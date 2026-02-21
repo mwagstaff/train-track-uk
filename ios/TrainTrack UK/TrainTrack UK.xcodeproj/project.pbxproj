@@ -1,0 +1,1574 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		E75AE1402F3272D200591535 /* NotificationServiceExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E75AE1392F3272D200591535 /* NotificationServiceExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		E7BD08012ED8A1D5009FAC62 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E7D479E62EBB4B10002D81D7 /* WidgetKit.framework */; };
+		E7BD08022ED8A1D5009FAC62 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E7D479E82EBB4B10002D81D7 /* SwiftUI.framework */; };
+		E7BD08132ED8A1D6009FAC62 /* Live ActivityExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E7BD08002ED8A1D5009FAC62 /* Live ActivityExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		E7BD08192ED8A495009FAC62 /* JourneyActivityShared in Frameworks */ = {isa = PBXBuildFile; productRef = E7BD08182ED8A495009FAC62 /* JourneyActivityShared */; };
+		E7D479E72EBB4B10002D81D7 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E7D479E62EBB4B10002D81D7 /* WidgetKit.framework */; };
+		E7D479E92EBB4B10002D81D7 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E7D479E82EBB4B10002D81D7 /* SwiftUI.framework */; };
+		E7D479FA2EBB4B11002D81D7 /* Phone WidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E7D479E42EBB4B10002D81D7 /* Phone WidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		E7F5ED792EBCE6AA002DE37A /* JourneyActivityShared in Frameworks */ = {isa = PBXBuildFile; productRef = E7F5ED782EBCE6AA002DE37A /* JourneyActivityShared */; };
+		E7F5ED7B2EBCE6C9002DE37A /* JourneyActivityShared in Frameworks */ = {isa = PBXBuildFile; productRef = E7F5ED7A2EBCE6C9002DE37A /* JourneyActivityShared */; };
+		E7F5ED7C2EBCD300002DE37A /* ActivityKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E7F5ED7D2EBCD300002DE37A /* ActivityKit.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		E7186E392EBAB5E90038C96B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E7186E232EBAB5E70038C96B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E7186E2A2EBAB5E70038C96B;
+			remoteInfo = "TrainTrack UK";
+		};
+		E7186E432EBAB5E90038C96B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E7186E232EBAB5E70038C96B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E7186E2A2EBAB5E70038C96B;
+			remoteInfo = "TrainTrack UK";
+		};
+		E75AE13E2F3272D200591535 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E7186E232EBAB5E70038C96B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E75AE1382F3272D200591535;
+			remoteInfo = NotificationServiceExtension;
+		};
+		E7BD08112ED8A1D6009FAC62 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E7186E232EBAB5E70038C96B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E7BD07FF2ED8A1D5009FAC62;
+			remoteInfo = "Live ActivityExtension";
+		};
+		E7D479F82EBB4B11002D81D7 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E7186E232EBAB5E70038C96B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E7D479E32EBB4B10002D81D7;
+			remoteInfo = "Phone WidgetExtension";
+		};
+		E7D47A992EBBDBCB002D81D7 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E7186E232EBAB5E70038C96B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E7D47A8B2EBBDBCA002D81D7;
+			remoteInfo = "TrainTrack UK Watch App";
+		};
+		E7D47AA32EBBDBCB002D81D7 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E7186E232EBAB5E70038C96B /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E7D47A8B2EBBDBCA002D81D7;
+			remoteInfo = "TrainTrack UK Watch App";
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		E7D479FB2EBB4B11002D81D7 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				E7BD08132ED8A1D6009FAC62 /* Live ActivityExtension.appex in Embed Foundation Extensions */,
+				E75AE1402F3272D200591535 /* NotificationServiceExtension.appex in Embed Foundation Extensions */,
+				E7D479FA2EBB4B11002D81D7 /* Phone WidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7D47A812EBBDB95002D81D7 /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
+			files = (
+			);
+			name = "Embed Watch Content";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		E7186E2B2EBAB5E70038C96B /* TrainTrack UK.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "TrainTrack UK.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7186E382EBAB5E90038C96B /* TrainTrack UKTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "TrainTrack UKTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7186E422EBAB5E90038C96B /* TrainTrack UKUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "TrainTrack UKUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E75AE1392F3272D200591535 /* NotificationServiceExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NotificationServiceExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7BD08002ED8A1D5009FAC62 /* Live ActivityExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "Live ActivityExtension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7D479E42EBB4B10002D81D7 /* Phone WidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "Phone WidgetExtension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7D479E62EBB4B10002D81D7 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		E7D479E82EBB4B10002D81D7 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
+		E7D47A002EBB4B27002D81D7 /* Phone WidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Phone WidgetExtension.entitlements"; sourceTree = "<group>"; };
+		E7D47A8C2EBBDBCA002D81D7 /* TrainTrack UK Watch App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "TrainTrack UK Watch App.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7D47A982EBBDBCB002D81D7 /* TrainTrack UK Watch AppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "TrainTrack UK Watch AppTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7D47AA22EBBDBCB002D81D7 /* TrainTrack UK Watch AppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "TrainTrack UK Watch AppUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7F5ED722EBCC0BF002DE37A /* JourneyActivityShared */ = {isa = PBXFileReference; lastKnownFileType = wrapper; name = JourneyActivityShared; path = ../JourneyActivityShared; sourceTree = SOURCE_ROOT; };
+		E7F5ED7D2EBCD300002DE37A /* ActivityKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ActivityKit.framework; path = System/Library/Frameworks/ActivityKit.framework; sourceTree = SDKROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		E75AE1432F3272D200591535 /* Exceptions for "NotificationServiceExtension" folder in "NotificationServiceExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = E75AE1382F3272D200591535 /* NotificationServiceExtension */;
+		};
+		E7BD08142ED8A1D6009FAC62 /* Exceptions for "Live Activity" folder in "Live ActivityExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = E7BD07FF2ED8A1D5009FAC62 /* Live ActivityExtension */;
+		};
+		E7D479FE2EBB4B11002D81D7 /* Exceptions for "Phone Widget" folder in "Phone WidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = E7D479E32EBB4B10002D81D7 /* Phone WidgetExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		E7186E2D2EBAB5E70038C96B /* TrainTrack UK */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "TrainTrack UK";
+			sourceTree = "<group>";
+		};
+		E7186E3B2EBAB5E90038C96B /* TrainTrack UKTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "TrainTrack UKTests";
+			sourceTree = "<group>";
+		};
+		E7186E452EBAB5E90038C96B /* TrainTrack UKUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "TrainTrack UKUITests";
+			sourceTree = "<group>";
+		};
+		E75AE13A2F3272D200591535 /* NotificationServiceExtension */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				E75AE1432F3272D200591535 /* Exceptions for "NotificationServiceExtension" folder in "NotificationServiceExtension" target */,
+			);
+			path = NotificationServiceExtension;
+			sourceTree = "<group>";
+		};
+		E7BD08032ED8A1D5009FAC62 /* Live Activity */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				E7BD08142ED8A1D6009FAC62 /* Exceptions for "Live Activity" folder in "Live ActivityExtension" target */,
+			);
+			path = "Live Activity";
+			sourceTree = "<group>";
+		};
+		E7D479EA2EBB4B10002D81D7 /* Phone Widget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				E7D479FE2EBB4B11002D81D7 /* Exceptions for "Phone Widget" folder in "Phone WidgetExtension" target */,
+			);
+			path = "Phone Widget";
+			sourceTree = "<group>";
+		};
+		E7D47A5E2EBBDB93002D81D7 /* Watch App Watch App */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Watch App Watch App";
+			sourceTree = "<group>";
+		};
+		E7D47A6C2EBBDB95002D81D7 /* Watch App Watch AppTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Watch App Watch AppTests";
+			sourceTree = "<group>";
+		};
+		E7D47A762EBBDB95002D81D7 /* Watch App Watch AppUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Watch App Watch AppUITests";
+			sourceTree = "<group>";
+		};
+		E7D47A8D2EBBDBCA002D81D7 /* TrainTrack UK Watch App */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "TrainTrack UK Watch App";
+			sourceTree = "<group>";
+		};
+		E7D47A9B2EBBDBCB002D81D7 /* TrainTrack UK Watch AppTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "TrainTrack UK Watch AppTests";
+			sourceTree = "<group>";
+		};
+		E7D47AA52EBBDBCB002D81D7 /* TrainTrack UK Watch AppUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "TrainTrack UK Watch AppUITests";
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		E7186E282EBAB5E70038C96B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7F5ED792EBCE6AA002DE37A /* JourneyActivityShared in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7186E352EBAB5E90038C96B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7186E3F2EBAB5E90038C96B /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E75AE1362F3272D200591535 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7BD07FD2ED8A1D5009FAC62 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7BD08022ED8A1D5009FAC62 /* SwiftUI.framework in Frameworks */,
+				E7BD08192ED8A495009FAC62 /* JourneyActivityShared in Frameworks */,
+				E7BD08012ED8A1D5009FAC62 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7D479E12EBB4B10002D81D7 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7D479E92EBB4B10002D81D7 /* SwiftUI.framework in Frameworks */,
+				E7F5ED7B2EBCE6C9002DE37A /* JourneyActivityShared in Frameworks */,
+				E7F5ED7C2EBCD300002DE37A /* ActivityKit.framework in Frameworks */,
+				E7D479E72EBB4B10002D81D7 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7D47A892EBBDBCA002D81D7 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7D47A952EBBDBCB002D81D7 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7D47A9F2EBBDBCB002D81D7 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		E7186E222EBAB5E70038C96B = {
+			isa = PBXGroup;
+			children = (
+				E7F5ED722EBCC0BF002DE37A /* JourneyActivityShared */,
+				E7D47A002EBB4B27002D81D7 /* Phone WidgetExtension.entitlements */,
+				E7186E2D2EBAB5E70038C96B /* TrainTrack UK */,
+				E7186E3B2EBAB5E90038C96B /* TrainTrack UKTests */,
+				E7186E452EBAB5E90038C96B /* TrainTrack UKUITests */,
+				E7D479EA2EBB4B10002D81D7 /* Phone Widget */,
+				E7D47A5E2EBBDB93002D81D7 /* Watch App Watch App */,
+				E7D47A6C2EBBDB95002D81D7 /* Watch App Watch AppTests */,
+				E7D47A762EBBDB95002D81D7 /* Watch App Watch AppUITests */,
+				E7D47A8D2EBBDBCA002D81D7 /* TrainTrack UK Watch App */,
+				E7D47A9B2EBBDBCB002D81D7 /* TrainTrack UK Watch AppTests */,
+				E7D47AA52EBBDBCB002D81D7 /* TrainTrack UK Watch AppUITests */,
+				E7BD08032ED8A1D5009FAC62 /* Live Activity */,
+				E75AE13A2F3272D200591535 /* NotificationServiceExtension */,
+				E7D479E52EBB4B10002D81D7 /* Frameworks */,
+				E7186E2C2EBAB5E70038C96B /* Products */,
+				E73678422EBCF6E300E749B3 /* Recovered References */,
+			);
+			sourceTree = "<group>";
+		};
+		E7186E2C2EBAB5E70038C96B /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				E7186E2B2EBAB5E70038C96B /* TrainTrack UK.app */,
+				E7186E382EBAB5E90038C96B /* TrainTrack UKTests.xctest */,
+				E7186E422EBAB5E90038C96B /* TrainTrack UKUITests.xctest */,
+				E7D479E42EBB4B10002D81D7 /* Phone WidgetExtension.appex */,
+				E7D47A8C2EBBDBCA002D81D7 /* TrainTrack UK Watch App.app */,
+				E7D47A982EBBDBCB002D81D7 /* TrainTrack UK Watch AppTests.xctest */,
+				E7D47AA22EBBDBCB002D81D7 /* TrainTrack UK Watch AppUITests.xctest */,
+				E7BD08002ED8A1D5009FAC62 /* Live ActivityExtension.appex */,
+				E75AE1392F3272D200591535 /* NotificationServiceExtension.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		E73678422EBCF6E300E749B3 /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				E7F5ED7D2EBCD300002DE37A /* ActivityKit.framework */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
+		E7D479E52EBB4B10002D81D7 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				E7D479E62EBB4B10002D81D7 /* WidgetKit.framework */,
+				E7D479E82EBB4B10002D81D7 /* SwiftUI.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		E7186E2A2EBAB5E70038C96B /* TrainTrack UK */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E7186E4C2EBAB5E90038C96B /* Build configuration list for PBXNativeTarget "TrainTrack UK" */;
+			buildPhases = (
+				E7186E272EBAB5E70038C96B /* Sources */,
+				E7186E282EBAB5E70038C96B /* Frameworks */,
+				E7186E292EBAB5E70038C96B /* Resources */,
+				E7D479FB2EBB4B11002D81D7 /* Embed Foundation Extensions */,
+				E7D47A812EBBDB95002D81D7 /* Embed Watch Content */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E7D479F92EBB4B11002D81D7 /* PBXTargetDependency */,
+				E7BD08122ED8A1D6009FAC62 /* PBXTargetDependency */,
+				E75AE13F2F3272D200591535 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E7186E2D2EBAB5E70038C96B /* TrainTrack UK */,
+			);
+			name = "TrainTrack UK";
+			packageProductDependencies = (
+				E7F5ED782EBCE6AA002DE37A /* JourneyActivityShared */,
+			);
+			productName = "TrainTrack UK";
+			productReference = E7186E2B2EBAB5E70038C96B /* TrainTrack UK.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E7186E372EBAB5E90038C96B /* TrainTrack UKTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E7186E4F2EBAB5E90038C96B /* Build configuration list for PBXNativeTarget "TrainTrack UKTests" */;
+			buildPhases = (
+				E7186E342EBAB5E90038C96B /* Sources */,
+				E7186E352EBAB5E90038C96B /* Frameworks */,
+				E7186E362EBAB5E90038C96B /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E7186E3A2EBAB5E90038C96B /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E7186E3B2EBAB5E90038C96B /* TrainTrack UKTests */,
+			);
+			name = "TrainTrack UKTests";
+			packageProductDependencies = (
+			);
+			productName = "TrainTrack UKTests";
+			productReference = E7186E382EBAB5E90038C96B /* TrainTrack UKTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		E7186E412EBAB5E90038C96B /* TrainTrack UKUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E7186E522EBAB5E90038C96B /* Build configuration list for PBXNativeTarget "TrainTrack UKUITests" */;
+			buildPhases = (
+				E7186E3E2EBAB5E90038C96B /* Sources */,
+				E7186E3F2EBAB5E90038C96B /* Frameworks */,
+				E7186E402EBAB5E90038C96B /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E7186E442EBAB5E90038C96B /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E7186E452EBAB5E90038C96B /* TrainTrack UKUITests */,
+			);
+			name = "TrainTrack UKUITests";
+			packageProductDependencies = (
+			);
+			productName = "TrainTrack UKUITests";
+			productReference = E7186E422EBAB5E90038C96B /* TrainTrack UKUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		E75AE1382F3272D200591535 /* NotificationServiceExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E75AE1442F3272D200591535 /* Build configuration list for PBXNativeTarget "NotificationServiceExtension" */;
+			buildPhases = (
+				E75AE1352F3272D200591535 /* Sources */,
+				E75AE1362F3272D200591535 /* Frameworks */,
+				E75AE1372F3272D200591535 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				E75AE13A2F3272D200591535 /* NotificationServiceExtension */,
+			);
+			name = NotificationServiceExtension;
+			packageProductDependencies = (
+			);
+			productName = NotificationServiceExtension;
+			productReference = E75AE1392F3272D200591535 /* NotificationServiceExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		E7BD07FF2ED8A1D5009FAC62 /* Live ActivityExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E7BD08152ED8A1D6009FAC62 /* Build configuration list for PBXNativeTarget "Live ActivityExtension" */;
+			buildPhases = (
+				E7BD07FC2ED8A1D5009FAC62 /* Sources */,
+				E7BD07FD2ED8A1D5009FAC62 /* Frameworks */,
+				E7BD07FE2ED8A1D5009FAC62 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				E7BD08032ED8A1D5009FAC62 /* Live Activity */,
+			);
+			name = "Live ActivityExtension";
+			packageProductDependencies = (
+				E7BD08182ED8A495009FAC62 /* JourneyActivityShared */,
+			);
+			productName = "Live ActivityExtension";
+			productReference = E7BD08002ED8A1D5009FAC62 /* Live ActivityExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		E7D479E32EBB4B10002D81D7 /* Phone WidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E7D479FF2EBB4B11002D81D7 /* Build configuration list for PBXNativeTarget "Phone WidgetExtension" */;
+			buildPhases = (
+				E7D479E02EBB4B10002D81D7 /* Sources */,
+				E7D479E12EBB4B10002D81D7 /* Frameworks */,
+				E7D479E22EBB4B10002D81D7 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				E7D479EA2EBB4B10002D81D7 /* Phone Widget */,
+			);
+			name = "Phone WidgetExtension";
+			packageProductDependencies = (
+				E7F5ED7A2EBCE6C9002DE37A /* JourneyActivityShared */,
+			);
+			productName = "Phone WidgetExtension";
+			productReference = E7D479E42EBB4B10002D81D7 /* Phone WidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		E7D47A8B2EBBDBCA002D81D7 /* TrainTrack UK Watch App */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E7D47AAA2EBBDBCB002D81D7 /* Build configuration list for PBXNativeTarget "TrainTrack UK Watch App" */;
+			buildPhases = (
+				E7D47A882EBBDBCA002D81D7 /* Sources */,
+				E7D47A892EBBDBCA002D81D7 /* Frameworks */,
+				E7D47A8A2EBBDBCA002D81D7 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				E7D47A8D2EBBDBCA002D81D7 /* TrainTrack UK Watch App */,
+			);
+			name = "TrainTrack UK Watch App";
+			packageProductDependencies = (
+			);
+			productName = "TrainTrack UK Watch App";
+			productReference = E7D47A8C2EBBDBCA002D81D7 /* TrainTrack UK Watch App.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E7D47A972EBBDBCB002D81D7 /* TrainTrack UK Watch AppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E7D47AAD2EBBDBCB002D81D7 /* Build configuration list for PBXNativeTarget "TrainTrack UK Watch AppTests" */;
+			buildPhases = (
+				E7D47A942EBBDBCB002D81D7 /* Sources */,
+				E7D47A952EBBDBCB002D81D7 /* Frameworks */,
+				E7D47A962EBBDBCB002D81D7 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E7D47A9A2EBBDBCB002D81D7 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E7D47A9B2EBBDBCB002D81D7 /* TrainTrack UK Watch AppTests */,
+			);
+			name = "TrainTrack UK Watch AppTests";
+			packageProductDependencies = (
+			);
+			productName = "TrainTrack UK Watch AppTests";
+			productReference = E7D47A982EBBDBCB002D81D7 /* TrainTrack UK Watch AppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		E7D47AA12EBBDBCB002D81D7 /* TrainTrack UK Watch AppUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E7D47AB02EBBDBCB002D81D7 /* Build configuration list for PBXNativeTarget "TrainTrack UK Watch AppUITests" */;
+			buildPhases = (
+				E7D47A9E2EBBDBCB002D81D7 /* Sources */,
+				E7D47A9F2EBBDBCB002D81D7 /* Frameworks */,
+				E7D47AA02EBBDBCB002D81D7 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E7D47AA42EBBDBCB002D81D7 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				E7D47AA52EBBDBCB002D81D7 /* TrainTrack UK Watch AppUITests */,
+			);
+			name = "TrainTrack UK Watch AppUITests";
+			packageProductDependencies = (
+			);
+			productName = "TrainTrack UK Watch AppUITests";
+			productReference = E7D47AA22EBBDBCB002D81D7 /* TrainTrack UK Watch AppUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E7186E232EBAB5E70038C96B /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2620;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					E7186E2A2EBAB5E70038C96B = {
+						CreatedOnToolsVersion = 26.0.1;
+					};
+					E7186E372EBAB5E90038C96B = {
+						CreatedOnToolsVersion = 26.0.1;
+						TestTargetID = E7186E2A2EBAB5E70038C96B;
+					};
+					E7186E412EBAB5E90038C96B = {
+						CreatedOnToolsVersion = 26.0.1;
+						TestTargetID = E7186E2A2EBAB5E70038C96B;
+					};
+					E75AE1382F3272D200591535 = {
+						CreatedOnToolsVersion = 26.2;
+					};
+					E7BD07FF2ED8A1D5009FAC62 = {
+						CreatedOnToolsVersion = 26.1.1;
+					};
+					E7D479E32EBB4B10002D81D7 = {
+						CreatedOnToolsVersion = 26.0.1;
+					};
+					E7D47A8B2EBBDBCA002D81D7 = {
+						CreatedOnToolsVersion = 26.0.1;
+					};
+					E7D47A972EBBDBCB002D81D7 = {
+						CreatedOnToolsVersion = 26.0.1;
+						TestTargetID = E7D47A8B2EBBDBCA002D81D7;
+					};
+					E7D47AA12EBBDBCB002D81D7 = {
+						CreatedOnToolsVersion = 26.0.1;
+						TestTargetID = E7D47A8B2EBBDBCA002D81D7;
+					};
+				};
+			};
+			buildConfigurationList = E7186E262EBAB5E70038C96B /* Build configuration list for PBXProject "TrainTrack UK" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = E7186E222EBAB5E70038C96B;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				E7F5ED772EBCE3F7002DE37A /* XCLocalSwiftPackageReference "JourneyActivityShared" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = E7186E2C2EBAB5E70038C96B /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				E7186E2A2EBAB5E70038C96B /* TrainTrack UK */,
+				E7186E372EBAB5E90038C96B /* TrainTrack UKTests */,
+				E7186E412EBAB5E90038C96B /* TrainTrack UKUITests */,
+				E7D479E32EBB4B10002D81D7 /* Phone WidgetExtension */,
+				E7D47A8B2EBBDBCA002D81D7 /* TrainTrack UK Watch App */,
+				E7D47A972EBBDBCB002D81D7 /* TrainTrack UK Watch AppTests */,
+				E7D47AA12EBBDBCB002D81D7 /* TrainTrack UK Watch AppUITests */,
+				E7BD07FF2ED8A1D5009FAC62 /* Live ActivityExtension */,
+				E75AE1382F3272D200591535 /* NotificationServiceExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E7186E292EBAB5E70038C96B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7186E362EBAB5E90038C96B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7186E402EBAB5E90038C96B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E75AE1372F3272D200591535 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7BD07FE2ED8A1D5009FAC62 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7D479E22EBB4B10002D81D7 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7D47A8A2EBBDBCA002D81D7 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7D47A962EBBDBCB002D81D7 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7D47AA02EBBDBCB002D81D7 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		E7186E272EBAB5E70038C96B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7186E342EBAB5E90038C96B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7186E3E2EBAB5E90038C96B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E75AE1352F3272D200591535 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7BD07FC2ED8A1D5009FAC62 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7D479E02EBB4B10002D81D7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7D47A882EBBDBCA002D81D7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7D47A942EBBDBCB002D81D7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E7D47A9E2EBBDBCB002D81D7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		E7186E3A2EBAB5E90038C96B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E7186E2A2EBAB5E70038C96B /* TrainTrack UK */;
+			targetProxy = E7186E392EBAB5E90038C96B /* PBXContainerItemProxy */;
+		};
+		E7186E442EBAB5E90038C96B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E7186E2A2EBAB5E70038C96B /* TrainTrack UK */;
+			targetProxy = E7186E432EBAB5E90038C96B /* PBXContainerItemProxy */;
+		};
+		E75AE13F2F3272D200591535 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E75AE1382F3272D200591535 /* NotificationServiceExtension */;
+			targetProxy = E75AE13E2F3272D200591535 /* PBXContainerItemProxy */;
+		};
+		E7BD08122ED8A1D6009FAC62 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E7BD07FF2ED8A1D5009FAC62 /* Live ActivityExtension */;
+			targetProxy = E7BD08112ED8A1D6009FAC62 /* PBXContainerItemProxy */;
+		};
+		E7D479F92EBB4B11002D81D7 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E7D479E32EBB4B10002D81D7 /* Phone WidgetExtension */;
+			targetProxy = E7D479F82EBB4B11002D81D7 /* PBXContainerItemProxy */;
+		};
+		E7D47A9A2EBBDBCB002D81D7 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E7D47A8B2EBBDBCA002D81D7 /* TrainTrack UK Watch App */;
+			targetProxy = E7D47A992EBBDBCB002D81D7 /* PBXContainerItemProxy */;
+		};
+		E7D47AA42EBBDBCB002D81D7 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E7D47A8B2EBBDBCA002D81D7 /* TrainTrack UK Watch App */;
+			targetProxy = E7D47AA32EBBDBCB002D81D7 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		E7186E4A2EBAB5E90038C96B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		E7186E4B2EBAB5E90038C96B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		E7186E4D2EBAB5E90038C96B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "TrainTrack UK/TrainTrack UK.entitlements";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "TrainTrack-UK-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "";
+				INFOPLIST_KEY_CFBundleURLTypes = "{\n    CFBundleURLName = \"dev.skynolimit.traintrack\";\n    CFBundleURLSchemes =     (\n        traintrack\n    );\n}";
+				INFOPLIST_KEY_LSApplicationCategoryType = "";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "TrainTrack uses your location to show the closest stations first, and to detect once you've arrived at a station in order to mute notifications (if that feature is enabled)";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "TrainTrack uses your location to show the closest stations first";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 3.5;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.skynolimit.traintrack;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E7186E4E2EBAB5E90038C96B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "TrainTrack UK/TrainTrack UK.entitlements";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "TrainTrack-UK-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "";
+				INFOPLIST_KEY_CFBundleURLTypes = "{\n    CFBundleURLName = \"dev.skynolimit.traintrack\";\n    CFBundleURLSchemes =     (\n        traintrack\n    );\n}";
+				INFOPLIST_KEY_LSApplicationCategoryType = "";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "TrainTrack uses your location to show the closest stations first, and to detect once you've arrived at a station in order to mute notifications (if that feature is enabled)";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "TrainTrack uses your location to show the closest stations first";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 3.5;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.skynolimit.traintrack;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		E7186E502EBAB5E90038C96B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				MARKETING_VERSION = 2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.TrainTrack-UKTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TrainTrack UK.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/TrainTrack UK";
+			};
+			name = Debug;
+		};
+		E7186E512EBAB5E90038C96B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				MARKETING_VERSION = 2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.TrainTrack-UKTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TrainTrack UK.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/TrainTrack UK";
+			};
+			name = Release;
+		};
+		E7186E532EBAB5E90038C96B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.TrainTrack-UKUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "TrainTrack UK";
+			};
+			name = Debug;
+		};
+		E7186E542EBAB5E90038C96B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.TrainTrack-UKUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = "TrainTrack UK";
+			};
+			name = Release;
+		};
+		E75AE1412F3272D200591535 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = NotificationServiceExtension/NotificationServiceExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NotificationServiceExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = NotificationServiceExtension;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.skynolimit.traintrack.NotificationServiceExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E75AE1422F3272D200591535 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = NotificationServiceExtension/NotificationServiceExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = NotificationServiceExtension/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = NotificationServiceExtension;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.skynolimit.traintrack.NotificationServiceExtension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		E7BD08162ED8A1D6009FAC62 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Live Activity/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Live Activity";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.traintrack.Live-Activity";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E7BD08172ED8A1D6009FAC62 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Live Activity/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Live Activity";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.traintrack.Live-Activity";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		E7D479FC2EBB4B11002D81D7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = "Phone WidgetExtension.entitlements";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				ENABLE_CODE_COVERAGE = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Phone Widget/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Phone Widget";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.traintrack.Phone-Widget";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		E7D479FD2EBB4B11002D81D7 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_ENTITLEMENTS = "Phone WidgetExtension.entitlements";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				ENABLE_CODE_COVERAGE = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Phone Widget/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Phone Widget";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 2.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.traintrack.Phone-Widget";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		E7D47AAB2EBBDBCB002D81D7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "TrainTrack UK Watch App/TrainTrack UK Watch App.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "TrainTrack UK";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.skynolimit.traintrack;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Debug;
+		};
+		E7D47AAC2EBBDBCB002D81D7 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = "TrainTrack UK Watch App/TrainTrack UK Watch App.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "TrainTrack UK";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.skynolimit.traintrack;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Release;
+		};
+		E7D47AAE2EBBDBCB002D81D7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.traintrack.TrainTrack-UK-Watch-AppTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TrainTrack UK Watch App.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/TrainTrack UK Watch App";
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Debug;
+		};
+		E7D47AAF2EBBDBCB002D81D7 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.traintrack.TrainTrack-UK-Watch-AppTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TrainTrack UK Watch App.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/TrainTrack UK Watch App";
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Release;
+		};
+		E7D47AB12EBBDBCB002D81D7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.traintrack.TrainTrack-UK-Watch-AppUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				TEST_TARGET_NAME = "TrainTrack UK Watch App";
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Debug;
+		};
+		E7D47AB22EBBDBCB002D81D7 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SJ8X4DLAN9;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.traintrack.TrainTrack-UK-Watch-AppUITests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				TEST_TARGET_NAME = "TrainTrack UK Watch App";
+				WATCHOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		E7186E262EBAB5E70038C96B /* Build configuration list for PBXProject "TrainTrack UK" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7186E4A2EBAB5E90038C96B /* Debug */,
+				E7186E4B2EBAB5E90038C96B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E7186E4C2EBAB5E90038C96B /* Build configuration list for PBXNativeTarget "TrainTrack UK" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7186E4D2EBAB5E90038C96B /* Debug */,
+				E7186E4E2EBAB5E90038C96B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E7186E4F2EBAB5E90038C96B /* Build configuration list for PBXNativeTarget "TrainTrack UKTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7186E502EBAB5E90038C96B /* Debug */,
+				E7186E512EBAB5E90038C96B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E7186E522EBAB5E90038C96B /* Build configuration list for PBXNativeTarget "TrainTrack UKUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7186E532EBAB5E90038C96B /* Debug */,
+				E7186E542EBAB5E90038C96B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E75AE1442F3272D200591535 /* Build configuration list for PBXNativeTarget "NotificationServiceExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E75AE1412F3272D200591535 /* Debug */,
+				E75AE1422F3272D200591535 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E7BD08152ED8A1D6009FAC62 /* Build configuration list for PBXNativeTarget "Live ActivityExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7BD08162ED8A1D6009FAC62 /* Debug */,
+				E7BD08172ED8A1D6009FAC62 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E7D479FF2EBB4B11002D81D7 /* Build configuration list for PBXNativeTarget "Phone WidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7D479FC2EBB4B11002D81D7 /* Debug */,
+				E7D479FD2EBB4B11002D81D7 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E7D47AAA2EBBDBCB002D81D7 /* Build configuration list for PBXNativeTarget "TrainTrack UK Watch App" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7D47AAB2EBBDBCB002D81D7 /* Debug */,
+				E7D47AAC2EBBDBCB002D81D7 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E7D47AAD2EBBDBCB002D81D7 /* Build configuration list for PBXNativeTarget "TrainTrack UK Watch AppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7D47AAE2EBBDBCB002D81D7 /* Debug */,
+				E7D47AAF2EBBDBCB002D81D7 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E7D47AB02EBBDBCB002D81D7 /* Build configuration list for PBXNativeTarget "TrainTrack UK Watch AppUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7D47AB12EBBDBCB002D81D7 /* Debug */,
+				E7D47AB22EBBDBCB002D81D7 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		E7F5ED772EBCE3F7002DE37A /* XCLocalSwiftPackageReference "JourneyActivityShared" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = JourneyActivityShared;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		E7BD08182ED8A495009FAC62 /* JourneyActivityShared */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E7F5ED772EBCE3F7002DE37A /* XCLocalSwiftPackageReference "JourneyActivityShared" */;
+			productName = JourneyActivityShared;
+		};
+		E7F5ED782EBCE6AA002DE37A /* JourneyActivityShared */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = JourneyActivityShared;
+		};
+		E7F5ED7A2EBCE6C9002DE37A /* JourneyActivityShared */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = JourneyActivityShared;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = E7186E232EBAB5E70038C96B /* Project object */;
+}

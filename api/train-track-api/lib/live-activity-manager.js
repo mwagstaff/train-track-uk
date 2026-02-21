@@ -1,0 +1,707 @@
+import moment from 'moment';
+import { getTrainTimes } from './realtime-trains-api.js';
+import { LiveActivityPushClient } from './live-activity-push-client.js';
+import { getServiceDetails } from './service-details.js';
+
+const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.LIVE_ACTIVITY_POLL_INTERVAL_SECONDS || '20');
+const DEFAULT_END_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_END_AFTER_SECONDS || '7200'); // default 2 hours
+const DEFAULT_STALE_DATE_REFRESH_SECONDS = Number(process.env.LIVE_ACTIVITY_STALE_DATE_REFRESH_SECONDS || '240'); // refresh stale-date every 4 minutes
+
+class LiveActivityManager {
+    constructor() {
+        this.subscriptions = new Map();
+        this.pushClient = new LiveActivityPushClient();
+        this.pollIntervalMs = DEFAULT_POLL_INTERVAL_SECONDS * 1000;
+        this.isPolling = false;
+        this.startPollingLoop();
+    }
+
+    startPollingLoop() {
+        setInterval(() => {
+            this.pollAll().catch((error) => {
+                console.error(`Live activity poll failed: ${error?.message || error}`);
+            });
+        }, this.pollIntervalMs).unref?.();
+    }
+
+    registerSubscription({ deviceId, activityId, pushToken, fromStation, toStation, preferredServiceId, useSandbox }) {
+        const key = this.buildKey(deviceId, activityId);
+        const existing = this.subscriptions.get(key);
+
+        // Track token changes for debugging
+        const tokenPreview = this.maskToken(pushToken);
+        const isTokenUpdate = existing && existing.pushToken !== pushToken;
+
+        if (isTokenUpdate) {
+            const oldTokenPreview = this.maskToken(existing.pushToken);
+            this.log(`[live-activity] token_rotation ${deviceId}/${activityId} old=${oldTokenPreview} new=${tokenPreview}`);
+            console.log(`🔄 [live-activity] Token rotation detected for ${key}: ${oldTokenPreview} → ${tokenPreview}`);
+        } else if (existing) {
+            this.log(`[live-activity] token_reregister ${deviceId}/${activityId} token=${tokenPreview} (same token)`);
+        } else {
+            this.log(`[live-activity] token_initial ${deviceId}/${activityId} token=${tokenPreview} sandbox=${useSandbox}`);
+        }
+
+        const subscription = {
+            deviceId,
+            activityId,
+            pushToken,
+            fromStation,
+            toStation,
+            preferredServiceId: (typeof preferredServiceId === 'string' && preferredServiceId.length > 0)
+                ? preferredServiceId
+                : (existing?.preferredServiceId || null),
+            useSandbox: Boolean(useSandbox), // Defaults to false (production) if not provided
+            createdAt: existing?.createdAt || new Date().toISOString(),
+            lastSnapshot: existing?.lastSnapshot || null,
+            lastPushAt: existing?.lastPushAt || null,
+            revision: existing?.revision || 0,
+            tokenUpdatedAt: new Date().toISOString()
+        };
+
+        this.subscriptions.set(key, subscription);
+        this.scheduleEnd(subscription);
+
+        // Trigger an immediate check so the caller gets fresh data right away
+        this.pollSubscription(subscription, { force: true }).catch((error) => {
+            console.error(`Initial poll for ${key} failed: ${error?.message || error}`);
+        });
+
+        return subscription;
+    }
+
+    scheduleEnd(subscription) {
+        this.clearEndTimer(subscription);
+        const endAfterMs = this.getEndAfterMs();
+        subscription.endAt = new Date(Date.now() + endAfterMs).toISOString();
+        subscription.endTimer = setTimeout(() => {
+            this.sendEndUpdate(subscription).catch((error) => {
+                const key = this.buildKey(subscription.deviceId, subscription.activityId);
+                console.error(`Final live activity end push failed for ${key}: ${error?.message || error}`);
+            });
+        }, endAfterMs);
+        subscription.endTimer.unref?.();
+    }
+
+    clearEndTimer(subscription) {
+        if (subscription?.endTimer) {
+            clearTimeout(subscription.endTimer);
+            delete subscription.endTimer;
+        }
+    }
+
+    async pollAll() {
+        if (this.isPolling || this.subscriptions.size === 0) {
+            return;
+        }
+
+        this.isPolling = true;
+        try {
+            const jobs = Array.from(this.subscriptions.values()).map((subscription) =>
+                this.pollSubscription(subscription).catch((error) => {
+                    const key = this.buildKey(subscription.deviceId, subscription.activityId);
+                    console.error(`Poll for ${key} failed: ${error?.message || error}`);
+                    return null;
+                })
+            );
+            await Promise.all(jobs);
+        } finally {
+            this.isPolling = false;
+        }
+    }
+
+    async pollSubscription(subscription, { force = false, dryRun = false } = {}) {
+        const snapshot = await this.getDeparturesSnapshot(
+            subscription.fromStation,
+            subscription.toStation,
+            subscription.preferredServiceId
+        );
+        const hasChanged = force || !this.snapshotsEqual(snapshot, subscription.lastSnapshot);
+
+        // Check if we need to refresh stale-date even if data hasn't changed
+        // This prevents iOS from marking the activity as stale and stops displaying updates
+        const needsStaleDateRefresh = this.shouldRefreshStaleDate(subscription);
+
+        if (!hasChanged && !needsStaleDateRefresh) {
+            this.log(`[live-activity] no_change ${subscription.deviceId}/${subscription.activityId}`);
+            return { sent: false, reason: 'no_change', snapshot };
+        }
+
+        if (!hasChanged && needsStaleDateRefresh) {
+            this.log(`[live-activity] stale_date_refresh ${subscription.deviceId}/${subscription.activityId} (keeping activity fresh)`);
+        }
+
+        if (snapshot.departures.length === 0) {
+            this.log(`[live-activity] no_departures ${subscription.deviceId}/${subscription.activityId}`);
+            return { sent: false, reason: 'no_departures', snapshot };
+        }
+
+        const payload = this.buildPayload(subscription, snapshot);
+
+        if (dryRun) {
+            this.log(`[live-activity] dry_run ${subscription.deviceId}/${subscription.activityId}`);
+            return { sent: false, reason: 'dry_run', snapshot, payload };
+        }
+
+        const pushResponse = await this.pushClient.sendLiveActivityUpdate(subscription.pushToken, payload, { useSandbox: subscription.useSandbox });
+
+        // If the token is bad/expired, remove this subscription
+        if (pushResponse?.isBadToken) {
+            const key = this.buildKey(subscription.deviceId, subscription.activityId);
+            console.log(`🗑️ [live-activity] Removing subscription ${key} due to bad/expired token`);
+            this.clearEndTimer(subscription);
+            this.subscriptions.delete(key);
+            return { sent: false, reason: 'bad_token', snapshot, payload, pushResponse };
+        }
+
+        subscription.lastSnapshot = snapshot;
+        subscription.lastPushAt = snapshot.fetchedAt;
+        subscription.revision = (subscription.revision || 0) + 1;
+
+        this.log(
+            `[live-activity] push_payload ${subscription.deviceId}/${subscription.activityId}`,
+            { payload }
+        );
+
+        this.log(
+            `[live-activity] pushed ${subscription.deviceId}/${subscription.activityId}`,
+            {
+                status: pushResponse?.status,
+                departures: snapshot.departures.length,
+                fetchedAt: snapshot.fetchedAt
+            }
+        );
+
+        return { sent: true, snapshot, payload, pushResponse };
+    }
+
+    async sendEndUpdate(subscription) {
+        const key = this.buildKey(subscription.deviceId, subscription.activityId);
+        const snapshot = subscription.lastSnapshot || (
+            await this.getDeparturesSnapshot(
+                subscription.fromStation,
+                subscription.toStation,
+                subscription.preferredServiceId
+            )
+        );
+        const payload = this.buildPayload(subscription, snapshot, { end: true });
+        const pushResponse = await this.pushClient.sendLiveActivityUpdate(subscription.pushToken, payload, { useSandbox: subscription.useSandbox });
+
+        // Clean up subscription regardless of push result
+        this.clearEndTimer(subscription);
+        this.subscriptions.delete(key);
+
+        // Log if token was bad/expired (expected when activity was already dismissed)
+        if (pushResponse?.isBadToken) {
+            console.log(`🗑️ [live-activity] Token already expired for ${key} (activity likely already dismissed)`);
+        }
+
+        this.log(
+            `[live-activity] end_payload ${subscription.deviceId}/${subscription.activityId}`,
+            { payload }
+        );
+        this.log(
+            `[live-activity] ended ${subscription.deviceId}/${subscription.activityId}`,
+            {
+                status: pushResponse?.status,
+                departures: snapshot.departures.length,
+                fetchedAt: snapshot.fetchedAt,
+                endAt: subscription.endAt
+            }
+        );
+        return { snapshot, payload, pushResponse };
+    }
+
+    async getDeparturesSnapshot(fromStation, toStation, preferredServiceId = null) {
+        const result = await getTrainTimes(fromStation, toStation);
+        const rawDepartures = Array.isArray(result?.departures) ? result.departures : [];
+
+        const normalizedAll = rawDepartures.map((dep) => ({
+            serviceID: dep.serviceID,
+            scheduled: dep.departure_time?.scheduled,
+            estimated: dep.departure_time?.estimated,
+            platform: dep.platform,
+            operator: dep.operator,
+            isCancelled: dep.isCancelled,
+            length: dep.length,
+            destination: dep.destination,
+            origin: dep.origin,
+            delayReason: dep.delayReason,
+            cancelReason: dep.cancelReason
+        }));
+
+        const sortedUpcoming = this.sortDepartures(normalizedAll);
+        const departures = this.selectDeparturesForActivity(
+            normalizedAll,
+            sortedUpcoming,
+            preferredServiceId
+        ).slice(0, 3);
+
+        // Fetch service details only for selected departures to keep polling lightweight.
+        const serviceDetailsPromises = departures.map(dep =>
+            getServiceDetails(dep.serviceID).catch(err => {
+                console.warn(`Failed to fetch service details for ${dep.serviceID}: ${err?.message || err}`);
+                return null;
+            })
+        );
+        const serviceDetails = await Promise.all(serviceDetailsPromises);
+
+        const normalized = departures.map((dep, index) => {
+            const details = serviceDetails[index];
+            const richStatus = this.computeRichStatus(dep, details);
+
+            return {
+                ...dep,
+                statusText: richStatus // Include rich status for comparison
+            };
+        });
+
+        return {
+            departures: normalized,
+            fetchedAt: new Date().toISOString()
+        };
+    }
+
+    buildPayload(subscription, snapshot, { end = false } = {}) {
+        const aps = {
+            timestamp: moment(snapshot.fetchedAt).unix(),
+            event: end ? 'end' : 'update',
+            'relevance-score': 1.0,  // Maximum relevance (0.0 to 1.0) - tells iOS this is important
+            'content-state': this.buildContentState(subscription, snapshot)  // Must be inside aps for ActivityKit
+        };
+
+        if (end) {
+            aps['dismissal-date'] = 0; // immediate dismissal
+        } else {
+            // Set stale date to 5 minutes from now - tells iOS when data becomes outdated
+            aps['stale-date'] = moment(snapshot.fetchedAt).add(5, 'minutes').unix();
+        }
+
+        const payload = { aps };
+
+        if (end) {
+            payload.endedAt = snapshot.fetchedAt;
+        }
+
+        return payload;
+    }
+
+    sortDepartures(departures) {
+        const now = moment();
+        return departures
+            .filter((dep) => dep.scheduled || dep.estimated)
+            .filter((dep) => {
+                // Filter out trains that have already departed (give 1 minute grace period)
+                const depTime = this.parseTime(dep.estimated || dep.scheduled);
+                const gracePeriodMs = 60 * 1000; // 1 minute
+                return depTime > (now.valueOf() - gracePeriodMs);
+            })
+            .sort((a, b) => {
+                const timeA = this.parseTime(a.estimated || a.scheduled);
+                const timeB = this.parseTime(b.estimated || b.scheduled);
+                return timeA - timeB;
+            });
+    }
+
+    selectDeparturesForActivity(allDepartures, sortedUpcoming, preferredServiceId) {
+        const normalizedPreferred = typeof preferredServiceId === 'string'
+            ? preferredServiceId.trim()
+            : '';
+        if (!normalizedPreferred) {
+            return sortedUpcoming.slice(0, 3);
+        }
+
+        const preferred = allDepartures.find((dep) => dep.serviceID === normalizedPreferred);
+        if (!preferred) {
+            return sortedUpcoming.slice(0, 3);
+        }
+
+        const remainingUpcoming = sortedUpcoming.filter((dep) => dep.serviceID !== normalizedPreferred);
+        return [preferred, ...remainingUpcoming].slice(0, 3);
+    }
+
+    parseTime(timeString) {
+        if (!timeString) return Number.MAX_SAFE_INTEGER;
+        const parsed = moment(timeString, 'HH:mm');
+        return parsed.isValid() ? parsed.valueOf() : Number.MAX_SAFE_INTEGER;
+    }
+
+    buildContentState(subscription, snapshot) {
+        const primary = snapshot.departures[0] || {};
+        const estimated = this.getTimeString(primary.estimated, primary.scheduled);
+        const delayMinutes = this.calculateDelay(primary.scheduled, primary.estimated);
+
+        const platform = this.ensureString(primary.platform);
+        const destinationTitle = this.ensureString(primary.destination?.locationName);
+        const upcomingDepartures = snapshot.departures.slice(1).map((dep) => ({
+            time: this.getTimeString(dep.estimated, dep.scheduled),
+            delayMinutes: this.calculateDelay(dep.scheduled, dep.estimated),
+            isCancelled: Boolean(dep.isCancelled),
+            platform: this.ensureString(dep.platform),
+            hasFasterLaterService: false // Server doesn't compute this; client handles it
+        }));
+
+        return {
+            fromCRS: this.ensureString(subscription.fromStation),
+            toCRS: this.ensureString(subscription.toStation),
+            destinationTitle,
+            arrivalLabel: null,
+            length: Number.isFinite(primary.length) && primary.length > 0 ? primary.length : null,
+            platform,
+            estimated,
+            statusText: this.buildStatusText(primary),
+            delayMinutes,
+            upcomingDepartures,
+            lastUpdated: moment(snapshot.fetchedAt).unix(), // Convert to Unix timestamp for iOS Date decoding
+            activityID: subscription.activityId, // Include activity ID for iOS ContentState
+            revision: subscription.revision || 0
+        };
+    }
+
+    computeRichStatus(dep, serviceDetails) {
+        // If we don't have service details, fall back to simple status
+        if (!serviceDetails || !serviceDetails.subsequentCallingPoints || !serviceDetails.previousCallingPoints) {
+            return this.buildSimpleStatusText(dep);
+        }
+
+        try {
+            // Get all stations
+            const allStations = this.getAllStations(serviceDetails);
+            if (allStations.length === 0) {
+                return this.buildSimpleStatusText(dep);
+            }
+
+            // Check if all stations are cancelled
+            if (allStations.every(s => this.isCancelledAtStation(s))) {
+                return this.buildSimpleStatusText(dep);
+            }
+
+            const now = new Date();
+
+            // Pre-departure guard: if no station has an actual time yet, the service hasn't started
+            const anyActual = allStations.some(s => s.at && s.at !== 'Cancelled');
+            if (!anyActual) {
+                const first = allStations.find(s => !this.isCancelledAtStation(s));
+                if (first) {
+                    const d = this.calculateStationDelay(first);
+                    if (first.et?.toLowerCase() === 'delayed') {
+                        return `Departure from ${first.locationName} delayed for an unknown period of time`;
+                    }
+                    const phrasing = d === 0 ? 'on time' : `${d} minute${d === 1 ? '' : 's'} late`;
+                    return `Scheduled to depart ${first.locationName} ${phrasing}`;
+                }
+            }
+
+            // Time-based position detection (matching iOS logic)
+            // approachWindow: within 1 min of next station -> approaching
+            // atGraceWindow: remain "at <prev>" for 30s after its estimated departure
+            const approachWindowMs = 60 * 1000;
+            const atGraceWindowMs = 30 * 1000;
+
+            for (let i = 0; i < allStations.length; i++) {
+                const s = allStations[i];
+                if (this.isCancelledAtStation(s)) continue;
+
+                // If we have actual arrival/departure from this station, it's been passed - continue forward
+                if (s.at && s.at !== 'Cancelled') continue;
+
+                const stTime = this.effectiveTime(s);
+                if (!stTime) continue;
+
+                // Approach threshold for next station
+                const arriveTime = new Date(stTime.getTime() - approachWindowMs);
+
+                if (now < arriveTime) {
+                    // Between previous station and this one (or before first)
+                    if (i === 0) {
+                        const d = this.calculateStationDelay(s);
+                        if (s.et?.toLowerCase() === 'delayed') {
+                            return `Departure from ${s.locationName} delayed for an unknown period of time`;
+                        }
+                        const lateText = d === 0 ? 'on time' : `${d} minute${d === 1 ? '' : 's'} late`;
+                        return `Scheduled to depart ${s.locationName} ${lateText}`;
+                    }
+
+                    // Find previous non-cancelled station
+                    let prevIdx = i - 1;
+                    while (prevIdx >= 0 && this.isCancelledAtStation(allStations[prevIdx])) {
+                        prevIdx--;
+                    }
+                    if (prevIdx >= 0) {
+                        const prev = allStations[prevIdx];
+                        const d = Math.max(this.calculateStationDelay(prev), this.calculateStationDelay(s));
+                        const lateText = d >= 240 ? 'delayed for an unknown period of time' : (d === 0 ? 'on time' : `${d} minute${d === 1 ? '' : 's'} late`);
+                        return `Currently ${lateText}, between ${prev.locationName} and ${s.locationName}`;
+                    }
+                } else if (now < stTime) {
+                    // Within the approach window for this next station
+                    // Show "at <prev>" if we've arrived there and are within grace period
+                    const dNext = this.calculateStationDelay(s);
+                    const lateNext = dNext === 0 ? 'on time' : `${dNext} minute${dNext === 1 ? '' : 's'} late`;
+
+                    if (i > 0) {
+                        let prevIdx = i - 1;
+                        while (prevIdx >= 0 && this.isCancelledAtStation(allStations[prevIdx])) {
+                            prevIdx--;
+                        }
+                        if (prevIdx >= 0) {
+                            const prev = allStations[prevIdx];
+                            if (prev.at && prev.at !== 'Cancelled') {
+                                const prevET = this.effectiveTime(prev);
+                                if (prevET && now <= new Date(prevET.getTime() + atGraceWindowMs)) {
+                                    const dPrev = this.calculateStationDelay(prev);
+                                    const latePrev = dPrev === 0 ? 'on time' : `${dPrev} minute${dPrev === 1 ? '' : 's'} late`;
+                                    return `Currently ${latePrev}, at ${prev.locationName}`;
+                                }
+                            }
+                        }
+                    }
+                    return `Currently ${lateNext}, at or near ${s.locationName}`;
+                }
+            }
+
+            // Check for delay after the last station with an actual time
+            let lastActualIdx = -1;
+            for (let i = 0; i < allStations.length; i++) {
+                if (allStations[i].at && allStations[i].at !== 'Cancelled') {
+                    lastActualIdx = i;
+                }
+            }
+            if (lastActualIdx >= 0 && lastActualIdx < allStations.length - 1) {
+                let nextIdx = lastActualIdx + 1;
+                while (nextIdx < allStations.length && this.isCancelledAtStation(allStations[nextIdx])) {
+                    nextIdx++;
+                }
+                if (nextIdx < allStations.length) {
+                    const next = allStations[nextIdx];
+                    if (next.et?.toLowerCase() === 'delayed' || !next.at) {
+                        const prev = allStations[lastActualIdx];
+                        const d = Math.max(this.calculateStationDelay(prev), this.calculateStationDelay(next));
+                        const txt = d >= 240 ? 'delayed for an unknown period of time' : (d === 0 ? 'on time' : `${d} minute${d === 1 ? '' : 's'} late`);
+                        return `Currently ${txt}, between ${prev.locationName} and ${next.locationName}`;
+                    }
+                }
+            }
+
+            // After final station
+            const last = allStations[allStations.length - 1];
+            if (last) {
+                const d = this.calculateStationDelay(last);
+                const lateText = d === 0 ? 'on time' : `${d} minute${d === 1 ? '' : 's'} late`;
+                return `Arrived ${lateText} at ${last.locationName}`;
+            }
+
+            // Fallback to simple status
+            return this.buildSimpleStatusText(dep);
+        } catch (error) {
+            console.warn(`Error computing rich status: ${error?.message || error}`);
+            return this.buildSimpleStatusText(dep);
+        }
+    }
+
+    isCancelledAtStation(station) {
+        return station.isCancelled === true || station.at === 'Cancelled' || station.et === 'Cancelled';
+    }
+
+    effectiveTime(station) {
+        // Return the estimated time if available and not "On time"/"Cancelled", otherwise scheduled time
+        const parseTime = (t) => {
+            if (!t || t === 'On time' || t === 'Cancelled') return null;
+            const parts = t.split(':');
+            if (parts.length !== 2) return null;
+            const hour = parseInt(parts[0], 10);
+            const minute = parseInt(parts[1], 10);
+            if (isNaN(hour) || isNaN(minute)) return null;
+            const now = new Date();
+            const result = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, minute, 0, 0);
+            return result;
+        };
+
+        if (station.et && station.et !== 'On time' && station.et !== 'Cancelled') {
+            return parseTime(station.et);
+        }
+        return parseTime(station.st);
+    }
+
+    getAllStations(serviceDetails) {
+        const stations = [];
+
+        // Add previous calling points (already passed)
+        if (serviceDetails.previousCallingPoints && serviceDetails.previousCallingPoints.length > 0) {
+            const prev = serviceDetails.previousCallingPoints[0].callingPoint || [];
+            stations.push(...prev);
+        }
+
+        // Add current location
+        if (serviceDetails.locationName) {
+            stations.push({
+                locationName: serviceDetails.locationName,
+                crs: serviceDetails.crs,
+                st: serviceDetails.std || serviceDetails.sta,
+                et: serviceDetails.etd || serviceDetails.eta,
+                at: serviceDetails.atd || serviceDetails.ata
+            });
+        }
+
+        // Add subsequent calling points (upcoming)
+        if (serviceDetails.subsequentCallingPoints && serviceDetails.subsequentCallingPoints.length > 0) {
+            const next = serviceDetails.subsequentCallingPoints[0].callingPoint || [];
+            stations.push(...next);
+        }
+
+        return stations;
+    }
+
+    calculateStationDelay(station) {
+        const scheduled = station.st;
+
+        // Check actual arrival time first (for stations already passed)
+        if (station.at && station.at !== 'Cancelled') {
+            if (station.at === 'On time') return 0;
+            const sched = moment(scheduled, 'HH:mm');
+            const actual = moment(station.at, 'HH:mm');
+            if (sched.isValid() && actual.isValid()) {
+                return Math.max(0, actual.diff(sched, 'minutes'));
+            }
+        }
+
+        // Fall back to estimated time
+        const estimated = station.et;
+        if (!scheduled || !estimated || estimated === 'On time') return 0;
+        if (estimated.toLowerCase() === 'delayed') return 240; // Unknown delay
+
+        const sched = moment(scheduled, 'HH:mm');
+        const est = moment(estimated, 'HH:mm');
+
+        if (!sched.isValid() || !est.isValid()) return 0;
+        return Math.max(0, est.diff(sched, 'minutes'));
+    }
+
+    parseStationTime(timeStr) {
+        if (!timeStr || timeStr === 'On time' || timeStr.toLowerCase() === 'delayed') return null;
+        const parsed = moment(timeStr, 'HH:mm');
+        return parsed.isValid() ? parsed.toDate() : null;
+    }
+
+    buildSimpleStatusText(dep) {
+        if (!dep) return '';
+        if (dep.isCancelled) return 'Cancelled';
+        const delay = this.calculateDelay(dep.scheduled, dep.estimated);
+        if (delay > 0) return `Delayed by ${delay} min`;
+        if (dep.estimated === 'On time') return 'On time';
+        return this.getTimeString(dep.estimated, dep.scheduled);
+    }
+
+    buildStatusText(dep) {
+        // Use the precomputed statusText from the snapshot if available
+        if (dep.statusText) return dep.statusText;
+        // Fallback to simple status
+        return this.buildSimpleStatusText(dep);
+    }
+
+    calculateDelay(scheduled, estimated) {
+        if (!scheduled || !estimated || estimated === 'On time') return 0;
+        const sched = moment(scheduled, 'HH:mm');
+        const est = moment(estimated, 'HH:mm');
+        if (!sched.isValid() || !est.isValid()) return 0;
+        return Math.max(0, est.diff(sched, 'minutes'));
+    }
+
+    getTimeString(estimated, scheduled, fallback = '') {
+        const estValid = estimated && moment(estimated, 'HH:mm', true).isValid();
+        if (estValid) return estimated;
+        const schedValid = scheduled && moment(scheduled, 'HH:mm', true).isValid();
+        if (schedValid) return scheduled;
+        return fallback;
+    }
+
+    ensureString(value, fallback = '') {
+        if (typeof value === 'string' && value.length > 0) return value;
+        if (typeof value === 'number') return String(value);
+        return fallback;
+    }
+
+    getSubscription(deviceId, activityId) {
+        return this.subscriptions.get(this.buildKey(deviceId, activityId));
+    }
+
+    unregisterSubscription(deviceId, activityId) {
+        const key = this.buildKey(deviceId, activityId);
+        const subscription = this.subscriptions.get(key);
+        if (!subscription) {
+            this.log(`[live-activity] unregister_not_found ${deviceId}/${activityId}`);
+            return false;
+        }
+        this.clearEndTimer(subscription);
+        this.subscriptions.delete(key);
+        this.log(`[live-activity] unregistered ${deviceId}/${activityId}`);
+        return true;
+    }
+
+    snapshotsEqual(a, b) {
+        if (!a || !b) return false;
+        return JSON.stringify(a.departures) === JSON.stringify(b.departures);
+    }
+
+    shouldRefreshStaleDate(subscription) {
+        if (!subscription.lastPushAt) {
+            return true; // No previous push, should update
+        }
+        const lastPushTime = new Date(subscription.lastPushAt).getTime();
+        const now = Date.now();
+        const elapsedSeconds = (now - lastPushTime) / 1000;
+
+        // Refresh stale-date periodically to keep iOS from marking the activity as stale
+        // This sends the same data with updated timestamp and stale-date
+        // Note: iOS has a Live Activity update budget (~8 pushes/hour when locked)
+        // We set this to 4 minutes (240s) to stay well within the budget while keeping the activity fresh
+        return elapsedSeconds >= DEFAULT_STALE_DATE_REFRESH_SECONDS;
+    }
+
+    maskToken(token) {
+        if (!token || typeof token !== 'string') return 'null';
+        if (token.length <= 16) return token.slice(0, 6) + '***';
+        return token.slice(0, 8) + '...' + token.slice(-8);
+    }
+
+    buildKey(deviceId, activityId) {
+        return `${deviceId}::${activityId}`;
+    }
+
+    listSubscriptions() {
+        return Array.from(this.subscriptions.values()).map((sub) => ({
+            deviceId: sub.deviceId,
+            activityId: sub.activityId,
+            fromStation: sub.fromStation,
+            toStation: sub.toStation,
+            lastPushAt: sub.lastPushAt,
+            lastSnapshot: sub.lastSnapshot,
+            createdAt: sub.createdAt,
+            endAt: sub.endAt
+        }));
+    }
+
+    isLoggingEnabled() {
+        const flag = process.env.DEBUG_CONSOLE_LOGGING_APNS;
+        return typeof flag === 'string' && flag.toLowerCase() === 'true';
+    }
+
+    log(message, data) {
+        if (!this.isLoggingEnabled()) return;
+        if (data) {
+            console.log(message, JSON.stringify(data));
+        } else {
+            console.log(message);
+        }
+    }
+
+    getEndAfterMs() {
+        const fromEnv = Number(process.env.LIVE_ACTIVITY_END_AFTER_SECONDS);
+        if (Number.isFinite(fromEnv) && fromEnv > 0) {
+            return fromEnv * 1000;
+        }
+        return DEFAULT_END_AFTER_SECONDS * 1000;
+    }
+}
+
+export const liveActivityManager = new LiveActivityManager();

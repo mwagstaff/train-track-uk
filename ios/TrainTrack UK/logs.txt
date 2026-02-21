@@ -1,0 +1,264 @@
+Couldn't read values in CFPrefsPlistSource<0x1067d0880> (Domain: group.dev.skynolimit.traintrack, User: kCFPreferencesAnyUser, ByHost: Yes, Container: (null), Contents Need Refresh: Yes): Using kCFPreferencesAnyUser with a container is only allowed for System Containers, detaching from cfprefsd
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+	(Note: If you're seeing NSAutoresizingMaskLayoutConstraints that you don't understand, refer to the documentation for the UIView property translatesAutoresizingMaskIntoConstraints) 
+(
+    "<NSAutoresizingMaskLayoutConstraint:0x1135a9360 h=--& v=--& _TtCC5UIKit19NavigationButtonBar15ItemWrapperView:0x113531dc0.width == 0   (active)>",
+    "<NSLayoutConstraint:0x1135a86e0 _TtCC5UIKit19NavigationButtonBar15ItemWrapperView:0x113531dc0.leading == _UIButtonBarButton:0x1135b8000.leading   (active)>",
+    "<NSLayoutConstraint:0x1135a8730 H:[_UIButtonBarButton:0x1135b8000]-(0)-|   (active, names: '|':_TtCC5UIKit19NavigationButtonBar15ItemWrapperView:0x113531dc0 )>",
+    "<NSLayoutConstraint:0x1135a8500 'IB_Leading_Leading' H:|-(2)-[_UIModernBarButton:0x1065ff800]   (active, names: '|':_UIButtonBarButton:0x1135b8000 )>",
+    "<NSLayoutConstraint:0x1135a8550 'IB_Trailing_Trailing' H:[_UIModernBarButton:0x1065ff800]-(2)-|   (active, names: '|':_UIButtonBarButton:0x1135b8000 )>"
+)
+
+Will attempt to recover by breaking constraint 
+<NSLayoutConstraint:0x1135a8550 'IB_Trailing_Trailing' H:[_UIModernBarButton:0x1065ff800]-(2)-|   (active, names: '|':_UIButtonBarButton:0x1135b8000 )>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+[ActivityMonitor] Activity.activityUpdates stream started
+🔄 [App] App became active - triggering Live Activity refresh
+⚠️ [LiveActivity] Not active, skipping refresh
+🚂 [LiveActivity] ===== START REQUESTED =====
+🚂 [LiveActivity] areActivitiesEnabled=true
+🚂 [LiveActivity] frequentPushesEnabled=true
+[LiveActivity] ===== START REQUESTED =====
+[LiveActivity] areActivitiesEnabled=true
+[LiveActivity] frequentPushesEnabled=true
+🚂 [LiveActivity] Attributes type=JourneyActivityShared.JourneyActivityAttributes
+🚂 [LiveActivity] Request start for KTH → VIC
+🚂 [LiveActivity] ActivityAttributes check: ✅ Conforms
+[LiveActivity] Attributes type=JourneyActivityShared.JourneyActivityAttributes
+[LiveActivity] Request start for KTH → VIC
+🚂 [LiveActivity] Initial state: platform=2, est=16:59, dest=London Victoria
+[LiveActivity] Initial content state: fromCRS=KTH, toCRS=VIC, dest=London Victoria, platform=2, est=16:59
+🚂 [LiveActivity] Attributes displayName=Kent House → London Victoria
+[LiveActivity] Attributes displayName=Kent House → London Victoria
+🚂 [LiveActivity] Calling Activity.request()...
+[LiveActivity] Calling Activity.request()...
+✅ [LiveActivity] SUCCESS! Activity created!
+✅ [LiveActivity] Activity ID: BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777
+✅ [LiveActivity] Activity state: active
+[LiveActivity] Activity created successfully!
+[LiveActivity] Activity ID: BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777
+[LiveActivity] Activity state: active
+[LiveActivity] Activity content: ["State: ContentState(fromCRS: \"KTH\", toCRS: \"VIC\", destinationTitle: \"London Victoria\", arrivalLabel: Optional(\"Arr 17:20\"), length: Optional(8), platform: \"2\", estimated: \"16:59\", statusText: Optional(\"Currently 4 minutes late, between Bickley and Bromley South\"), delayMinutes: 4, upcomingDepartures: [JourneyActivityShared.JourneyActivityAttributes.UpcomingDeparture(time: \"17:12\", delayMinutes: 0, isCancelled: false), JourneyActivityShared.JourneyActivityAttributes.UpcomingDeparture(time: \"17:27\", delayMinutes: 0, isCancelled: false), JourneyActivityShared.JourneyActivityAttributes.UpcomingDeparture(time: \"17:42\", delayMinutes: 0, isCancelled: false)], lastUpdated: 2025-12-08 16:48:31 +0000)", "Stale date: nil", "Relevance Score: 0.0"]
+[LiveActivity] Push token: nil
+⏳ [LiveActivity] Waiting for push token via pushTokenUpdates stream (requested pushType=.token)
+✅ [LiveActivity] Total active activities: 1
+[LiveActivity] Total active activities: 1
+✅ [LiveActivity] Activity [0]: id=BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777, state=active
+[LiveActivity] Activity [0]: id=BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777, state=active
+⏰ [LiveActivity] Scheduling timer for updates every 10 seconds
+[LiveActivity] Scheduling timer for updates every 10 seconds
+⏳ [LiveActivity] Auto-expiry disabled (manual dismissal only)
+✅ [LiveActivity] ===== START COMPLETED SUCCESSFULLY =====
+[LiveActivity] ===== START COMPLETED SUCCESSFULLY =====
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+	(Note: If you're seeing NSAutoresizingMaskLayoutConstraints that you don't understand, refer to the documentation for the UIView property translatesAutoresizingMaskIntoConstraints) 
+(
+    "<NSAutoresizingMaskLayoutConstraint:0x1095ce940 h=--& v=--& _TtCC5UIKit19NavigationButtonBar15ItemWrapperView:0x113643100.width == 0   (active)>",
+    "<NSLayoutConstraint:0x1095cd4a0 _TtCC5UIKit19NavigationButtonBar15ItemWrapperView:0x113643100.leading == _UIButtonBarButton:0x1135b8f00.leading   (active)>",
+    "<NSLayoutConstraint:0x1095cd400 H:[_UIButtonBarButton:0x1135b8f00]-(0)-|   (active, names: '|':_TtCC5UIKit19NavigationButtonBar15ItemWrapperView:0x113643100 )>",
+    "<NSLayoutConstraint:0x1095cd900 'IB_Leading_Leading' H:|-(2)-[_UIModernBarButton:0x11360d180]   (active, names: '|':_UIButtonBarButton:0x1135b8f00 )>",
+    "<NSLayoutConstraint:0x1095cd360 'IB_Trailing_Trailing' H:[_UIModernBarButton:0x11360d180]-(2)-|   (active, names: '|':_UIButtonBarButton:0x1135b8f00 )>"
+)
+
+Will attempt to recover by breaking constraint 
+<NSLayoutConstraint:0x1095cd360 'IB_Trailing_Trailing' H:[_UIModernBarButton:0x11360d180]-(2)-|   (active, names: '|':_UIButtonBarButton:0x1135b8f00 )>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+[ActivityMonitor] Activity emitted id=BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777 state=active
+🛰️ [LiveActivity][activityUpdates emit] Snapshot:
+{
+  "contentState" : {
+    "length" : 8,
+    "lastUpdated" : "2025-12-08T16:48:31Z",
+    "estimated" : "16:59",
+    "toCRS" : "VIC",
+    "delayMinutes" : 4,
+    "destinationTitle" : "London Victoria",
+    "platform" : "2",
+    "statusText" : "Currently 4 minutes late, between Bickley and Bromley South",
+    "fromCRS" : "KTH",
+    "upcomingDepartures" : [
+      {
+        "delayMinutes" : 0,
+        "isCancelled" : false,
+        "time" : "17:12"
+      },
+      {
+        "delayMinutes" : 0,
+        "isCancelled" : false,
+        "time" : "17:27"
+      },
+      {
+        "delayMinutes" : 0,
+        "isCancelled" : false,
+        "time" : "17:42"
+      }
+    ],
+    "arrivalLabel" : "Arr 17:20"
+  },
+  "attributesDisplayName" : "Kent House → London Victoria",
+  "state" : "active"
+}
+[LiveActivity] Listening for push token updates for activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777
+🔄 [LiveActivity] [2025-12-08 16:48:31 +0000] Fetching fresh departure data for KTH → VIC
+[LiveActivity] Fetching fresh departure data for KTH → VIC
+[ActivityMonitor] Activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777 transitioned to active
+🛰️ [LiveActivity][state transition -> active] Snapshot:
+{
+  "attributesDisplayName" : "Kent House → London Victoria",
+  "state" : "active",
+  "contentState" : {
+    "length" : 8,
+    "lastUpdated" : "2025-12-08T16:48:31Z",
+    "estimated" : "16:59",
+    "toCRS" : "VIC",
+    "delayMinutes" : 4,
+    "destinationTitle" : "London Victoria",
+    "platform" : "2",
+    "statusText" : "Currently 4 minutes late, between Bickley and Bromley South",
+    "fromCRS" : "KTH",
+    "upcomingDepartures" : [
+      {
+        "delayMinutes" : 0,
+        "isCancelled" : false,
+        "time" : "17:12"
+      },
+      {
+        "delayMinutes" : 0,
+        "isCancelled" : false,
+        "time" : "17:27"
+      },
+      {
+        "delayMinutes" : 0,
+        "isCancelled" : false,
+        "time" : "17:42"
+      }
+    ],
+    "arrivalLabel" : "Arr 17:20"
+  }
+}
+🔄 [LiveActivity] Found 13 departures after refresh
+✅ [LiveActivity] Fetched departure data, next service: 3325376KENTHOS_, platform: 2, time: 16:59
+[LiveActivity] Next service: 3325376KENTHOS_, platform: 2
+Updating content for activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777
+✅ [LiveActivity] Updated at 16:48:31 to show: platform=2, est=16:59, dest=London Victoria, upcoming=3
+[LiveActivity] Updated activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777 at 16:48:31
+[LiveActivity] Received push token for activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777
+📡 [LiveActivity] Push token received for BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777: 801e7a0849c3b11162815a3023fbaa63ba438adaaec4ffd0c159c0254dad63fbdeebd4b50e4442fe02c34ac0931ab4ba089a439435138514641ef03c36fc32bb272abf03f1992c19343d8274ad1742a6
+➡️ [LiveActivity] Registering live activity with backend http://Mikes-MacBook-Air.local:3000/api/v2/live_activities payload=["device_id": "3399BA5F-9FEA-4165-8E80-3AC61FC2F64A", "live_activity_push_token": "801e7a0849c3b11162815a3023fbaa63ba438adaaec4ffd0c159c0254dad63fbdeebd4b50e4442fe02c34ac0931ab4ba089a439435138514641ef03c36fc32bb272abf03f1992c19343d8274ad1742a6", "activity_id": "BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777", "from": "KTH", "to": "VIC"]
+[LiveActivity] Registering live activity with backend: http://Mikes-MacBook-Air.local:3000/api/v2/live_activities
+✅ [LiveActivity] Registration response status=200 body={"status":"registered","poll_interval_seconds":20,"apns_configured":true,"subscription":{"device_id":"3399BA5F-9FEA-4165-8E80-3AC61FC2F64A","activity_id":"BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777","from":"KTH","to":"VIC","last_push_at":null,"created_at":"2025-12-08T16:48:32.439Z","scheduled_end_at":"2025-12-08T16:49:32.439Z"},"next_departures":[{"serviceID":"3325376KENTHOS_","scheduled":"16:57","estimated":"16:59","platform":"2","operator":"Southeastern","isCancelled":false,"length":8,"destination":{"crs":"VIC","locationName":"London Victoria"},"origin":{"crs":"ORP","locationName":"Orpington"}},{"serviceID":"3323352KENTHOS_","scheduled":"17:12","estimated":"17:12","platform":"2","operator":"Southeastern","isCancelled":false,"length":8,"destination":{"crs":"VIC","locationName":"London Victoria"},"origin":{"crs":"ORP","locationName":"Orpington"}},{"serviceID":"3325354KENTHOS_","scheduled":"17:27","estimated":"17:27","platform":"2","operator":"Southeastern","isCancelled":false,"length":8,"destination":{"crs":"VIC","locationName":"London Victoria"},"origin":{"crs":"ORP","locationName":"Orpington"}}],"last_updated":"2025-12-08T16:48:32.568Z"}
+[LiveActivity] Registration response status=200
+⏰ [LiveActivity] Timer fired - starting refresh
+[LiveActivity] Timer fired - starting refresh
+🛰️ [LiveActivity] Monitor tick - activities: BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777: active
+🔄 [LiveActivity] [2025-12-08 16:48:41 +0000] Fetching fresh departure data for KTH → VIC
+[LiveActivity] Fetching fresh departure data for KTH → VIC
+🔄 [LiveActivity] Found 13 departures after refresh
+✅ [LiveActivity] Fetched departure data, next service: 3325376KENTHOS_, platform: 2, time: 16:59
+[LiveActivity] Next service: 3325376KENTHOS_, platform: 2
+Updating content for activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777
+✅ [LiveActivity] Updated at 16:48:41 to show: platform=2, est=16:59, dest=London Victoria, upcoming=3
+[LiveActivity] Updated activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777 at 16:48:41
+⏰ [LiveActivity] Timer fired - starting refresh
+[LiveActivity] Timer fired - starting refresh
+🛰️ [LiveActivity] Monitor tick - activities: BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777: active
+🔄 [LiveActivity] [2025-12-08 16:48:51 +0000] Fetching fresh departure data for KTH → VIC
+[LiveActivity] Fetching fresh departure data for KTH → VIC
+🔄 [LiveActivity] Found 13 departures after refresh
+✅ [LiveActivity] Fetched departure data, next service: 3325376KENTHOS_, platform: 2, time: 16:59
+[LiveActivity] Next service: 3325376KENTHOS_, platform: 2
+Updating content for activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777
+✅ [LiveActivity] Updated at 16:48:51 to show: platform=2, est=16:59, dest=London Victoria, upcoming=3
+[LiveActivity] Updated activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777 at 16:48:51
+⏰ [LiveActivity] Timer fired - starting refresh
+[LiveActivity] Timer fired - starting refresh
+🛰️ [LiveActivity] Monitor tick - activities: BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777: active
+🔄 [LiveActivity] [2025-12-08 16:49:01 +0000] Fetching fresh departure data for KTH → VIC
+[LiveActivity] Fetching fresh departure data for KTH → VIC
+🔄 [LiveActivity] Found 13 departures after refresh
+✅ [LiveActivity] Fetched departure data, next service: 3325376KENTHOS_, platform: 2, time: 16:59
+[LiveActivity] Next service: 3325376KENTHOS_, platform: 2
+Updating content for activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777
+✅ [LiveActivity] Updated at 16:49:01 to show: platform=2, est=16:59, dest=London Victoria, upcoming=3
+[LiveActivity] Updated activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777 at 16:49:01
+⏰ [LiveActivity] Timer fired - starting refresh
+[LiveActivity] Timer fired - starting refresh
+🛰️ [LiveActivity] Monitor tick - activities: BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777: active
+🔄 [LiveActivity] [2025-12-08 16:49:11 +0000] Fetching fresh departure data for KTH → VIC
+[LiveActivity] Fetching fresh departure data for KTH → VIC
+🔄 [LiveActivity] Found 13 departures after refresh
+✅ [LiveActivity] Fetched departure data, next service: 3325376KENTHOS_, platform: 2, time: 16:59
+[LiveActivity] Next service: 3325376KENTHOS_, platform: 2
+Updating content for activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777
+✅ [LiveActivity] Updated at 16:49:11 to show: platform=2, est=16:59, dest=London Victoria, upcoming=3
+[LiveActivity] Updated activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777 at 16:49:11
+⏰ [LiveActivity] Timer fired - starting refresh
+[LiveActivity] Timer fired - starting refresh
+🛰️ [LiveActivity] Monitor tick - activities: BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777: active
+🔄 [LiveActivity] [2025-12-08 16:49:21 +0000] Fetching fresh departure data for KTH → VIC
+[LiveActivity] Fetching fresh departure data for KTH → VIC
+🔄 [LiveActivity] Found 13 departures after refresh
+✅ [LiveActivity] Fetched departure data, next service: 3325376KENTHOS_, platform: 2, time: 16:59
+[LiveActivity] Next service: 3325376KENTHOS_, platform: 2
+Updating content for activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777
+✅ [LiveActivity] Updated at 16:49:21 to show: platform=2, est=16:59, dest=London Victoria, upcoming=3
+[LiveActivity] Updated activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777 at 16:49:21
+⏰ [LiveActivity] Timer fired - starting refresh
+[LiveActivity] Timer fired - starting refresh
+🛰️ [LiveActivity] Monitor tick - activities: BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777: active
+🔄 [LiveActivity] [2025-12-08 16:49:31 +0000] Fetching fresh departure data for KTH → VIC
+[LiveActivity] Fetching fresh departure data for KTH → VIC
+🔄 [LiveActivity] Found 13 departures after refresh
+✅ [LiveActivity] Fetched departure data, next service: 3325376KENTHOS_, platform: 2, time: 16:59
+[LiveActivity] Next service: 3325376KENTHOS_, platform: 2
+Updating content for activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777
+✅ [LiveActivity] Updated at 16:49:31 to show: platform=2, est=16:59, dest=London Victoria, upcoming=3
+[LiveActivity] Updated activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777 at 16:49:31
+⏰ [LiveActivity] Timer fired - starting refresh
+[LiveActivity] Timer fired - starting refresh
+🛰️ [LiveActivity] Monitor tick - activities: BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777: active
+🔄 [LiveActivity] [2025-12-08 16:49:41 +0000] Fetching fresh departure data for KTH → VIC
+[LiveActivity] Fetching fresh departure data for KTH → VIC
+🔄 [LiveActivity] Found 13 departures after refresh
+✅ [LiveActivity] Fetched departure data, next service: 3325376KENTHOS_, platform: 2, time: 16:59
+[LiveActivity] Next service: 3325376KENTHOS_, platform: 2
+Updating content for activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777
+✅ [LiveActivity] Updated at 16:49:41 to show: platform=2, est=16:59, dest=London Victoria, upcoming=3
+[LiveActivity] Updated activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777 at 16:49:41
+⏰ [LiveActivity] Timer fired - starting refresh
+[LiveActivity] Timer fired - starting refresh
+🛰️ [LiveActivity] Monitor tick - activities: BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777: active
+🔄 [LiveActivity] [2025-12-08 16:49:51 +0000] Fetching fresh departure data for KTH → VIC
+[LiveActivity] Fetching fresh departure data for KTH → VIC
+🔄 [LiveActivity] Found 13 departures after refresh
+✅ [LiveActivity] Fetched departure data, next service: 3325376KENTHOS_, platform: 2, time: 16:59
+[LiveActivity] Next service: 3325376KENTHOS_, platform: 2
+Updating content for activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777
+✅ [LiveActivity] Updated at 16:49:51 to show: platform=2, est=16:59, dest=London Victoria, upcoming=3
+[LiveActivity] Updated activity BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777 at 16:49:51
+⏰ [LiveActivity] Timer fired - starting refresh
+[LiveActivity] Timer fired - starting refresh
+⏳ [LiveActivity] Fallback end fired after 90.0s; ending locally
+🛰️ [LiveActivity] Monitor tick - activities: BC7F5FA4-2FE8-48BE-8DD3-CF63D0B82777: active
+🔄 [LiveActivity] [2025-12-08 16:50:01 +0000] Fetching fresh departure data for KTH → VIC
+[LiveActivity] Fetching fresh departure data for KTH → VIC
+[LiveActivity] Stopped
+🛑 [LiveActivity] End requested with dismissalPolicy=.immediate
+🔄 [LiveActivity] Found 13 departures after refresh
+✅ [LiveActivity] Fetched departure data, next service: 3325376KENTHOS_, platform: 2, time: 16:59
+[LiveActivity] Next service: 3325376KENTHOS_, platform: 2
+Publishing changes from within view updates is not allowed, this will cause undefined behavior.
+⚠️ [LiveActivity] Update skipped; no active activity
+[LiveActivity] Update skipped; no active activity
