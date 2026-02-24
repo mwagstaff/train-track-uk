@@ -11,6 +11,9 @@ struct JourneyListRow: View {
 
     private var nextDeparture: DepartureV2? {
         let deps = depStore.departures(for: primaryLeg)
+        if let upcoming = deps.first(where: { !$0.isCancelled && isUpcoming($0) }) {
+            return upcoming
+        }
         return deps.first(where: { !$0.isCancelled }) ?? deps.first
     }
 
@@ -84,6 +87,9 @@ struct JourneyListRow: View {
             }) {
                 return match
             }
+        }
+        if let upcoming = deps.first(where: { isUpcoming($0) }) {
+            return upcoming
         }
         return deps.first
     }
@@ -229,6 +235,11 @@ struct JourneyListRow: View {
             candidate = Calendar.current.date(byAdding: .day, value: 1, to: candidate) ?? candidate
         }
         return candidate
+    }
+
+    private func isUpcoming(_ departure: DepartureV2) -> Bool {
+        guard let depDate = departureDate(departure) else { return false }
+        return depDate >= Date()
     }
 
     private func departureDate(_ d: DepartureV2) -> Date? {

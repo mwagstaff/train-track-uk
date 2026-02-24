@@ -1,0 +1,277 @@
+############################################
+# Ultimate .gitignore (Node + iOS/Xcode + macOS) — 2026
+# Repo-root, designed for multi-project trees.
+############################################
+
+###############
+# Secrets / keys
+###############
+# APNs auth keys and other private keys (explicit requirement)
+*.p8
+*.p12
+*.pem
+*.key
+*.cer
+*.crt
+*.mobileprovision
+*.provisionprofile
+*.pfx
+
+# Common local env / secrets files
+.env
+.env.*
+!.env.example
+*.secret
+*.secrets
+secrets/
+**/secrets/
+certs/
+**/certs/
+.dev.sh
+
+###############
+# Logs (explicit requirement)
+###############
+*.log
+logs/
+**/logs/
+*.pid
+*.seed
+*.tmp
+*.temp
+
+###############
+# macOS / Finder
+###############
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.VolumeIcon.icns
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+###############
+# Editor / IDE
+###############
+# VS Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# JetBrains
+.idea/
+*.iml
+
+###############
+# Node.js
+###############
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Package manager / build caches
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+
+# Runtime / coverage / build output
+dist/
+build/
+out/
+lib-cov/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+.eslintcache
+.stylelintcache
+.cache/
+.parcel-cache/
+.next/
+.nuxt/
+.svelte-kit/
+.vercel/
+.turbo/
+.vite/
+.rollup.cache/
+
+# Local-only configs
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+###############
+# Xcode / iOS / Swift
+###############
+# Build products
+build/
+DerivedData/
+**/DerivedData/
+
+# User-specific Xcode data
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+# Xcode settings files that are user/machine specific
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+
+# Swift / iOS artifacts
+*.hmap
+*.ipa
+*.dSYM
+*.dSYM.zip
+*.xcarchive
+*.xcodearchive
+*.swiftmodule
+*.swiftdoc
+*.swiftinterface
+
+# Playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+###############
+# Swift Package Manager
+###############
+.build/
+Packages/
+Package.resolved
+.package-cache/
+.swiftpm/
+**/.swiftpm/
+
+###############
+# CocoaPods
+###############
+Pods/
+**/Pods/
+# If you *do* commit Pods, remove the lines above.
+
+###############
+# Carthage
+###############
+Carthage/Build/
+**/Carthage/Build/
+
+###############
+# fastlane (explicit requirement: exclude fastlane)
+###############
+fastlane/
+**/fastlane/
+
+# (If you later decide to keep fastlane config but ignore generated files,
+# remove the lines above and use fastlane's recommended ignores instead.)  # see notes
+
+###############
+# Ruby / Bundler (explicit requirement: exclude Gemfile)
+###############
+Gemfile
+Gemfile.lock
+
+# Bundler paths & caches (matches vendor/bundle trees)
+.bundle/
+vendor/bundle/
+vendor/cache/
+**/vendor/bundle/
+**/vendor/cache/
+
+# Ruby build artifacts
+*.gem
+*.rbc
+*.rspec
+.rspec_status
+
+###############
+# Misc
+###############
+# Archives / dumps
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.gz
+*.sqlite
+*.sqlite3
+
+# OS / tool junk
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+############################################
+# Claude / Anthropic tooling (local caches/config)
+############################################
+
+.claude/
+.claude-cache/
+.claude_tokens/
+.claude-session/
+.claude_history.json
+.claude_config.yaml
+.claude/
+anthropic/
+anthropic-cli/
+anthropic.config.js
+
+############################################
+# Codex / OpenAI tooling (local)
+############################################
+
+.codex/
+.codex_cache/
+.codex_tokens/
+.openai/
+openai_tokens.json
+openai_cache/
+.openai_config.yaml
+.openai_history.json
+
+# Any other AI tooling state/config
+.ai/
+.ai_cache/
+.ai_tokens/
+
+############################################
+# ChatGPT CLI / local chat clients
+############################################
+
+.chatgpt/
+.chatgpt_cache/
+chatgpt_session.json
+chatgpt_tokens.json
+chatgpt_config.yaml
+
+############################################
+# VS Code + AI Extensions
+############################################
+
+.vscode/ai/
+.vscode/extensions/*ai*
+.vscode/settings/*ai*

@@ -3,6 +3,7 @@ import axios, { isCancel } from 'axios';
 axios.defaults.timeout = 8000;
 
 import axiosRetry from 'axios-retry';
+import moment from 'moment';
 axiosRetry(axios, {
     retries: 2,
     retryDelay: axiosRetry.exponentialDelay,
@@ -10,6 +11,21 @@ axiosRetry(axios, {
 });
 
 import { pastDeparturesCache } from './past-departures-cache.js';
+
+// Cache the most recent known platform for a service so we can keep showing it
+// when upstream drops platform data very close to departure.
+const platformFallbackCache = new Map();
+const PLATFORM_CACHE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+const PLATFORM_CACHE_ENTRY_TTL_MS = 6 * 60 * 60 * 1000;
+const PLATFORM_FALLBACK_WINDOW_BEFORE_DEPARTURE_MINUTES = 5;
+const PLATFORM_FALLBACK_WINDOW_AFTER_DEPARTURE_MINUTES = 20;
+
+const platformCacheCleanupTimer = setInterval(() => {
+    cleanupPlatformFallbackCache();
+}, PLATFORM_CACHE_CLEANUP_INTERVAL_MS);
+if (typeof platformCacheCleanupTimer.unref === 'function') {
+    platformCacheCleanupTimer.unref();
+}
 
 export async function getTrainTimes(from, to) {
     // Only fetch now and future; past cache refresh is handled separately
@@ -25,13 +41,17 @@ export async function getTrainTimes(from, to) {
         return { error: 'Failed to get data from API' };
     }
     const departures = nowList.concat(futureList);
-    // Dedupe by serviceID without using lodash
-    const uniqueDepartures = [];
-    departures.forEach(departure => {
-        if (!uniqueDepartures.some(uniqueDeparture => uniqueDeparture.serviceID === departure.serviceID)) {
-            uniqueDepartures.push(departure);
+    // Dedupe by serviceID and prefer entries that still have a platform.
+    const uniqueByService = new Map();
+    departures.forEach((departure) => {
+        const existing = uniqueByService.get(departure.serviceID);
+        if (!existing || shouldPreferDeparture(existing, departure)) {
+            uniqueByService.set(departure.serviceID, departure);
         }
     });
+    const uniqueDepartures = Array.from(uniqueByService.values());
+
+    applyPlatformFallbackCache(uniqueDepartures, from, to);
 
     // Return both departures as one array
     return {
@@ -180,4 +200,116 @@ async function parseResponseDataLiveDepartureBoard(data) {
         console.error(`Failed to parse response data: ${error}`);
         return { error: 'Failed to parse response data', error };
     }
+}
+
+function shouldPreferDeparture(current, candidate) {
+    const currentPlatform = normalizePlatform(current?.platform);
+    const candidatePlatform = normalizePlatform(candidate?.platform);
+
+    if (!currentPlatform && candidatePlatform) {
+        return true;
+    }
+    if (currentPlatform && !candidatePlatform) {
+        return false;
+    }
+    return false;
+}
+
+function normalizePlatform(platform) {
+    if (typeof platform !== 'string') {
+        return null;
+    }
+    const trimmed = platform.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
+
+function platformCacheKey(from, to, serviceID) {
+    return `${(from || '').toUpperCase()}-${(to || '').toUpperCase()}-${serviceID || ''}`;
+}
+
+function parseServiceDepartureTime(timeString, reference = moment()) {
+    if (!timeString || !moment(timeString, 'HH:mm', true).isValid()) {
+        return null;
+    }
+
+    const parsed = moment(timeString, 'HH:mm');
+    const candidate = reference.clone()
+        .hour(parsed.hour())
+        .minute(parsed.minute())
+        .second(0)
+        .millisecond(0);
+
+    const deltaHours = candidate.diff(reference, 'hours', true);
+    if (deltaHours > 12) {
+        return candidate.subtract(1, 'day');
+    }
+    if (deltaHours < -12) {
+        return candidate.add(1, 'day');
+    }
+    return candidate;
+}
+
+function isNearDepartureWindow(timeString, now = moment()) {
+    const departureTime = parseServiceDepartureTime(timeString, now);
+    if (!departureTime) {
+        return false;
+    }
+    const minutesFromNow = departureTime.diff(now, 'minutes', true);
+    return minutesFromNow <= PLATFORM_FALLBACK_WINDOW_BEFORE_DEPARTURE_MINUTES &&
+        minutesFromNow >= -PLATFORM_FALLBACK_WINDOW_AFTER_DEPARTURE_MINUTES;
+}
+
+function cleanupPlatformFallbackCache() {
+    const nowMs = Date.now();
+    for (const [key, entry] of platformFallbackCache.entries()) {
+        if (!entry || !entry.lastUpdatedAtMs || (nowMs - entry.lastUpdatedAtMs) > PLATFORM_CACHE_ENTRY_TTL_MS) {
+            platformFallbackCache.delete(key);
+        }
+    }
+}
+
+function applyPlatformFallbackCache(departures, from, to) {
+    if (!Array.isArray(departures) || departures.length === 0) {
+        return;
+    }
+
+    const now = moment();
+    const nowMs = now.valueOf();
+
+    departures.forEach((departure) => {
+        if (!departure?.serviceID) {
+            return;
+        }
+
+        const key = platformCacheKey(from, to, departure.serviceID);
+        const currentPlatform = normalizePlatform(departure.platform);
+        const cached = platformFallbackCache.get(key);
+
+        if (currentPlatform) {
+            platformFallbackCache.set(key, {
+                platform: currentPlatform,
+                fallbackActive: false,
+                lastUpdatedAtMs: nowMs
+            });
+            departure.platform = currentPlatform;
+            return;
+        }
+
+        if (!cached?.platform) {
+            return;
+        }
+
+        const shouldUseFallback = cached.fallbackActive ||
+            isNearDepartureWindow(departure?.departure_time?.scheduled, now);
+        if (!shouldUseFallback) {
+            return;
+        }
+
+        departure.platform = cached.platform;
+        platformFallbackCache.set(key, {
+            ...cached,
+            fallbackActive: true,
+            lastUpdatedAtMs: nowMs
+        });
+    });
 }
