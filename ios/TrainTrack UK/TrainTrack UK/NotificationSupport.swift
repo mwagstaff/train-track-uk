@@ -76,6 +76,12 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
         NotificationCategoryRegistrar.register()
+        // If relaunched in background to deliver a region event, ensure the
+        // geofence manager's CLLocationManager is initialised before iOS
+        // delivers the queued CLLocationManagerDelegate callbacks.
+        if launchOptions?[.location] != nil {
+            _ = NotificationGeofenceManager.shared
+        }
         return true
     }
 

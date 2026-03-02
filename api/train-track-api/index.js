@@ -211,7 +211,7 @@ app.delete('/api/v2/live_activities', async (req, res) => {
 });
 
 // Notification subscription endpoints
-app.post('/api/v2/notifications/subscriptions', (req, res) => {
+app.post('/api/v2/notifications/subscriptions', async (req, res) => {
     const {
         device_id,
         push_token,
@@ -237,7 +237,7 @@ app.post('/api/v2/notifications/subscriptions', (req, res) => {
     });
 
     try {
-        const subscription = notificationSubscriptionManager.upsertSubscription({
+        const subscription = await notificationSubscriptionManager.upsertSubscription({
             deviceId: device_id,
             pushToken: push_token,
             routeKey: route_key,
@@ -273,20 +273,20 @@ app.get('/api/v2/notifications/subscriptions', (req, res) => {
     res.json({ subscriptions });
 });
 
-app.delete('/api/v2/notifications/subscriptions', (req, res) => {
+app.delete('/api/v2/notifications/subscriptions', async (req, res) => {
     const { device_id, subscription_id } = req.body || {};
     logNotificationRequest('delete', req, { device_id, subscription_id });
     if (!device_id || !subscription_id) {
         return res.status(400).json({ error: 'device_id and subscription_id are required' });
     }
-    const removed = notificationSubscriptionManager.deleteSubscription({
+    const removed = await notificationSubscriptionManager.deleteSubscription({
         deviceId: device_id,
         subscriptionId: subscription_id
     });
     res.json({ status: removed ? 'deleted' : 'not_found' });
 });
 
-app.post('/api/v2/notifications/terminate', (req, res) => {
+app.post('/api/v2/notifications/terminate', async (req, res) => {
     const { device_id, subscription_id, from, to, date } = req.body || {};
     logNotificationRequest('terminate', req, {
         device_id,
@@ -300,7 +300,7 @@ app.post('/api/v2/notifications/terminate', (req, res) => {
             error: 'device_id, subscription_id, from, and to are required'
         });
     }
-    const result = notificationSubscriptionManager.muteLegForDate({
+    const result = await notificationSubscriptionManager.muteLegForDate({
         deviceId: device_id,
         subscriptionId: subscription_id,
         from,
@@ -319,13 +319,13 @@ app.get('/api/v2/notifications/debug/subscriptions', (req, res) => {
     res.json({ subscriptions: notificationSubscriptionManager.listAllSubscriptions() });
 });
 
-app.delete('/api/v2/notifications/debug/subscriptions', (req, res) => {
+app.delete('/api/v2/notifications/debug/subscriptions', async (req, res) => {
     const { subscription_id } = req.body || {};
     logNotificationRequest('debug_delete', req, { subscription_id });
     if (!subscription_id) {
         return res.status(400).json({ error: 'subscription_id is required' });
     }
-    const removed = notificationSubscriptionManager.deleteSubscription({ subscriptionId: subscription_id });
+    const removed = await notificationSubscriptionManager.deleteSubscription({ subscriptionId: subscription_id });
     res.json({ status: removed ? 'deleted' : 'not_found' });
 });
 
@@ -513,6 +513,9 @@ app.get('/api/v2/stations', async (req, res) => {
 app.get('/api/v1/xbar/from/:fromStation/to/:toStation/max_departures/:maxDepartures/return_after/:returnAfter?', async (req, res) => {
     res.send(await getXbarOutput(req.params.fromStation, req.params.toStation, req.params.maxDepartures, req.params.returnAfter));
 });
+
+// Hydrate subscription state from Redis before accepting requests.
+await notificationSubscriptionManager.init();
 
 const port = process.env.PORT || 3012;
 app.listen(port, () => {

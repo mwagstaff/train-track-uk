@@ -2,6 +2,7 @@ import moment from 'moment';
 import crypto from 'crypto';
 import { getTrainTimes } from './realtime-trains-api.js';
 import { NotificationPushClient } from './notification-push-client.js';
+import redis from './redis-client.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.NOTIFICATION_POLL_INTERVAL_SECONDS || '30');
 const MAX_SUBSCRIPTIONS_PER_DEVICE = Number(process.env.NOTIFICATION_MAX_SUBSCRIPTIONS || '3');
@@ -12,12 +13,48 @@ const DAY_MAP = {
     sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6
 };
 
+// Redis key helpers
+const REDIS_SUB_IDS_KEY = 'tt:notification:sub_ids';
+const redisSubKey = (id) => `tt:notification:sub:${id}`;
+
 class NotificationSubscriptionManager {
     constructor() {
         this.subscriptions = new Map();
         this.pushClient = new NotificationPushClient();
         this.pollIntervalMs = DEFAULT_POLL_INTERVAL_SECONDS * 1000;
         this.isPolling = false;
+        // Polling loop is started by init() after Redis hydration.
+    }
+
+    // Load all persisted subscriptions from Redis, then start the polling loop.
+    // Must be called once at server startup before handling requests.
+    async init() {
+        try {
+            const ids = await redis.smembers(REDIS_SUB_IDS_KEY);
+            if (ids.length > 0) {
+                const pipeline = redis.pipeline();
+                for (const id of ids) {
+                    pipeline.get(redisSubKey(id));
+                }
+                const results = await pipeline.exec();
+                let loaded = 0;
+                for (const [err, val] of results) {
+                    if (err || !val) continue;
+                    try {
+                        const sub = JSON.parse(val);
+                        this.subscriptions.set(sub.id, sub);
+                        loaded++;
+                    } catch (e) {
+                        console.error('[notifications] Failed to parse subscription from Redis:', e?.message);
+                    }
+                }
+                console.log(`[notifications] Loaded ${loaded} subscription(s) from Redis`);
+            } else {
+                console.log('[notifications] No subscriptions found in Redis');
+            }
+        } catch (err) {
+            console.error('[notifications] Failed to load subscriptions from Redis:', err?.message || err);
+        }
         this.startPollingLoop();
     }
 
@@ -29,6 +66,32 @@ class NotificationSubscriptionManager {
         }, this.pollIntervalMs).unref?.();
     }
 
+    // --- Redis persistence helpers ---
+
+    async _saveSubscription(sub) {
+        try {
+            await redis.multi()
+                .set(redisSubKey(sub.id), JSON.stringify(sub))
+                .sadd(REDIS_SUB_IDS_KEY, sub.id)
+                .exec();
+        } catch (err) {
+            console.error('[notifications] Failed to save subscription to Redis:', err?.message || err);
+        }
+    }
+
+    async _deleteFromRedis(id) {
+        try {
+            await redis.multi()
+                .del(redisSubKey(id))
+                .srem(REDIS_SUB_IDS_KEY, id)
+                .exec();
+        } catch (err) {
+            console.error('[notifications] Failed to delete subscription from Redis:', err?.message || err);
+        }
+    }
+
+    // --- Public API ---
+
     listSubscriptions(deviceId) {
         return Array.from(this.subscriptions.values())
             .filter((sub) => sub.deviceId === deviceId)
@@ -39,7 +102,7 @@ class NotificationSubscriptionManager {
         return Array.from(this.subscriptions.values()).map((sub) => this.publicSubscription(sub));
     }
 
-    upsertSubscription(payload) {
+    async upsertSubscription(payload) {
         const {
             deviceId,
             pushToken,
@@ -133,14 +196,16 @@ class NotificationSubscriptionManager {
         };
 
         this.subscriptions.set(subscription.id, subscription);
+        await this._saveSubscription(subscription);
         return this.publicSubscription(subscription);
     }
 
-    deleteSubscription({ deviceId, subscriptionId }) {
+    async deleteSubscription({ deviceId, subscriptionId }) {
         const sub = this.subscriptions.get(subscriptionId);
         if (!sub) return false;
         if (deviceId && sub.deviceId !== deviceId) return false;
         this.subscriptions.delete(subscriptionId);
+        await this._deleteFromRedis(subscriptionId);
         return true;
     }
 
@@ -190,6 +255,10 @@ class NotificationSubscriptionManager {
             const legKey = `${leg.from}-${leg.to}`;
             if (this.isMutedToday(subscription, legKey)) continue;
             subscription.lastActiveAt = new Date().toISOString();
+            // Fire-and-forget: persist lastActiveAt without blocking the poll.
+            this._saveSubscription(subscription).catch((err) => {
+                console.error('[notifications] Failed to persist lastActiveAt:', err?.message || err);
+            });
             const snapshot = await getDeparturesSnapshot(leg.from, leg.to);
             if (!snapshot.departures.length) {
                 continue;
@@ -244,11 +313,22 @@ class NotificationSubscriptionManager {
             reason: pushResult?.body?.reason || null
         }));
         if (pushResult?.isBadToken) {
+            console.warn('[notifications] bad_token_delete', JSON.stringify({
+                subscription_id: subscription.id,
+                device_id: subscription.deviceId,
+                route_key: subscription.routeKey,
+                context: 'sendSummaryIfNeeded'
+            }));
             this.subscriptions.delete(subscription.id);
+            await this._deleteFromRedis(subscription.id);
             return;
         }
 
         subscription.lastSummarySentByLeg[legKey] = todayKey;
+        // Fire-and-forget: persist the updated lastSummarySentByLeg.
+        this._saveSubscription(subscription).catch((err) => {
+            console.error('[notifications] Failed to persist lastSummarySentByLeg:', err?.message || err);
+        });
     }
 
     async sendUpdateNotifications(subscription, leg, legKey, snapshot) {
@@ -292,6 +372,10 @@ class NotificationSubscriptionManager {
         }
 
         subscription.lastStateByLeg[legKey] = nextState;
+        // Fire-and-forget: persist the updated lastStateByLeg.
+        this._saveSubscription(subscription).catch((err) => {
+            console.error('[notifications] Failed to persist lastStateByLeg:', err?.message || err);
+        });
     }
 
     async sendNotification(subscription, notification) {
@@ -310,7 +394,14 @@ class NotificationSubscriptionManager {
             reason: result?.body?.reason || null
         }));
         if (result?.isBadToken) {
+            console.warn('[notifications] bad_token_delete', JSON.stringify({
+                subscription_id: subscription.id,
+                device_id: subscription.deviceId,
+                route_key: subscription.routeKey,
+                context: 'sendNotification'
+            }));
             this.subscriptions.delete(subscription.id);
+            await this._deleteFromRedis(subscription.id);
         }
     }
 
@@ -339,7 +430,7 @@ class NotificationSubscriptionManager {
         };
     }
 
-    muteLegForDate({ deviceId, subscriptionId, from, to, date }) {
+    async muteLegForDate({ deviceId, subscriptionId, from, to, date }) {
         const subscription = this.subscriptions.get(subscriptionId);
         if (!subscription) return null;
         if (deviceId && subscription.deviceId !== deviceId) return null;
@@ -350,6 +441,7 @@ class NotificationSubscriptionManager {
         const mutedAt = new Date().toISOString();
         subscription.mutedByLegDay[legKey] = dateKey;
         subscription.mutedAtByLegDay[legKey] = mutedAt;
+        await this._saveSubscription(subscription);
         return dateKey;
     }
 

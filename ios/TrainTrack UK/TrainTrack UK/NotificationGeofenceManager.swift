@@ -15,12 +15,13 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     static let shared = NotificationGeofenceManager()
 
     private let manager = CLLocationManager()
-    private let regionPrefix = "tt_notify_mute"
+    private nonisolated let regionPrefix = "tt_notify_mute"
     static let regionRadiusMeters: CLLocationDistance = 250
 
     private override init() {
         super.init()
         manager.delegate = self
+        manager.allowsBackgroundLocationUpdates = true
     }
 
     func requestAlwaysAuthorizationIfNeeded() {
@@ -96,7 +97,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         "\(regionPrefix):\(subscriptionId):\(from.uppercased()):\(to.uppercased())"
     }
 
-    private func parseRegionIdentifier(_ identifier: String) -> (subscriptionId: String, from: String, to: String)? {
+    private nonisolated func parseRegionIdentifier(_ identifier: String) -> (subscriptionId: String, from: String, to: String)? {
         let parts = identifier.split(separator: ":")
         guard parts.count == 4, parts[0] == regionPrefix else { return nil }
         return (String(parts[1]), String(parts[2]), String(parts[3]))
@@ -104,28 +105,25 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
     // MARK: - CLLocationManagerDelegate
 
-    func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
+    nonisolated func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
         guard let circular = region as? CLCircularRegion else { return }
         guard let parsed = parseRegionIdentifier(circular.identifier) else { return }
 
         let message = "Entered region: \(circular.identifier)\nSub: \(parsed.subscriptionId)\nFrom: \(parsed.from.uppercased()) To: \(parsed.to.uppercased())"
         Task { @MainActor in
             DebugLogStore.shared.log(message, category: "Geofence")
+            print("📍 \(message)")
+            // Mark this leg as muted locally (for client-side filtering)
+            self.markLegMutedLocally(from: parsed.from, to: parsed.to)
+            // Send local notification to confirm arrival
+            self.sendArrivalNotification(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to)
+            // Enqueue mute request to backend
+            NotificationMuteRequestSender.shared.enqueueMute(
+                subscriptionId: parsed.subscriptionId,
+                from: parsed.from,
+                to: parsed.to
+            )
         }
-        print("📍 \(message)")
-
-        // Mark this leg as muted locally (for client-side filtering)
-        markLegMutedLocally(from: parsed.from, to: parsed.to)
-
-        // Send local notification to confirm arrival
-        sendArrivalNotification(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to)
-
-        // Enqueue mute request to backend
-        NotificationMuteRequestSender.shared.enqueueMute(
-            subscriptionId: parsed.subscriptionId,
-            from: parsed.from,
-            to: parsed.to
-        )
     }
 
     func simulateArrival(subscriptionId: String, from: String, to: String, sendNotification: Bool = true) {
@@ -194,11 +192,10 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        if manager.authorizationStatus == .authorizedAlways {
-            Task {
-                await NotificationSubscriptionStore.shared.refresh()
-            }
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        guard manager.authorizationStatus == .authorizedAlways else { return }
+        Task { @MainActor in
+            await NotificationSubscriptionStore.shared.refresh()
         }
     }
 }
