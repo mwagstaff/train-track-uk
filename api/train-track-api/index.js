@@ -9,6 +9,7 @@ import { pastDeparturesCache } from './lib/past-departures-cache.js';
 import { metricsMiddleware, getMetrics, updateNotificationSubscriptionGauges } from './lib/metrics.js';
 import { liveActivityManager } from './lib/live-activity-manager.js';
 import { notificationSubscriptionManager } from './lib/notification-subscription-manager.js';
+import { registerAdminRoutes } from './lib/admin-portal.js';
 import path from 'path';
 
 function isLiveActivityLoggingEnabled() {
@@ -98,6 +99,8 @@ function writeEnvironmentSnapshotToTempLog() {
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
+
+registerAdminRoutes(app);
 
 // Live activity request logging middleware (only logs when DEBUG_CONSOLE_LOGGING_APNS=true)
 app.use('/api/v2/live_activities', (req, res, next) => {

@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { getTrainTimes } from './realtime-trains-api.js';
 import { NotificationPushClient } from './notification-push-client.js';
 import redis from './redis-client.js';
+import { recordNotificationEvent } from './admin-data-store.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.NOTIFICATION_POLL_INTERVAL_SECONDS || '30');
 const MAX_SUBSCRIPTIONS_PER_DEVICE = Number(process.env.NOTIFICATION_MAX_SUBSCRIPTIONS || '3');
@@ -303,6 +304,7 @@ class NotificationSubscriptionManager {
             summary.payload,
             { useSandbox: subscription.useSandbox }
         );
+        this.logSendEvent(subscription, leg, summary, pushResult);
         console.log('[notifications] summary_push', JSON.stringify({
             subscription_id: subscription.id,
             device_id: subscription.deviceId,
@@ -358,15 +360,15 @@ class NotificationSubscriptionManager {
 
             if (subscription.notificationTypes.includes('delays')) {
                 if (current.isCancelled && !prev.isCancelled) {
-                    await this.sendNotification(subscription, buildCancellationMessage(subscription, leg, current));
+                    await this.sendNotification(subscription, buildCancellationMessage(subscription, leg, current), leg);
                 } else if (current.delayMinutes > 0 && current.delayMinutes !== prev.delayMinutes) {
-                    await this.sendNotification(subscription, buildDelayMessage(subscription, leg, current));
+                    await this.sendNotification(subscription, buildDelayMessage(subscription, leg, current), leg);
                 }
             }
 
             if (subscription.notificationTypes.includes('platform')) {
                 if (prev.platform && current.platform && prev.platform !== current.platform) {
-                    await this.sendNotification(subscription, buildPlatformMessage(subscription, leg, current));
+                    await this.sendNotification(subscription, buildPlatformMessage(subscription, leg, current), leg);
                 }
             }
         }
@@ -378,13 +380,14 @@ class NotificationSubscriptionManager {
         });
     }
 
-    async sendNotification(subscription, notification) {
+    async sendNotification(subscription, notification, leg = null) {
         if (!notification) return;
         const result = await this.pushClient.sendNotification(
             subscription.pushToken,
             notification.payload,
             { useSandbox: subscription.useSandbox }
         );
+        this.logSendEvent(subscription, leg, notification, result);
         console.log('[notifications] update_push', JSON.stringify({
             subscription_id: subscription.id,
             device_id: subscription.deviceId,
@@ -403,6 +406,34 @@ class NotificationSubscriptionManager {
             this.subscriptions.delete(subscription.id);
             await this._deleteFromRedis(subscription.id);
         }
+    }
+
+    logSendEvent(subscription, leg, notification, result) {
+        const status = result?.status ?? null;
+        const success = typeof status === 'number' && status >= 200 && status < 300;
+        recordNotificationEvent({
+            channel: 'notification',
+            type: notification?.type || 'unknown',
+            success,
+            status,
+            error: result?.error || result?.body?.reason || result?.reason || null,
+            apns_environment: subscription.useSandbox ? 'sandbox' : 'prod',
+            subscription_id: subscription.id,
+            device_id: subscription.deviceId,
+            route_key: subscription.routeKey,
+            from_station: leg?.from || null,
+            to_station: leg?.to || null,
+            token: subscription.pushToken || null,
+            is_bad_token: Boolean(result?.isBadToken),
+            payload: notification?.payload ?? null,
+            response: result || null,
+            metadata: {
+                notification_types: subscription.notificationTypes,
+                days_of_week: subscription.daysOfWeek
+            }
+        }).catch((error) => {
+            console.error('[admin] Failed to log notification send event:', error?.message || error);
+        });
     }
 
     publicSubscription(subscription) {
@@ -435,13 +466,47 @@ class NotificationSubscriptionManager {
         if (!subscription) return null;
         if (deviceId && subscription.deviceId !== deviceId) return null;
         const legKey = `${from}-${to}`;
-        const hasLeg = subscription.legs.some((leg) => leg.from === from && leg.to === to);
-        if (!hasLeg) return null;
-        const dateKey = typeof date === 'string' && date ? date : moment().format('YYYY-MM-DD');
+        const leg = subscription.legs.find((l) => l.from === from && l.to === to);
+        if (!leg) return null;
+        const todayKey = moment().format('YYYY-MM-DD');
+        const dateKey = typeof date === 'string' && date ? date : todayKey;
         const mutedAt = new Date().toISOString();
         subscription.mutedByLegDay[legKey] = dateKey;
         subscription.mutedAtByLegDay[legKey] = mutedAt;
         await this._saveSubscription(subscription);
+
+        // When muting for today (i.e. triggered by geofence arrival), send a
+        // confirmation push so the user knows notifications have been muted.
+        if (dateKey === todayKey) {
+            const mutedNotification = buildMutedMessage(subscription, leg);
+            const pushResult = await this.pushClient.sendNotification(
+                subscription.pushToken,
+                mutedNotification.payload,
+                { useSandbox: subscription.useSandbox }
+            );
+            this.logSendEvent(subscription, leg, mutedNotification, pushResult);
+            console.log('[notifications] mute_on_arrival', JSON.stringify({
+                subscription_id: subscription.id,
+                device_id: subscription.deviceId,
+                route_key: subscription.routeKey,
+                leg: legKey,
+                use_sandbox: subscription.useSandbox,
+                status: pushResult?.status,
+                reason: pushResult?.body?.reason || null
+            }));
+            if (pushResult?.isBadToken) {
+                console.warn('[notifications] bad_token_delete', JSON.stringify({
+                    subscription_id: subscription.id,
+                    device_id: subscription.deviceId,
+                    route_key: subscription.routeKey,
+                    context: 'muteLegForDate'
+                }));
+                this.subscriptions.delete(subscription.id);
+                await this._deleteFromRedis(subscription.id);
+                return null;
+            }
+        }
+
         return dateKey;
     }
 
@@ -561,7 +626,7 @@ function buildSummaryMessage(subscription, leg, snapshot) {
     const fromLabel = leg.fromName || leg.from;
     const toLabel = leg.toName || leg.to;
     const body = `Next train status: ${status}\nDepartures: ${departures}.`;
-    return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'summary'));
+    return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'summary'), 'summary');
 }
 
 function buildStatusText(dep) {
@@ -581,14 +646,14 @@ function buildDelayMessage(subscription, leg, dep) {
     const delay = dep.delayMinutes;
     const platform = dep.platform ? ` from platform ${dep.platform}` : '';
     const body = `${fromLabel} → ${toLabel} status update: The ${dep.scheduled} departure is now running ${delay} minute${delay === 1 ? '' : 's'} late, and is expected to depart at ${dep.estimated}${platform}.`;
-    return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'delay'));
+    return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'delay'), 'delay');
 }
 
 function buildCancellationMessage(subscription, leg, dep) {
     const fromLabel = leg.fromName || leg.from;
     const toLabel = leg.toName || leg.to;
     const body = `${fromLabel} → ${toLabel} status update: The ${dep.scheduled} departure has been cancelled.`;
-    return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'cancellation'));
+    return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'cancellation'), 'cancellation');
 }
 
 function buildPlatformMessage(subscription, leg, dep) {
@@ -596,11 +661,19 @@ function buildPlatformMessage(subscription, leg, dep) {
     const toLabel = leg.toName || leg.to;
     const platform = dep.platform || 'TBC';
     const body = `${fromLabel} → ${toLabel} platform update: The ${dep.scheduled} departure is now expected to depart at ${dep.estimated} from platform ${platform}.`;
-    return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'platform'));
+    return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'platform'), 'platform');
 }
 
-function buildNotificationPayload(title, body, meta = {}) {
+function buildMutedMessage(subscription, leg) {
+    const fromLabel = leg.fromName || leg.from;
+    const toLabel = leg.toName || leg.to;
+    const body = `Notifications for ${fromLabel} → ${toLabel} have been muted for today. Have a good journey! 🚆`;
+    return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'muted'), 'muted');
+}
+
+function buildNotificationPayload(title, body, meta = {}, type = 'unknown') {
     return {
+        type,
         payload: {
             aps: {
                 alert: { title, body },

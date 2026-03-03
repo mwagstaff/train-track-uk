@@ -2,6 +2,7 @@ import moment from 'moment';
 import { getTrainTimes } from './realtime-trains-api.js';
 import { LiveActivityPushClient } from './live-activity-push-client.js';
 import { getServiceDetails } from './service-details.js';
+import { recordNotificationEvent } from './admin-data-store.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.LIVE_ACTIVITY_POLL_INTERVAL_SECONDS || '20');
 const DEFAULT_END_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_END_AFTER_SECONDS || '7200'); // default 2 hours
@@ -144,6 +145,7 @@ class LiveActivityManager {
         }
 
         const pushResponse = await this.pushClient.sendLiveActivityUpdate(subscription.pushToken, payload, { useSandbox: subscription.useSandbox });
+        this.logPushEvent(subscription, payload, pushResponse, 'live_activity_update');
 
         // If the token is bad/expired, remove this subscription
         if (pushResponse?.isBadToken) {
@@ -186,6 +188,7 @@ class LiveActivityManager {
         );
         const payload = this.buildPayload(subscription, snapshot, { end: true });
         const pushResponse = await this.pushClient.sendLiveActivityUpdate(subscription.pushToken, payload, { useSandbox: subscription.useSandbox });
+        this.logPushEvent(subscription, payload, pushResponse, 'live_activity_end');
 
         // Clean up subscription regardless of push result
         this.clearEndTimer(subscription);
@@ -210,6 +213,34 @@ class LiveActivityManager {
             }
         );
         return { snapshot, payload, pushResponse };
+    }
+
+    logPushEvent(subscription, payload, pushResponse, type) {
+        const status = pushResponse?.status ?? null;
+        const success = typeof status === 'number' && status >= 200 && status < 300;
+        recordNotificationEvent({
+            channel: 'live_activity',
+            type,
+            success,
+            status,
+            error: pushResponse?.error || pushResponse?.body?.reason || null,
+            apns_environment: subscription.useSandbox ? 'sandbox' : 'prod',
+            activity_id: subscription.activityId,
+            device_id: subscription.deviceId,
+            route_key: `${subscription.fromStation || ''}-${subscription.toStation || ''}`,
+            from_station: subscription.fromStation || null,
+            to_station: subscription.toStation || null,
+            token: subscription.pushToken || null,
+            is_bad_token: Boolean(pushResponse?.isBadToken),
+            payload,
+            response: pushResponse || null,
+            metadata: {
+                preferred_service_id: subscription.preferredServiceId || null,
+                created_at: subscription.createdAt || null
+            }
+        }).catch((error) => {
+            console.error('[admin] Failed to log live activity event:', error?.message || error);
+        });
     }
 
     async getDeparturesSnapshot(fromStation, toStation, preferredServiceId = null) {
