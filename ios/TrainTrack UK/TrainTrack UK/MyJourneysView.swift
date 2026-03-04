@@ -1183,6 +1183,20 @@ private struct PinnedDepartureRowContent: View {
     @EnvironmentObject var depStore: DeparturesStore
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
 
+    private var isCancelledDeparture: Bool {
+        if row.departure.isCancelled { return true }
+        return row.departure.departureTime.estimated
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "cancelled"
+    }
+
+    private var originalScheduledLabel: String {
+        let scheduled = row.departure.departureTime.scheduled
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = scheduled.isEmpty ? row.departure.departureTime.estimated : scheduled
+        return "Originally scheduled for \(value)"
+    }
+
     private var timeColor: Color {
         colorForDelay(estimated: row.departure.departureTime.estimated, scheduled: row.departure.departureTime.scheduled)
     }
@@ -1215,6 +1229,18 @@ private struct PinnedDepartureRowContent: View {
     }
 
     private func statusInfo() -> (text: String, color: Color)? {
+        if let mins = departureDelayMinutes(
+            estimated: row.departure.departureTime.estimated,
+            scheduled: row.departure.departureTime.scheduled
+        ), mins > 0 {
+            return ("Departure delayed by \(mins) minute\(mins == 1 ? "" : "s")", .yellow)
+        }
+        let estimated = row.departure.departureTime.estimated
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if estimated == "delayed" {
+            return ("Departure status unknown at present", .yellow)
+        }
         guard let details = depStore.serviceDetailsById[row.departure.serviceID] else { return nil }
         if let live = computeLiveStatus(from: details, within: row.leg.fromStation.crs, toCRS: row.leg.toStation.crs) {
             let c: Color = live.delayMinutes >= 5 ? .red : (live.delayMinutes > 0 ? .yellow : .green)
@@ -1225,33 +1251,39 @@ private struct PinnedDepartureRowContent: View {
 
     @ViewBuilder
     private var metaLine: some View {
-        HStack(spacing: 10) {
-            if let arr = arrivalLabel() {
-                Text(arr)
+        if isCancelledDeparture {
+            Text(originalScheduledLabel)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            HStack(spacing: 10) {
+                if let arr = arrivalLabel() {
+                    Text(arr)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if isBus {
+                    EmptyView()
+                } else if let l = row.departure.length, l > 0 {
+                    HStack(spacing: 4) {
+                        Text("\(l) cars")
+                        if l <= minShortTrainCars {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.yellow)
+                        }
+                    }
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-
-            if isBus {
-                EmptyView()
-            } else if let l = row.departure.length, l > 0 {
-                HStack(spacing: 4) {
-                    Text("\(l) cars")
-                    if l <= minShortTrainCars {
+                } else {
+                    HStack(spacing: 4) {
+                        Text("Unknown length")
                         Image(systemName: "exclamationmark.triangle.fill")
                             .foregroundStyle(.yellow)
                     }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            } else {
-                HStack(spacing: 4) {
-                    Text("Unknown length")
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.yellow)
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
         }
     }
@@ -1265,12 +1297,14 @@ private struct PinnedDepartureRowContent: View {
                 metaLine
                 Spacer(minLength: 0)
                 HStack(spacing: 8) {
-                    PlatformBadge(
-                        platform: row.departure.platform?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-                        ? (row.departure.platform ?? "TBC")
-                        : "TBC",
-                        isBus: isBus
-                    )
+                    if !isCancelledDeparture {
+                        PlatformBadge(
+                            platform: row.departure.platform?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                            ? (row.departure.platform ?? "TBC")
+                            : "TBC",
+                            isBus: isBus
+                        )
+                    }
                     Text(row.departure.departureTime.estimated)
                         .font(.headline)
                         .fontWeight(.semibold)

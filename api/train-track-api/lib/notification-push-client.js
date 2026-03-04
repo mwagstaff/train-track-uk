@@ -2,10 +2,32 @@ import fs from 'fs';
 import path from 'path';
 import http2 from 'http2';
 import crypto from 'crypto';
+import {
+    recordPushNotification,
+    recordPushRetry,
+    recordPushRetryExhausted
+} from './metrics.js';
+import {
+    computeExponentialBackoffMs,
+    isRetryableHttpStatus,
+    parseRetryAfterMs,
+    sleep
+} from './retry-utils.js';
+
+const DEFAULT_PUSH_MAX_RETRIES = Number(process.env.APNS_PUSH_MAX_RETRIES || '3');
+const DEFAULT_PUSH_RETRY_BASE_DELAY_MS = Number(process.env.APNS_PUSH_RETRY_BASE_DELAY_MS || '400');
+const DEFAULT_PUSH_RETRY_MAX_DELAY_MS = Number(process.env.APNS_PUSH_RETRY_MAX_DELAY_MS || '12000');
 
 function base64UrlEncode(input) {
     const buffer = Buffer.isBuffer(input) ? input : Buffer.from(input);
     return buffer.toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+function retryReason(status) {
+    if (typeof status === 'number') {
+        return `http_${status}`;
+    }
+    return 'network_error';
 }
 
 export class NotificationPushClient {
@@ -65,9 +87,78 @@ export class NotificationPushClient {
         }
 
         const useSandbox = options.useSandbox === true ? true : this.useSandbox;
+        const environment = useSandbox ? 'sandbox' : 'prod';
         const host = useSandbox ? 'api.sandbox.push.apple.com' : 'api.push.apple.com';
+        const event = typeof options.event === 'string' && options.event.length > 0
+            ? options.event
+            : 'notification';
+
+        const maxRetries = Number.isFinite(DEFAULT_PUSH_MAX_RETRIES) && DEFAULT_PUSH_MAX_RETRIES >= 0
+            ? Math.trunc(DEFAULT_PUSH_MAX_RETRIES)
+            : 3;
+
+        let attempt = 0;
+        while (attempt <= maxRetries) {
+            const result = await this.sendSingleRequest({
+                host,
+                deviceToken,
+                payload,
+                jwt: this.buildJwt()
+            });
+
+            recordPushNotification({
+                channel: 'notification',
+                event,
+                environment,
+                status: result?.status,
+                durationMs: result?.durationMs
+            });
+
+            const shouldRetry = !result?.isBadToken && (
+                result?.status === 'error' || isRetryableHttpStatus(result?.status)
+            );
+
+            if (!shouldRetry) {
+                return result;
+            }
+
+            if (attempt >= maxRetries) {
+                recordPushRetryExhausted({
+                    channel: 'notification',
+                    event,
+                    environment,
+                    reason: retryReason(result?.status),
+                    status: result?.status
+                });
+                return result;
+            }
+
+            const retryAfterMs = parseRetryAfterMs(result?.headers?.['retry-after']);
+            const backoffMs = computeExponentialBackoffMs({
+                attemptNumber: attempt + 1,
+                baseDelayMs: DEFAULT_PUSH_RETRY_BASE_DELAY_MS,
+                maxDelayMs: DEFAULT_PUSH_RETRY_MAX_DELAY_MS,
+                retryAfterMs
+            });
+
+            recordPushRetry({
+                channel: 'notification',
+                event,
+                environment,
+                reason: retryReason(result?.status),
+                status: result?.status,
+                backoffMs
+            });
+
+            await sleep(backoffMs);
+            attempt += 1;
+        }
+
+        throw new Error('APNS notification retry loop exited unexpectedly');
+    }
+
+    async sendSingleRequest({ host, deviceToken, payload, jwt }) {
         const session = http2.connect(`https://${host}`);
-        const jwt = this.buildJwt();
         const body = JSON.stringify(payload);
         const headers = {
             ':method': 'POST',
@@ -79,13 +170,17 @@ export class NotificationPushClient {
             'content-type': 'application/json'
         };
 
+        const startedAt = Date.now();
+
         return await new Promise((resolve) => {
             let status;
             let responseBody = '';
+            let responseHeaders = {};
             const request = session.request(headers);
             request.setEncoding('utf8');
-            request.on('response', (headers) => {
-                status = headers[':status'];
+            request.on('response', (incomingHeaders) => {
+                responseHeaders = incomingHeaders || {};
+                status = incomingHeaders?.[':status'];
             });
             request.on('data', (chunk) => {
                 responseBody += chunk;
@@ -94,12 +189,24 @@ export class NotificationPushClient {
                 session.close();
                 const parsedBody = safeParseJson(responseBody);
                 const isBadToken = status === 410 || parsedBody?.reason === 'BadDeviceToken' || parsedBody?.reason === 'Unregistered';
-                resolve({ status, body: parsedBody, isBadToken });
+                resolve({
+                    status,
+                    body: parsedBody,
+                    headers: responseHeaders,
+                    durationMs: Date.now() - startedAt,
+                    isBadToken
+                });
             });
             request.on('error', (error) => {
                 session.close();
                 console.error(`APNS notification push failed: ${error?.message || error}`);
-                resolve({ status: 'error', error: error?.message || error.toString() });
+                resolve({
+                    status: 'error',
+                    error: error?.message || error.toString(),
+                    headers: {},
+                    durationMs: Date.now() - startedAt,
+                    isBadToken: false
+                });
             });
             request.write(body);
             request.end();

@@ -302,7 +302,7 @@ class NotificationSubscriptionManager {
         const pushResult = await this.pushClient.sendNotification(
             subscription.pushToken,
             summary.payload,
-            { useSandbox: subscription.useSandbox }
+            { useSandbox: subscription.useSandbox, event: summary.type }
         );
         this.logSendEvent(subscription, leg, summary, pushResult);
         console.log('[notifications] summary_push', JSON.stringify({
@@ -385,7 +385,7 @@ class NotificationSubscriptionManager {
         const result = await this.pushClient.sendNotification(
             subscription.pushToken,
             notification.payload,
-            { useSandbox: subscription.useSandbox }
+            { useSandbox: subscription.useSandbox, event: notification.type }
         );
         this.logSendEvent(subscription, leg, notification, result);
         console.log('[notifications] update_push', JSON.stringify({
@@ -482,7 +482,7 @@ class NotificationSubscriptionManager {
             const pushResult = await this.pushClient.sendNotification(
                 subscription.pushToken,
                 mutedNotification.payload,
-                { useSandbox: subscription.useSandbox }
+                { useSandbox: subscription.useSandbox, event: mutedNotification.type }
             );
             this.logSendEvent(subscription, leg, mutedNotification, pushResult);
             console.log('[notifications] mute_on_arrival', JSON.stringify({
@@ -515,6 +515,10 @@ class NotificationSubscriptionManager {
         if (!mutedDate) return false;
         const todayKey = moment().format('YYYY-MM-DD');
         return mutedDate === todayKey;
+    }
+
+    getSubscriptionCount() {
+        return this.subscriptions.size;
     }
 }
 

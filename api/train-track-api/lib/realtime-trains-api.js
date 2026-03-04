@@ -1,14 +1,5 @@
-import axios, { isCancel } from 'axios';
-// Give upstream a bit more time to respond
-axios.defaults.timeout = 8000;
-
-import axiosRetry from 'axios-retry';
 import moment from 'moment';
-axiosRetry(axios, {
-    retries: 2,
-    retryDelay: axiosRetry.exponentialDelay,
-    retryCondition: (error) => axiosRetry.isNetworkOrIdempotentRequestError(error) || error?.code === 'ECONNABORTED'
-});
+import { getWithRetry } from './upstream-api-client.js';
 
 import { pastDeparturesCache } from './past-departures-cache.js';
 
@@ -109,7 +100,10 @@ async function getLiveDepartureBoard(from, to, offset) {
     const url = to && to.length > 0 ? `https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120/GetDepartureBoard/${from}?filterCrs=${to}&filterType=to&timeOffset=${offset}` : `https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120/GetDepartureBoard/${from}?timeOffset=${offset}`;
     try {
         const start = Date.now();
-        const response = await axios.get(url, {
+        const response = await getWithRetry({
+            api: 'rail_departure_board',
+            operation: 'get_departure_board',
+            url,
             headers: {
                 'x-apikey': process.env.LIVE_DEPARTURE_BOARD_API_KEY
             }

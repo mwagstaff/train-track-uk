@@ -49,6 +49,15 @@ struct TrainTrackUKApp: App {
                 }
                 DeparturesStore.shared.runPinnedCleanupImmediately()
 
+                // Re-sync subscriptions and geofences each time the app comes to the
+                // foreground. This ensures geofences are registered after the app was
+                // killed/re-launched and stations need to be reloaded, and keeps the
+                // geofence set in step with any subscription changes made elsewhere.
+                print("📍 [App] App became active - refreshing notification subscriptions & geofences")
+                Task {
+                    await NotificationSubscriptionStore.shared.refresh()
+                }
+
                 // Check if we should auto-return to favourites
                 if autoReturnMinutes > 0, let bgTime = backgroundedAt {
                     let elapsed = Date().timeIntervalSince(bgTime)

@@ -53,18 +53,48 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             }
         }
 
+        // Guard: if stations failed to load, stationsByCrs is empty which would make
+        // `desired` empty and cause ALL existing geofences to be silently removed.
+        // Bail out early to preserve the existing geofences.
+        guard !stationsByCrs.isEmpty else {
+            print("⚠️ [GeofenceManager] Stations not loaded — skipping geofence sync to preserve existing regions")
+            Task { @MainActor in
+                DebugLogStore.shared.log("Stations not loaded — skipping geofence sync to preserve existing regions", category: "Geofence")
+            }
+            return
+        }
+
         let desired = desiredRegions(subscriptions: subscriptions, stationsByCrs: stationsByCrs)
         let existing = manager.monitoredRegions.filter { $0.identifier.hasPrefix(regionPrefix) }
 
+        var removedCount = 0
         for region in existing where desired[region.identifier] == nil {
             manager.stopMonitoring(for: region)
+            removedCount += 1
         }
 
+        var addedCount = 0
         for (identifier, region) in desired {
             if !existing.contains(where: { $0.identifier == identifier }) {
                 manager.startMonitoring(for: region)
+                addedCount += 1
             }
         }
+
+        // Request current state for ALL desired regions.
+        // This fires didDetermineState — critical for the "already inside" case:
+        // if the user is already within the geofence when sync runs (e.g. app opened
+        // while standing at the station), didEnterRegion will never fire, but
+        // didDetermineState(.inside) will, and we trigger the mute from there.
+        for (_, region) in desired {
+            manager.requestState(for: region)
+        }
+
+        let syncMsg = "Geofence sync: \(desired.count) desired, +\(addedCount) added, -\(removedCount) removed"
+        Task { @MainActor in
+            DebugLogStore.shared.log(syncMsg, category: "Geofence")
+        }
+        print("📍 \(syncMsg)")
     }
 
     private func desiredRegions(
@@ -103,6 +133,59 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         return (String(parts[1]), String(parts[2]), String(parts[3]))
     }
 
+    // Returns true if the current day and time fall within the scheduled window for
+    // this leg, meaning a geofence entry should actually trigger a mute.
+    //
+    // This prevents spurious mutes when the user passes through a starting station
+    // at a time outside their scheduled window — e.g. arriving at London Victoria
+    // at 09:34 when the Victoria→Kent House leg is only scheduled for 16:00–18:00.
+    //
+    // If the subscription/leg can't be found in the local store (e.g. subscriptions
+    // haven't loaded yet, common on a cold background launch), returns true so that
+    // a genuine geofence crossing is still honoured; the server validates anyway.
+    private func shouldMuteNow(subscriptionId: String, from: String, to: String) -> Bool {
+        guard let subscription = NotificationSubscriptionStore.shared.subscriptions
+                .first(where: { $0.id == subscriptionId }),
+              let leg = subscription.legs.first(where: {
+                  $0.from.uppercased() == from.uppercased() &&
+                  $0.to.uppercased() == to.uppercased()
+              }) else {
+            return true // Subscription/leg not in local store — allow; server validates.
+        }
+
+        let now = Date()
+        let calendar = Calendar.current
+
+        // Check day of week. iOS weekday: 1 = Sunday, 2 = Monday … 7 = Saturday.
+        let weekday = calendar.component(.weekday, from: now)
+        let dayMap: [Int: DayOfWeek] = [
+            1: .sun, 2: .mon, 3: .tue, 4: .wed, 5: .thu, 6: .fri, 7: .sat
+        ]
+        guard let today = dayMap[weekday], subscription.daysOfWeek.contains(today) else {
+            return false
+        }
+
+        // Check time window. windowStart/windowEnd are "HH:mm" strings.
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        guard let winStart = formatter.date(from: leg.windowStart),
+              let winEnd   = formatter.date(from: leg.windowEnd) else {
+            return true // Can't parse window — allow mute.
+        }
+
+        let nowMins   = calendar.component(.hour, from: now)    * 60 + calendar.component(.minute, from: now)
+        let startMins = calendar.component(.hour, from: winStart) * 60 + calendar.component(.minute, from: winStart)
+        let endMins   = calendar.component(.hour, from: winEnd)   * 60 + calendar.component(.minute, from: winEnd)
+
+        let inWindow = nowMins >= startMins && nowMins <= endMins
+        if !inWindow {
+            let msg = "shouldMuteNow: \(from)→\(to) window \(leg.windowStart)–\(leg.windowEnd), current \(nowMins/60):\(String(format:"%02d",nowMins%60)) — outside window"
+            DebugLogStore.shared.log(msg, category: "Geofence")
+        }
+        return inWindow
+    }
+
     // MARK: - CLLocationManagerDelegate
 
     nonisolated func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
@@ -113,11 +196,97 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         Task { @MainActor in
             DebugLogStore.shared.log(message, category: "Geofence")
             print("📍 \(message)")
+
+            // Only mute if we're currently within the scheduled notification window.
+            guard self.shouldMuteNow(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to) else {
+                let skipMsg = "Geofence entry for \(parsed.from)→\(parsed.to) is outside scheduled window — not muting"
+                DebugLogStore.shared.log(skipMsg, category: "Geofence")
+                print("📍 \(skipMsg)")
+                return
+            }
+
             // Mark this leg as muted locally (for client-side filtering)
             self.markLegMutedLocally(from: parsed.from, to: parsed.to)
             // Send local notification to confirm arrival
             self.sendArrivalNotification(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to)
             // Enqueue mute request to backend
+            NotificationMuteRequestSender.shared.enqueueMute(
+                subscriptionId: parsed.subscriptionId,
+                from: parsed.from,
+                to: parsed.to
+            )
+        }
+    }
+
+    // Exposed for the debug UI — shows which regions CLLocationManager is actually monitoring.
+    var monitoredRegionIdentifiers: [String] {
+        manager.monitoredRegions
+            .filter { $0.identifier.hasPrefix(regionPrefix) }
+            .map { $0.identifier }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didStartMonitoringFor region: CLRegion) {
+        guard region.identifier.hasPrefix(regionPrefix) else { return }
+        let msg = "Started monitoring: \(region.identifier)"
+        Task { @MainActor in
+            DebugLogStore.shared.log(msg, category: "Geofence")
+        }
+        print("📍 \(msg)")
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
+        let regionId = region?.identifier ?? "unknown"
+        let msg = "Monitoring FAILED for \(regionId): \(error.localizedDescription)"
+        Task { @MainActor in
+            DebugLogStore.shared.log(msg, category: "Error")
+        }
+        print("❌ \(msg)")
+    }
+
+    // Called in response to requestState(for:) after sync, and also after startMonitoring.
+    // Handles the critical "already inside" case: if the user is already within the geofence
+    // boundary when monitoring starts (e.g. app opened while standing at the station),
+    // didEnterRegion will never fire — only didDetermineState(.inside) will.
+    nonisolated func locationManager(_ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
+        guard let circular = region as? CLCircularRegion,
+              let parsed = parseRegionIdentifier(circular.identifier) else { return }
+
+        let stateStr: String
+        switch state {
+        case .inside:  stateStr = "inside"
+        case .outside: stateStr = "outside"
+        case .unknown: stateStr = "unknown"
+        @unknown default: stateStr = "unknown"
+        }
+
+        let msg = "Region state [\(stateStr)]: \(circular.identifier)"
+        Task { @MainActor in
+            DebugLogStore.shared.log(msg, category: "Geofence")
+        }
+        print("📍 \(msg)")
+
+        guard state == .inside else { return }
+
+        // Treat being inside as an entry — trigger the mute flow.
+        Task { @MainActor in
+            guard !NotificationMuteStorage.isMutedToday(from: parsed.from, to: parsed.to) else {
+                let skipMsg = "Already muted today for \(parsed.from)→\(parsed.to) — skipping duplicate"
+                DebugLogStore.shared.log(skipMsg, category: "Mute")
+                return
+            }
+
+            // Only mute if we're currently within the scheduled notification window.
+            guard self.shouldMuteNow(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to) else {
+                let skipMsg = "Inside geofence for \(parsed.from)→\(parsed.to) but outside scheduled window — not muting"
+                DebugLogStore.shared.log(skipMsg, category: "Geofence")
+                print("📍 \(skipMsg)")
+                return
+            }
+
+            let entryMsg = "Already inside geofence — triggering mute: \(parsed.from) → \(parsed.to)"
+            DebugLogStore.shared.log(entryMsg, category: "Geofence")
+            self.markLegMutedLocally(from: parsed.from, to: parsed.to)
+            self.sendArrivalNotification(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to)
             NotificationMuteRequestSender.shared.enqueueMute(
                 subscriptionId: parsed.subscriptionId,
                 from: parsed.from,

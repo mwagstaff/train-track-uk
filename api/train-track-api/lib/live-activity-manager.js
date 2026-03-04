@@ -144,7 +144,10 @@ class LiveActivityManager {
             return { sent: false, reason: 'dry_run', snapshot, payload };
         }
 
-        const pushResponse = await this.pushClient.sendLiveActivityUpdate(subscription.pushToken, payload, { useSandbox: subscription.useSandbox });
+        const pushResponse = await this.pushClient.sendLiveActivityUpdate(subscription.pushToken, payload, {
+            useSandbox: subscription.useSandbox,
+            event: 'live_activity_update'
+        });
         this.logPushEvent(subscription, payload, pushResponse, 'live_activity_update');
 
         // If the token is bad/expired, remove this subscription
@@ -187,7 +190,10 @@ class LiveActivityManager {
             )
         );
         const payload = this.buildPayload(subscription, snapshot, { end: true });
-        const pushResponse = await this.pushClient.sendLiveActivityUpdate(subscription.pushToken, payload, { useSandbox: subscription.useSandbox });
+        const pushResponse = await this.pushClient.sendLiveActivityUpdate(subscription.pushToken, payload, {
+            useSandbox: subscription.useSandbox,
+            event: 'live_activity_end'
+        });
         this.logPushEvent(subscription, payload, pushResponse, 'live_activity_end');
 
         // Clean up subscription regardless of push result
@@ -710,6 +716,10 @@ class LiveActivityManager {
             createdAt: sub.createdAt,
             endAt: sub.endAt
         }));
+    }
+
+    getSubscriptionCount() {
+        return this.subscriptions.size;
     }
 
     isLoggingEnabled() {

@@ -6,7 +6,13 @@ import { getTrainTimes, refreshPastDepartures } from './lib/realtime-trains-api.
 import { getServiceDetails } from './lib/service-details.js';
 import { getXbarOutput } from './lib/xbar.js';
 import { pastDeparturesCache } from './lib/past-departures-cache.js';
-import { metricsMiddleware, getMetrics, updateNotificationSubscriptionGauges } from './lib/metrics.js';
+import {
+    metricsMiddleware,
+    getMetrics,
+    recordPushTokenRegistration,
+    updateNotificationSubscriptionGauges,
+    updatePushSubscriptionGauges
+} from './lib/metrics.js';
 import { liveActivityManager } from './lib/live-activity-manager.js';
 import { notificationSubscriptionManager } from './lib/notification-subscription-manager.js';
 import { registerAdminRoutes } from './lib/admin-portal.js';
@@ -132,6 +138,10 @@ app.get('/healthcheck', (req, res) => {
 app.get('/metrics', async (req, res) => {
     res.set('Content-Type', 'text/plain; version=0.0.4');
     updateNotificationSubscriptionGauges(notificationSubscriptionManager.getActiveCounts());
+    updatePushSubscriptionGauges({
+        notification: notificationSubscriptionManager.getSubscriptionCount(),
+        liveActivity: liveActivityManager.getSubscriptionCount()
+    });
     res.send(await getMetrics());
 });
 
@@ -167,6 +177,10 @@ app.post('/api/v2/live_activities', async (req, res) => {
         toStation: to,
         preferredServiceId: preferred_service_id,
         useSandbox: Boolean(use_sandbox)
+    });
+    recordPushTokenRegistration({
+        channel: 'live_activity',
+        environment: Boolean(use_sandbox) ? 'sandbox' : 'prod'
     });
 
     let snapshot = { departures: [], fetchedAt: null };
@@ -250,6 +264,10 @@ app.post('/api/v2/notifications/subscriptions', async (req, res) => {
             subscriptionId: subscription_id,
             useSandbox: Boolean(use_sandbox),
             muteOnArrival: Boolean(mute_on_arrival)
+        });
+        recordPushTokenRegistration({
+            channel: 'notification',
+            environment: Boolean(use_sandbox) ? 'sandbox' : 'prod'
         });
         res.json({
             status: 'registered',

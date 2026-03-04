@@ -3,10 +3,10 @@ import client from 'prom-client';
 // Create a Registry to register the metrics
 const register = new client.Registry();
 
-// Add default metrics (like Node.js process metrics)
+// Add default process/runtime metrics from Node.js.
 client.collectDefaultMetrics({ register });
 
-// Custom metrics
+// HTTP request metrics (incoming API requests)
 const httpRequestsTotal = new client.Counter({
     name: 'http_requests_total',
     help: 'Total number of HTTP requests',
@@ -34,6 +34,97 @@ const v2RequestsTotal = new client.Counter({
     registers: [register]
 });
 
+// Upstream API call metrics (Rail Data APIs etc.)
+const upstreamApiRequestsTotal = new client.Counter({
+    name: 'upstream_api_requests_total',
+    help: 'Total number of upstream API call attempts (includes retries)',
+    labelNames: ['api', 'operation', 'method', 'status', 'status_class', 'outcome'],
+    registers: [register]
+});
+
+const upstreamApiRequestDuration = new client.Histogram({
+    name: 'upstream_api_request_duration_ms',
+    help: 'Upstream API call duration in milliseconds',
+    labelNames: ['api', 'operation', 'method', 'status_class', 'outcome'],
+    buckets: [25, 50, 100, 250, 500, 1000, 2000, 5000, 10000, 20000],
+    registers: [register]
+});
+
+const upstreamApiRetriesTotal = new client.Counter({
+    name: 'upstream_api_retries_total',
+    help: 'Total number of upstream API retry attempts',
+    labelNames: ['api', 'operation', 'method', 'reason', 'status'],
+    registers: [register]
+});
+
+const upstreamApiRetryBackoff = new client.Histogram({
+    name: 'upstream_api_retry_backoff_ms',
+    help: 'Backoff delay before upstream API retries',
+    labelNames: ['api', 'operation', 'method', 'reason'],
+    buckets: [50, 100, 250, 500, 1000, 2000, 5000, 10000, 30000],
+    registers: [register]
+});
+
+const upstreamApiRetryExhaustedTotal = new client.Counter({
+    name: 'upstream_api_retry_exhausted_total',
+    help: 'Total number of upstream API calls that exhausted retries',
+    labelNames: ['api', 'operation', 'method', 'reason', 'status'],
+    registers: [register]
+});
+
+// Push notification metrics (APNs)
+const pushNotificationsTotal = new client.Counter({
+    name: 'push_notifications_total',
+    help: 'Total number of APNs push attempts (includes retries)',
+    labelNames: ['channel', 'event', 'environment', 'status', 'status_class', 'outcome'],
+    registers: [register]
+});
+
+const pushNotificationDuration = new client.Histogram({
+    name: 'push_notification_duration_ms',
+    help: 'APNs push request duration in milliseconds',
+    labelNames: ['channel', 'event', 'environment', 'status_class', 'outcome'],
+    buckets: [25, 50, 100, 250, 500, 1000, 2000, 5000, 10000],
+    registers: [register]
+});
+
+const pushRetriesTotal = new client.Counter({
+    name: 'push_retries_total',
+    help: 'Total number of push retry attempts',
+    labelNames: ['channel', 'event', 'environment', 'reason', 'status'],
+    registers: [register]
+});
+
+const pushRetryBackoff = new client.Histogram({
+    name: 'push_retry_backoff_ms',
+    help: 'Backoff delay before push retry attempts',
+    labelNames: ['channel', 'event', 'environment', 'reason'],
+    buckets: [50, 100, 250, 500, 1000, 2000, 5000, 10000, 30000],
+    registers: [register]
+});
+
+const pushRetryExhaustedTotal = new client.Counter({
+    name: 'push_retry_exhausted_total',
+    help: 'Total number of pushes that exhausted retries',
+    labelNames: ['channel', 'event', 'environment', 'reason', 'status'],
+    registers: [register]
+});
+
+const pushTokensRegisteredTotal = new client.Counter({
+    name: 'push_tokens_registered_total',
+    help: 'Total number of push token registrations',
+    labelNames: ['channel', 'environment'],
+    registers: [register]
+});
+
+const pushActiveSubscriptions = new client.Gauge({
+    name: 'push_active_subscriptions',
+    help: 'Current number of active push subscriptions by channel',
+    labelNames: ['channel'],
+    registers: [register]
+});
+
+// User and subscription activity gauges
 const uniqueDevices1m = new client.Gauge({
     name: 'unique_devices_1m',
     help: 'Unique devices seen in the past 1 minute',
@@ -82,33 +173,61 @@ const notificationSubscriptions24h = new client.Gauge({
     registers: [register]
 });
 
-// In-memory storage for calculating top URIs by duration
+// In-memory storage for calculating top URIs by duration.
 const requestDurations = [];
-const MAX_STORED_REQUESTS = 10000; // Keep last 10k requests for top URI calculation
+const MAX_STORED_REQUESTS = 10000;
 
-// Track when we last saw a device token so we can derive recent unique device counts
+// Track when we last saw a device token so we can derive recent unique device counts.
 const DEVICE_TOKEN_HEADER = 'x-device-token';
-const DEVICE_RETENTION_MS = 48 * 60 * 60 * 1000; // Keep a 48h window to cover 24h metric plus buffer
+const DEVICE_RETENTION_MS = 48 * 60 * 60 * 1000;
 const deviceLastSeen = new Map();
 
-// Middleware to track metrics
+function normalizeStatus(status) {
+    if (typeof status === 'number' && Number.isFinite(status)) {
+        return String(Math.trunc(status));
+    }
+    if (typeof status === 'string' && status.length > 0) {
+        return status;
+    }
+    return 'error';
+}
+
+function statusClass(status) {
+    if (typeof status === 'number' && Number.isFinite(status)) {
+        const klass = Math.floor(status / 100);
+        if (klass >= 1 && klass <= 5) {
+            return `${klass}xx`;
+        }
+    }
+    return 'error';
+}
+
+function outcomeFromStatus(status) {
+    if (typeof status === 'number' && Number.isFinite(status)) {
+        return status < 400 ? 'success' : 'failure';
+    }
+    return 'failure';
+}
+
+function asLabel(value, fallback = 'unknown') {
+    return typeof value === 'string' && value.length > 0 ? value : fallback;
+}
+
+// Middleware to track metrics for inbound HTTP requests.
 export function metricsMiddleware(req, res, next) {
     const start = Date.now();
 
     cleanupOldDevices(start);
     recordDeviceSeen(req, start);
 
-    // Capture the original end function
     const originalEnd = res.end;
 
-    // Override res.end to capture metrics when response completes
     res.end = function(...args) {
         const duration = Date.now() - start;
         const path = req.route ? req.route.path : req.path;
         const status = res.statusCode;
         const method = req.method;
 
-        // Determine API version
         let apiVersion = 'other';
         if (path.startsWith('/api/v1')) {
             apiVersion = 'v1';
@@ -118,23 +237,160 @@ export function metricsMiddleware(req, res, next) {
             v2RequestsTotal.inc();
         }
 
-        // Record metrics
         httpRequestsTotal.inc({ method, path, status, api_version: apiVersion });
         httpRequestDuration.observe({ method, path, status, api_version: apiVersion }, duration);
 
-        // Store request duration for top URIs calculation
         requestDurations.push({ path, duration, timestamp: Date.now() });
-
-        // Keep only the last MAX_STORED_REQUESTS
         if (requestDurations.length > MAX_STORED_REQUESTS) {
             requestDurations.shift();
         }
 
-        // Call the original end function
         originalEnd.apply(res, args);
     };
 
     next();
+}
+
+export function recordUpstreamApiRequest({ api, operation, method, status, durationMs }) {
+    const apiLabel = asLabel(api);
+    const operationLabel = asLabel(operation);
+    const methodLabel = asLabel(method, 'GET').toUpperCase();
+    const statusLabel = normalizeStatus(status);
+    const statusClassLabel = statusClass(status);
+    const outcomeLabel = outcomeFromStatus(status);
+
+    upstreamApiRequestsTotal.inc({
+        api: apiLabel,
+        operation: operationLabel,
+        method: methodLabel,
+        status: statusLabel,
+        status_class: statusClassLabel,
+        outcome: outcomeLabel
+    });
+
+    upstreamApiRequestDuration.observe(
+        {
+            api: apiLabel,
+            operation: operationLabel,
+            method: methodLabel,
+            status_class: statusClassLabel,
+            outcome: outcomeLabel
+        },
+        Math.max(0, Number(durationMs) || 0)
+    );
+}
+
+export function recordUpstreamApiRetry({ api, operation, method, reason, status, backoffMs }) {
+    const apiLabel = asLabel(api);
+    const operationLabel = asLabel(operation);
+    const methodLabel = asLabel(method, 'GET').toUpperCase();
+    const reasonLabel = asLabel(reason);
+    const statusLabel = normalizeStatus(status);
+
+    upstreamApiRetriesTotal.inc({
+        api: apiLabel,
+        operation: operationLabel,
+        method: methodLabel,
+        reason: reasonLabel,
+        status: statusLabel
+    });
+
+    upstreamApiRetryBackoff.observe(
+        {
+            api: apiLabel,
+            operation: operationLabel,
+            method: methodLabel,
+            reason: reasonLabel
+        },
+        Math.max(0, Number(backoffMs) || 0)
+    );
+}
+
+export function recordUpstreamApiRetryExhausted({ api, operation, method, reason, status }) {
+    upstreamApiRetryExhaustedTotal.inc({
+        api: asLabel(api),
+        operation: asLabel(operation),
+        method: asLabel(method, 'GET').toUpperCase(),
+        reason: asLabel(reason),
+        status: normalizeStatus(status)
+    });
+}
+
+export function recordPushNotification({ channel, event, environment, status, durationMs }) {
+    const channelLabel = asLabel(channel);
+    const eventLabel = asLabel(event);
+    const environmentLabel = asLabel(environment, 'prod');
+    const statusLabel = normalizeStatus(status);
+    const statusClassLabel = statusClass(status);
+    const outcomeLabel = outcomeFromStatus(status);
+
+    pushNotificationsTotal.inc({
+        channel: channelLabel,
+        event: eventLabel,
+        environment: environmentLabel,
+        status: statusLabel,
+        status_class: statusClassLabel,
+        outcome: outcomeLabel
+    });
+
+    pushNotificationDuration.observe(
+        {
+            channel: channelLabel,
+            event: eventLabel,
+            environment: environmentLabel,
+            status_class: statusClassLabel,
+            outcome: outcomeLabel
+        },
+        Math.max(0, Number(durationMs) || 0)
+    );
+}
+
+export function recordPushRetry({ channel, event, environment, reason, status, backoffMs }) {
+    const channelLabel = asLabel(channel);
+    const eventLabel = asLabel(event);
+    const environmentLabel = asLabel(environment, 'prod');
+    const reasonLabel = asLabel(reason);
+    const statusLabel = normalizeStatus(status);
+
+    pushRetriesTotal.inc({
+        channel: channelLabel,
+        event: eventLabel,
+        environment: environmentLabel,
+        reason: reasonLabel,
+        status: statusLabel
+    });
+
+    pushRetryBackoff.observe(
+        {
+            channel: channelLabel,
+            event: eventLabel,
+            environment: environmentLabel,
+            reason: reasonLabel
+        },
+        Math.max(0, Number(backoffMs) || 0)
+    );
+}
+
+export function recordPushRetryExhausted({ channel, event, environment, reason, status }) {
+    pushRetryExhaustedTotal.inc({
+        channel: asLabel(channel),
+        event: asLabel(event),
+        environment: asLabel(environment, 'prod'),
+        reason: asLabel(reason),
+        status: normalizeStatus(status)
+    });
+}
+
+export function recordPushTokenRegistration({ channel, environment }) {
+    pushTokensRegisteredTotal.inc({
+        channel: asLabel(channel),
+        environment: asLabel(environment, 'prod')
+    });
+}
+
+export function updatePushSubscriptionGauges({ notification = 0, liveActivity = 0 } = {}) {
+    pushActiveSubscriptions.set({ channel: 'notification' }, Math.max(0, Number(notification) || 0));
+    pushActiveSubscriptions.set({ channel: 'live_activity' }, Math.max(0, Number(liveActivity) || 0));
 }
 
 function extractDeviceToken(req) {
@@ -186,9 +442,7 @@ function updateDeviceGauges(now = Date.now()) {
     uniqueDevices24h.set(countUniqueDevices(24 * 60 * 60 * 1000, now));
 }
 
-// Function to get top 10 URIs by request duration
 function getTopUrisByDuration() {
-    // Sort by duration descending and take top 10
     const sorted = [...requestDurations].sort((a, b) => b.duration - a.duration).slice(0, 10);
 
     let output = '';
@@ -201,7 +455,6 @@ function getTopUrisByDuration() {
     return output;
 }
 
-// Function to calculate percentiles
 function calculatePercentiles() {
     if (requestDurations.length === 0) {
         return { min: 0, max: 0, avg: 0, p90: 0, p95: 0, p99: 0 };
@@ -225,14 +478,12 @@ function calculatePercentiles() {
     return { min, max, avg, p90, p95, p99 };
 }
 
-// Export metrics in Prometheus format
+// Export metrics in Prometheus format.
 export async function getMetrics() {
     updateDeviceGauges();
 
-    // Get default metrics from the registry
     let metrics = await register.metrics();
 
-    // Add custom percentile metrics
     const percentiles = calculatePercentiles();
 
     metrics += '\n# HELP http_request_duration_min_ms Minimum HTTP request duration in milliseconds\n';
@@ -259,7 +510,6 @@ export async function getMetrics() {
     metrics += '# TYPE http_request_duration_p99_ms gauge\n';
     metrics += `http_request_duration_p99_ms ${percentiles.p99}\n`;
 
-    // Add top URIs by duration
     metrics += '\n' + getTopUrisByDuration();
 
     return metrics;

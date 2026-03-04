@@ -2,11 +2,32 @@ import fs from 'fs';
 import path from 'path';
 import http2 from 'http2';
 import crypto from 'crypto';
+import {
+    recordPushNotification,
+    recordPushRetry,
+    recordPushRetryExhausted
+} from './metrics.js';
+import {
+    computeExponentialBackoffMs,
+    isRetryableHttpStatus,
+    parseRetryAfterMs,
+    sleep
+} from './retry-utils.js';
 
-// Helper to build base64url strings without pulling in extra deps
+const DEFAULT_PUSH_MAX_RETRIES = Number(process.env.APNS_PUSH_MAX_RETRIES || '3');
+const DEFAULT_PUSH_RETRY_BASE_DELAY_MS = Number(process.env.APNS_PUSH_RETRY_BASE_DELAY_MS || '400');
+const DEFAULT_PUSH_RETRY_MAX_DELAY_MS = Number(process.env.APNS_PUSH_RETRY_MAX_DELAY_MS || '12000');
+
 function base64UrlEncode(input) {
     const buffer = Buffer.isBuffer(input) ? input : Buffer.from(input);
     return buffer.toString('base64').replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+function retryReason(status) {
+    if (typeof status === 'number') {
+        return `http_${status}`;
+    }
+    return 'network_error';
 }
 
 export class LiveActivityPushClient {
@@ -85,12 +106,93 @@ export class LiveActivityPushClient {
             return { skipped: true, reason: 'apns_not_configured', payload };
         }
 
-        // Use per-request useSandbox if provided, otherwise default to production (false)
-        // This ensures older clients that don't send use_sandbox will use production APNs
+        // Use per-request useSandbox if provided, otherwise default to production.
         const useSandbox = options.useSandbox === true;
+        const environment = useSandbox ? 'sandbox' : 'prod';
         const host = useSandbox ? 'api.sandbox.push.apple.com' : 'api.push.apple.com';
+        const event = typeof options.event === 'string' && options.event.length > 0
+            ? options.event
+            : 'live_activity_update';
+
+        const maxRetries = Number.isFinite(DEFAULT_PUSH_MAX_RETRIES) && DEFAULT_PUSH_MAX_RETRIES >= 0
+            ? Math.trunc(DEFAULT_PUSH_MAX_RETRIES)
+            : 3;
+
+        let attempt = 0;
+        while (attempt <= maxRetries) {
+            const result = await this.sendSingleRequest({
+                host,
+                deviceToken,
+                payload,
+                jwt: this.buildJwt(),
+                logEnabled: this.isLoggingEnabled()
+            });
+
+            recordPushNotification({
+                channel: 'live_activity',
+                event,
+                environment,
+                status: result?.status,
+                durationMs: result?.durationMs
+            });
+
+            const shouldRetry = !result?.isBadToken && (
+                result?.status === 'error' || isRetryableHttpStatus(result?.status)
+            );
+
+            if (!shouldRetry) {
+                return result;
+            }
+
+            if (attempt >= maxRetries) {
+                recordPushRetryExhausted({
+                    channel: 'live_activity',
+                    event,
+                    environment,
+                    reason: retryReason(result?.status),
+                    status: result?.status
+                });
+                return result;
+            }
+
+            const retryAfterMs = parseRetryAfterMs(result?.headers?.['retry-after']);
+            const backoffMs = computeExponentialBackoffMs({
+                attemptNumber: attempt + 1,
+                baseDelayMs: DEFAULT_PUSH_RETRY_BASE_DELAY_MS,
+                maxDelayMs: DEFAULT_PUSH_RETRY_MAX_DELAY_MS,
+                retryAfterMs
+            });
+
+            recordPushRetry({
+                channel: 'live_activity',
+                event,
+                environment,
+                reason: retryReason(result?.status),
+                status: result?.status,
+                backoffMs
+            });
+
+            if (this.isLoggingEnabled()) {
+                console.log('[live-activity] apns_retry', JSON.stringify({
+                    host,
+                    event,
+                    attempt: attempt + 1,
+                    backoffMs,
+                    status: result?.status,
+                    reason: retryReason(result?.status),
+                    token: this.maskToken(deviceToken)
+                }));
+            }
+
+            await sleep(backoffMs);
+            attempt += 1;
+        }
+
+        throw new Error('APNS live-activity retry loop exited unexpectedly');
+    }
+
+    async sendSingleRequest({ host, deviceToken, payload, jwt, logEnabled }) {
         const session = http2.connect(`https://${host}`);
-        const jwt = this.buildJwt();
         const body = JSON.stringify(payload);
         const headers = {
             ':method': 'POST',
@@ -102,7 +204,7 @@ export class LiveActivityPushClient {
             'content-type': 'application/json'
         };
 
-        if (this.isLoggingEnabled()) {
+        if (logEnabled) {
             console.log(
                 '[live-activity] apns_request_headers',
                 JSON.stringify({
@@ -119,16 +221,19 @@ export class LiveActivityPushClient {
             );
         }
 
+        const startedAt = Date.now();
+
         return await new Promise((resolve) => {
             let status;
             let responseBody = '';
+            let responseHeaders = {};
 
             const request = session.request(headers);
-
             request.setEncoding('utf8');
 
-            request.on('response', (headers) => {
-                status = headers[':status'];
+            request.on('response', (incomingHeaders) => {
+                responseHeaders = incomingHeaders || {};
+                status = incomingHeaders?.[':status'];
             });
 
             request.on('data', (chunk) => {
@@ -138,12 +243,10 @@ export class LiveActivityPushClient {
             request.on('end', () => {
                 session.close();
                 const parsedBody = this.safeParseJson(responseBody);
-
-                // Check for APNs error conditions
-                const isError = status >= 400;
+                const isError = typeof status === 'number' && status >= 400;
                 const isBadToken = status === 410 || parsedBody?.reason === 'BadDeviceToken' || parsedBody?.reason === 'Unregistered';
 
-                if (this.isLoggingEnabled()) {
+                if (logEnabled) {
                     console.log(
                         '[live-activity] apns_response',
                         JSON.stringify({
@@ -165,16 +268,24 @@ export class LiveActivityPushClient {
                 resolve({
                     status,
                     body: parsedBody,
+                    headers: responseHeaders,
                     bytesSent: body.length,
                     isError,
-                    isBadToken
+                    isBadToken,
+                    durationMs: Date.now() - startedAt
                 });
             });
 
             request.on('error', (error) => {
                 session.close();
                 console.error(`APNS live activity push failed: ${error?.message || error}`);
-                resolve({ status: 'error', error: error?.message || error.toString() });
+                resolve({
+                    status: 'error',
+                    error: error?.message || error.toString(),
+                    headers: {},
+                    isBadToken: false,
+                    durationMs: Date.now() - startedAt
+                });
             });
 
             request.write(body);

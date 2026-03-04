@@ -1,19 +1,14 @@
-import axios, { isCancel } from 'axios';
-axios.defaults.timeout = 8000;
-
-import axiosRetry from 'axios-retry';
-axiosRetry(axios, {
-    retries: 2,
-    retryDelay: axiosRetry.exponentialDelay,
-    retryCondition: (error) => axiosRetry.isNetworkOrIdempotentRequestError(error) || error?.code === 'ECONNABORTED'
-});
+import { getWithRetry } from './upstream-api-client.js';
 
 // Fetches data from the service details API
 export async function getServiceDetails(serviceId) {
     const url = `https://api1.raildata.org.uk/1010-service-details1_2/LDBWS/api/20220120/GetServiceDetails/${serviceId}`;
     try {
         const start = Date.now();
-        const response = await axios.get(url, {
+        const response = await getWithRetry({
+            api: 'rail_service_details',
+            operation: 'get_service_details',
+            url,
             headers: {
                 'x-apikey': process.env.SERVICE_DETAILS_API_KEY
             }

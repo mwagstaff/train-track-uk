@@ -201,6 +201,20 @@ struct JourneyListRow: View {
         guard let dep = nextDeparture else { return nil }
         if dep.isCancelled { return ("Cancelled", .red) }
 
+        if let mins = departureDelayMinutes(
+            estimated: dep.departureTime.estimated,
+            scheduled: dep.departureTime.scheduled
+        ), mins > 0 {
+            return ("Departure delayed by \(mins) minute\(mins == 1 ? "" : "s")", .yellow)
+        }
+
+        let estimated = dep.departureTime.estimated
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if estimated == "delayed" {
+            return ("Departure status unknown at present", .yellow)
+        }
+
         if let details = depStore.serviceDetailsById[dep.serviceID], let live = computeLiveStatus(from: details, within: primaryLeg.fromStation.crs, toCRS: primaryLeg.toStation.crs) {
             let c: Color = live.delayMinutes >= 5 ? .red : (live.delayMinutes > 0 ? .yellow : .green)
             return (live.text, c)
@@ -209,7 +223,6 @@ struct JourneyListRow: View {
         // Fallback: compare estimated vs scheduled
         let est = dep.departureTime.estimated.lowercased()
         if est == "cancelled" { return ("Cancelled", .red) }
-        if est == "delayed" { return ("Delayed", .red) }
         let df = DateFormatter(); df.dateFormat = "HH:mm"
         if let s = df.date(from: dep.departureTime.scheduled), let e = df.date(from: dep.departureTime.estimated) {
             let mins = Calendar.current.dateComponents([.minute], from: s, to: e).minute ?? 0

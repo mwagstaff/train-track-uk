@@ -361,7 +361,7 @@ struct JourneyDetailsView: View {
                                 HStack(spacing: 6) {
                                     Image(systemName: "checkmark.circle.fill")
                                         .foregroundStyle(.green)
-                                    Text("Within geofence (250m) - Mute triggered")
+                                    Text("Within geofence (250m)")
                                         .font(.caption2)
                                         .foregroundStyle(.green)
                                         .fontWeight(.medium)
@@ -378,6 +378,27 @@ struct JourneyDetailsView: View {
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
                                 }
+                            }
+
+                            // Actual CLLocationManager monitoring status — distinct from
+                            // the GPS distance check above.
+                            if let subscription = notificationSubscription {
+                                let expectedId = "tt_notify_mute:\(subscription.id):\(firstLeg.fromStation.crs.uppercased()):\(firstLeg.toStation.crs.uppercased())"
+                                let monitoredIds = NotificationGeofenceManager.shared.monitoredRegionIdentifiers
+                                let isRegistered = monitoredIds.contains(expectedId)
+                                HStack(spacing: 6) {
+                                    Image(systemName: isRegistered ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+                                        .foregroundStyle(isRegistered ? .green : .orange)
+                                    Text("CLLocation monitoring: \(isRegistered ? "Active ✓" : "NOT registered ⚠️")")
+                                        .font(.caption2)
+                                        .foregroundStyle(isRegistered ? .green : .orange)
+                                        .fontWeight(.medium)
+                                    Spacer()
+                                    Text("\(monitoredIds.count) region(s)")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                .padding(.top, 2)
                             }
 
                             Divider().padding(.vertical, 4)
@@ -424,6 +445,14 @@ struct JourneyDetailsView: View {
 
                                 Button("Clear local mute") {
                                     debugClearLocalMute()
+                                }
+                                .buttonStyle(.bordered)
+                            }
+                            HStack(spacing: 8) {
+                                Button("Re-sync geofences") {
+                                    Task {
+                                        await notificationStore.refresh()
+                                    }
                                 }
                                 .buttonStyle(.bordered)
                             }
@@ -870,6 +899,20 @@ private struct JourneySummaryLegRow: View {
     @AppStorage("showTransferWarnings") private var showTransferWarnings: Bool = true
     @AppStorage("transferWarningThresholdMinutes") private var transferWarningThresholdMinutes: Int = 3
 
+    private var isCancelledDeparture: Bool {
+        if summary.departure.isCancelled { return true }
+        return summary.departure.departureTime.estimated
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "cancelled"
+    }
+
+    private var originalScheduledLabel: String {
+        let scheduled = summary.departure.departureTime.scheduled
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = scheduled.isEmpty ? summary.departureTime : scheduled
+        return "Originally scheduled for \(value)"
+    }
+
     private var arrivalTimeText: String {
         summary.arrivalTime ?? arrivalTimeFromDetails() ?? "—"
     }
@@ -937,6 +980,18 @@ private struct JourneySummaryLegRow: View {
     }
 
     private func statusInfo() -> (text: String, color: Color)? {
+        if let mins = departureDelayMinutes(
+            estimated: summary.departure.departureTime.estimated,
+            scheduled: summary.departure.departureTime.scheduled
+        ), mins > 0 {
+            return ("Departure delayed by \(mins) minute\(mins == 1 ? "" : "s")", .yellow)
+        }
+        let estimated = summary.departure.departureTime.estimated
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if estimated == "delayed" {
+            return ("Departure status unknown at present", .yellow)
+        }
         guard let details = depStore.serviceDetailsById[summary.departure.serviceID] else { return nil }
         if let live = computeLiveStatus(from: details, within: summary.leg.fromStation.crs, toCRS: summary.leg.toStation.crs) {
             let c: Color = live.delayMinutes >= 5 ? .red : (live.delayMinutes > 0 ? .yellow : .green)
@@ -968,30 +1023,36 @@ private struct JourneySummaryLegRow: View {
 
     @ViewBuilder
     private var metaLine: some View {
-        let length = summary.departure.length
-        HStack(spacing: 10) {
-            Text("Arr \(arrivalTimeText)")
+        if isCancelledDeparture {
+            Text(originalScheduledLabel)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            if isBus {
-                EmptyView()
-            } else if let l = length, l > 0 {
-                HStack(spacing: 4) {
-                    Text("\(l) cars")
-                    if l <= minShortTrainCars {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.yellow)
+        } else {
+            let length = summary.departure.length
+            HStack(spacing: 10) {
+                Text("Arr \(arrivalTimeText)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if isBus {
+                    EmptyView()
+                } else if let l = length, l > 0 {
+                    HStack(spacing: 4) {
+                        Text("\(l) cars")
+                        if l <= minShortTrainCars {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.yellow)
+                        }
                     }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                } else {
+                    HStack(spacing: 4) {
+                        Text("Unknown length")
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            } else {
-                HStack(spacing: 4) {
-                    Text("Unknown length")
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
         }
     }
@@ -1025,7 +1086,9 @@ private struct JourneySummaryLegRow: View {
                 }
                 Spacer()
                 HStack(spacing: 8) {
-                    PlatformBadge(platform: summary.departure.platform?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? (summary.departure.platform ?? "TBC") : "TBC", isBus: isBus)
+                    if !isCancelledDeparture {
+                        PlatformBadge(platform: summary.departure.platform?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? (summary.departure.platform ?? "TBC") : "TBC", isBus: isBus)
+                    }
                     Text(summary.departureTime)
                         .font(.headline)
                         .fontWeight(.semibold)
@@ -1104,6 +1167,20 @@ private struct DepartureRow: View {
     @EnvironmentObject var depStore: DeparturesStore
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
 
+    private var isCancelledDeparture: Bool {
+        if dep.isCancelled { return true }
+        return dep.departureTime.estimated
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "cancelled"
+    }
+
+    private var originalScheduledLabel: String {
+        let scheduled = dep.departureTime.scheduled
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let value = scheduled.isEmpty ? dep.departureTime.estimated : scheduled
+        return "Originally scheduled for \(value)"
+    }
+
     private var timeColor: Color {
         colorForDelay(estimated: dep.departureTime.estimated, scheduled: dep.departureTime.scheduled)
     }
@@ -1125,41 +1202,58 @@ private struct DepartureRow: View {
 
     @ViewBuilder
     private var metaLine: some View {
-        let length = dep.length
+        if isCancelledDeparture {
+            Text(originalScheduledLabel)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            let length = dep.length
+            HStack(spacing: 10) {
 
-        HStack(spacing: 10) {
+                // Estimated arrival at destination station
+                if let arr = arrivalLabel() {
+                    Text(arr)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
-            // Estimated arrival at destination station
-            if let arr = arrivalLabel() {
-                Text(arr)
+                if isBus {
+                    EmptyView()
+                } else if let l = length, l > 0 {
+                    HStack(spacing: 4) {
+                        Text("\(l) cars")
+                        if l <= minShortTrainCars {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.yellow)
+                        }
+                    }
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-
-            if isBus {
-                EmptyView()
-            } else if let l = length, l > 0 {
-                HStack(spacing: 4) {
-                    Text("\(l) cars")
-                    if l <= minShortTrainCars {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.yellow)
+                } else {
+                    HStack(spacing: 4) {
+                        Text("Unknown length")
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
                     }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            } else {
-                HStack(spacing: 4) {
-                    Text("Unknown length")
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
         }
     }
 
     private func statusInfo() -> (text: String, color: Color)? {
+        if let mins = departureDelayMinutes(
+            estimated: dep.departureTime.estimated,
+            scheduled: dep.departureTime.scheduled
+        ), mins > 0 {
+            return ("Departure delayed by \(mins) minute\(mins == 1 ? "" : "s")", .yellow)
+        }
+        let estimated = dep.departureTime.estimated
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if estimated == "delayed" {
+            return ("Departure status unknown at present", .yellow)
+        }
         guard let details = depStore.serviceDetailsById[dep.serviceID] else { return nil }
         if let live = computeLiveStatus(from: details, within: fromCRS, toCRS: toCRS) {
             let c: Color = live.delayMinutes >= 5 ? .red : (live.delayMinutes > 0 ? .yellow : .green)
@@ -1257,7 +1351,9 @@ private struct DepartureRow: View {
             }
             Spacer()
             HStack(spacing: 8) {
-                PlatformBadge(platform: dep.platform?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? (dep.platform ?? "TBC") : "TBC", isBus: isBus)
+                if !isCancelledDeparture {
+                    PlatformBadge(platform: dep.platform?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? (dep.platform ?? "TBC") : "TBC", isBus: isBus)
+                }
                 Text(dep.departureTime.estimated)
                     .font(.headline)
                     .fontWeight(.semibold)
