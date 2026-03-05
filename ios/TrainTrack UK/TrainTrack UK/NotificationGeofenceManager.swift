@@ -18,13 +18,41 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     private nonisolated let regionPrefix = "tt_notify_mute"
     static let regionRadiusMeters: CLLocationDistance = 250
 
+    // iOS 18+ requires an active CLServiceSession to guarantee reliable delivery
+    // of region monitoring events to the app, including cold-launch from terminated state.
+    // Stored as Any? to avoid @available spreading everywhere — we simply cast when needed.
+    // The session must be kept alive for the lifetime of the manager (hence a stored property,
+    // not a local variable). Creating it with .always tells the system this app needs
+    // "Always" location authorization and keeps region monitoring events flowing.
+    //
+    // On iOS 17 and below, requestAlwaysAuthorization() handles auth instead.
+    //
+    // Requirements for region monitoring to cold-launch a terminated app:
+    //   1. CLServiceSession (iOS 18+) or requestAlwaysAuthorization (iOS <18) ✓
+    //   2. authorizedAlways granted by user ✓
+    //   3. UIBackgroundModes includes "location" in Info.plist ✓
+    //   4. Background App Refresh enabled on device (Settings > General > Background App Refresh)
+    //      — this is a user-facing setting; the app cannot enable it programmatically.
+    //   5. App was NOT force-quit by the user — user swipe-close prevents re-launch.
+    private var locationServiceSession: Any?
+
     private override init() {
         super.init()
         manager.delegate = self
         manager.allowsBackgroundLocationUpdates = true
+        if #available(iOS 18.0, *) {
+            // Create session immediately — this registers our intent with the system
+            // and ensures events are delivered even after the app is OS-terminated.
+            locationServiceSession = CLServiceSession(authorization: .always)
+        }
     }
 
     func requestAlwaysAuthorizationIfNeeded() {
+        if #available(iOS 18.0, *) {
+            // On iOS 18+, CLServiceSession (created in init) handles authorization
+            // requests automatically — no need to call requestAlwaysAuthorization().
+            return
+        }
         switch manager.authorizationStatus {
         case .notDetermined:
             manager.requestAlwaysAuthorization()
@@ -103,7 +131,6 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     ) -> [String: CLCircularRegion] {
         var regions: [String: CLCircularRegion] = [:]
         for subscription in subscriptions {
-            guard subscription.muteOnArrival ?? true else { continue }
             for leg in subscription.legs where leg.enabled {
                 guard let station = stationsByCrs[leg.from.uppercased()] else { continue }
                 let coordinate = station.coordinate
@@ -116,7 +143,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                     identifier: identifier
                 )
                 region.notifyOnEntry = true
-                region.notifyOnExit = false
+                region.notifyOnExit = true
                 regions[identifier] = region
             }
         }
@@ -192,14 +219,36 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         guard let circular = region as? CLCircularRegion else { return }
         guard let parsed = parseRegionIdentifier(circular.identifier) else { return }
 
+        // Always log boundary crossings to the server regardless of mute window,
+        // so geofence health is visible in the admin even when the app is force-closed.
+        GeofenceEventSender.shared.sendEvent(
+            regionId: circular.identifier,
+            from: parsed.from,
+            to: parsed.to,
+            eventType: "enter"
+        )
+
         let message = "Entered region: \(circular.identifier)\nSub: \(parsed.subscriptionId)\nFrom: \(parsed.from.uppercased()) To: \(parsed.to.uppercased())"
         Task { @MainActor in
             DebugLogStore.shared.log(message, category: "Geofence")
             print("📍 \(message)")
 
-            // Only mute if we're currently within the scheduled notification window.
-            guard self.shouldMuteNow(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to) else {
-                let skipMsg = "Geofence entry for \(parsed.from)→\(parsed.to) is outside scheduled window — not muting"
+            // Check global mute-on-arrival preference
+            let autoMuteEnabled = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
+            guard autoMuteEnabled else {
+                let skipMsg = "Geofence entry for \(parsed.from)→\(parsed.to) — mute on arrival disabled in preferences"
+                DebugLogStore.shared.log(skipMsg, category: "Geofence")
+                print("📍 \(skipMsg)")
+                return
+            }
+
+            // Mute if within scheduled window, or if a live activity is active for this route.
+            // This allows muting to work for manually-started live activities outside the usual window.
+            let hasActiveLiveActivity = LiveActivityManager.shared.activeJourneys.contains(where: {
+                $0.0.uppercased() == parsed.from.uppercased() && $0.1.uppercased() == parsed.to.uppercased()
+            })
+            guard hasActiveLiveActivity || self.shouldMuteNow(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to) else {
+                let skipMsg = "Geofence entry for \(parsed.from)→\(parsed.to) is outside scheduled window and no active live activity — not muting"
                 DebugLogStore.shared.log(skipMsg, category: "Geofence")
                 print("📍 \(skipMsg)")
                 return
@@ -216,6 +265,24 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 to: parsed.to
             )
         }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
+        guard let circular = region as? CLCircularRegion else { return }
+        guard let parsed = parseRegionIdentifier(circular.identifier) else { return }
+
+        GeofenceEventSender.shared.sendEvent(
+            regionId: circular.identifier,
+            from: parsed.from,
+            to: parsed.to,
+            eventType: "exit"
+        )
+
+        let message = "Exited region: \(circular.identifier)\nFrom: \(parsed.from.uppercased()) To: \(parsed.to.uppercased())"
+        Task { @MainActor in
+            DebugLogStore.shared.log(message, category: "Geofence")
+        }
+        print("📍 \(message)")
     }
 
     // Exposed for the debug UI — shows which regions CLLocationManager is actually monitoring.
@@ -275,9 +342,21 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 return
             }
 
-            // Only mute if we're currently within the scheduled notification window.
-            guard self.shouldMuteNow(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to) else {
-                let skipMsg = "Inside geofence for \(parsed.from)→\(parsed.to) but outside scheduled window — not muting"
+            // Check global mute-on-arrival preference
+            let autoMuteEnabled = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
+            guard autoMuteEnabled else {
+                let skipMsg = "Inside geofence for \(parsed.from)→\(parsed.to) — mute on arrival disabled in preferences"
+                DebugLogStore.shared.log(skipMsg, category: "Geofence")
+                print("📍 \(skipMsg)")
+                return
+            }
+
+            // Mute if within scheduled window, or if a live activity is active for this route.
+            let hasActiveLiveActivity = LiveActivityManager.shared.activeJourneys.contains(where: {
+                $0.0.uppercased() == parsed.from.uppercased() && $0.1.uppercased() == parsed.to.uppercased()
+            })
+            guard hasActiveLiveActivity || self.shouldMuteNow(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to) else {
+                let skipMsg = "Inside geofence for \(parsed.from)→\(parsed.to) but outside scheduled window and no active live activity — not muting"
                 DebugLogStore.shared.log(skipMsg, category: "Geofence")
                 print("📍 \(skipMsg)")
                 return
@@ -534,6 +613,101 @@ final class BackgroundSessionCoordinator {
         guard let identifier else { return }
         let completion = completions.removeValue(forKey: identifier)
         completion?()
+    }
+}
+
+// MARK: - Geofence Event Sender
+// Sends a diagnostic event to the server whenever a CLRegion boundary is crossed.
+// Uses a background URLSession so requests complete even when the app is woken
+// from a force-closed state to handle a geofence event.
+
+final class GeofenceEventSender: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
+    static let shared = GeofenceEventSender()
+    static let sessionIdentifier = "dev.skynolimit.traintrack.notifications.geofence"
+
+    private lazy var session: URLSession = {
+        let config = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
+        config.isDiscretionary = false
+        config.waitsForConnectivity = true
+        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
+    }()
+
+    private let syncQueue = DispatchQueue(label: "dev.skynolimit.traintrack.geofence.sync")
+    private var uploadFiles: [Int: URL] = [:]
+
+    private override init() { super.init() }
+
+    func sendEvent(regionId: String, from: String, to: String, eventType: String) {
+        let baseURL = ApiHostPreference.currentBaseURL
+        guard let url = URL(string: "\(baseURL)/notifications/geofence-event") else {
+            print("❌ [GeofenceEvent] Invalid URL")
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(DeviceIdentity.deviceToken, forHTTPHeaderField: "X-Device-Token")
+
+        let payload = GeofenceEventPayload(
+            deviceId: DeviceIdentity.deviceToken,
+            timestamp: ISO8601DateFormatter().string(from: Date()),
+            event: eventType,
+            regionId: regionId,
+            from: from,
+            to: to
+        )
+        guard let body = try? JSONEncoder().encode(payload) else { return }
+
+        let msg = "Sending geofence event: \(eventType) \(from)→\(to)"
+        Task { @MainActor in DebugLogStore.shared.log(msg, category: "Geofence") }
+        print("📡 [GeofenceEvent] \(msg)")
+
+        let tempDir = FileManager.default.temporaryDirectory
+        let fileURL = tempDir.appendingPathComponent("geofence_event_\(UUID().uuidString).json")
+        if (try? body.write(to: fileURL, options: .atomic)) != nil {
+            let task = session.uploadTask(with: request, fromFile: fileURL)
+            syncQueue.async { self.uploadFiles[task.taskIdentifier] = fileURL }
+            task.resume()
+        } else {
+            URLSession.shared.uploadTask(with: request, from: body).resume()
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let taskId = task.taskIdentifier
+        syncQueue.async {
+            if let temp = self.uploadFiles.removeValue(forKey: taskId) {
+                try? FileManager.default.removeItem(at: temp)
+            }
+        }
+        if let error = error {
+            print("❌ [GeofenceEvent] Request failed: \(error.localizedDescription)")
+        } else if let response = task.response as? HTTPURLResponse {
+            print("📡 [GeofenceEvent] Response: \(response.statusCode)")
+        }
+    }
+
+    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        BackgroundSessionCoordinator.shared.complete(identifier: session.configuration.identifier)
+    }
+}
+
+private struct GeofenceEventPayload: Codable {
+    let deviceId: String
+    let timestamp: String
+    let event: String
+    let regionId: String
+    let from: String
+    let to: String
+
+    enum CodingKeys: String, CodingKey {
+        case deviceId = "device_id"
+        case timestamp
+        case event
+        case regionId = "region_id"
+        case from
+        case to
     }
 }
 

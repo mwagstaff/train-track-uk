@@ -25,6 +25,7 @@ struct PreferencesView: View {
     @AppStorage(ApiHostPreference.storageKey, store: ApiHostPreference.store) private var apiHostRaw: String = ApiHost.prod.rawValue
     @AppStorage("autoReturnToFavouritesMinutes") private var autoReturnMinutes: Int = 0
     @AppStorage("autoStartLiveActivity") private var autoStartLiveActivity: Bool = true
+    @AppStorage("autoMuteOnArrival") private var autoMuteOnArrival: Bool = true
     @AppStorage("showClosestJourneyLegOnly") private var showClosestJourneyLegOnly: Bool = true
     @AppStorage("showTransferWarnings") private var showTransferWarnings: Bool = true
     @AppStorage("transferWarningThresholdMinutes") private var transferWarningThresholdMinutes: Int = 3
@@ -129,6 +130,11 @@ struct PreferencesView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
+                Toggle("Mute notifications on arrival", isOn: $autoMuteOnArrival)
+                Text("When you arrive at a departure station, notifications for that journey are paused for the rest of the day. Requires 'Always' location permission.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
                 Picker("Live Activity duration", selection: $liveActivityDurationMinutes) {
                     Text("30 min").tag(30)
                     Text("1 hr").tag(60)
@@ -217,6 +223,14 @@ struct PreferencesView: View {
         .task {
             await notificationStore.refresh()
             try? await StationsService.shared.loadStations()
+            if autoMuteOnArrival {
+                NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
+            }
+        }
+        .onChange(of: autoMuteOnArrival) { newValue in
+            if newValue {
+                NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
+            }
         }
         .onChange(of: veryCloseMiles) { newValue in
             // Keep thresholds sensible: moderately >= veryClose

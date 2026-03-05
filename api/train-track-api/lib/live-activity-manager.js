@@ -25,7 +25,7 @@ class LiveActivityManager {
         }, this.pollIntervalMs).unref?.();
     }
 
-    registerSubscription({ deviceId, activityId, pushToken, fromStation, toStation, preferredServiceId, useSandbox }) {
+    registerSubscription({ deviceId, activityId, pushToken, fromStation, toStation, preferredServiceId, useSandbox, muteOnArrival }) {
         const key = this.buildKey(deviceId, activityId);
         const existing = this.subscriptions.get(key);
 
@@ -53,6 +53,7 @@ class LiveActivityManager {
                 ? preferredServiceId
                 : (existing?.preferredServiceId || null),
             useSandbox: Boolean(useSandbox), // Defaults to false (production) if not provided
+            muteOnArrival: muteOnArrival !== undefined ? Boolean(muteOnArrival) : (existing?.muteOnArrival ?? true),
             createdAt: existing?.createdAt || new Date().toISOString(),
             lastSnapshot: existing?.lastSnapshot || null,
             lastPushAt: existing?.lastPushAt || null,
@@ -62,6 +63,28 @@ class LiveActivityManager {
 
         this.subscriptions.set(key, subscription);
         this.scheduleEnd(subscription);
+
+        // Log registration event for admin visibility
+        recordNotificationEvent({
+            channel: 'live_activity',
+            type: isTokenUpdate ? 'live_activity_token_rotation' : (existing ? 'live_activity_reregister' : 'live_activity_register'),
+            success: true,
+            status: 200,
+            apns_environment: subscription.useSandbox ? 'sandbox' : 'prod',
+            activity_id: activityId,
+            device_id: deviceId,
+            route_key: `${fromStation || ''}-${toStation || ''}`,
+            from_station: fromStation || null,
+            to_station: toStation || null,
+            token: pushToken || null,
+            metadata: {
+                preferred_service_id: subscription.preferredServiceId || null,
+                mute_on_arrival: subscription.muteOnArrival,
+                created_at: subscription.createdAt || null
+            }
+        }).catch((error) => {
+            console.error('[admin] Failed to log live activity registration event:', error?.message || error);
+        });
 
         // Trigger an immediate check so the caller gets fresh data right away
         this.pollSubscription(subscription, { force: true }).catch((error) => {
@@ -112,72 +135,84 @@ class LiveActivityManager {
     }
 
     async pollSubscription(subscription, { force = false, dryRun = false } = {}) {
-        const snapshot = await this.getDeparturesSnapshot(
-            subscription.fromStation,
-            subscription.toStation,
-            subscription.preferredServiceId
-        );
-        const hasChanged = force || !this.snapshotsEqual(snapshot, subscription.lastSnapshot);
-
-        // Check if we need to refresh stale-date even if data hasn't changed
-        // This prevents iOS from marking the activity as stale and stops displaying updates
-        const needsStaleDateRefresh = this.shouldRefreshStaleDate(subscription);
-
-        if (!hasChanged && !needsStaleDateRefresh) {
-            this.log(`[live-activity] no_change ${subscription.deviceId}/${subscription.activityId}`);
-            return { sent: false, reason: 'no_change', snapshot };
+        // Guard against concurrent polls of the same subscription. This prevents a
+        // double-push race between the registration-forced poll and the periodic pollAll()
+        // timer both firing for the same subscription at almost the same moment.
+        if (subscription.isPollInProgress) {
+            this.log(`[live-activity] poll_skipped_concurrent ${subscription.deviceId}/${subscription.activityId}`);
+            return { sent: false, reason: 'concurrent_poll' };
         }
+        subscription.isPollInProgress = true;
+        try {
+            const snapshot = await this.getDeparturesSnapshot(
+                subscription.fromStation,
+                subscription.toStation,
+                subscription.preferredServiceId
+            );
+            const hasChanged = force || !this.snapshotsEqual(snapshot, subscription.lastSnapshot);
 
-        if (!hasChanged && needsStaleDateRefresh) {
-            this.log(`[live-activity] stale_date_refresh ${subscription.deviceId}/${subscription.activityId} (keeping activity fresh)`);
-        }
+            // Check if we need to refresh stale-date even if data hasn't changed
+            // This prevents iOS from marking the activity as stale and stops displaying updates
+            const needsStaleDateRefresh = this.shouldRefreshStaleDate(subscription);
 
-        if (snapshot.departures.length === 0) {
-            this.log(`[live-activity] no_departures ${subscription.deviceId}/${subscription.activityId}`);
-            return { sent: false, reason: 'no_departures', snapshot };
-        }
-
-        const payload = this.buildPayload(subscription, snapshot);
-
-        if (dryRun) {
-            this.log(`[live-activity] dry_run ${subscription.deviceId}/${subscription.activityId}`);
-            return { sent: false, reason: 'dry_run', snapshot, payload };
-        }
-
-        const pushResponse = await this.pushClient.sendLiveActivityUpdate(subscription.pushToken, payload, {
-            useSandbox: subscription.useSandbox,
-            event: 'live_activity_update'
-        });
-        this.logPushEvent(subscription, payload, pushResponse, 'live_activity_update');
-
-        // If the token is bad/expired, remove this subscription
-        if (pushResponse?.isBadToken) {
-            const key = this.buildKey(subscription.deviceId, subscription.activityId);
-            console.log(`🗑️ [live-activity] Removing subscription ${key} due to bad/expired token`);
-            this.clearEndTimer(subscription);
-            this.subscriptions.delete(key);
-            return { sent: false, reason: 'bad_token', snapshot, payload, pushResponse };
-        }
-
-        subscription.lastSnapshot = snapshot;
-        subscription.lastPushAt = snapshot.fetchedAt;
-        subscription.revision = (subscription.revision || 0) + 1;
-
-        this.log(
-            `[live-activity] push_payload ${subscription.deviceId}/${subscription.activityId}`,
-            { payload }
-        );
-
-        this.log(
-            `[live-activity] pushed ${subscription.deviceId}/${subscription.activityId}`,
-            {
-                status: pushResponse?.status,
-                departures: snapshot.departures.length,
-                fetchedAt: snapshot.fetchedAt
+            if (!hasChanged && !needsStaleDateRefresh) {
+                this.log(`[live-activity] no_change ${subscription.deviceId}/${subscription.activityId}`);
+                return { sent: false, reason: 'no_change', snapshot };
             }
-        );
 
-        return { sent: true, snapshot, payload, pushResponse };
+            if (!hasChanged && needsStaleDateRefresh) {
+                this.log(`[live-activity] stale_date_refresh ${subscription.deviceId}/${subscription.activityId} (keeping activity fresh)`);
+            }
+
+            if (snapshot.departures.length === 0) {
+                this.log(`[live-activity] no_departures ${subscription.deviceId}/${subscription.activityId}`);
+                return { sent: false, reason: 'no_departures', snapshot };
+            }
+
+            const payload = this.buildPayload(subscription, snapshot);
+
+            if (dryRun) {
+                this.log(`[live-activity] dry_run ${subscription.deviceId}/${subscription.activityId}`);
+                return { sent: false, reason: 'dry_run', snapshot, payload };
+            }
+
+            const pushResponse = await this.pushClient.sendLiveActivityUpdate(subscription.pushToken, payload, {
+                useSandbox: subscription.useSandbox,
+                event: 'live_activity_update'
+            });
+            this.logPushEvent(subscription, payload, pushResponse, 'live_activity_update');
+
+            // If the token is bad/expired, remove this subscription
+            if (pushResponse?.isBadToken) {
+                const key = this.buildKey(subscription.deviceId, subscription.activityId);
+                console.log(`🗑️ [live-activity] Removing subscription ${key} due to bad/expired token`);
+                this.clearEndTimer(subscription);
+                this.subscriptions.delete(key);
+                return { sent: false, reason: 'bad_token', snapshot, payload, pushResponse };
+            }
+
+            subscription.lastSnapshot = snapshot;
+            subscription.lastPushAt = snapshot.fetchedAt;
+            subscription.revision = (subscription.revision || 0) + 1;
+
+            this.log(
+                `[live-activity] push_payload ${subscription.deviceId}/${subscription.activityId}`,
+                { payload }
+            );
+
+            this.log(
+                `[live-activity] pushed ${subscription.deviceId}/${subscription.activityId}`,
+                {
+                    status: pushResponse?.status,
+                    departures: snapshot.departures.length,
+                    fetchedAt: snapshot.fetchedAt
+                }
+            );
+
+            return { sent: true, snapshot, payload, pushResponse };
+        } finally {
+            subscription.isPollInProgress = false;
+        }
     }
 
     async sendEndUpdate(subscription) {
@@ -312,6 +347,13 @@ class LiveActivityManager {
         } else {
             // Set stale date to 5 minutes from now - tells iOS when data becomes outdated
             aps['stale-date'] = moment(snapshot.fetchedAt).add(5, 'minutes').unix();
+
+            // Add an alert for significant changes so iOS shows a banner notification
+            const alert = this.buildAlert(subscription.lastSnapshot, snapshot);
+            if (alert) {
+                aps.alert = alert;
+                aps.sound = 'default';
+            }
         }
 
         const payload = { aps };
@@ -321,6 +363,58 @@ class LiveActivityManager {
         }
 
         return payload;
+    }
+
+    /**
+     * Compares the previous and new departure snapshots and returns an APNs alert object
+     * when a significant change is detected for the primary (first) departure:
+     *  - Cancellation
+     *  - Platform change
+     *  - Delay increase of ≥ 5 minutes (and at least 3 minutes worse than before)
+     *
+     * Returns null if no significant change is detected or if the snapshots represent
+     * different services (to avoid false alerts on service rotations).
+     */
+    buildAlert(prevSnapshot, newSnapshot) {
+        if (!prevSnapshot || !newSnapshot) return null;
+        const prev = prevSnapshot.departures[0];
+        const next = newSnapshot.departures[0];
+        if (!prev || !next) return null;
+
+        // Only compare the same service to avoid false positives when a different
+        // train becomes the primary departure between polls.
+        if (prev.serviceID && next.serviceID && prev.serviceID !== next.serviceID) {
+            return null;
+        }
+
+        // Cancellation
+        if (!prev.isCancelled && next.isCancelled) {
+            const time = next.scheduled ? ` ${next.scheduled}` : '';
+            return {
+                title: 'Train Cancelled',
+                body: `Your${time} service has been cancelled.`
+            };
+        }
+
+        // Platform change (only alert when both sides have a known platform)
+        if (prev.platform && next.platform && prev.platform !== next.platform) {
+            return {
+                title: 'Platform Change',
+                body: `Platform changed from ${prev.platform} to ${next.platform}.`
+            };
+        }
+
+        // Significant delay increase: new delay ≥ 5 min AND at least 3 min worse than before
+        const prevDelay = this.calculateDelay(prev.scheduled, prev.estimated);
+        const nextDelay = this.calculateDelay(next.scheduled, next.estimated);
+        if (nextDelay >= 5 && nextDelay >= prevDelay + 3) {
+            return {
+                title: 'Delay Update',
+                body: `Your train is now running ${nextDelay} minutes late.`
+            };
+        }
+
+        return null;
     }
 
     sortDepartures(departures) {
@@ -711,10 +805,14 @@ class LiveActivityManager {
             activityId: sub.activityId,
             fromStation: sub.fromStation,
             toStation: sub.toStation,
-            lastPushAt: sub.lastPushAt,
-            lastSnapshot: sub.lastSnapshot,
+            preferredServiceId: sub.preferredServiceId || null,
+            muteOnArrival: sub.muteOnArrival,
+            useSandbox: sub.useSandbox,
             createdAt: sub.createdAt,
-            endAt: sub.endAt
+            tokenUpdatedAt: sub.tokenUpdatedAt,
+            lastPushAt: sub.lastPushAt,
+            endAt: sub.endAt,
+            revision: sub.revision || 0
         }));
     }
 

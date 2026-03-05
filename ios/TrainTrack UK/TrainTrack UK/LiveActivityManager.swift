@@ -843,13 +843,15 @@ final class LiveActivityManager: ObservableObject {
         let isDebugBuild = false
         #endif
 
+        let muteOnArrival = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
         var payload: [String: Any] = [
             "device_id": deviceID,
             "activity_id": activityID,
             "live_activity_push_token": tokenString,
             "from": fromCRS,
             "to": toCRS,
-            "use_sandbox": isDebugBuild
+            "use_sandbox": isDebugBuild,
+            "mute_on_arrival": muteOnArrival
         ]
         if let preferredServiceID, !preferredServiceID.isEmpty {
             payload["preferred_service_id"] = preferredServiceID

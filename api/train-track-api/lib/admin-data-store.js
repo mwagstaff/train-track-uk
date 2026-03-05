@@ -162,3 +162,35 @@ function clampLimit(value, min, max) {
 function isSuccessStatus(status) {
     return typeof status === 'number' && status >= 200 && status < 300;
 }
+
+// ── Geofence event log ─────────────────────────────────────────────────────
+
+const REDIS_GEOFENCE_EVENT_LOG_KEY = 'tt:notification:geofence_event_log';
+const MAX_GEOFENCE_EVENT_LOG_SIZE = 100;
+
+export async function recordGeofenceEvent({ deviceId, clientTimestamp, event, regionId, from, to, ip } = {}) {
+    const entry = JSON.stringify({
+        received_at: new Date().toISOString(),
+        device_id: deviceId || null,
+        client_timestamp: clientTimestamp || null,
+        event: event || null,
+        region_id: regionId || null,
+        from: from || null,
+        to: to || null,
+        ip: ip || null
+    });
+    try {
+        const tx = redis.multi();
+        tx.lpush(REDIS_GEOFENCE_EVENT_LOG_KEY, entry);
+        tx.ltrim(REDIS_GEOFENCE_EVENT_LOG_KEY, 0, MAX_GEOFENCE_EVENT_LOG_SIZE - 1);
+        await tx.exec();
+    } catch (error) {
+        console.error('[admin] Failed to persist geofence event:', error?.message || error);
+    }
+}
+
+export async function listGeofenceEvents() {
+    const raw = await redis.lrange(REDIS_GEOFENCE_EVENT_LOG_KEY, 0, MAX_GEOFENCE_EVENT_LOG_SIZE - 1);
+    if (!Array.isArray(raw)) return [];
+    return raw.map((entry) => safeParseJson(entry)).filter(Boolean);
+}

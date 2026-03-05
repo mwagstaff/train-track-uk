@@ -10,7 +10,6 @@ struct NotificationScheduleView: View {
     @State private var legs: [NotificationLeg]
     @State private var selectedDays: Set<DayOfWeek>
     @State private var selectedTypes: Set<NotificationType>
-    @State private var muteOnArrival: Bool
     @State private var errorMessage: String?
     @State private var isSaving = false
     @State private var isDeleting = false
@@ -43,7 +42,6 @@ struct NotificationScheduleView: View {
         _legs = State(initialValue: initialLegs)
         _selectedDays = State(initialValue: [.mon, .tue, .wed, .thu, .fri])
         _selectedTypes = State(initialValue: [.summary, .delays, .platform])
-        _muteOnArrival = State(initialValue: true)
     }
 
     private var routeKey: String {
@@ -96,13 +94,6 @@ struct NotificationScheduleView: View {
                     }
                 }
 
-                Section("Arrival muting") {
-                    Toggle("Mute when I arrive at the start station", isOn: $muteOnArrival)
-                    Text("Uses a geofence around each start station to pause notifications for the rest of today.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
                 Section("Notification types") {
                     ForEach(NotificationType.allCases) { kind in
                         Toggle(kind.displayName, isOn: binding(for: kind))
@@ -151,14 +142,6 @@ struct NotificationScheduleView: View {
                 await NotificationAuthorizationManager.registerIfAuthorized()
                 await notificationStore.refresh()
                 applyExistingIfNeeded()
-                if muteOnArrival {
-                    NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
-                }
-            }
-            .onChange(of: muteOnArrival) { newValue in
-                if newValue {
-                    NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
-                }
             }
         }
     }
@@ -168,7 +151,6 @@ struct NotificationScheduleView: View {
         didApplyExisting = true
         selectedDays = Set(existing.daysOfWeek)
         selectedTypes = Set(existing.notificationTypes)
-        muteOnArrival = existing.muteOnArrival ?? true
         let existingById = Dictionary(uniqueKeysWithValues: existing.legs.map { ($0.id, $0) })
         for index in legs.indices {
             if let existingLeg = existingById[legs[index].id] {
@@ -321,7 +303,7 @@ struct NotificationScheduleView: View {
                 fromName: primaryLeg?.fromName,
                 toName: primaryLeg?.toName,
                 useSandbox: useSandbox,
-                muteOnArrival: muteOnArrival
+                muteOnArrival: (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
             )
 
             do {

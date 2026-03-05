@@ -16,6 +16,7 @@ import {
 import { liveActivityManager } from './lib/live-activity-manager.js';
 import { notificationSubscriptionManager } from './lib/notification-subscription-manager.js';
 import { registerAdminRoutes } from './lib/admin-portal.js';
+import { recordGeofenceEvent } from './lib/admin-data-store.js';
 import path from 'path';
 
 function isLiveActivityLoggingEnabled() {
@@ -146,7 +147,7 @@ app.get('/metrics', async (req, res) => {
 });
 
 app.post('/api/v2/live_activities', async (req, res) => {
-    const { device_id, activity_id, live_activity_push_token, from, to, use_sandbox, preferred_service_id } = req.body || {};
+    const { device_id, activity_id, live_activity_push_token, from, to, use_sandbox, preferred_service_id, mute_on_arrival } = req.body || {};
     if (!device_id || !activity_id || !live_activity_push_token || !from || !to) {
         logLiveActivityRequest('register_failed_validation', req, {
             device_id,
@@ -176,7 +177,8 @@ app.post('/api/v2/live_activities', async (req, res) => {
         fromStation: from,
         toStation: to,
         preferredServiceId: preferred_service_id,
-        useSandbox: Boolean(use_sandbox)
+        useSandbox: Boolean(use_sandbox),
+        muteOnArrival: mute_on_arrival === true || mute_on_arrival === 'true'
     });
     recordPushTokenRegistration({
         channel: 'live_activity',
@@ -332,6 +334,14 @@ app.post('/api/v2/notifications/terminate', async (req, res) => {
         return res.status(404).json({ error: 'Subscription or leg not found' });
     }
     res.json({ status: 'muted', date: result });
+});
+
+app.post('/api/v2/notifications/geofence-event', async (req, res) => {
+    const { device_id, timestamp, event, region_id, from, to } = req.body || {};
+    const ip = req.headers['x-forwarded-for'] || req.ip || null;
+    logNotificationRequest('geofence_event', req, { device_id, event, from, to });
+    await recordGeofenceEvent({ deviceId: device_id, clientTimestamp: timestamp, event, regionId: region_id, from, to, ip });
+    res.json({ status: 'ok' });
 });
 
 // Debug notification endpoints
