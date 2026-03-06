@@ -3,10 +3,13 @@ import { getTrainTimes } from './realtime-trains-api.js';
 import { LiveActivityPushClient } from './live-activity-push-client.js';
 import { getServiceDetails } from './service-details.js';
 import { recordNotificationEvent } from './admin-data-store.js';
+import { getDeviceLastSeen } from './metrics.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.LIVE_ACTIVITY_POLL_INTERVAL_SECONDS || '20');
 const DEFAULT_END_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_END_AFTER_SECONDS || '7200'); // default 2 hours
 const DEFAULT_STALE_DATE_REFRESH_SECONDS = Number(process.env.LIVE_ACTIVITY_STALE_DATE_REFRESH_SECONDS || '240'); // refresh stale-date every 4 minutes
+const APP_CHECKIN_WARNING_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_APP_CHECKIN_WARNING_AFTER_SECONDS || '120');
+const DEFAULT_MAX_ACTIVE_PER_DEVICE = Number(process.env.LIVE_ACTIVITY_MAX_ACTIVE_PER_DEVICE || '1');
 
 class LiveActivityManager {
     constructor() {
@@ -25,7 +28,7 @@ class LiveActivityManager {
         }, this.pollIntervalMs).unref?.();
     }
 
-    registerSubscription({ deviceId, activityId, pushToken, fromStation, toStation, preferredServiceId, useSandbox, muteOnArrival }) {
+    registerSubscription({ deviceId, activityId, pushToken, fromStation, toStation, preferredServiceId, useSandbox, muteOnArrival, muteDelayMinutes, autoEndOnArrival }) {
         const key = this.buildKey(deviceId, activityId);
         const existing = this.subscriptions.get(key);
 
@@ -54,15 +57,27 @@ class LiveActivityManager {
                 : (existing?.preferredServiceId || null),
             useSandbox: Boolean(useSandbox), // Defaults to false (production) if not provided
             muteOnArrival: muteOnArrival !== undefined ? Boolean(muteOnArrival) : (existing?.muteOnArrival ?? true),
+            muteDelayMinutes: Number.isFinite(Number(muteDelayMinutes)) && Number(muteDelayMinutes) >= 0
+                ? Math.min(10, Math.max(1, Math.round(Number(muteDelayMinutes))))
+                : (existing?.muteDelayMinutes ?? 5),
+            autoEndOnArrival: autoEndOnArrival !== undefined ? Boolean(autoEndOnArrival) : (existing?.autoEndOnArrival ?? false),
             createdAt: existing?.createdAt || new Date().toISOString(),
             lastSnapshot: existing?.lastSnapshot || null,
             lastPushAt: existing?.lastPushAt || null,
             revision: existing?.revision || 0,
-            tokenUpdatedAt: new Date().toISOString()
+            tokenUpdatedAt: new Date().toISOString(),
+            appIsActive: existing?.appIsActive ?? false
         };
 
         this.subscriptions.set(key, subscription);
         this.scheduleEnd(subscription);
+        const evicted = this.evictDuplicateSessionsForDevice(deviceId, activityId);
+        for (const stale of evicted) {
+            this.sendEndPushForEvictedSubscription(stale, 'register_duplicate_evict').catch((error) => {
+                const staleKey = this.buildKey(stale.deviceId, stale.activityId);
+                console.error(`[live-activity] evicted end push failed for ${staleKey}: ${error?.message || error}`);
+            });
+        }
 
         // Log registration event for admin visibility
         recordNotificationEvent({
@@ -121,6 +136,7 @@ class LiveActivityManager {
 
         this.isPolling = true;
         try {
+            await this.tidyDuplicateSessions();
             const jobs = Array.from(this.subscriptions.values()).map((subscription) =>
                 this.pollSubscription(subscription).catch((error) => {
                     const key = this.buildKey(subscription.deviceId, subscription.activityId);
@@ -139,6 +155,9 @@ class LiveActivityManager {
         // double-push race between the registration-forced poll and the periodic pollAll()
         // timer both firing for the same subscription at almost the same moment.
         if (subscription.isPollInProgress) {
+            if (force) {
+                subscription.pendingForcedPoll = true;
+            }
             this.log(`[live-activity] poll_skipped_concurrent ${subscription.deviceId}/${subscription.activityId}`);
             return { sent: false, reason: 'concurrent_poll' };
         }
@@ -149,7 +168,9 @@ class LiveActivityManager {
                 subscription.toStation,
                 subscription.preferredServiceId
             );
-            const hasChanged = force || !this.snapshotsEqual(snapshot, subscription.lastSnapshot);
+            const appIsActive = this.shouldShowAppActive(subscription);
+            const appIsActiveChanged = Boolean(subscription.appIsActive) !== appIsActive;
+            const hasChanged = force || appIsActiveChanged || !this.snapshotsEqual(snapshot, subscription.lastSnapshot);
 
             // Check if we need to refresh stale-date even if data hasn't changed
             // This prevents iOS from marking the activity as stale and stops displaying updates
@@ -169,7 +190,7 @@ class LiveActivityManager {
                 return { sent: false, reason: 'no_departures', snapshot };
             }
 
-            const payload = this.buildPayload(subscription, snapshot);
+            const payload = this.buildPayload(subscription, snapshot, { appIsActive });
 
             if (dryRun) {
                 this.log(`[live-activity] dry_run ${subscription.deviceId}/${subscription.activityId}`);
@@ -194,6 +215,7 @@ class LiveActivityManager {
             subscription.lastSnapshot = snapshot;
             subscription.lastPushAt = snapshot.fetchedAt;
             subscription.revision = (subscription.revision || 0) + 1;
+            subscription.appIsActive = appIsActive;
 
             this.log(
                 `[live-activity] push_payload ${subscription.deviceId}/${subscription.activityId}`,
@@ -212,6 +234,13 @@ class LiveActivityManager {
             return { sent: true, snapshot, payload, pushResponse };
         } finally {
             subscription.isPollInProgress = false;
+            if (subscription.pendingForcedPoll) {
+                subscription.pendingForcedPoll = false;
+                this.pollSubscription(subscription, { force: true }).catch((error) => {
+                    const key = this.buildKey(subscription.deviceId, subscription.activityId);
+                    console.error(`[live-activity] queued force poll failed for ${key}: ${error?.message || error}`);
+                });
+            }
         }
     }
 
@@ -224,7 +253,10 @@ class LiveActivityManager {
                 subscription.preferredServiceId
             )
         );
-        const payload = this.buildPayload(subscription, snapshot, { end: true });
+        const payload = this.buildPayload(subscription, snapshot, {
+            end: true,
+            appIsActive: this.shouldShowAppActive(subscription)
+        });
         const pushResponse = await this.pushClient.sendLiveActivityUpdate(subscription.pushToken, payload, {
             useSandbox: subscription.useSandbox,
             event: 'live_activity_end'
@@ -334,12 +366,12 @@ class LiveActivityManager {
         };
     }
 
-    buildPayload(subscription, snapshot, { end = false } = {}) {
+    buildPayload(subscription, snapshot, { end = false, appIsActive = false } = {}) {
         const aps = {
             timestamp: moment(snapshot.fetchedAt).unix(),
             event: end ? 'end' : 'update',
             'relevance-score': 1.0,  // Maximum relevance (0.0 to 1.0) - tells iOS this is important
-            'content-state': this.buildContentState(subscription, snapshot)  // Must be inside aps for ActivityKit
+            'content-state': this.buildContentState(subscription, snapshot, appIsActive)  // Must be inside aps for ActivityKit
         };
 
         if (end) {
@@ -457,7 +489,7 @@ class LiveActivityManager {
         return parsed.isValid() ? parsed.valueOf() : Number.MAX_SAFE_INTEGER;
     }
 
-    buildContentState(subscription, snapshot) {
+    buildContentState(subscription, snapshot, appIsActive = false) {
         const primary = snapshot.departures[0] || {};
         const estimated = this.getTimeString(primary.estimated, primary.scheduled);
         const delayMinutes = this.calculateDelay(primary.scheduled, primary.estimated);
@@ -485,7 +517,8 @@ class LiveActivityManager {
             upcomingDepartures,
             lastUpdated: moment(snapshot.fetchedAt).unix(), // Convert to Unix timestamp for iOS Date decoding
             activityID: subscription.activityId, // Include activity ID for iOS ContentState
-            revision: subscription.revision || 0
+            revision: subscription.revision || 0,
+            appIsActive
         };
     }
 
@@ -769,6 +802,149 @@ class LiveActivityManager {
         return true;
     }
 
+    async handleDeviceCheckIn(deviceId, { forceRefresh = true } = {}) {
+        const normalizedDeviceId = typeof deviceId === 'string' ? deviceId.trim() : '';
+        if (!normalizedDeviceId) {
+            return {
+                updated: 0,
+                refreshed: 0,
+                subscriptions: 0
+            };
+        }
+
+        const nowIso = new Date().toISOString();
+        const subs = Array.from(this.subscriptions.values()).filter((sub) => sub.deviceId === normalizedDeviceId);
+        for (const sub of subs) {
+            sub.tokenUpdatedAt = nowIso;
+        }
+
+        let refreshed = 0;
+        if (forceRefresh && subs.length > 0) {
+            const results = await Promise.all(subs.map(async (sub) => {
+                try {
+                    const result = await this.pollSubscription(sub, { force: true });
+                    return result?.sent ? 1 : 0;
+                } catch (error) {
+                    const key = this.buildKey(sub.deviceId, sub.activityId);
+                    console.error(`[live-activity] checkin force refresh failed for ${key}: ${error?.message || error}`);
+                    return 0;
+                }
+            }));
+            refreshed = results.reduce((sum, value) => sum + value, 0);
+        }
+
+        return {
+            updated: subs.length,
+            refreshed,
+            subscriptions: subs.length
+        };
+    }
+
+    async tidyDuplicateSessions() {
+        if (this.subscriptions.size <= DEFAULT_MAX_ACTIVE_PER_DEVICE) {
+            return;
+        }
+        const byDevice = new Map();
+        for (const sub of this.subscriptions.values()) {
+            const deviceId = sub.deviceId || '';
+            if (!byDevice.has(deviceId)) {
+                byDevice.set(deviceId, []);
+            }
+            byDevice.get(deviceId).push(sub);
+        }
+
+        const jobs = [];
+        for (const [deviceId, subs] of byDevice.entries()) {
+            if (!deviceId || subs.length <= DEFAULT_MAX_ACTIVE_PER_DEVICE) continue;
+            jobs.push(this.tidyDuplicateSessionsForDevice(deviceId));
+        }
+        if (jobs.length > 0) {
+            await Promise.all(jobs);
+        }
+    }
+
+    async tidyDuplicateSessionsForDevice(deviceId, preferredActivityId = null) {
+        const evicted = this.evictDuplicateSessionsForDevice(deviceId, preferredActivityId);
+        if (evicted.length === 0) {
+            const kept = preferredActivityId || (
+                Array.from(this.subscriptions.values()).find((sub) => sub.deviceId === deviceId)?.activityId ?? null
+            );
+            return {
+                kept,
+                removed: 0
+            };
+        }
+
+        await Promise.all(evicted.map((sub) => this.sendEndPushForEvictedSubscription(sub, 'duplicate_session_cleanup')));
+        const kept = Array.from(this.subscriptions.values()).find((sub) => sub.deviceId === deviceId)?.activityId ?? null;
+        return {
+            kept,
+            removed: evicted.length
+        };
+    }
+
+    evictDuplicateSessionsForDevice(deviceId, preferredActivityId = null) {
+        const subs = Array.from(this.subscriptions.values())
+            .filter((sub) => sub.deviceId === deviceId);
+        if (subs.length <= DEFAULT_MAX_ACTIVE_PER_DEVICE) {
+            return [];
+        }
+
+        const sorted = subs.sort((a, b) => this.subscriptionFreshnessMs(b) - this.subscriptionFreshnessMs(a));
+        const preferred = preferredActivityId
+            ? sorted.find((sub) => sub.activityId === preferredActivityId)
+            : null;
+        const keep = preferred || sorted[0];
+        const remove = sorted.filter((sub) => sub.activityId !== keep.activityId);
+
+        for (const sub of remove) {
+            this.clearEndTimer(sub);
+            this.subscriptions.delete(this.buildKey(sub.deviceId, sub.activityId));
+            this.log(`[live-activity] duplicate_evict ${sub.deviceId}/${sub.activityId} keep=${keep.activityId}`);
+        }
+        return remove;
+    }
+
+    subscriptionFreshnessMs(subscription) {
+        const tokenUpdatedAtMs = new Date(subscription?.tokenUpdatedAt || 0).getTime();
+        if (Number.isFinite(tokenUpdatedAtMs) && tokenUpdatedAtMs > 0) {
+            return tokenUpdatedAtMs;
+        }
+        const createdAtMs = new Date(subscription?.createdAt || 0).getTime();
+        if (Number.isFinite(createdAtMs) && createdAtMs > 0) {
+            return createdAtMs;
+        }
+        return 0;
+    }
+
+    async cleanupSubscription(subscription, reason = 'cleanup') {
+        const key = this.buildKey(subscription.deviceId, subscription.activityId);
+        if (!this.subscriptions.has(key)) {
+            return;
+        }
+        this.log(`[live-activity] cleanup_start ${key} reason=${reason}`);
+
+        try {
+            await this.sendEndUpdate(subscription);
+            return;
+        } catch (error) {
+            console.error(`[live-activity] cleanup end push failed for ${key}: ${error?.message || error}`);
+        }
+
+        this.clearEndTimer(subscription);
+        this.subscriptions.delete(key);
+        this.log(`[live-activity] cleanup_removed ${key} reason=${reason}`);
+    }
+
+    async sendEndPushForEvictedSubscription(subscription, reason = 'evicted') {
+        try {
+            await this.sendEndUpdate(subscription);
+        } catch (error) {
+            const key = this.buildKey(subscription.deviceId, subscription.activityId);
+            console.error(`[live-activity] end push failed for evicted ${key} (${reason}): ${error?.message || error}`);
+        }
+    }
+
     snapshotsEqual(a, b) {
         if (!a || !b) return false;
         return JSON.stringify(a.departures) === JSON.stringify(b.departures);
@@ -789,6 +965,55 @@ class LiveActivityManager {
         return elapsedSeconds >= DEFAULT_STALE_DATE_REFRESH_SECONDS;
     }
 
+    shouldShowAppActive(subscription) {
+        const metricsLastSeen = getDeviceLastSeen(subscription?.deviceId);
+        const fallbackLastSeen = new Date(subscription?.tokenUpdatedAt || 0).getTime();
+        const lastSeen = Number.isFinite(metricsLastSeen)
+            ? metricsLastSeen
+            : (Number.isFinite(fallbackLastSeen) && fallbackLastSeen > 0 ? fallbackLastSeen : null);
+        if (!lastSeen) return false;
+        const ageMs = Date.now() - lastSeen;
+        if (ageMs < 0) return false;
+        // Active = checked in recently (within the threshold)
+        return ageMs <= (APP_CHECKIN_WARNING_AFTER_SECONDS * 1000);
+    }
+
+    /**
+     * Called when the iOS app detects the user has arrived at a departure station.
+     * Ends any matching Live Activity subscriptions that have autoEndOnArrival enabled.
+     */
+    async handleArrival(deviceId, { fromStation = null, toStation = null } = {}) {
+        const normalizedDeviceId = typeof deviceId === 'string' ? deviceId.trim() : '';
+        if (!normalizedDeviceId) return { ended: 0 };
+
+        const subs = Array.from(this.subscriptions.values()).filter((sub) => {
+            if (sub.deviceId !== normalizedDeviceId) return false;
+            if (!sub.autoEndOnArrival) return false;
+            if (fromStation && sub.fromStation?.toUpperCase() !== fromStation.toUpperCase()) return false;
+            if (toStation && sub.toStation?.toUpperCase() !== toStation.toUpperCase()) return false;
+            return true;
+        });
+
+        if (subs.length === 0) {
+            this.log(`[live-activity] arrival_no_subscriptions ${normalizedDeviceId} (autoEndOnArrival=false or no match)`);
+            return { ended: 0 };
+        }
+
+        const results = await Promise.all(subs.map(async (sub) => {
+            try {
+                await this.sendEndUpdate(sub);
+                this.log(`[live-activity] ended_on_arrival ${sub.deviceId}/${sub.activityId}`);
+                return 1;
+            } catch (error) {
+                const key = this.buildKey(sub.deviceId, sub.activityId);
+                console.error(`[live-activity] arrival end failed for ${key}: ${error?.message || error}`);
+                return 0;
+            }
+        }));
+
+        return { ended: results.reduce((sum, v) => sum + v, 0) };
+    }
+
     maskToken(token) {
         if (!token || typeof token !== 'string') return 'null';
         if (token.length <= 16) return token.slice(0, 6) + '***';
@@ -801,18 +1026,28 @@ class LiveActivityManager {
 
     listSubscriptions() {
         return Array.from(this.subscriptions.values()).map((sub) => ({
+            lastAppCheckInAt: (() => {
+                const metricsLastSeen = getDeviceLastSeen(sub.deviceId);
+                if (Number.isFinite(metricsLastSeen)) {
+                    return new Date(metricsLastSeen).toISOString();
+                }
+                return sub.tokenUpdatedAt || null;
+            })(),
             deviceId: sub.deviceId,
             activityId: sub.activityId,
             fromStation: sub.fromStation,
             toStation: sub.toStation,
             preferredServiceId: sub.preferredServiceId || null,
             muteOnArrival: sub.muteOnArrival,
+            muteDelayMinutes: sub.muteDelayMinutes ?? 5,
+            autoEndOnArrival: Boolean(sub.autoEndOnArrival),
             useSandbox: sub.useSandbox,
             createdAt: sub.createdAt,
             tokenUpdatedAt: sub.tokenUpdatedAt,
             lastPushAt: sub.lastPushAt,
             endAt: sub.endAt,
-            revision: sub.revision || 0
+            revision: sub.revision || 0,
+            appIsActive: Boolean(sub.appIsActive)
         }));
     }
 

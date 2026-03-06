@@ -26,6 +26,8 @@ struct PreferencesView: View {
     @AppStorage("autoReturnToFavouritesMinutes") private var autoReturnMinutes: Int = 0
     @AppStorage("autoStartLiveActivity") private var autoStartLiveActivity: Bool = true
     @AppStorage("autoMuteOnArrival") private var autoMuteOnArrival: Bool = true
+    @AppStorage("muteDelayMinutes") private var muteDelayMinutes: Int = 5
+    @AppStorage("autoEndLiveActivity") private var autoEndLiveActivity: Bool = false
     @AppStorage("showClosestJourneyLegOnly") private var showClosestJourneyLegOnly: Bool = true
     @AppStorage("showTransferWarnings") private var showTransferWarnings: Bool = true
     @AppStorage("transferWarningThresholdMinutes") private var transferWarningThresholdMinutes: Int = 3
@@ -134,6 +136,21 @@ struct PreferencesView: View {
                 Text("When you arrive at a departure station, notifications for that journey are paused for the rest of the day. Requires 'Always' location permission.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                if autoMuteOnArrival {
+                    Stepper(value: $muteDelayMinutes, in: 1...10) {
+                        HStack {
+                            Text("Mute after")
+                            Spacer()
+                            Text("\(muteDelayMinutes) min\(muteDelayMinutes == 1 ? "" : "s") at station")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Toggle("End Live Activity on arrival", isOn: $autoEndLiveActivity)
+                    Text("When notifications are muted, automatically dismiss the Live Activity widget from your lock screen and home screen.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
 
                 Picker("Live Activity duration", selection: $liveActivityDurationMinutes) {
                     Text("30 min").tag(30)

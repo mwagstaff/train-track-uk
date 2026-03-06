@@ -254,12 +254,8 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 return
             }
 
-            // Mark this leg as muted locally (for client-side filtering)
-            self.markLegMutedLocally(from: parsed.from, to: parsed.to)
-            // Send local notification to confirm arrival
-            self.sendArrivalNotification(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to)
-            // Enqueue mute request to backend
-            NotificationMuteRequestSender.shared.enqueueMute(
+            // Apply delay then mute (and optionally end Live Activity)
+            self.triggerMuteFlow(
                 subscriptionId: parsed.subscriptionId,
                 from: parsed.from,
                 to: parsed.to
@@ -364,13 +360,46 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
             let entryMsg = "Already inside geofence — triggering mute: \(parsed.from) → \(parsed.to)"
             DebugLogStore.shared.log(entryMsg, category: "Geofence")
-            self.markLegMutedLocally(from: parsed.from, to: parsed.to)
-            self.sendArrivalNotification(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to)
-            NotificationMuteRequestSender.shared.enqueueMute(
+            self.triggerMuteFlow(
                 subscriptionId: parsed.subscriptionId,
                 from: parsed.from,
                 to: parsed.to
             )
+        }
+    }
+
+    /// Triggers the full mute-and-optionally-end flow after the user-configured delay.
+    /// Called from both `didEnterRegion` and `didDetermineState(.inside)`.
+    /// - Parameter simulate: When true the delay is skipped (used by the debug simulate-arrival action).
+    func triggerMuteFlow(subscriptionId: String, from: String, to: String,
+                         sendNotification: Bool = true, simulate: Bool = false) {
+        Task { @MainActor in
+            let delayMinutes = simulate ? 0 : ((UserDefaults.standard.object(forKey: "muteDelayMinutes") as? Int) ?? 5)
+            if delayMinutes > 0 {
+                let delayMsg = "Waiting \(delayMinutes) min before muting \(from)→\(to)"
+                DebugLogStore.shared.log(delayMsg, category: "Mute")
+                print("⏳ \(delayMsg)")
+                try? await Task.sleep(nanoseconds: UInt64(delayMinutes) * 60 * 1_000_000_000)
+            }
+
+            self.markLegMutedLocally(from: from, to: to)
+            if sendNotification {
+                self.sendArrivalNotification(subscriptionId: subscriptionId, from: from, to: to)
+            }
+            NotificationMuteRequestSender.shared.enqueueMute(
+                subscriptionId: subscriptionId,
+                from: from,
+                to: to
+            )
+
+            // If the user has opted in, also ask the server to end the Live Activity
+            let autoEnd = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? false
+            if autoEnd {
+                let endMsg = "autoEndLiveActivity enabled — sending arrive event to server for \(from)→\(to)"
+                DebugLogStore.shared.log(endMsg, category: "Mute")
+                print("🏁 \(endMsg)")
+                LiveActivityArrivalSender.shared.sendArrival(from: from, to: to)
+            }
         }
     }
 
@@ -380,16 +409,8 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             DebugLogStore.shared.log(msg, category: "Geofence")
         }
         print("🧪 \(msg)")
-
-        markLegMutedLocally(from: from, to: to)
-        if sendNotification {
-            sendArrivalNotification(subscriptionId: subscriptionId, from: from, to: to)
-        }
-        NotificationMuteRequestSender.shared.enqueueMute(
-            subscriptionId: subscriptionId,
-            from: from,
-            to: to
-        )
+        triggerMuteFlow(subscriptionId: subscriptionId, from: from, to: to,
+                        sendNotification: sendNotification, simulate: true)
     }
 
     private func markLegMutedLocally(from: String, to: String) {
@@ -685,6 +706,81 @@ final class GeofenceEventSender: NSObject, URLSessionDelegate, URLSessionTaskDel
             print("❌ [GeofenceEvent] Request failed: \(error.localizedDescription)")
         } else if let response = task.response as? HTTPURLResponse {
             print("📡 [GeofenceEvent] Response: \(response.statusCode)")
+        }
+    }
+
+    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        BackgroundSessionCoordinator.shared.complete(identifier: session.configuration.identifier)
+    }
+}
+
+// MARK: - Live Activity Arrival Sender
+// Notifies the server when the user has arrived at a departure station so the server
+// can end the Live Activity push (if autoEndOnArrival is enabled for that subscription).
+// Uses a background URLSession so the request completes even from a background geofence wake.
+
+final class LiveActivityArrivalSender: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
+    static let shared = LiveActivityArrivalSender()
+    static let sessionIdentifier = "dev.skynolimit.traintrack.liveactivity.arrive"
+
+    private lazy var session: URLSession = {
+        let config = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
+        config.isDiscretionary = false
+        config.waitsForConnectivity = true
+        return URLSession(configuration: config, delegate: self, delegateQueue: nil)
+    }()
+
+    private let syncQueue = DispatchQueue(label: "dev.skynolimit.traintrack.liveactivity.arrive.sync")
+    private var uploadFiles: [Int: URL] = [:]
+
+    private override init() { super.init() }
+
+    func sendArrival(from: String, to: String) {
+        let baseURL = ApiHostPreference.currentBaseURL
+        guard let url = URL(string: "\(baseURL)/live_activities/arrive") else {
+            print("❌ [LiveActivityArrival] Invalid URL")
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(DeviceIdentity.deviceToken, forHTTPHeaderField: "X-Device-Token")
+
+        let payload: [String: String] = [
+            "device_id": DeviceIdentity.deviceToken,
+            "from": from.uppercased(),
+            "to": to.uppercased()
+        ]
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else {
+            print("❌ [LiveActivityArrival] Failed to encode payload")
+            return
+        }
+
+        let tempDir = FileManager.default.temporaryDirectory
+        let fileURL = tempDir.appendingPathComponent("la_arrive_\(UUID().uuidString).json")
+        if (try? body.write(to: fileURL, options: .atomic)) != nil {
+            let task = session.uploadTask(with: request, fromFile: fileURL)
+            syncQueue.async { self.uploadFiles[task.taskIdentifier] = fileURL }
+            task.resume()
+        } else {
+            URLSession.shared.uploadTask(with: request, from: body).resume()
+        }
+
+        print("📡 [LiveActivityArrival] Sent arrive event \(from.uppercased())→\(to.uppercased())")
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let taskId = task.taskIdentifier
+        syncQueue.async {
+            if let temp = self.uploadFiles.removeValue(forKey: taskId) {
+                try? FileManager.default.removeItem(at: temp)
+            }
+        }
+        if let error = error {
+            print("❌ [LiveActivityArrival] Request failed: \(error.localizedDescription)")
+        } else if let response = task.response as? HTTPURLResponse {
+            print("📡 [LiveActivityArrival] Response: \(response.statusCode)")
         }
     }
 

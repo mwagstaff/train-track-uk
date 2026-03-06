@@ -82,7 +82,7 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
             .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))
             .map((s) => {
                 const lastPushAgo = s.lastPushAt ? relativeTime(new Date(s.lastPushAt), now) : '<span class="never">never</span>';
-                const lastCheckinAgo = s.tokenUpdatedAt ? relativeTime(new Date(s.tokenUpdatedAt), now) : '<span class="never">never</span>';
+                const lastCheckinAgo = s.lastAppCheckInAt ? relativeTime(new Date(s.lastAppCheckInAt), now) : '<span class="never">never</span>';
                 const expiresIn = s.endAt ? relativeTime(now, new Date(s.endAt)) : '—';
                 const devShort = escapeHtml(shortId(s.deviceId));
                 const actShort = escapeHtml(shortId(s.activityId));
@@ -97,7 +97,7 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
                     <td>${formatDate(s.createdAt)}</td>
                     <td>${formatDate(s.lastPushAt) || '<span class="never">—</span>'}</td>
                     <td>${lastPushAgo}</td>
-                    <td title="${escapeHtml(s.tokenUpdatedAt || '')}">${lastCheckinAgo}</td>
+                    <td title="${escapeHtml(s.lastAppCheckInAt || '')}">${lastCheckinAgo}</td>
                     <td>${escapeHtml(expiresIn)}</td>
                     <td>${escapeHtml(String(s.revision))}</td>
                     <td>${mute}</td>

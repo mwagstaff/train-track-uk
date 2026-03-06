@@ -37,6 +37,8 @@ final class LiveActivityManager: ObservableObject {
     private var lastEndedAt: Date? = nil
     private let autoRestartSuppressionWindow: TimeInterval = 10
     private let durationKey = "liveActivityDurationMinutes"
+    private var lastBackendCheckInAt: Date? = nil
+    private let backendCheckInMinIntervalSeconds: TimeInterval = 5
 
     // Live Activity lifetime; set to nil to disable auto-expiry and rely on manual dismissal.
     private let activityExpiryInterval: TimeInterval? = nil
@@ -844,6 +846,8 @@ final class LiveActivityManager: ObservableObject {
         #endif
 
         let muteOnArrival = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
+        let muteDelayMinutes = (UserDefaults.standard.object(forKey: "muteDelayMinutes") as? Int) ?? 5
+        let autoEndLiveActivity = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? false
         var payload: [String: Any] = [
             "device_id": deviceID,
             "activity_id": activityID,
@@ -851,7 +855,9 @@ final class LiveActivityManager: ObservableObject {
             "from": fromCRS,
             "to": toCRS,
             "use_sandbox": isDebugBuild,
-            "mute_on_arrival": muteOnArrival
+            "mute_on_arrival": muteOnArrival,
+            "mute_delay_minutes": muteDelayMinutes,
+            "auto_end_on_arrival": autoEndLiveActivity
         ]
         if let preferredServiceID, !preferredServiceID.isEmpty {
             payload["preferred_service_id"] = preferredServiceID
@@ -947,6 +953,45 @@ final class LiveActivityManager: ObservableObject {
         } catch {
             print("❌ [LiveActivity] Network error unregistering live activity: \(error)")
             logger.error("[LiveActivity] Network error unregistering live activity: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    func sendImmediateBackendCheckIn(force: Bool = false) async {
+        if !force, let last = lastBackendCheckInAt, Date().timeIntervalSince(last) < backendCheckInMinIntervalSeconds {
+            return
+        }
+        lastBackendCheckInAt = Date()
+
+        let base = ApiHostPreference.currentBaseURL
+        let urlString = "\(base)/live_activities/checkin"
+        guard let url = URL(string: urlString) else {
+            logger.error("[LiveActivity] Invalid live activity check-in URL: \(urlString, privacy: .public)")
+            return
+        }
+
+        let deviceID = UIDevice.current.identifierForVendor?.uuidString ?? "unknown-device"
+        let payload: [String: Any] = [
+            "device_id": deviceID,
+            "force_refresh": true
+        ]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(DeviceIdentity.deviceToken, forHTTPHeaderField: "X-Device-Token")
+        request.timeoutInterval = 15
+
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+                let body = String(data: data, encoding: .utf8) ?? "<no body>"
+                logger.warning("[LiveActivity] Check-in returned status=\(http.statusCode) body=\(body, privacy: .public)")
+            } else {
+                logger.info("[LiveActivity] Check-in sent successfully for device \(deviceID, privacy: .public)")
+            }
+        } catch {
+            logger.error("[LiveActivity] Failed to send check-in: \(String(describing: error), privacy: .public)")
         }
     }
 

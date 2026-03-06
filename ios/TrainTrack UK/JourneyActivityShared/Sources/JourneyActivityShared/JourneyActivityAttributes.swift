@@ -49,6 +49,9 @@ public struct JourneyActivityAttributes: Codable, Hashable {
         public var lastUpdated: Date
         public var activityID: String?
         public var revision: Int?
+        /// True when the app has checked in with the server recently (within ~2 min).
+        /// Used to show the navigation-arrow indicator on the Live Activity widget.
+        public var appIsActive: Bool
 
         public init(
             fromCRS: String,
@@ -63,7 +66,8 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             upcomingDepartures: [UpcomingDeparture] = [],
             lastUpdated: Date = Date(),
             activityID: String? = nil,
-            revision: Int? = nil
+            revision: Int? = nil,
+            appIsActive: Bool = false
         ) {
             self.fromCRS = fromCRS
             self.toCRS = toCRS
@@ -78,10 +82,11 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             self.lastUpdated = lastUpdated
             self.activityID = activityID
             self.revision = revision
+            self.appIsActive = appIsActive
         }
 
         private enum CodingKeys: String, CodingKey {
-            case fromCRS, toCRS, destinationTitle, arrivalLabel, length, platform, estimated, statusText, delayMinutes, upcomingDepartures, lastUpdated, activityID, revision
+            case fromCRS, toCRS, destinationTitle, arrivalLabel, length, platform, estimated, statusText, delayMinutes, upcomingDepartures, lastUpdated, activityID, revision, appIsActive
         }
 
         public init(from decoder: Decoder) throws {
@@ -98,6 +103,7 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             upcomingDepartures = try container.decodeIfPresent([UpcomingDeparture].self, forKey: .upcomingDepartures) ?? []
             activityID = try container.decodeIfPresent(String.self, forKey: .activityID)
             revision = try container.decodeIfPresent(Int.self, forKey: .revision)
+            appIsActive = try container.decodeIfPresent(Bool.self, forKey: .appIsActive) ?? false
 
             // Handle lastUpdated as Unix timestamp (server sends integer seconds since epoch)
             if let timestamp = try? container.decode(Double.self, forKey: .lastUpdated) {

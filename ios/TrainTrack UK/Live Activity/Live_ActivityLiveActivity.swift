@@ -121,7 +121,7 @@ struct LiveActivityLockScreenView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            // Header with journey name
+            // Header with journey name and optional app-active indicator
             HStack {
                 Image(systemName: "train.side.front.car")
                     .font(.headline)
@@ -129,6 +129,12 @@ struct LiveActivityLockScreenView: View {
                     .font(.headline)
                     .fontWeight(.semibold)
                 Spacer()
+                // Navigation arrow: shown when the app is open and tracking
+                if state.appIsActive {
+                    Image(systemName: "location.north.fill")
+                        .font(.caption)
+                        .foregroundStyle(.blue)
+                }
             }
 
             // Main departure info
@@ -192,7 +198,7 @@ struct LiveActivityLockScreenView: View {
                 .padding(.top, 4)
             }
 
-            // Upcoming departures - compact format with platforms
+            // Upcoming departures
             if !state.upcomingDepartures.isEmpty {
                 HStack(spacing: 4) {
                     ForEach(Array(state.upcomingDepartures.prefix(3).enumerated()), id: \.offset) { _, departure in

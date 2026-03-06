@@ -36,12 +36,16 @@ struct TrainTrackUKApp: App {
                 }
                 .onOpenURL { url in
                     deepLink.handle(url: url)
+                    Task {
+                        await LiveActivityManager.shared.sendImmediateBackendCheckIn(force: true)
+                    }
                 }
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             if newPhase == .active {
                 print("🔄 [App] App became active - triggering Live Activity refresh")
                 Task {
+                    await LiveActivityManager.shared.sendImmediateBackendCheckIn()
                     await LiveActivityManager.shared.refreshIfActive(
                         journeyStore: JourneyStore.shared,
                         depStore: DeparturesStore.shared

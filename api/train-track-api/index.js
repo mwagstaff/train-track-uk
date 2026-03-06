@@ -147,7 +147,7 @@ app.get('/metrics', async (req, res) => {
 });
 
 app.post('/api/v2/live_activities', async (req, res) => {
-    const { device_id, activity_id, live_activity_push_token, from, to, use_sandbox, preferred_service_id, mute_on_arrival } = req.body || {};
+    const { device_id, activity_id, live_activity_push_token, from, to, use_sandbox, preferred_service_id, mute_on_arrival, mute_delay_minutes, auto_end_on_arrival } = req.body || {};
     if (!device_id || !activity_id || !live_activity_push_token || !from || !to) {
         logLiveActivityRequest('register_failed_validation', req, {
             device_id,
@@ -178,7 +178,9 @@ app.post('/api/v2/live_activities', async (req, res) => {
         toStation: to,
         preferredServiceId: preferred_service_id,
         useSandbox: Boolean(use_sandbox),
-        muteOnArrival: mute_on_arrival === true || mute_on_arrival === 'true'
+        muteOnArrival: mute_on_arrival === true || mute_on_arrival === 'true',
+        muteDelayMinutes: mute_delay_minutes !== undefined ? Number(mute_delay_minutes) : undefined,
+        autoEndOnArrival: auto_end_on_arrival === true || auto_end_on_arrival === 'true'
     });
     recordPushTokenRegistration({
         channel: 'live_activity',
@@ -227,6 +229,60 @@ app.delete('/api/v2/live_activities', async (req, res) => {
         device_id,
         activity_id
     });
+});
+
+app.post('/api/v2/live_activities/checkin', async (req, res) => {
+    const { device_id, force_refresh } = req.body || {};
+    if (!device_id) {
+        logLiveActivityRequest('checkin_failed_validation', req, { device_id });
+        return res.status(400).json({ error: 'device_id is required' });
+    }
+
+    logLiveActivityRequest('checkin', req, {
+        device_id,
+        force_refresh: force_refresh !== false
+    });
+
+    try {
+        const result = await liveActivityManager.handleDeviceCheckIn(device_id, {
+            forceRefresh: force_refresh !== false
+        });
+        res.json({
+            status: 'ok',
+            device_id,
+            ...result
+        });
+    } catch (error) {
+        const message = error?.message || error;
+        console.error(`[live-activity] checkin failed for ${device_id}: ${message}`);
+        res.status(500).json({ error: message });
+    }
+});
+
+app.post('/api/v2/live_activities/arrive', async (req, res) => {
+    const { device_id, from, to } = req.body || {};
+    if (!device_id) {
+        logLiveActivityRequest('arrive_failed_validation', req, { device_id });
+        return res.status(400).json({ error: 'device_id is required' });
+    }
+
+    logLiveActivityRequest('arrive', req, { device_id, from, to });
+
+    try {
+        const result = await liveActivityManager.handleArrival(device_id, {
+            fromStation: from || null,
+            toStation: to || null
+        });
+        res.json({
+            status: 'ok',
+            device_id,
+            ...result
+        });
+    } catch (error) {
+        const message = error?.message || error;
+        console.error(`[live-activity] arrive failed for ${device_id}: ${message}`);
+        res.status(500).json({ error: message });
+    }
 });
 
 // Notification subscription endpoints

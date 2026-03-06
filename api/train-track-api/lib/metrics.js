@@ -181,6 +181,7 @@ const MAX_STORED_REQUESTS = 10000;
 const DEVICE_TOKEN_HEADER = 'x-device-token';
 const DEVICE_RETENTION_MS = 48 * 60 * 60 * 1000;
 const deviceLastSeen = new Map();
+const DEVICE_LAST_SEEN_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 function normalizeStatus(status) {
     if (typeof status === 'number' && Number.isFinite(status)) {
@@ -395,12 +396,16 @@ export function updatePushSubscriptionGauges({ notification = 0, liveActivity = 
 
 function extractDeviceToken(req) {
     if (!req) return null;
+    const body = req.body || {};
+    const bodyDeviceId = body.device_id || body.deviceId;
+    if (typeof bodyDeviceId === 'string' && bodyDeviceId.trim().length > 0) {
+        return bodyDeviceId.trim();
+    }
     const headerTokenRaw = req.headers?.[DEVICE_TOKEN_HEADER];
     const headerToken = Array.isArray(headerTokenRaw) ? headerTokenRaw[0] : headerTokenRaw;
     if (typeof headerToken === 'string' && headerToken.trim().length > 0) {
         return headerToken.trim();
     }
-    const body = req.body || {};
     const bodyToken = body.device_token || body.deviceToken || body.device_id || body.deviceId;
     if (typeof bodyToken === 'string' && bodyToken.trim().length > 0) {
         return bodyToken.trim();
@@ -412,6 +417,21 @@ function recordDeviceSeen(req, now = Date.now()) {
     const token = extractDeviceToken(req);
     if (!token) return;
     deviceLastSeen.set(token, now);
+}
+
+export function getDeviceLastSeen(deviceId, now = Date.now()) {
+    if (typeof deviceId !== 'string' || deviceId.trim().length === 0) {
+        return null;
+    }
+    const ts = deviceLastSeen.get(deviceId.trim());
+    if (!Number.isFinite(ts)) {
+        return null;
+    }
+    const ageMs = now - ts;
+    if (ageMs < 0 || ageMs > DEVICE_LAST_SEEN_MAX_AGE_MS) {
+        return null;
+    }
+    return ts;
 }
 
 function cleanupOldDevices(now = Date.now()) {
