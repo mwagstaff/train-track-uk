@@ -171,7 +171,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     // haven't loaded yet, common on a cold background launch), returns true so that
     // a genuine geofence crossing is still honoured; the server validates anyway.
     private func shouldMuteNow(subscriptionId: String, from: String, to: String) -> Bool {
-        guard let subscription = NotificationSubscriptionStore.shared.subscriptions
+        guard let subscription = NotificationSubscriptionStore.shared.combinedSubscriptions
                 .first(where: { $0.id == subscriptionId }),
               let leg = subscription.legs.first(where: {
                   $0.from.uppercased() == from.uppercased() &&
@@ -368,28 +368,48 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    /// Triggers the full mute-and-optionally-end flow after the user-configured delay.
+    /// Triggers the mute flow immediately — delay is applied server-side.
     /// Called from both `didEnterRegion` and `didDetermineState(.inside)`.
-    /// - Parameter simulate: When true the delay is skipped (used by the debug simulate-arrival action).
+    ///
+    /// **Why no client-side sleep**: iOS only grants ~30 s of background execution after a
+    /// geofence wake, so `Task.sleep` is unreliable for delays > a few seconds. Instead,
+    /// we pass `delay_minutes` to the server which applies the wait via `setTimeout`
+    /// (always-on, never suspended). The server also sends the "muted" confirmation push
+    /// after the delay, so no local notification is needed here.
+    ///
+    /// - Parameter simulate: When true the delay is zero (used by the debug simulate-arrival action).
     func triggerMuteFlow(subscriptionId: String, from: String, to: String,
                          sendNotification: Bool = true, simulate: Bool = false) {
         Task { @MainActor in
-            let delayMinutes = simulate ? 0 : ((UserDefaults.standard.object(forKey: "muteDelayMinutes") as? Int) ?? 5)
-            if delayMinutes > 0 {
-                let delayMsg = "Waiting \(delayMinutes) min before muting \(from)→\(to)"
-                DebugLogStore.shared.log(delayMsg, category: "Mute")
-                print("⏳ \(delayMsg)")
-                try? await Task.sleep(nanoseconds: UInt64(delayMinutes) * 60 * 1_000_000_000)
+            // Guard against duplicate calls — both didEnterRegion and didDetermineState can fire
+            // for the same region event. Since both outer tasks are @MainActor and this inner
+            // task is also @MainActor (serial), the first call marks locally then the second
+            // hits this guard and returns cleanly.
+            guard !NotificationMuteStorage.isMutedToday(from: from, to: to) else {
+                let skipMsg = "triggerMuteFlow: already muted today for \(from)→\(to) — skipping duplicate"
+                DebugLogStore.shared.log(skipMsg, category: "Mute")
+                print("⏭ \(skipMsg)")
+                return
             }
 
+            // Mark locally immediately — prevents the second triggerMuteFlow call (above guard)
+            // from also sending a terminate request during the server-side delay window.
             self.markLegMutedLocally(from: from, to: to)
-            if sendNotification {
-                self.sendArrivalNotification(subscriptionId: subscriptionId, from: from, to: to)
-            }
+
+            let delayMinutes = simulate ? 0 : ((UserDefaults.standard.object(forKey: "muteDelayMinutes") as? Int) ?? 5)
+            let msg = delayMinutes > 0
+                ? "Sending mute request with \(delayMinutes)-min server-side delay for \(from)→\(to)"
+                : "Sending immediate mute request for \(from)→\(to)"
+            DebugLogStore.shared.log(msg, category: "Mute")
+            print("⏳ \(msg)")
+
+            // The terminate request is sent immediately via background URLSession (reliable
+            // even after iOS suspends the app). The server delays the actual mute + push.
             NotificationMuteRequestSender.shared.enqueueMute(
                 subscriptionId: subscriptionId,
                 from: from,
-                to: to
+                to: to,
+                delayMinutes: delayMinutes
             )
 
             // If the user has opted in, also ask the server to end the Live Activity
@@ -423,44 +443,6 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         print("✅ \(msg)")
     }
 
-    private func sendArrivalNotification(subscriptionId: String, from: String, to: String) {
-        let fromStation = StationsService.shared.stations.first { $0.crs.uppercased() == from.uppercased() }
-        let toStation = StationsService.shared.stations.first { $0.crs.uppercased() == to.uppercased() }
-
-        let fromName = fromStation?.name ?? from
-        let toName = toStation?.name ?? to
-
-        let content = UNMutableNotificationContent()
-        content.title = "Arrived at \(fromName)"
-        content.body = "Notifications for your journey to \(toName) have been muted for the rest of today."
-        content.sound = .default
-        content.badge = 0
-        content.categoryIdentifier = NotificationCategoryId.stationArrival
-        content.userInfo = [
-            NotificationPayloadKeys.subscriptionId: subscriptionId,
-            NotificationPayloadKeys.from: from.uppercased(),
-            NotificationPayloadKeys.to: to.uppercased(),
-            NotificationPayloadKeys.fromName: fromName,
-            NotificationPayloadKeys.toName: toName,
-            NotificationPayloadKeys.legKey: NotificationMuteStorage.legKey(from: from, to: to),
-            NotificationPayloadKeys.alertType: "arrival"
-        ]
-
-        let request = UNNotificationRequest(
-            identifier: "station_arrival_\(from)_\(to)_\(Date().timeIntervalSince1970)",
-            content: content,
-            trigger: nil // Deliver immediately
-        )
-
-        UNUserNotificationCenter.current().add(request) { error in
-            if let error = error {
-                print("❌ Failed to send arrival notification: \(error.localizedDescription)")
-            } else {
-                print("✅ Sent arrival notification for \(fromName) → \(toName)")
-            }
-        }
-    }
-
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         guard manager.authorizationStatus == .authorizedAlways else { return }
         Task { @MainActor in
@@ -484,7 +466,7 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
     private var uploadFiles: [Int: URL] = [:]
     private let syncQueue = DispatchQueue(label: "dev.skynolimit.traintrack.notifications.mute.sync")
 
-    func enqueueMute(subscriptionId: String, from: String, to: String) {
+    func enqueueMute(subscriptionId: String, from: String, to: String, delayMinutes: Int = 0) {
         let baseURL = ApiHostPreference.currentBaseURL
         guard let url = URL(string: "\(baseURL)/notifications/terminate") else {
             let errorMsg = "Invalid URL for terminate endpoint: \(baseURL)"
@@ -502,7 +484,8 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             subscriptionId: subscriptionId,
             from: from.uppercased(),
             to: to.uppercased(),
-            date: currentDateKey()
+            date: currentDateKey(),
+            delayMinutes: delayMinutes
         )
         guard let body = try? JSONEncoder().encode(payload) else {
             let errorMsg = "Failed to encode mute request payload"
@@ -813,6 +796,7 @@ private struct NotificationMuteRequest: Codable {
     let from: String
     let to: String
     let date: String
+    let delayMinutes: Int
 
     enum CodingKeys: String, CodingKey {
         case deviceId = "device_id"
@@ -820,5 +804,6 @@ private struct NotificationMuteRequest: Codable {
         case from
         case to
         case date
+        case delayMinutes = "delay_minutes"
     }
 }

@@ -21,7 +21,31 @@ final class NotificationSubscriptionService {
     }()
 
     func fetchSubscriptions() async throws -> [NotificationSubscription] {
-        guard let url = URL(string: "\(base)/notifications/subscriptions?device_id=\(deviceId)") else {
+        try await fetchSubscriptions(path: "subscriptions")
+    }
+
+    func fetchLiveSessions() async throws -> [NotificationSubscription] {
+        try await fetchSubscriptions(path: "live_sessions")
+    }
+
+    func upsertSubscription(_ requestBody: NotificationSubscriptionRequest) async throws -> NotificationSubscription {
+        try await upsert(requestBody, path: "subscriptions")
+    }
+
+    func upsertLiveSession(_ requestBody: NotificationSubscriptionRequest) async throws -> NotificationSubscription {
+        try await upsert(requestBody, path: "live_sessions")
+    }
+
+    func deleteSubscription(id: String) async throws {
+        try await delete(id: id, path: "subscriptions")
+    }
+
+    func deleteLiveSession(id: String) async throws {
+        try await delete(id: id, path: "live_sessions")
+    }
+
+    private func fetchSubscriptions(path: String) async throws -> [NotificationSubscription] {
+        guard let url = URL(string: "\(base)/notifications/\(path)?device_id=\(deviceId)") else {
             throw PhoneNetworkError.invalidURL
         }
         var request = URLRequest(url: url)
@@ -35,8 +59,8 @@ final class NotificationSubscriptionService {
         return payload.subscriptions
     }
 
-    func upsertSubscription(_ requestBody: NotificationSubscriptionRequest) async throws -> NotificationSubscription {
-        guard let url = URL(string: "\(base)/notifications/subscriptions") else {
+    private func upsert(_ requestBody: NotificationSubscriptionRequest, path: String) async throws -> NotificationSubscription {
+        guard let url = URL(string: "\(base)/notifications/\(path)") else {
             throw PhoneNetworkError.invalidURL
         }
         var request = URLRequest(url: url)
@@ -53,8 +77,8 @@ final class NotificationSubscriptionService {
         return payload.subscription
     }
 
-    func deleteSubscription(id: String) async throws {
-        guard let url = URL(string: "\(base)/notifications/subscriptions") else {
+    private func delete(id: String, path: String) async throws {
+        guard let url = URL(string: "\(base)/notifications/\(path)") else {
             throw PhoneNetworkError.invalidURL
         }
         var request = URLRequest(url: url)
@@ -91,6 +115,7 @@ final class NotificationSubscriptionStore: ObservableObject {
     static let shared = NotificationSubscriptionStore()
 
     @Published private(set) var subscriptions: [NotificationSubscription] = []
+    @Published private(set) var liveSessions: [NotificationSubscription] = []
     @Published private(set) var isLoading = false
     @Published var lastError: String? = nil
 
@@ -101,10 +126,12 @@ final class NotificationSubscriptionStore: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         do {
-            let data = try await service.fetchSubscriptions()
-            subscriptions = data
+            async let scheduledTask = service.fetchSubscriptions()
+            async let liveSessionsTask = service.fetchLiveSessions()
+            subscriptions = try await scheduledTask
+            liveSessions = try await liveSessionsTask
             lastError = nil
-            await NotificationGeofenceManager.shared.sync(subscriptions: subscriptions)
+            await syncGeofences()
         } catch {
             lastError = error.localizedDescription
         }
@@ -117,21 +144,51 @@ final class NotificationSubscriptionStore: ObservableObject {
         } else {
             subscriptions.append(subscription)
         }
-        await NotificationGeofenceManager.shared.sync(subscriptions: subscriptions)
+        await syncGeofences()
         return subscription
     }
 
     func delete(id: String) async throws {
         try await service.deleteSubscription(id: id)
         subscriptions.removeAll { $0.id == id }
-        await NotificationGeofenceManager.shared.sync(subscriptions: subscriptions)
+        await syncGeofences()
     }
 
     func subscription(for routeKey: String) -> NotificationSubscription? {
         subscriptions.first { $0.routeKey == routeKey }
     }
 
+    func upsertLiveSession(_ requestBody: NotificationSubscriptionRequest) async throws -> NotificationSubscription {
+        let subscription = try await service.upsertLiveSession(requestBody)
+        if let index = liveSessions.firstIndex(where: { $0.id == subscription.id }) {
+            liveSessions[index] = subscription
+        } else {
+            liveSessions.append(subscription)
+        }
+        await syncGeofences()
+        return subscription
+    }
+
+    func deleteLiveSession(id: String) async throws {
+        try await service.deleteLiveSession(id: id)
+        liveSessions.removeAll { $0.id == id }
+        await syncGeofences()
+    }
+
+    func liveSession(for routeKey: String) -> NotificationSubscription? {
+        liveSessions.first { $0.routeKey == routeKey }
+    }
+
+    var combinedSubscriptions: [NotificationSubscription] {
+        subscriptions + liveSessions
+    }
+
     var canCreateNew: Bool { subscriptions.count < 3 }
+    var canCreateNewLiveSession: Bool { liveSessions.count < 3 }
+
+    private func syncGeofences() async {
+        await NotificationGeofenceManager.shared.sync(subscriptions: combinedSubscriptions)
+    }
 }
 
 private struct NotificationSubscriptionResponse: Codable {

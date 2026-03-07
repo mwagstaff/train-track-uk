@@ -16,7 +16,7 @@ API for the [TrainTrack UK](https://apps.apple.com/gb/app/traintrack-uk/id650420
 - Includes Node.js runtime/process metrics from `prom-client` default collectors
 - Includes custom metrics for:
   - Inbound API request throughput/latency
-  - Upstream Rail API call throughput/latency/retries
+  - Upstream Rail API call throughput/latency/retries, including per-method URL/status counters
   - Push notification delivery throughput/latency/retries
   - Push token registrations and active push subscriptions
   - Unique users and recent notification activity windows
@@ -24,6 +24,8 @@ API for the [TrainTrack UK](https://apps.apple.com/gb/app/traintrack-uk/id650420
 ## Retry Behavior
 
 External API calls now automatically retry retryable responses (`429`, `500`, `503`) and transient transport errors using exponential backoff with jitter.
+
+When an upstream call is rate limited (`429`), the API now emits a structured warning log with the method, full URL, explicit ISO timestamp, retry metadata, and backoff timing.
 
 - Upstream Rail API tuning:
   - `UPSTREAM_API_TIMEOUT_MS` (default `8000`)

@@ -12,13 +12,15 @@ struct JourneyDetailsView: View {
     @EnvironmentObject var journeyStore: JourneyStore
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
     @EnvironmentObject var muteDebugStore: MuteRequestDebugStore
-    @AppStorage("autoStartLiveActivity") private var autoStartLiveActivity: Bool = true
+    @AppStorage("liveActivityDurationMinutes") private var liveActivityDurationMinutes: Int = 60
     @StateObject private var location = LocationManagerPhone()
 
     @State private var refreshing = false
     @State private var tick = Date()
     @State private var showingReverse = false
     @State private var showingNotificationSheet = false
+    @State private var liveSessionInfoMessage: String?
+    @State private var liveSessionActionInFlight = false
     @Environment(\.scenePhase) private var scenePhase
 
     private var reverseGroup: JourneyGroup? {
@@ -46,8 +48,16 @@ struct JourneyDetailsView: View {
         return min(forward, reverse)
     }
 
+    private var liveSessionRouteKey: String {
+        "\(currentGroup.startStation.crs.uppercased())-\(currentGroup.endStation.crs.uppercased())"
+    }
+
     private var notificationSubscription: NotificationSubscription? {
         notificationStore.subscription(for: notificationRouteKey)
+    }
+
+    private var liveSession: NotificationSubscription? {
+        notificationStore.liveSession(for: liveSessionRouteKey)
     }
 
     private var canScheduleNotifications: Bool {
@@ -65,7 +75,7 @@ struct JourneyDetailsView: View {
     }
 
     private var notificationMuteStatus: (detail: String, isMuted: Bool)? {
-        guard let subscription = notificationSubscription else { return nil }
+        guard let subscription = liveSession ?? notificationSubscription else { return nil }
         guard let firstLeg = currentGroup.legs.first else { return nil }
         let muteOnArrival = subscription.muteOnArrival ?? true
         let startName = firstLeg.fromStation.name
@@ -280,9 +290,15 @@ struct JourneyDetailsView: View {
 
     var body: some View {
         List {
-            // Live Activity status indicator
             Section {
-                LiveActivityStatusRow(legs: currentGroup.legs)
+                LiveJourneySessionRow(
+                    isActive: liveSession != nil,
+                    isBusy: liveSessionActionInFlight,
+                    activeCount: notificationStore.liveSessions.count,
+                    infoMessage: liveSessionInfoMessage
+                ) {
+                    toggleLiveSession()
+                }
                 NotificationScheduleRow(
                     subtitle: notificationSubtitle,
                     detail: notificationMuteStatus?.detail,
@@ -549,7 +565,6 @@ struct JourneyDetailsView: View {
         .task {
             await notificationStore.refresh()
             await prefetchServiceDetailsIfNeeded()
-            await startLiveActivityAutomatically()
         }
         .refreshable { await manualRefresh() }
         .onReceive(Timer.publish(every: 20, on: .main, in: .common).autoconnect()) { _ in
@@ -570,7 +585,6 @@ struct JourneyDetailsView: View {
         .onChange(of: showingReverse) { _ in
             Task {
                 await prefetchServiceDetailsIfNeeded()
-                await startLiveActivityAutomatically()
             }
         }
     }
@@ -591,22 +605,234 @@ struct JourneyDetailsView: View {
         }
     }
 
-    private func startLiveActivityAutomatically() async {
-        guard autoStartLiveActivity else {
-            print("⏸️ [JourneyDetails] Auto-start disabled in preferences, user must tap Start manually")
+    private func toggleLiveSession() {
+        guard !liveSessionActionInFlight else { return }
+        Task {
+            if liveSession != nil {
+                await stopCurrentLiveSession()
+            } else {
+                await startCurrentLiveSession()
+            }
+        }
+    }
+
+    private func startCurrentLiveSession() async {
+        guard !liveSessionActionInFlight else { return }
+        liveSessionActionInFlight = true
+        defer { liveSessionActionInFlight = false }
+
+        liveSessionInfoMessage = nil
+
+        let allowed = await NotificationAuthorizationManager.ensureAuthorized()
+        guard allowed else {
+            let message = "Notifications are disabled in Settings"
+            activityMgr.lastMessage = message
+            ToastStore.shared.show(message, icon: "bell.slash.fill")
             return
         }
 
-        let legsToStart = legsForActivity.filter { !activityMgr.isActive(for: $0) }
-        guard !legsToStart.isEmpty else {
-            print("✅ [JourneyDetails] Live Activity already running for all visible legs, skipping")
+        guard let pushToken = await NotificationPushTokenStore.waitForToken(timeoutSeconds: 6.0) else {
+            let message = "Waiting for a notification token. Try again in a moment."
+            activityMgr.lastMessage = message
+            ToastStore.shared.show(message, icon: "exclamationmark.triangle.fill")
             return
         }
 
-        // Start in natural order so the first leg appears on top in the Live Activity stack.
-        for leg in legsToStart {
-            print("🚀 [JourneyDetails] Auto-starting Live Activity for \(leg.fromStation.crs) → \(leg.toStation.crs) (current: \(activityMgr.activeCount)/3)")
+        var replacement: NotificationSubscription?
+        if liveSession == nil,
+           notificationStore.liveSessions.count >= 3 {
+            replacement = notificationStore.liveSessions
+                .filter { $0.routeKey != liveSessionRouteKey }
+                .sorted(by: { ($0.createdAt ?? .distantFuture) < ($1.createdAt ?? .distantFuture) })
+                .first
+        }
+
+        if let replacement {
+            do {
+                try await stopLiveSession(replacement)
+                let replacedTitle = sessionTitle(for: replacement)
+                liveSessionInfoMessage = "Replaced the oldest active session (\(replacedTitle)) to make room for this one."
+                ToastStore.shared.show("Replaced oldest live session", icon: "arrow.triangle.2.circlepath")
+            } catch {
+                activityMgr.lastMessage = error.localizedDescription
+                ToastStore.shared.show("Unable to replace oldest live session", icon: "exclamationmark.triangle.fill")
+                return
+            }
+        }
+
+        guard await startLiveActivitiesForCurrentGroup() else {
+            ToastStore.shared.show("Unable to start Live Activity", icon: "exclamationmark.triangle.fill")
+            return
+        }
+
+        do {
+            _ = try await notificationStore.upsertLiveSession(buildLiveSessionRequest(pushToken: pushToken))
+            ToastStore.shared.show("Live Activity + notifications started", icon: "dot.radiowaves.left.and.right")
+        } catch {
+            await stopLiveActivities(for: legsForActivity)
+            activityMgr.lastMessage = error.localizedDescription
+            ToastStore.shared.show("Unable to start notifications", icon: "exclamationmark.triangle.fill")
+        }
+    }
+
+    private func stopCurrentLiveSession() async {
+        guard let liveSession else { return }
+        liveSessionActionInFlight = true
+        defer { liveSessionActionInFlight = false }
+
+        do {
+            try await stopLiveSession(liveSession)
+            liveSessionInfoMessage = nil
+            ToastStore.shared.show("Live Activity + notifications stopped", icon: "stop.fill")
+        } catch {
+            activityMgr.lastMessage = error.localizedDescription
+            ToastStore.shared.show("Unable to stop live session", icon: "exclamationmark.triangle.fill")
+        }
+    }
+
+    private func stopLiveSession(_ session: NotificationSubscription) async throws {
+        try await notificationStore.deleteLiveSession(id: session.id)
+        await stopLiveActivities(for: session)
+    }
+
+    private func startLiveActivitiesForCurrentGroup() async -> Bool {
+        var newlyStarted: [Journey] = []
+        for leg in legsForActivity {
+            if activityMgr.isActive(for: leg) { continue }
             await activityMgr.start(for: leg, depStore: depStore, triggeredByUser: true, bypassSuppression: true)
+            if activityMgr.isActive(for: leg) {
+                newlyStarted.append(leg)
+            }
+        }
+
+        let allActive = legsForActivity.allSatisfy { activityMgr.isActive(for: $0) }
+        if !allActive {
+            await stopLiveActivities(for: newlyStarted)
+        }
+        return allActive
+    }
+
+    private func stopLiveActivities(for session: NotificationSubscription) async {
+        if StationsService.shared.stations.isEmpty {
+            try? await StationsService.shared.loadStations()
+        }
+
+        let stationsByCRS = StationsService.shared.stations.reduce(into: [String: Station]()) { result, station in
+            let key = station.crs.uppercased()
+            if result[key] == nil {
+                result[key] = station
+            }
+        }
+
+        for leg in Array(session.legs.prefix(3)) {
+            guard let fromStation = stationsByCRS[leg.from.uppercased()],
+                  let toStation = stationsByCRS[leg.to.uppercased()] else {
+                continue
+            }
+            let journey = Journey(fromStation: fromStation, toStation: toStation, favorite: false)
+            await activityMgr.stop(for: journey)
+        }
+    }
+
+    private func stopLiveActivities(for journeys: [Journey]) async {
+        for leg in journeys {
+            await activityMgr.stop(for: leg)
+        }
+    }
+
+    private func buildLiveSessionRequest(pushToken: String) -> NotificationSubscriptionRequest {
+        let today = currentDayOfWeek()
+        let defaultLegs = currentGroup.legs.map { leg in
+            NotificationLeg(
+                from: leg.fromStation.crs.uppercased(),
+                to: leg.toStation.crs.uppercased(),
+                fromName: leg.fromStation.name,
+                toName: leg.toStation.name,
+                enabled: true,
+                windowStart: "00:00",
+                windowEnd: "23:59"
+            )
+        }
+
+        let scheduledByLegID = Dictionary(
+            uniqueKeysWithValues: (notificationSubscription?.legs ?? []).map { ($0.id, $0) }
+        )
+        let resolvedLegs = defaultLegs.map { leg in
+            guard let existing = scheduledByLegID[leg.id] else { return leg }
+            return NotificationLeg(
+                from: leg.from,
+                to: leg.to,
+                fromName: leg.fromName,
+                toName: leg.toName,
+                enabled: existing.enabled,
+                windowStart: leg.windowStart,
+                windowEnd: leg.windowEnd
+            )
+        }
+        let liveSessionLegs: [NotificationLeg]
+        if resolvedLegs.contains(where: { $0.enabled }) {
+            liveSessionLegs = resolvedLegs
+        } else if let firstLeg = resolvedLegs.first {
+            liveSessionLegs = [NotificationLeg(
+                from: firstLeg.from,
+                to: firstLeg.to,
+                fromName: firstLeg.fromName,
+                toName: firstLeg.toName,
+                enabled: true,
+                windowStart: firstLeg.windowStart,
+                windowEnd: firstLeg.windowEnd
+            )] + Array(resolvedLegs.dropFirst())
+        } else {
+            liveSessionLegs = resolvedLegs
+        }
+
+        let notificationTypes = notificationSubscription?.notificationTypes ?? [.summary, .delays, .platform]
+        let muteOnArrival = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
+        let activeUntil = Date().addingTimeInterval(Double(liveActivityDurationMinutes * 60))
+
+        #if DEBUG
+        let useSandbox = true
+        #else
+        let useSandbox = false
+        #endif
+
+        return NotificationSubscriptionRequest(
+            subscriptionId: liveSession?.id,
+            deviceId: DeviceIdentity.deviceToken,
+            pushToken: pushToken,
+            routeKey: liveSessionRouteKey,
+            daysOfWeek: [today],
+            notificationTypes: notificationTypes,
+            legs: liveSessionLegs,
+            windowStart: "00:00",
+            windowEnd: "23:59",
+            from: currentGroup.startStation.crs.uppercased(),
+            to: currentGroup.endStation.crs.uppercased(),
+            fromName: currentGroup.startStation.name,
+            toName: currentGroup.endStation.name,
+            useSandbox: useSandbox,
+            muteOnArrival: muteOnArrival,
+            activeUntil: activeUntil
+        )
+    }
+
+    private func sessionTitle(for session: NotificationSubscription) -> String {
+        let first = session.legs.first
+        let last = session.legs.last
+        let from = first?.fromName ?? first?.from ?? currentGroup.startStation.name
+        let to = last?.toName ?? last?.to ?? currentGroup.endStation.name
+        return "\(from) → \(to)"
+    }
+
+    private func currentDayOfWeek() -> DayOfWeek {
+        switch Calendar.current.component(.weekday, from: Date()) {
+        case 1: return .sun
+        case 2: return .mon
+        case 3: return .tue
+        case 4: return .wed
+        case 5: return .thu
+        case 6: return .fri
+        default: return .sat
         }
     }
 
@@ -634,17 +860,17 @@ struct JourneyDetailsView: View {
                 }
                 try? await Task.sleep(nanoseconds: UInt64(delaySeconds * 1_000_000_000))
             }
-            var subscriptionId = notificationSubscription?.id
+            var subscriptionId = (liveSession ?? notificationSubscription)?.id
             if subscriptionId == nil {
-                if notificationStore.subscriptions.isEmpty {
+                if notificationStore.combinedSubscriptions.isEmpty {
                     await notificationStore.refresh()
                 }
-                subscriptionId = notificationStore.subscriptions.first(where: { sub in
+                subscriptionId = notificationStore.combinedSubscriptions.first(where: { sub in
                     sub.legs.contains(where: { $0.from.uppercased() == leg.fromStation.crs.uppercased() && $0.to.uppercased() == leg.toStation.crs.uppercased() })
                 })?.id
             }
             guard let subscriptionId else {
-                ToastStore.shared.show("No notification schedule found for this journey", icon: "exclamationmark.triangle.fill")
+                ToastStore.shared.show("No active notifications found for this journey", icon: "exclamationmark.triangle.fill")
                 return
             }
             NotificationGeofenceManager.shared.simulateArrival(
@@ -673,7 +899,7 @@ struct JourneyDetailsView: View {
             NotificationPayloadKeys.legKey: NotificationMuteStorage.legKey(from: leg.fromStation.crs, to: leg.toStation.crs),
             NotificationPayloadKeys.alertType: "simulated_arrival"
         ]
-        if let subscriptionId = notificationSubscription?.id {
+        if let subscriptionId = (liveSession ?? notificationSubscription)?.id {
             info[NotificationPayloadKeys.subscriptionId] = subscriptionId
         }
         content.userInfo = info
@@ -689,7 +915,7 @@ struct JourneyDetailsView: View {
 
     private func debugSendLegNotification(delaySeconds: TimeInterval = 1.5) {
         guard let leg = currentGroup.legs.first else { return }
-        let subscriptionId = notificationSubscription?.id
+        let subscriptionId = (liveSession ?? notificationSubscription)?.id
         Task {
             let allowed = await NotificationAuthorizationManager.ensureAuthorized()
             guard allowed else {
@@ -1366,98 +1592,65 @@ private struct DepartureRow: View {
     }
 }
 
-// MARK: - Live Activity Status Row
-private struct LiveActivityStatusRow: View {
-    let legs: [Journey]
-    @EnvironmentObject var activityMgr: LiveActivityManager
-    @EnvironmentObject var depStore: DeparturesStore
+// MARK: - Live Session Row
+private struct LiveJourneySessionRow: View {
+    let isActive: Bool
+    let isBusy: Bool
+    let activeCount: Int
+    let infoMessage: String?
+    var onToggle: () -> Void
 
-    private var totalLegs: Int { legs.count }
-    private var legsForActivity: [Journey] {
-        Array(legs.prefix(3))
-    }
-
-    private var activeLegs: [Journey] {
-        legsForActivity.filter { activityMgr.isActive(for: $0) }
-    }
-
-    private var isActiveForGroup: Bool {
-        !activeLegs.isEmpty
+    private var subtitle: String {
+        if isActive {
+            return "Notifications are running for this journey"
+        }
+        if activeCount >= 3 {
+            return "Starting a new session will replace the oldest active one"
+        }
+        return "Manually start Live Activity + notifications"
     }
 
     var body: some View {
-        if legsForActivity.isEmpty {
-            EmptyView()
-        } else {
-            HStack {
-                if isActiveForGroup {
-                    // Live Activity is active for at least one leg
-                    HStack(spacing: 8) {
-                        Image(systemName: "dot.radiowaves.left.and.right")
-                            .foregroundStyle(.green)
-                            .symbolEffect(.pulse)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Live Activity Active")
-                                .font(.subheadline)
-                                .fontWeight(.medium)
-                            Text("Tracking this journey")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer()
-                    Button(role: .destructive) {
-                        Task {
-                            for leg in activeLegs {
-                                await activityMgr.stop(for: leg)
-                            }
-                        }
-                    } label: {
-                        Text("Stop")
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.red)
-                } else {
-                    // Live Activity is not active for this group
-                    HStack(spacing: 8) {
-                        Image(systemName: "dot.radiowaves.left.and.right")
-                            .foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Live Activity")
-                                .font(.subheadline)
-                                .fontWeight(.medium)
-                            if activityMgr.activeCount > 0 {
-                                Text("Tracking this journey")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Text("Track on Lock Screen")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                    Spacer()
-                    Button {
-                        Task {
-                            let legsToStart = legsForActivity.filter { !activityMgr.isActive(for: $0) }
-                        for leg in legsToStart {
-                            await activityMgr.start(for: leg, depStore: depStore, triggeredByUser: true, bypassSuppression: true)
-                        }
-                        }
-                    } label: {
-                        Text("Start")
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(.blue)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "dot.radiowaves.left.and.right")
+                    .foregroundStyle(isActive ? .green : .secondary)
+                    .symbolEffect(.pulse)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Live Activity + Notifications")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
+
+                Spacer()
+
+                Button(role: isActive ? .destructive : nil) {
+                    onToggle()
+                } label: {
+                    if isBusy {
+                        ProgressView()
+                    } else {
+                        Text(isActive ? "Stop" : "Start")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                    }
+                }
+                .buttonStyle(.bordered)
+                .tint(isActive ? .red : .blue)
+                .disabled(isBusy)
             }
-            .padding(.vertical, 4)
+
+            if let infoMessage, !infoMessage.isEmpty {
+                Label(infoMessage, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
+        .padding(.vertical, 4)
     }
 }
 

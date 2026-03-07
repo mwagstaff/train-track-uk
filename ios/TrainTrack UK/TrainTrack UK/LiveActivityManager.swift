@@ -14,8 +14,8 @@ typealias JourneyActivityAttributes = JourneyActivityShared.JourneyActivityAttri
 final class LiveActivityManager: ObservableObject {
     static let shared = LiveActivityManager()
 
-    // Maximum number of concurrent Live Activities allowed
-    private let maxConcurrentActivities = 3
+    // Journey details can now run up to 3 sessions in parallel, each with up to 3 legs.
+    private let maxConcurrentActivities = 9
 
     private let logger = Logger(subsystem: "dev.skynolimit.traintrack.app", category: "LiveActivityManager")
 
@@ -71,6 +71,7 @@ final class LiveActivityManager: ObservableObject {
     private init() {
         startActivityLifecycleLogging()
         scheduleGlobalActivityMonitor()
+        updatePublishedState()
     }
 
     deinit {
@@ -80,31 +81,43 @@ final class LiveActivityManager: ObservableObject {
 
     /// Check if there's an active Live Activity for the given journey
     func isActive(for journey: Journey) -> Bool {
+        let fromCRS = journey.fromStation.crs.uppercased()
+        let toCRS = journey.toStation.crs.uppercased()
         return trackedActivities.values.contains {
-            $0.fromCRS == journey.fromStation.crs && $0.toCRS == journey.toStation.crs
-        }
+            $0.fromCRS.uppercased() == fromCRS && $0.toCRS.uppercased() == toCRS
+        } || systemActivities(forFromCRS: fromCRS, toCRS: toCRS).isEmpty == false
     }
 
     /// Check if an active Live Activity exists for the given journey and preferred service.
     func isActive(for journey: Journey, preferredServiceID: String?) -> Bool {
         guard let preferredServiceID else { return isActive(for: journey) }
+        let fromCRS = journey.fromStation.crs.uppercased()
+        let toCRS = journey.toStation.crs.uppercased()
         return trackedActivities.values.contains {
-            $0.fromCRS == journey.fromStation.crs
-                && $0.toCRS == journey.toStation.crs
+            $0.fromCRS.uppercased() == fromCRS
+                && $0.toCRS.uppercased() == toCRS
                 && $0.preferredServiceID == preferredServiceID
         }
     }
 
     /// Get the activity ID for a specific journey (if active)
     func activityID(for journey: Journey) -> String? {
-        return trackedActivities.first {
-            $0.value.fromCRS == journey.fromStation.crs && $0.value.toCRS == journey.toStation.crs
-        }?.key
+        let fromCRS = journey.fromStation.crs.uppercased()
+        let toCRS = journey.toStation.crs.uppercased()
+        if let trackedID = trackedActivities.first(where: {
+            $0.value.fromCRS.uppercased() == fromCRS && $0.value.toCRS.uppercased() == toCRS
+        })?.key {
+            return trackedID
+        }
+        return systemActivities(forFromCRS: fromCRS, toCRS: toCRS).first?.id
     }
 
     /// Get the count of currently active Live Activities
     var activeCount: Int {
-        return trackedActivities.count
+        return Set(
+            Activity<JourneyActivityAttributes>.activities.map { $0.id }
+                + trackedActivities.keys
+        ).count
     }
 
     func refreshIfActive(journeyStore: JourneyStore, depStore: DeparturesStore) async {
@@ -363,18 +376,57 @@ final class LiveActivityManager: ObservableObject {
 
     /// Stop the Live Activity for a specific journey
     func stop(for journey: Journey) async {
-        guard let activityID = activityID(for: journey) else {
+        let fromCRS = journey.fromStation.crs.uppercased()
+        let toCRS = journey.toStation.crs.uppercased()
+
+        let trackedIDs = trackedActivities.compactMap { entry -> String? in
+            let tracked = entry.value
+            guard tracked.fromCRS.uppercased() == fromCRS, tracked.toCRS.uppercased() == toCRS else { return nil }
+            return entry.key
+        }
+        if !trackedIDs.isEmpty {
+            for activityID in trackedIDs {
+                await stopActivity(activityID: activityID)
+            }
+            return
+        }
+
+        let matchingActivities = systemActivities(forFromCRS: fromCRS, toCRS: toCRS)
+        guard !matchingActivities.isEmpty else {
             print("⚠️ [LiveActivity] No activity found for \(journey.fromStation.crs) → \(journey.toStation.crs)")
             return
         }
-        await stopActivity(activityID: activityID)
+
+        for activity in matchingActivities {
+            await activity.end(nil, dismissalPolicy: .immediate)
+            await sendLiveActivityUnregistration(activityID: activity.id)
+        }
+        updatePublishedState()
+        lastEndedAt = Date()
     }
 
     /// Update the published state based on tracked activities
     private func updatePublishedState() {
-        isActive = !trackedActivities.isEmpty
-        activeJourneys = trackedActivities.values.map { ($0.fromCRS, $0.toCRS) }
+        let trackedPairs = trackedActivities.values.map { ($0.fromCRS.uppercased(), $0.toCRS.uppercased()) }
+        let systemPairs = Activity<JourneyActivityAttributes>.activities.map {
+            ($0.contentState.fromCRS.uppercased(), $0.contentState.toCRS.uppercased())
+        }
+        let allPairs = trackedPairs + systemPairs
+        var seen = Set<String>()
+        activeJourneys = allPairs.filter { pair in
+            let key = "\(pair.0)->\(pair.1)"
+            if seen.contains(key) { return false }
+            seen.insert(key)
+            return true
+        }
+        isActive = !activeJourneys.isEmpty
         print("📊 [LiveActivity] State updated: isActive=\(isActive), activeJourneys=\(activeJourneys.map { "\($0.fromCRS)→\($0.toCRS)" })")
+    }
+
+    private func systemActivities(forFromCRS fromCRS: String, toCRS: String) -> [Activity<JourneyActivityAttributes>] {
+        Activity<JourneyActivityAttributes>.activities.filter {
+            $0.contentState.fromCRS.uppercased() == fromCRS && $0.contentState.toCRS.uppercased() == toCRS
+        }
     }
 
     private func scheduleFallbackEnd(for activityID: String) -> Timer? {
@@ -741,6 +793,7 @@ final class LiveActivityManager: ObservableObject {
         let activityID = activity.id
         guard let tracked = trackedActivities[activityID] else {
             print("⚠️ [LiveActivity] Cleanup requested for unknown activity \(activityID)")
+            updatePublishedState()
             return
         }
 
@@ -835,7 +888,7 @@ final class LiveActivityManager: ObservableObject {
             return false
         }
 
-        let deviceID = UIDevice.current.identifierForVendor?.uuidString ?? "unknown-device"
+        let deviceID = DeviceIdentity.deviceToken
         let tokenPreview = String(tokenString.prefix(8)) + "..." + String(tokenString.suffix(8))
 
         // Detect if this is a debug/development build to tell server which APNs environment to use
@@ -914,7 +967,7 @@ final class LiveActivityManager: ObservableObject {
             return
         }
 
-        let deviceID = UIDevice.current.identifierForVendor?.uuidString ?? "unknown-device"
+        let deviceID = DeviceIdentity.deviceToken
         let payload: [String: Any] = [
             "device_id": deviceID,
             "activity_id": activityID
@@ -969,7 +1022,7 @@ final class LiveActivityManager: ObservableObject {
             return
         }
 
-        let deviceID = UIDevice.current.identifierForVendor?.uuidString ?? "unknown-device"
+        let deviceID = DeviceIdentity.deviceToken
         let payload: [String: Any] = [
             "device_id": deviceID,
             "force_refresh": true

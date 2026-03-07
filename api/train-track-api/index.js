@@ -30,6 +30,27 @@ function maskToken(token) {
     return `${token.slice(0, 6)}...${token.slice(-4)}`;
 }
 
+function normalizeDeviceId(value) {
+    return typeof value === 'string' ? value.trim() : '';
+}
+
+function resolveRequestDeviceIds(req, deviceId) {
+    const bodyDeviceId = normalizeDeviceId(deviceId);
+    const headerDeviceId = normalizeDeviceId(req.get('X-Device-Token'));
+    const canonicalDeviceId = headerDeviceId || bodyDeviceId;
+    const fallbackDeviceIds = bodyDeviceId && headerDeviceId && bodyDeviceId !== headerDeviceId
+        ? [bodyDeviceId]
+        : [];
+
+    return {
+        canonicalDeviceId,
+        bodyDeviceId: bodyDeviceId || null,
+        headerDeviceId: headerDeviceId || null,
+        fallbackDeviceIds,
+        hasMismatch: fallbackDeviceIds.length > 0
+    };
+}
+
 function getFlyInstanceId() {
     return process.env.FLY_ALLOC_ID || process.env.HOSTNAME || 'unknown';
 }
@@ -148,9 +169,12 @@ app.get('/metrics', async (req, res) => {
 
 app.post('/api/v2/live_activities', async (req, res) => {
     const { device_id, activity_id, live_activity_push_token, from, to, use_sandbox, preferred_service_id, mute_on_arrival, mute_delay_minutes, auto_end_on_arrival } = req.body || {};
-    if (!device_id || !activity_id || !live_activity_push_token || !from || !to) {
+    const { canonicalDeviceId, bodyDeviceId, headerDeviceId, hasMismatch } = resolveRequestDeviceIds(req, device_id);
+    if (!canonicalDeviceId || !activity_id || !live_activity_push_token || !from || !to) {
         logLiveActivityRequest('register_failed_validation', req, {
-            device_id,
+            device_id: canonicalDeviceId || bodyDeviceId,
+            body_device_id: bodyDeviceId,
+            header_device_id: headerDeviceId,
             activity_id,
             from,
             to,
@@ -161,7 +185,10 @@ app.post('/api/v2/live_activities', async (req, res) => {
     }
 
     logLiveActivityRequest('register', req, {
-        device_id,
+        device_id: canonicalDeviceId,
+        body_device_id: bodyDeviceId,
+        header_device_id: headerDeviceId,
+        device_id_mismatch: hasMismatch,
         activity_id,
         from,
         to,
@@ -171,7 +198,7 @@ app.post('/api/v2/live_activities', async (req, res) => {
     });
 
     const subscription = liveActivityManager.registerSubscription({
-        deviceId: device_id,
+        deviceId: canonicalDeviceId,
         activityId: activity_id,
         pushToken: live_activity_push_token,
         fromStation: from,
@@ -199,7 +226,7 @@ app.post('/api/v2/live_activities', async (req, res) => {
         poll_interval_seconds: Math.round(liveActivityManager.pollIntervalMs / 1000),
         apns_configured: liveActivityManager.pushClient.isConfigured(),
         subscription: {
-            device_id,
+            device_id: canonicalDeviceId,
             activity_id,
             from,
             to,
@@ -215,72 +242,109 @@ app.post('/api/v2/live_activities', async (req, res) => {
 
 app.delete('/api/v2/live_activities', async (req, res) => {
     const { device_id, activity_id } = req.body || {};
-    if (!device_id || !activity_id) {
-        logLiveActivityRequest('unregister_failed_validation', req, { device_id, activity_id });
+    const { canonicalDeviceId, bodyDeviceId, headerDeviceId, fallbackDeviceIds, hasMismatch } = resolveRequestDeviceIds(req, device_id);
+    if (!canonicalDeviceId || !activity_id) {
+        logLiveActivityRequest('unregister_failed_validation', req, {
+            device_id: canonicalDeviceId || bodyDeviceId,
+            body_device_id: bodyDeviceId,
+            header_device_id: headerDeviceId,
+            activity_id
+        });
         return res.status(400).json({ error: 'device_id and activity_id are required' });
     }
 
-    logLiveActivityRequest('unregister', req, { device_id, activity_id });
+    logLiveActivityRequest('unregister', req, {
+        device_id: canonicalDeviceId,
+        body_device_id: bodyDeviceId,
+        header_device_id: headerDeviceId,
+        device_id_mismatch: hasMismatch,
+        activity_id
+    });
 
-    const removed = liveActivityManager.unregisterSubscription(device_id, activity_id);
+    const removed = liveActivityManager.unregisterSubscription(canonicalDeviceId, activity_id, {
+        fallbackDeviceIds
+    });
 
     res.json({
         status: removed ? 'unregistered' : 'not_found',
-        device_id,
+        device_id: canonicalDeviceId,
         activity_id
     });
 });
 
 app.post('/api/v2/live_activities/checkin', async (req, res) => {
     const { device_id, force_refresh } = req.body || {};
-    if (!device_id) {
-        logLiveActivityRequest('checkin_failed_validation', req, { device_id });
+    const { canonicalDeviceId, bodyDeviceId, headerDeviceId, fallbackDeviceIds, hasMismatch } = resolveRequestDeviceIds(req, device_id);
+    if (!canonicalDeviceId) {
+        logLiveActivityRequest('checkin_failed_validation', req, {
+            device_id: canonicalDeviceId || bodyDeviceId,
+            body_device_id: bodyDeviceId,
+            header_device_id: headerDeviceId
+        });
         return res.status(400).json({ error: 'device_id is required' });
     }
 
     logLiveActivityRequest('checkin', req, {
-        device_id,
+        device_id: canonicalDeviceId,
+        body_device_id: bodyDeviceId,
+        header_device_id: headerDeviceId,
+        device_id_mismatch: hasMismatch,
         force_refresh: force_refresh !== false
     });
 
     try {
-        const result = await liveActivityManager.handleDeviceCheckIn(device_id, {
-            forceRefresh: force_refresh !== false
+        const result = await liveActivityManager.handleDeviceCheckIn(canonicalDeviceId, {
+            forceRefresh: force_refresh !== false,
+            fallbackDeviceIds,
+            canonicalDeviceId
         });
         res.json({
             status: 'ok',
-            device_id,
+            device_id: canonicalDeviceId,
             ...result
         });
     } catch (error) {
         const message = error?.message || error;
-        console.error(`[live-activity] checkin failed for ${device_id}: ${message}`);
+        console.error(`[live-activity] checkin failed for ${canonicalDeviceId}: ${message}`);
         res.status(500).json({ error: message });
     }
 });
 
 app.post('/api/v2/live_activities/arrive', async (req, res) => {
     const { device_id, from, to } = req.body || {};
-    if (!device_id) {
-        logLiveActivityRequest('arrive_failed_validation', req, { device_id });
+    const { canonicalDeviceId, bodyDeviceId, headerDeviceId, fallbackDeviceIds, hasMismatch } = resolveRequestDeviceIds(req, device_id);
+    if (!canonicalDeviceId) {
+        logLiveActivityRequest('arrive_failed_validation', req, {
+            device_id: canonicalDeviceId || bodyDeviceId,
+            body_device_id: bodyDeviceId,
+            header_device_id: headerDeviceId
+        });
         return res.status(400).json({ error: 'device_id is required' });
     }
 
-    logLiveActivityRequest('arrive', req, { device_id, from, to });
+    logLiveActivityRequest('arrive', req, {
+        device_id: canonicalDeviceId,
+        body_device_id: bodyDeviceId,
+        header_device_id: headerDeviceId,
+        device_id_mismatch: hasMismatch,
+        from,
+        to
+    });
 
     try {
-        const result = await liveActivityManager.handleArrival(device_id, {
+        const result = await liveActivityManager.handleArrival(canonicalDeviceId, {
             fromStation: from || null,
-            toStation: to || null
+            toStation: to || null,
+            fallbackDeviceIds
         });
         res.json({
             status: 'ok',
-            device_id,
+            device_id: canonicalDeviceId,
             ...result
         });
     } catch (error) {
         const message = error?.message || error;
-        console.error(`[live-activity] arrive failed for ${device_id}: ${message}`);
+        console.error(`[live-activity] arrive failed for ${canonicalDeviceId}: ${message}`);
         res.status(500).json({ error: message });
     }
 });
@@ -321,7 +385,8 @@ app.post('/api/v2/notifications/subscriptions', async (req, res) => {
             legs,
             subscriptionId: subscription_id,
             useSandbox: Boolean(use_sandbox),
-            muteOnArrival: Boolean(mute_on_arrival)
+            muteOnArrival: Boolean(mute_on_arrival),
+            source: 'scheduled'
         });
         recordPushTokenRegistration({
             channel: 'notification',
@@ -348,13 +413,95 @@ app.get('/api/v2/notifications/subscriptions', (req, res) => {
     if (!device_id) {
         return res.status(400).json({ error: 'device_id is required' });
     }
-    const subscriptions = notificationSubscriptionManager.listSubscriptions(device_id);
+    const subscriptions = notificationSubscriptionManager.listSubscriptions(device_id, { source: 'scheduled' });
     res.json({ subscriptions });
 });
 
 app.delete('/api/v2/notifications/subscriptions', async (req, res) => {
     const { device_id, subscription_id } = req.body || {};
     logNotificationRequest('delete', req, { device_id, subscription_id });
+    if (!device_id || !subscription_id) {
+        return res.status(400).json({ error: 'device_id and subscription_id are required' });
+    }
+    const removed = await notificationSubscriptionManager.deleteSubscription({
+        deviceId: device_id,
+        subscriptionId: subscription_id
+    });
+    res.json({ status: removed ? 'deleted' : 'not_found' });
+});
+
+app.post('/api/v2/notifications/live_sessions', async (req, res) => {
+    const {
+        device_id,
+        push_token,
+        route_key,
+        days_of_week,
+        notification_types,
+        legs,
+        subscription_id,
+        use_sandbox,
+        mute_on_arrival,
+        active_until
+    } = req.body || {};
+
+    logNotificationRequest('register_live_session', req, {
+        device_id,
+        route_key,
+        subscription_id,
+        notification_types,
+        use_sandbox: Boolean(use_sandbox),
+        mute_on_arrival: Boolean(mute_on_arrival),
+        active_until,
+        legs_count: Array.isArray(legs) ? legs.length : 0,
+        push_token: maskToken(push_token)
+    });
+
+    try {
+        const subscription = await notificationSubscriptionManager.upsertSubscription({
+            deviceId: device_id,
+            pushToken: push_token,
+            routeKey: route_key,
+            daysOfWeek: days_of_week,
+            notificationTypes: notification_types,
+            legs,
+            subscriptionId: subscription_id,
+            useSandbox: Boolean(use_sandbox),
+            muteOnArrival: Boolean(mute_on_arrival),
+            source: 'live_session',
+            activeUntil: active_until
+        });
+        recordPushTokenRegistration({
+            channel: 'notification',
+            environment: Boolean(use_sandbox) ? 'sandbox' : 'prod'
+        });
+        res.json({
+            status: 'registered',
+            poll_interval_seconds: Math.round(notificationSubscriptionManager.pollIntervalMs / 1000),
+            subscription
+        });
+    } catch (error) {
+        logNotificationRequest('register_live_session_failed', req, {
+            device_id,
+            route_key,
+            error: error?.message || error
+        });
+        res.status(400).json({ error: error?.message || error });
+    }
+});
+
+app.get('/api/v2/notifications/live_sessions', (req, res) => {
+    const { device_id } = req.query || {};
+    logNotificationRequest('list_live_sessions', req, { device_id });
+    if (!device_id) {
+        return res.status(400).json({ error: 'device_id is required' });
+    }
+    const subscriptions = notificationSubscriptionManager.listSubscriptions(device_id, { source: 'live_session' });
+    res.json({ subscriptions });
+});
+
+app.delete('/api/v2/notifications/live_sessions', async (req, res) => {
+    const { device_id, subscription_id } = req.body || {};
+    logNotificationRequest('delete_live_session', req, { device_id, subscription_id });
     if (!device_id || !subscription_id) {
         return res.status(400).json({ error: 'device_id and subscription_id are required' });
     }

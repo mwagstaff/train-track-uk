@@ -303,7 +303,8 @@ struct NotificationScheduleView: View {
                 fromName: primaryLeg?.fromName,
                 toName: primaryLeg?.toName,
                 useSandbox: useSandbox,
-                muteOnArrival: (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
+                muteOnArrival: (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true,
+                activeUntil: nil
             )
 
             do {

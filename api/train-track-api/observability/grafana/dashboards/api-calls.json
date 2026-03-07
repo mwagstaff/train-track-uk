@@ -272,6 +272,87 @@
       ],
       "title": "Retry Rate by Reason",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": ""
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 7,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Count"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sort_desc(topk(20, sum by (method, url, status) (increase(upstream_api_requests_total[$__range]))))",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Top URLs by Count and Status",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true
+            },
+            "indexByName": {
+              "method": 0,
+              "url": 1,
+              "status": 2,
+              "Value": 3
+            },
+            "renameByName": {
+              "method": "Method",
+              "url": "URL",
+              "status": "Status code",
+              "Value": "Count"
+            }
+          }
+        }
+      ],
+      "type": "table"
     }
   ],
   "refresh": "10s",
@@ -291,6 +372,6 @@
   "timezone": "",
   "title": "Upstream API Calls",
   "uid": "tt-api-calls",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

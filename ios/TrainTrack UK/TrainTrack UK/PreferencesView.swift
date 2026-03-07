@@ -24,7 +24,6 @@ struct PreferencesView: View {
     @AppStorage("journeySortMode") private var journeySortModeRaw: String = JourneySortMode.distance.rawValue
     @AppStorage(ApiHostPreference.storageKey, store: ApiHostPreference.store) private var apiHostRaw: String = ApiHost.prod.rawValue
     @AppStorage("autoReturnToFavouritesMinutes") private var autoReturnMinutes: Int = 0
-    @AppStorage("autoStartLiveActivity") private var autoStartLiveActivity: Bool = true
     @AppStorage("autoMuteOnArrival") private var autoMuteOnArrival: Bool = true
     @AppStorage("muteDelayMinutes") private var muteDelayMinutes: Int = 5
     @AppStorage("autoEndLiveActivity") private var autoEndLiveActivity: Bool = false
@@ -127,8 +126,7 @@ struct PreferencesView: View {
             }
 
             Section("Live Activities") {
-                Toggle("Auto-start when viewing journey", isOn: $autoStartLiveActivity)
-                Text("Automatically start a Live Activity when you open a journey. When disabled, tap the Start button instead.")
+                Text("Use the Start button at the top of a journey to begin a Live Activity and matching notifications manually.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 

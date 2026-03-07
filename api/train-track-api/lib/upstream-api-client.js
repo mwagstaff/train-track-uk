@@ -21,6 +21,38 @@ const client = axios.create({
     timeout: Number.isFinite(DEFAULT_TIMEOUT_MS) && DEFAULT_TIMEOUT_MS > 0 ? DEFAULT_TIMEOUT_MS : 8000
 });
 
+function logUpstreamRateLimit({
+    api,
+    operation,
+    method,
+    url,
+    status,
+    attempt,
+    maxRetries,
+    maxAttempts,
+    retryAfterMs,
+    backoffMs,
+    code,
+    message
+}) {
+    console.warn(JSON.stringify({
+        event: 'upstream_api_rate_limited',
+        timestamp: new Date().toISOString(),
+        api,
+        operation,
+        method,
+        url,
+        status,
+        attempt,
+        maxRetries,
+        maxAttempts,
+        retryAfterMs: Number.isFinite(retryAfterMs) ? retryAfterMs : null,
+        backoffMs: Number.isFinite(backoffMs) ? backoffMs : null,
+        code: code || null,
+        message: message || null
+    }));
+}
+
 function shouldRetry(error) {
     const status = error?.response?.status;
     if (isRetryableHttpStatus(status)) {
@@ -51,6 +83,7 @@ export async function getWithRetry({ api, operation, url, headers = {} }) {
                 api,
                 operation,
                 method,
+                url,
                 status: response?.status,
                 durationMs: Date.now() - startedAt
             });
@@ -61,12 +94,40 @@ export async function getWithRetry({ api, operation, url, headers = {} }) {
                 api,
                 operation,
                 method,
+                url,
                 status,
                 durationMs: Date.now() - startedAt
             });
 
             const retryable = shouldRetry(error);
             const hasAttemptsRemaining = attempt < retries;
+            const retryReason = retryReasonFromError(error);
+            const retryAfterMs = parseRetryAfterMs(error?.response?.headers?.['retry-after']);
+            const backoffMs = retryable && hasAttemptsRemaining
+                ? computeExponentialBackoffMs({
+                    attemptNumber: attempt + 1,
+                    baseDelayMs: DEFAULT_RETRY_BASE_DELAY_MS,
+                    maxDelayMs: DEFAULT_RETRY_MAX_DELAY_MS,
+                    retryAfterMs
+                })
+                : null;
+
+            if (status === 429) {
+                logUpstreamRateLimit({
+                    api,
+                    operation,
+                    method,
+                    url,
+                    status,
+                    attempt: attempt + 1,
+                    maxRetries: retries,
+                    maxAttempts: retries + 1,
+                    retryAfterMs,
+                    backoffMs,
+                    code: error?.code,
+                    message: error?.message
+                });
+            }
 
             if (!retryable || !hasAttemptsRemaining) {
                 if (retryable) {
@@ -74,26 +135,20 @@ export async function getWithRetry({ api, operation, url, headers = {} }) {
                         api,
                         operation,
                         method,
-                        reason: retryReasonFromError(error),
+                        url,
+                        reason: retryReason,
                         status
                     });
                 }
                 throw error;
             }
 
-            const retryAfterMs = parseRetryAfterMs(error?.response?.headers?.['retry-after']);
-            const backoffMs = computeExponentialBackoffMs({
-                attemptNumber: attempt + 1,
-                baseDelayMs: DEFAULT_RETRY_BASE_DELAY_MS,
-                maxDelayMs: DEFAULT_RETRY_MAX_DELAY_MS,
-                retryAfterMs
-            });
-
             recordUpstreamApiRetry({
                 api,
                 operation,
                 method,
-                reason: retryReasonFromError(error),
+                url,
+                reason: retryReason,
                 status,
                 backoffMs
             });

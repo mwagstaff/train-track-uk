@@ -8,6 +8,8 @@ import { recordNotificationEvent } from './admin-data-store.js';
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.NOTIFICATION_POLL_INTERVAL_SECONDS || '30');
 const MAX_SUBSCRIPTIONS_PER_DEVICE = Number(process.env.NOTIFICATION_MAX_SUBSCRIPTIONS || '3');
 const MAX_WINDOW_MINUTES = 120;
+const SCHEDULED_SOURCE = 'scheduled';
+const LIVE_SESSION_SOURCE = 'live_session';
 
 const VALID_TYPES = new Set(['summary', 'delays', 'platform']);
 const DAY_MAP = {
@@ -93,9 +95,19 @@ class NotificationSubscriptionManager {
 
     // --- Public API ---
 
-    listSubscriptions(deviceId) {
+    listSubscriptions(deviceId, { source = null } = {}) {
         return Array.from(this.subscriptions.values())
-            .filter((sub) => sub.deviceId === deviceId)
+            .filter((sub) => {
+                if (sub.deviceId !== deviceId) return false;
+                if (source && this.subscriptionSource(sub) !== source) return false;
+                if (this.isExpiredLiveSession(sub)) {
+                    this.deleteSubscription({ deviceId: sub.deviceId, subscriptionId: sub.id }).catch((error) => {
+                        console.error('[notifications] Failed to delete expired live session:', error?.message || error);
+                    });
+                    return false;
+                }
+                return true;
+            })
             .map((sub) => this.publicSubscription(sub));
     }
 
@@ -113,7 +125,9 @@ class NotificationSubscriptionManager {
             legs: legsInput,
             subscriptionId,
             useSandbox,
-            muteOnArrival
+            muteOnArrival,
+            source: sourceInput,
+            activeUntil
         } = payload || {};
 
         if (!deviceId || !pushToken) {
@@ -127,8 +141,9 @@ class NotificationSubscriptionManager {
             throw new Error('At least one journey leg must be enabled');
         }
 
+        const source = normalizeSource(sourceInput);
         const daysOfWeek = normalizeDays(daysInput);
-        if (daysOfWeek.length === 0) {
+        if (source === SCHEDULED_SOURCE && daysOfWeek.length === 0) {
             throw new Error('At least one day of week is required');
         }
 
@@ -141,7 +156,7 @@ class NotificationSubscriptionManager {
             const enabled = Boolean(leg.enabled);
             const windowStart = leg.window_start || leg.windowStart;
             const windowEnd = leg.window_end || leg.windowEnd;
-            if (enabled) {
+            if (enabled && source === SCHEDULED_SOURCE) {
                 const { startMinutes, endMinutes } = parseWindow(windowStart, windowEnd);
                 const duration = endMinutes - startMinutes;
                 if (duration < 0 || duration > MAX_WINDOW_MINUTES) {
@@ -165,10 +180,15 @@ class NotificationSubscriptionManager {
         }
 
         const existing = Array.from(this.subscriptions.values()).find(
-            (sub) => sub.deviceId === deviceId && sub.routeKey === routeKey
+            (sub) => sub.deviceId === deviceId
+                && sub.routeKey === routeKey
+                && this.subscriptionSource(sub) === source
         );
-        const deviceCount = this.countSubscriptionsForDevice(deviceId);
+        const deviceCount = this.countSubscriptionsForDevice(deviceId, { source });
         if (!existing && deviceCount >= MAX_SUBSCRIPTIONS_PER_DEVICE) {
+            if (source === LIVE_SESSION_SOURCE) {
+                throw new Error(`Maximum of ${MAX_SUBSCRIPTIONS_PER_DEVICE} live journeys reached`);
+            }
             throw new Error(`Maximum of ${MAX_SUBSCRIPTIONS_PER_DEVICE} scheduled journeys reached`);
         }
 
@@ -176,17 +196,22 @@ class NotificationSubscriptionManager {
         const resolvedMuteOnArrival = muteOnArrival === undefined
             ? (existing?.muteOnArrival ?? true)
             : Boolean(muteOnArrival);
+        const resolvedActiveUntil = source === LIVE_SESSION_SOURCE
+            ? normalizeIsoDate(activeUntil) || existing?.activeUntil || nowIso
+            : null;
 
         const subscription = {
             id: existing?.id || subscriptionId || crypto.randomUUID(),
             deviceId,
             pushToken,
             routeKey,
-            daysOfWeek,
+            daysOfWeek: daysOfWeek.length > 0 ? daysOfWeek : (existing?.daysOfWeek || []),
             notificationTypes,
             legs: normalizedLegs,
             useSandbox: Boolean(useSandbox),
             muteOnArrival: resolvedMuteOnArrival,
+            source,
+            activeUntil: resolvedActiveUntil,
             createdAt: existing?.createdAt || nowIso,
             updatedAt: nowIso,
             lastSummarySentByLeg: existing?.lastSummarySentByLeg || {},
@@ -210,8 +235,13 @@ class NotificationSubscriptionManager {
         return true;
     }
 
-    countSubscriptionsForDevice(deviceId) {
-        return Array.from(this.subscriptions.values()).filter((sub) => sub.deviceId === deviceId).length;
+    countSubscriptionsForDevice(deviceId, { source = null } = {}) {
+        return Array.from(this.subscriptions.values()).filter((sub) => {
+            if (sub.deviceId !== deviceId) return false;
+            if (source && this.subscriptionSource(sub) !== source) return false;
+            if (this.isExpiredLiveSession(sub)) return false;
+            return true;
+        }).length;
     }
 
     getActiveCounts(now = Date.now()) {
@@ -237,6 +267,7 @@ class NotificationSubscriptionManager {
         }
         this.isPolling = true;
         try {
+            await this.pruneExpiredLiveSessions();
             const jobs = Array.from(this.subscriptions.values()).map((sub) =>
                 this.pollSubscription(sub).catch((error) => {
                     console.error(`Notification poll failed for ${sub.deviceId}/${sub.routeKey}: ${error?.message || error}`);
@@ -250,6 +281,10 @@ class NotificationSubscriptionManager {
     }
 
     async pollSubscription(subscription) {
+        if (this.isExpiredLiveSession(subscription)) {
+            await this.deleteSubscription({ deviceId: subscription.deviceId, subscriptionId: subscription.id });
+            return;
+        }
         for (const leg of subscription.legs) {
             if (!leg.enabled) continue;
             if (!shouldPollNow(subscription, leg)) continue;
@@ -299,36 +334,41 @@ class NotificationSubscriptionManager {
             return;
         }
 
+        const activeSubscription = this.getActiveSubscriptionForPush(subscription.id, leg, 'summary_pre_send');
+        if (!activeSubscription) {
+            return;
+        }
+
         const pushResult = await this.pushClient.sendNotification(
-            subscription.pushToken,
+            activeSubscription.pushToken,
             summary.payload,
-            { useSandbox: subscription.useSandbox, event: summary.type }
+            { useSandbox: activeSubscription.useSandbox, event: summary.type }
         );
-        this.logSendEvent(subscription, leg, summary, pushResult);
+        this.logSendEvent(activeSubscription, leg, summary, pushResult);
         console.log('[notifications] summary_push', JSON.stringify({
-            subscription_id: subscription.id,
-            device_id: subscription.deviceId,
-            route_key: subscription.routeKey,
+            subscription_id: activeSubscription.id,
+            device_id: activeSubscription.deviceId,
+            route_key: activeSubscription.routeKey,
             leg: legKey,
-            use_sandbox: subscription.useSandbox,
+            use_sandbox: activeSubscription.useSandbox,
             status: pushResult?.status,
             reason: pushResult?.body?.reason || null
         }));
         if (pushResult?.isBadToken) {
             console.warn('[notifications] bad_token_delete', JSON.stringify({
-                subscription_id: subscription.id,
-                device_id: subscription.deviceId,
-                route_key: subscription.routeKey,
+                subscription_id: activeSubscription.id,
+                device_id: activeSubscription.deviceId,
+                route_key: activeSubscription.routeKey,
                 context: 'sendSummaryIfNeeded'
             }));
-            this.subscriptions.delete(subscription.id);
-            await this._deleteFromRedis(subscription.id);
+            this.subscriptions.delete(activeSubscription.id);
+            await this._deleteFromRedis(activeSubscription.id);
             return;
         }
 
-        subscription.lastSummarySentByLeg[legKey] = todayKey;
+        activeSubscription.lastSummarySentByLeg[legKey] = todayKey;
         // Fire-and-forget: persist the updated lastSummarySentByLeg.
-        this._saveSubscription(subscription).catch((err) => {
+        this._saveSubscription(activeSubscription).catch((err) => {
             console.error('[notifications] Failed to persist lastSummarySentByLeg:', err?.message || err);
         });
     }
@@ -382,30 +422,63 @@ class NotificationSubscriptionManager {
 
     async sendNotification(subscription, notification, leg = null) {
         if (!notification) return;
+        const activeSubscription = this.getActiveSubscriptionForPush(subscription.id, leg, 'update_pre_send');
+        if (!activeSubscription) {
+            return;
+        }
         const result = await this.pushClient.sendNotification(
-            subscription.pushToken,
+            activeSubscription.pushToken,
             notification.payload,
-            { useSandbox: subscription.useSandbox, event: notification.type }
+            { useSandbox: activeSubscription.useSandbox, event: notification.type }
         );
-        this.logSendEvent(subscription, leg, notification, result);
+        this.logSendEvent(activeSubscription, leg, notification, result);
         console.log('[notifications] update_push', JSON.stringify({
-            subscription_id: subscription.id,
-            device_id: subscription.deviceId,
-            route_key: subscription.routeKey,
-            use_sandbox: subscription.useSandbox,
+            subscription_id: activeSubscription.id,
+            device_id: activeSubscription.deviceId,
+            route_key: activeSubscription.routeKey,
+            use_sandbox: activeSubscription.useSandbox,
             status: result?.status,
             reason: result?.body?.reason || null
         }));
         if (result?.isBadToken) {
             console.warn('[notifications] bad_token_delete', JSON.stringify({
-                subscription_id: subscription.id,
-                device_id: subscription.deviceId,
-                route_key: subscription.routeKey,
+                subscription_id: activeSubscription.id,
+                device_id: activeSubscription.deviceId,
+                route_key: activeSubscription.routeKey,
                 context: 'sendNotification'
             }));
-            this.subscriptions.delete(subscription.id);
-            await this._deleteFromRedis(subscription.id);
+            this.subscriptions.delete(activeSubscription.id);
+            await this._deleteFromRedis(activeSubscription.id);
         }
+    }
+
+    getActiveSubscriptionForPush(subscriptionId, leg, context) {
+        const activeSubscription = this.subscriptions.get(subscriptionId);
+        const legKey = leg ? `${leg.from}-${leg.to}` : null;
+
+        if (!activeSubscription) {
+            console.log('[notifications] suppress_push', JSON.stringify({
+                subscription_id: subscriptionId,
+                leg: legKey,
+                context,
+                reason: 'subscription_missing'
+            }));
+            return null;
+        }
+
+        if (legKey && this.isMutedToday(activeSubscription, legKey)) {
+            console.log('[notifications] suppress_push', JSON.stringify({
+                subscription_id: subscriptionId,
+                device_id: activeSubscription.deviceId,
+                route_key: activeSubscription.routeKey,
+                leg: legKey,
+                context,
+                reason: 'muted'
+            }));
+            return null;
+        }
+
+        return activeSubscription;
     }
 
     logSendEvent(subscription, leg, notification, result) {
@@ -445,6 +518,8 @@ class NotificationSubscriptionManager {
             notification_types: subscription.notificationTypes,
             use_sandbox: subscription.useSandbox,
             mute_on_arrival: subscription.muteOnArrival,
+            source: this.subscriptionSource(subscription),
+            active_until: subscription.activeUntil || null,
             muted_by_leg_day: subscription.mutedByLegDay,
             muted_at_by_leg_day: subscription.mutedAtByLegDay,
             legs: subscription.legs.map((leg) => ({
@@ -520,6 +595,29 @@ class NotificationSubscriptionManager {
     getSubscriptionCount() {
         return this.subscriptions.size;
     }
+
+    subscriptionSource(subscription) {
+        return normalizeSource(subscription?.source);
+    }
+
+    isExpiredLiveSession(subscription, now = Date.now()) {
+        if (this.subscriptionSource(subscription) !== LIVE_SESSION_SOURCE) {
+            return false;
+        }
+        const activeUntil = Date.parse(subscription?.activeUntil || '');
+        if (!Number.isFinite(activeUntil)) {
+            return false;
+        }
+        return activeUntil <= now;
+    }
+
+    async pruneExpiredLiveSessions(now = Date.now()) {
+        const expiredIds = Array.from(this.subscriptions.values())
+            .filter((sub) => this.isExpiredLiveSession(sub, now))
+            .map((sub) => sub.id);
+        if (expiredIds.length === 0) return;
+        await Promise.all(expiredIds.map((id) => this.deleteSubscription({ subscriptionId: id })));
+    }
 }
 
 function normalizeDays(daysInput) {
@@ -544,6 +642,11 @@ function normalizeTypes(typesInput) {
     return raw
         .map((t) => (typeof t === 'string' ? t.trim().toLowerCase() : ''))
         .filter((t) => VALID_TYPES.has(t));
+}
+
+function normalizeSource(value) {
+    const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    return raw === LIVE_SESSION_SOURCE ? LIVE_SESSION_SOURCE : SCHEDULED_SOURCE;
 }
 
 function buildRouteKey(legs) {
@@ -581,6 +684,10 @@ function currentMinutes() {
 }
 
 function shouldPollNow(subscription, leg) {
+    if (normalizeSource(subscription?.source) === LIVE_SESSION_SOURCE) {
+        const activeUntil = Date.parse(subscription?.activeUntil || '');
+        return !Number.isFinite(activeUntil) || activeUntil > Date.now();
+    }
     const dayKey = moment().format('ddd').toLowerCase();
     const today = dayKey.slice(0, 3);
     if (!subscription.daysOfWeek.includes(today)) {
@@ -595,6 +702,13 @@ function shouldPollNow(subscription, leg) {
     }
     const nowMinutes = currentMinutes();
     return nowMinutes >= startMinutes && nowMinutes <= endMinutes;
+}
+
+function normalizeIsoDate(value) {
+    if (!value || typeof value !== 'string') return null;
+    const timestamp = Date.parse(value);
+    if (!Number.isFinite(timestamp)) return null;
+    return new Date(timestamp).toISOString();
 }
 
 async function getDeparturesSnapshot(fromStation, toStation) {

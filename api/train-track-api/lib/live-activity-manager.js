@@ -785,35 +785,59 @@ class LiveActivityManager {
         return fallback;
     }
 
-    getSubscription(deviceId, activityId) {
-        return this.subscriptions.get(this.buildKey(deviceId, activityId));
+    getSubscription(deviceId, activityId, { fallbackDeviceIds = [] } = {}) {
+        const deviceIds = this.uniqueDeviceIds([deviceId, ...fallbackDeviceIds]);
+        for (const candidate of deviceIds) {
+            const subscription = this.subscriptions.get(this.buildKey(candidate, activityId));
+            if (subscription) {
+                return subscription;
+            }
+        }
+        return null;
     }
 
-    unregisterSubscription(deviceId, activityId) {
-        const key = this.buildKey(deviceId, activityId);
-        const subscription = this.subscriptions.get(key);
+    unregisterSubscription(deviceId, activityId, { fallbackDeviceIds = [] } = {}) {
+        const subscription = this.getSubscription(deviceId, activityId, { fallbackDeviceIds });
         if (!subscription) {
             this.log(`[live-activity] unregister_not_found ${deviceId}/${activityId}`);
             return false;
         }
+        const key = this.buildKey(subscription.deviceId, subscription.activityId);
         this.clearEndTimer(subscription);
         this.subscriptions.delete(key);
         this.log(`[live-activity] unregistered ${deviceId}/${activityId}`);
         return true;
     }
 
-    async handleDeviceCheckIn(deviceId, { forceRefresh = true } = {}) {
-        const normalizedDeviceId = typeof deviceId === 'string' ? deviceId.trim() : '';
-        if (!normalizedDeviceId) {
+    async handleDeviceCheckIn(deviceId, { forceRefresh = true, fallbackDeviceIds = [], canonicalDeviceId = null } = {}) {
+        const requestedDeviceIds = this.uniqueDeviceIds([deviceId, ...fallbackDeviceIds]);
+        const normalizedCanonicalDeviceId = typeof canonicalDeviceId === 'string' ? canonicalDeviceId.trim() : '';
+        if (requestedDeviceIds.length === 0 && !normalizedCanonicalDeviceId) {
             return {
                 updated: 0,
                 refreshed: 0,
-                subscriptions: 0
+                subscriptions: 0,
+                migrated: 0
             };
         }
 
+        let subs = this.findSubscriptionsByDeviceIds(
+            normalizedCanonicalDeviceId
+                ? [normalizedCanonicalDeviceId, ...requestedDeviceIds]
+                : requestedDeviceIds
+        );
+
+        let migrated = 0;
+        if (normalizedCanonicalDeviceId) {
+            for (const sub of subs) {
+                if (this.migrateSubscriptionDeviceId(sub, normalizedCanonicalDeviceId)) {
+                    migrated += 1;
+                }
+            }
+            subs = this.findSubscriptionsByDeviceIds([normalizedCanonicalDeviceId, ...requestedDeviceIds]);
+        }
+
         const nowIso = new Date().toISOString();
-        const subs = Array.from(this.subscriptions.values()).filter((sub) => sub.deviceId === normalizedDeviceId);
         for (const sub of subs) {
             sub.tokenUpdatedAt = nowIso;
         }
@@ -836,7 +860,8 @@ class LiveActivityManager {
         return {
             updated: subs.length,
             refreshed,
-            subscriptions: subs.length
+            subscriptions: subs.length,
+            migrated
         };
     }
 
@@ -982,12 +1007,11 @@ class LiveActivityManager {
      * Called when the iOS app detects the user has arrived at a departure station.
      * Ends any matching Live Activity subscriptions that have autoEndOnArrival enabled.
      */
-    async handleArrival(deviceId, { fromStation = null, toStation = null } = {}) {
-        const normalizedDeviceId = typeof deviceId === 'string' ? deviceId.trim() : '';
-        if (!normalizedDeviceId) return { ended: 0 };
+    async handleArrival(deviceId, { fromStation = null, toStation = null, fallbackDeviceIds = [] } = {}) {
+        const candidateDeviceIds = this.uniqueDeviceIds([deviceId, ...fallbackDeviceIds]);
+        if (candidateDeviceIds.length === 0) return { ended: 0 };
 
-        const subs = Array.from(this.subscriptions.values()).filter((sub) => {
-            if (sub.deviceId !== normalizedDeviceId) return false;
+        const subs = this.findSubscriptionsByDeviceIds(candidateDeviceIds).filter((sub) => {
             if (!sub.autoEndOnArrival) return false;
             if (fromStation && sub.fromStation?.toUpperCase() !== fromStation.toUpperCase()) return false;
             if (toStation && sub.toStation?.toUpperCase() !== toStation.toUpperCase()) return false;
@@ -995,7 +1019,7 @@ class LiveActivityManager {
         });
 
         if (subs.length === 0) {
-            this.log(`[live-activity] arrival_no_subscriptions ${normalizedDeviceId} (autoEndOnArrival=false or no match)`);
+            this.log(`[live-activity] arrival_no_subscriptions ${candidateDeviceIds.join(',')} (autoEndOnArrival=false or no match)`);
             return { ended: 0 };
         }
 
@@ -1022,6 +1046,44 @@ class LiveActivityManager {
 
     buildKey(deviceId, activityId) {
         return `${deviceId}::${activityId}`;
+    }
+
+    uniqueDeviceIds(deviceIds = []) {
+        return Array.from(new Set(
+            deviceIds
+                .map((value) => typeof value === 'string' ? value.trim() : '')
+                .filter(Boolean)
+        ));
+    }
+
+    findSubscriptionsByDeviceIds(deviceIds = []) {
+        const normalized = this.uniqueDeviceIds(deviceIds);
+        if (normalized.length === 0) {
+            return [];
+        }
+        const candidates = new Set(normalized);
+        return Array.from(this.subscriptions.values()).filter((sub) => candidates.has(sub.deviceId));
+    }
+
+    migrateSubscriptionDeviceId(subscription, nextDeviceId) {
+        const normalizedNextDeviceId = typeof nextDeviceId === 'string' ? nextDeviceId.trim() : '';
+        if (!subscription || !normalizedNextDeviceId || subscription.deviceId === normalizedNextDeviceId) {
+            return false;
+        }
+
+        const currentKey = this.buildKey(subscription.deviceId, subscription.activityId);
+        const nextKey = this.buildKey(normalizedNextDeviceId, subscription.activityId);
+        const existing = this.subscriptions.get(nextKey);
+        if (existing && existing !== subscription) {
+            this.log(`[live-activity] device_id_migrate_collision ${subscription.deviceId}->${normalizedNextDeviceId}/${subscription.activityId}`);
+            return false;
+        }
+
+        this.subscriptions.delete(currentKey);
+        subscription.deviceId = normalizedNextDeviceId;
+        this.subscriptions.set(nextKey, subscription);
+        this.log(`[live-activity] device_id_migrated ${currentKey} -> ${nextKey}`);
+        return true;
     }
 
     listSubscriptions() {

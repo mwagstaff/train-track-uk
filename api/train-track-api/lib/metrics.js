@@ -38,7 +38,7 @@ const v2RequestsTotal = new client.Counter({
 const upstreamApiRequestsTotal = new client.Counter({
     name: 'upstream_api_requests_total',
     help: 'Total number of upstream API call attempts (includes retries)',
-    labelNames: ['api', 'operation', 'method', 'status', 'status_class', 'outcome'],
+    labelNames: ['api', 'operation', 'method', 'url', 'status', 'status_class', 'outcome'],
     registers: [register]
 });
 
@@ -53,7 +53,7 @@ const upstreamApiRequestDuration = new client.Histogram({
 const upstreamApiRetriesTotal = new client.Counter({
     name: 'upstream_api_retries_total',
     help: 'Total number of upstream API retry attempts',
-    labelNames: ['api', 'operation', 'method', 'reason', 'status'],
+    labelNames: ['api', 'operation', 'method', 'url', 'reason', 'status'],
     registers: [register]
 });
 
@@ -68,7 +68,7 @@ const upstreamApiRetryBackoff = new client.Histogram({
 const upstreamApiRetryExhaustedTotal = new client.Counter({
     name: 'upstream_api_retry_exhausted_total',
     help: 'Total number of upstream API calls that exhausted retries',
-    labelNames: ['api', 'operation', 'method', 'reason', 'status'],
+    labelNames: ['api', 'operation', 'method', 'url', 'reason', 'status'],
     registers: [register]
 });
 
@@ -214,6 +214,33 @@ function asLabel(value, fallback = 'unknown') {
     return typeof value === 'string' && value.length > 0 ? value : fallback;
 }
 
+function normalizeUpstreamUrl(url) {
+    if (typeof url !== 'string' || url.length === 0) {
+        return 'unknown';
+    }
+
+    try {
+        const parsed = new URL(url);
+        const pathSegments = parsed.pathname.split('/').filter(Boolean);
+        const getServiceDetailsIndex = pathSegments.indexOf('GetServiceDetails');
+
+        if (getServiceDetailsIndex >= 0 && pathSegments.length > getServiceDetailsIndex + 1) {
+            pathSegments[getServiceDetailsIndex + 1] = ':serviceId';
+        }
+
+        const normalizedPath = `/${pathSegments.join('/')}`;
+        const normalizedQueryEntries = Array.from(parsed.searchParams.entries())
+            .sort(([left], [right]) => left.localeCompare(right));
+        const normalizedQuery = normalizedQueryEntries.length > 0
+            ? `?${normalizedQueryEntries.map(([key, value]) => `${key}=${value}`).join('&')}`
+            : '';
+
+        return `${normalizedPath}${normalizedQuery}`;
+    } catch {
+        return url;
+    }
+}
+
 // Middleware to track metrics for inbound HTTP requests.
 export function metricsMiddleware(req, res, next) {
     const start = Date.now();
@@ -252,10 +279,11 @@ export function metricsMiddleware(req, res, next) {
     next();
 }
 
-export function recordUpstreamApiRequest({ api, operation, method, status, durationMs }) {
+export function recordUpstreamApiRequest({ api, operation, method, url, status, durationMs }) {
     const apiLabel = asLabel(api);
     const operationLabel = asLabel(operation);
     const methodLabel = asLabel(method, 'GET').toUpperCase();
+    const urlLabel = asLabel(normalizeUpstreamUrl(url));
     const statusLabel = normalizeStatus(status);
     const statusClassLabel = statusClass(status);
     const outcomeLabel = outcomeFromStatus(status);
@@ -264,6 +292,7 @@ export function recordUpstreamApiRequest({ api, operation, method, status, durat
         api: apiLabel,
         operation: operationLabel,
         method: methodLabel,
+        url: urlLabel,
         status: statusLabel,
         status_class: statusClassLabel,
         outcome: outcomeLabel
@@ -281,10 +310,11 @@ export function recordUpstreamApiRequest({ api, operation, method, status, durat
     );
 }
 
-export function recordUpstreamApiRetry({ api, operation, method, reason, status, backoffMs }) {
+export function recordUpstreamApiRetry({ api, operation, method, url, reason, status, backoffMs }) {
     const apiLabel = asLabel(api);
     const operationLabel = asLabel(operation);
     const methodLabel = asLabel(method, 'GET').toUpperCase();
+    const urlLabel = asLabel(normalizeUpstreamUrl(url));
     const reasonLabel = asLabel(reason);
     const statusLabel = normalizeStatus(status);
 
@@ -292,6 +322,7 @@ export function recordUpstreamApiRetry({ api, operation, method, reason, status,
         api: apiLabel,
         operation: operationLabel,
         method: methodLabel,
+        url: urlLabel,
         reason: reasonLabel,
         status: statusLabel
     });
@@ -307,11 +338,12 @@ export function recordUpstreamApiRetry({ api, operation, method, reason, status,
     );
 }
 
-export function recordUpstreamApiRetryExhausted({ api, operation, method, reason, status }) {
+export function recordUpstreamApiRetryExhausted({ api, operation, method, url, reason, status }) {
     upstreamApiRetryExhaustedTotal.inc({
         api: asLabel(api),
         operation: asLabel(operation),
         method: asLabel(method, 'GET').toUpperCase(),
+        url: asLabel(normalizeUpstreamUrl(url)),
         reason: asLabel(reason),
         status: normalizeStatus(status)
     });
