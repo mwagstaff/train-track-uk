@@ -87,7 +87,7 @@ struct JourneyDetailsView: View {
         }
 
         if let subscription = notificationSubscription,
-           let nextSchedule = nextScheduledStartDescription(for: subscription) {
+           let nextSchedule = nextScheduledStartDescription(for: subscription, matching: currentGroup.legs) {
             return ("Journey updates scheduled to start \(nextSchedule)", .secondary)
         }
 
@@ -962,9 +962,12 @@ struct JourneyDetailsView: View {
         return output.string(from: date)
     }
 
-    private func nextScheduledStartDescription(for subscription: NotificationSubscription) -> String? {
+    private func nextScheduledStartDescription(
+        for subscription: NotificationSubscription,
+        matching journeyLegs: [Journey]
+    ) -> String? {
         guard !subscription.daysOfWeek.isEmpty,
-              let startValue = subscription.legs.first(where: \.enabled)?.windowStart ?? subscription.legs.first?.windowStart,
+              let startValue = scheduledWindowStart(in: subscription, matching: journeyLegs),
               let startTime = timeFromHHmm(startValue) else {
             return nil
         }
@@ -998,6 +1001,41 @@ struct JourneyDetailsView: View {
 
         guard let next = candidates.min(by: { $0.date < $1.date }) else { return nil }
         return "on \(next.label) at \(formatTime(next.date))"
+    }
+
+    private func scheduledWindowStart(
+        in subscription: NotificationSubscription,
+        matching journeyLegs: [Journey]
+    ) -> String? {
+        let directionLegIDs = journeyLegs.map {
+            NotificationLeg(
+                from: $0.fromStation.crs.uppercased(),
+                to: $0.toStation.crs.uppercased(),
+                fromName: nil,
+                toName: nil,
+                enabled: true,
+                windowStart: "",
+                windowEnd: ""
+            ).id
+        }
+
+        let matchingLegs = subscription.legs.filter { leg in
+            directionLegIDs.contains("\(leg.from.uppercased())->\(leg.to.uppercased())")
+        }
+
+        if let enabledMatch = matchingLegs.first(where: \.enabled) {
+            return enabledMatch.windowStart
+        }
+
+        if let firstMatch = matchingLegs.first {
+            return firstMatch.windowStart
+        }
+
+        if let enabledFallback = subscription.legs.first(where: \.enabled) {
+            return enabledFallback.windowStart
+        }
+
+        return subscription.legs.first?.windowStart
     }
 
     private func timeFromHHmm(_ value: String) -> Date? {
