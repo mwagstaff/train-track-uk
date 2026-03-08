@@ -64,41 +64,46 @@ struct JourneyDetailsView: View {
         notificationSubscription != nil || notificationStore.subscriptions.count < 3
     }
 
-    private var notificationSubtitle: String {
-        if let subscription = notificationSubscription {
-            return "Scheduled • \(subscription.daysLabel) • \(subscription.windowLabel)"
-        }
-        if !canScheduleNotifications {
-            return "Limit reached (max 3 journeys)"
-        }
-        return "Choose days, time window, and alert types"
-    }
-
     private var notificationMuteStatus: (detail: String, isMuted: Bool)? {
         guard let subscription = liveSession ?? notificationSubscription else { return nil }
         guard let firstLeg = currentGroup.legs.first else { return nil }
-        let muteOnArrival = subscription.muteOnArrival ?? true
-        let startName = firstLeg.fromStation.name
         let fromCode = firstLeg.fromStation.crs.uppercased()
         let toCode = firstLeg.toStation.crs.uppercased()
         let legKey = NotificationMuteStorage.legKey(from: fromCode, to: toCode)
 
         if NotificationMuteStorage.isMutedToday(from: fromCode, to: toCode) {
             if let timeLabel = NotificationMuteStorage.mutedTimeLabel(from: fromCode, to: toCode) {
-                return (detail: "Muted at \(timeLabel) for today", isMuted: true)
+                return (detail: "Notifications muted at \(timeLabel) today", isMuted: true)
             }
-            return (detail: "Muted for today", isMuted: true)
+            return (detail: "Notifications muted for today", isMuted: true)
         }
 
         if let mutedDate = subscription.mutedByLegDay?[legKey],
            mutedDate == currentDateKeyUTC() {
             let mutedAt = subscription.mutedAtByLegDay?[legKey]
-            let timeLabel = mutedAt.flatMap(formatTime) ?? "now"
-            return (detail: "Muted at \(timeLabel) due to arrival at \(startName)", isMuted: true)
+            if let timeLabel = mutedAt.flatMap(formatTime) {
+                return (detail: "Notifications muted at \(timeLabel) today", isMuted: true)
+            }
+            return (detail: "Notifications muted for today", isMuted: true)
         }
 
-        guard muteOnArrival else { return nil }
-        return (detail: "Auto-mutes today when you arrive at \(startName)", isMuted: false)
+        return nil
+    }
+
+    private var updatesStatus: (text: String, icon: String, color: Color)? {
+        if let liveSessionInfoMessage, !liveSessionInfoMessage.isEmpty {
+            return (liveSessionInfoMessage, "info.circle", .secondary)
+        }
+        if let muteStatus = notificationMuteStatus {
+            return (muteStatus.detail, "bell.slash.fill", muteStatus.isMuted ? .orange : .secondary)
+        }
+        if let subscription = notificationSubscription {
+            return ("Scheduled \(subscription.daysLabel)", "calendar", .secondary)
+        }
+        if !canScheduleNotifications {
+            return ("Schedule limit reached", "calendar.badge.exclamationmark", .secondary)
+        }
+        return nil
     }
 
     private func departures(for leg: Journey) -> [DepartureV2] {
@@ -291,23 +296,22 @@ struct JourneyDetailsView: View {
     var body: some View {
         List {
             Section {
-                LiveJourneySessionRow(
-                    isActive: liveSession != nil,
+                JourneyUpdatesRow(
+                    isLiveActive: liveSession != nil,
                     isBusy: liveSessionActionInFlight,
-                    activeCount: notificationStore.liveSessions.count,
-                    infoMessage: liveSessionInfoMessage
-                ) {
-                    toggleLiveSession()
-                }
-                NotificationScheduleRow(
-                    subtitle: notificationSubtitle,
-                    detail: notificationMuteStatus?.detail,
-                    isMuted: notificationMuteStatus?.isMuted ?? false,
+                    liveActiveCount: notificationStore.liveSessions.count,
                     isScheduled: notificationSubscription != nil,
-                    isDisabled: !canScheduleNotifications
-                ) {
-                    showingNotificationSheet = true
-                }
+                    isScheduleDisabled: !canScheduleNotifications,
+                    statusText: updatesStatus?.text,
+                    statusIcon: updatesStatus?.icon,
+                    statusColor: updatesStatus?.color,
+                    onToggleLive: {
+                        toggleLiveSession()
+                    },
+                    onOpenSchedule: {
+                        showingNotificationSheet = true
+                    }
+                )
             }
 
             if currentGroup.legs.count > 1 {
@@ -652,24 +656,23 @@ struct JourneyDetailsView: View {
         if let replacement {
             do {
                 try await stopLiveSession(replacement)
-                let replacedTitle = sessionTitle(for: replacement)
-                liveSessionInfoMessage = "Replaced the oldest active session (\(replacedTitle)) to make room for this one."
-                ToastStore.shared.show("Replaced oldest live session", icon: "arrow.triangle.2.circlepath")
+                liveSessionInfoMessage = "Oldest live update replaced to make room for this journey."
+                ToastStore.shared.show("Replaced oldest live update", icon: "arrow.triangle.2.circlepath")
             } catch {
                 activityMgr.lastMessage = error.localizedDescription
-                ToastStore.shared.show("Unable to replace oldest live session", icon: "exclamationmark.triangle.fill")
+                ToastStore.shared.show("Unable to replace oldest live update", icon: "exclamationmark.triangle.fill")
                 return
             }
         }
 
         guard await startLiveActivitiesForCurrentGroup() else {
-            ToastStore.shared.show("Unable to start Live Activity", icon: "exclamationmark.triangle.fill")
+            ToastStore.shared.show("Unable to start journey updates", icon: "exclamationmark.triangle.fill")
             return
         }
 
         do {
             _ = try await notificationStore.upsertLiveSession(buildLiveSessionRequest(pushToken: pushToken))
-            ToastStore.shared.show("Live Activity + notifications started", icon: "dot.radiowaves.left.and.right")
+            ToastStore.shared.show("Journey updates started", icon: "dot.radiowaves.left.and.right")
         } catch {
             await stopLiveActivities(for: legsForActivity)
             activityMgr.lastMessage = error.localizedDescription
@@ -685,10 +688,10 @@ struct JourneyDetailsView: View {
         do {
             try await stopLiveSession(liveSession)
             liveSessionInfoMessage = nil
-            ToastStore.shared.show("Live Activity + notifications stopped", icon: "stop.fill")
+            ToastStore.shared.show("Journey updates stopped", icon: "stop.fill")
         } catch {
             activityMgr.lastMessage = error.localizedDescription
-            ToastStore.shared.show("Unable to stop live session", icon: "exclamationmark.triangle.fill")
+            ToastStore.shared.show("Unable to stop journey updates", icon: "exclamationmark.triangle.fill")
         }
     }
 
@@ -1594,112 +1597,107 @@ private struct DepartureRow: View {
     }
 }
 
-// MARK: - Live Session Row
-private struct LiveJourneySessionRow: View {
-    let isActive: Bool
+// MARK: - Journey Updates Row
+private struct JourneyUpdatesRow: View {
+    let isLiveActive: Bool
     let isBusy: Bool
-    let activeCount: Int
-    let infoMessage: String?
-    var onToggle: () -> Void
+    let liveActiveCount: Int
+    let isScheduled: Bool
+    let isScheduleDisabled: Bool
+    let statusText: String?
+    let statusIcon: String?
+    let statusColor: Color?
+    var onToggleLive: () -> Void
+    var onOpenSchedule: () -> Void
 
     private var subtitle: String {
-        if isActive {
-            return "Notifications are running for this journey"
+        if isLiveActive {
+            return "Live updates are on for this journey"
         }
-        if activeCount >= 3 {
-            return "Starting a new session will replace the oldest active one"
+        if liveActiveCount >= 3 {
+            return "Tap Start for live updates. The oldest one will be replaced."
         }
-        return "Manually start Live Activity + notifications"
+        return "Tap Start for live updates on this journey"
+    }
+
+    private var scheduleTitle: String {
+        isScheduled ? "Scheduled" : "Schedule"
+    }
+
+    private var scheduleIcon: String {
+        isScheduled ? "checkmark.circle.fill" : "calendar.badge.plus"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 12) {
                 Image(systemName: "dot.radiowaves.left.and.right")
-                    .foregroundStyle(isActive ? .green : .secondary)
-                    .symbolEffect(.pulse)
+                    .foregroundStyle(isLiveActive ? .blue : .secondary)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Live Activity + Notifications")
+                    Text("Journey updates")
                         .font(.subheadline)
-                        .fontWeight(.medium)
+                        .fontWeight(.semibold)
                     Text(subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(2)
                 }
 
                 Spacer()
 
-                Button(role: isActive ? .destructive : nil) {
-                    onToggle()
-                } label: {
-                    if isBusy {
-                        ProgressView()
-                    } else {
-                        Text(isActive ? "Stop" : "Start")
-                            .font(.subheadline)
-                            .fontWeight(.medium)
+                Grid(alignment: .trailing, horizontalSpacing: 0, verticalSpacing: 6) {
+                    GridRow {
+                        liveButton
+                    }
+                    GridRow {
+                        scheduleButton
                     }
                 }
-                .buttonStyle(.bordered)
-                .tint(isActive ? .red : .blue)
-                .disabled(isBusy)
             }
 
-            if let infoMessage, !infoMessage.isEmpty {
-                Label(infoMessage, systemImage: "info.circle")
+            if let statusText, let statusIcon {
+                Label(statusText, systemImage: statusIcon)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(statusColor ?? .secondary)
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
     }
-}
 
-private struct NotificationScheduleRow: View {
-    let subtitle: String
-    let detail: String?
-    let isMuted: Bool
-    let isScheduled: Bool
-    let isDisabled: Bool
-    var onTap: () -> Void
-
-    var body: some View {
-        Button {
-            onTap()
+    private var liveButton: some View {
+        Button(role: isLiveActive ? .destructive : nil) {
+            onToggleLive()
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: isScheduled ? (isMuted ? "bell.slash.fill" : "bell.badge.fill") : "bell.badge")
-                    .foregroundStyle(isDisabled ? Color.secondary : (isMuted ? Color.orange : Color.blue))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Schedule notifications")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .foregroundStyle(isDisabled ? Color.secondary : Color.primary)
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if let detail {
-                        HStack(spacing: 4) {
-                            if isMuted {
-                                Image(systemName: "checkmark.circle.fill")
-                                    .foregroundStyle(.orange)
-                                    .font(.caption2)
-                            }
-                            Text(detail)
-                                .font(.caption2)
-                                .foregroundStyle(isMuted ? .orange : .secondary)
-                                .fontWeight(isMuted ? .medium : .regular)
-                        }
-                    }
-                }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .foregroundStyle(.secondary)
+            if isBusy {
+                ProgressView()
+            } else {
+                Text(isLiveActive ? "Stop" : "Start")
+                    .fontWeight(.medium)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
         }
-        .buttonStyle(.plain)
-        .disabled(isDisabled)
-        .padding(.vertical, 4)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(isLiveActive ? .red : .blue)
+        .disabled(isBusy)
+        .accessibilityHint(isLiveActive ? "Stops live updates for this journey." : "Starts live updates for this journey.")
+    }
+
+    private var scheduleButton: some View {
+        Button {
+            onOpenSchedule()
+        } label: {
+            Label(scheduleTitle, systemImage: scheduleIcon)
+                .fontWeight(.medium)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(isScheduled ? .green : .blue)
+        .disabled(isScheduleDisabled)
+        .accessibilityHint(isScheduled ? "Opens the schedule for this journey." : "Choose days and times for scheduled updates.")
     }
 }
