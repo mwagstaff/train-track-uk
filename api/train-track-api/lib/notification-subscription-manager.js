@@ -728,7 +728,11 @@ async function getDeparturesSnapshot(fromStation, toStation) {
         platform: dep.platform,
         isCancelled: dep.isCancelled
     }));
-    return { departures: normalized, fetchedAt: new Date().toISOString() };
+    return {
+        departures: normalized,
+        error: typeof result?.error === 'string' ? result.error : null,
+        fetchedAt: new Date().toISOString()
+    };
 }
 
 function calculateDelayMinutes(scheduled, estimated) {
@@ -800,9 +804,14 @@ function buildMutedMessageBody(leg, snapshot) {
     const fromLabel = leg.fromName || leg.from;
     const toLabel = leg.toName || leg.to;
     const welcome = `Welcome to ${fromLabel}!`;
-    const primary = Array.isArray(snapshot?.departures) ? snapshot.departures[0] : null;
+    const departures = Array.isArray(snapshot?.departures) ? snapshot.departures : null;
+    const primary = departures?.[0] || null;
 
-    if (!primary) {
+    if (departures && departures.length === 0) {
+        return `${welcome} Sorry, but I couldn't find any upcoming departures to ${toLabel}. Please check station information.`;
+    }
+
+    if (!primary || snapshot?.error) {
         return `Notifications for ${fromLabel} → ${toLabel} have been muted for today. Have a good journey! 🚆`;
     }
 
