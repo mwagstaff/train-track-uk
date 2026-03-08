@@ -84,6 +84,21 @@ function logLiveActivityRequest(event, req, extra = {}) {
     );
 }
 
+function logDepartureRequest(event, req, extra = {}) {
+    const clientIp = req.headers['x-forwarded-for'] || req.ip || 'unknown';
+    console.log(
+        '[departures]',
+        event,
+        JSON.stringify({
+            instance_id: getFlyInstanceId(),
+            path: req.path,
+            method: req.method,
+            clientIp,
+            ...extra
+        })
+    );
+}
+
 function logLiveActivityStartup() {
     const enabled = isLiveActivityLoggingEnabled();
     console.log(
@@ -616,6 +631,7 @@ app.get('/api/v1/departures/from/:fromStation/to/:toStation', async (req, res) =
 // V2 API - New array format supporting multiple journeys
 app.get('/api/v2/departures/from/:fromStation/to/:toStation*', async (req, res) => {
     const path = req.path;
+    const deviceId = normalizeDeviceId(req.get('X-Device-Token')) || null;
 
     // Parse the path to extract multiple from/to pairs
     // Example: /api/v2/departures/from/ECR/to/VIC/from/EUS/to/WFJ
@@ -638,18 +654,45 @@ app.get('/api/v2/departures/from/:fromStation/to/:toStation*', async (req, res) 
 
     // If no valid pairs found, return error
     if (journeyPairs.length === 0) {
+        logDepartureRequest('fetch_v2_failed_validation', req, {
+            device_id: deviceId,
+            journey_count: 0
+        });
         return res.status(400).json({ error: 'No valid from/to pairs found in request' });
     }
 
-    // Fetch all journeys in parallel and return as array
-    const results = await Promise.all(
-        journeyPairs.map(async (pair) => {
-            const data = await getTrainTimes(pair.from, pair.to);
-            const key = `${pair.from}_${pair.to}`;
-            return { [key]: data.departures || [] };
-        })
-    );
-    res.json(results);
+    const startedAt = Date.now();
+    logDepartureRequest('fetch_v2', req, {
+        device_id: deviceId,
+        journey_count: journeyPairs.length,
+        journey_pairs: journeyPairs.map((pair) => `${pair.from}_${pair.to}`)
+    });
+
+    try {
+        // Fetch all journeys in parallel and return as array
+        const results = await Promise.all(
+            journeyPairs.map(async (pair) => {
+                const data = await getTrainTimes(pair.from, pair.to);
+                const key = `${pair.from}_${pair.to}`;
+                return { [key]: data.departures || [] };
+            })
+        );
+
+        logDepartureRequest('fetch_v2_completed', req, {
+            device_id: deviceId,
+            journey_count: journeyPairs.length,
+            duration_ms: Date.now() - startedAt
+        });
+        res.json(results);
+    } catch (error) {
+        logDepartureRequest('fetch_v2_failed', req, {
+            device_id: deviceId,
+            journey_count: journeyPairs.length,
+            duration_ms: Date.now() - startedAt,
+            error: error?.message || error
+        });
+        throw error;
+    }
 });
 
 app.get('/api/v1/departures/past/from/:fromStation/to/:toStation', async (req, res) => {

@@ -10,44 +10,53 @@ const PLATFORM_CACHE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const PLATFORM_CACHE_ENTRY_TTL_MS = 6 * 60 * 60 * 1000;
 const PLATFORM_FALLBACK_WINDOW_BEFORE_DEPARTURE_MINUTES = 5;
 const PLATFORM_FALLBACK_WINDOW_AFTER_DEPARTURE_MINUTES = 20;
+const JOURNEY_RESULT_FRESH_TTL_MS = Number(
+    process.env.DEPARTURE_BOARD_JOURNEY_FRESH_CACHE_TTL_MS
+    || process.env.DEPARTURE_BOARD_JOURNEY_CACHE_TTL_MS
+    || '30000'
+);
+const JOURNEY_RESULT_STALE_TTL_MS = Number(process.env.DEPARTURE_BOARD_JOURNEY_STALE_CACHE_TTL_MS || '300000');
+const JOURNEY_REFRESH_CONCURRENCY = Number(process.env.DEPARTURE_BOARD_ROUTE_REFRESH_CONCURRENCY || '4');
+
+const inFlightJourneyRequests = new Map();
+const recentJourneyResults = new Map();
+const queuedJourneyRefreshes = [];
+let activeJourneyRefreshes = 0;
 
 const platformCacheCleanupTimer = setInterval(() => {
     cleanupPlatformFallbackCache();
+    cleanupRecentJourneyResults();
 }, PLATFORM_CACHE_CLEANUP_INTERVAL_MS);
 if (typeof platformCacheCleanupTimer.unref === 'function') {
     platformCacheCleanupTimer.unref();
 }
 
 export async function getTrainTimes(from, to) {
-    // Only fetch now and future; past cache refresh is handled separately
-    const [departuresNow, departuresFuture] = await Promise.all([
-        getLiveDepartureBoard(from, to, 0),
-        getLiveDepartureBoard(from, to, 119)
-    ]);
-
-    // Gracefully handle partial failures: merge whichever arrays are available
-    const nowList = Array.isArray(departuresNow.departures) ? departuresNow.departures : [];
-    const futureList = Array.isArray(departuresFuture.departures) ? departuresFuture.departures : [];
-    if (nowList.length === 0 && futureList.length === 0) {
-        return { error: 'Failed to get data from API' };
+    if (!from || !to) {
+        return { error: `Missing from (${from}) or to (${to}) parameter` };
     }
-    const departures = nowList.concat(futureList);
-    // Dedupe by serviceID and prefer entries that still have a platform.
-    const uniqueByService = new Map();
-    departures.forEach((departure) => {
-        const existing = uniqueByService.get(departure.serviceID);
-        if (!existing || shouldPreferDeparture(existing, departure)) {
-            uniqueByService.set(departure.serviceID, departure);
-        }
-    });
-    const uniqueDepartures = Array.from(uniqueByService.values());
 
-    applyPlatformFallbackCache(uniqueDepartures, from, to);
+    const key = journeyRequestKey(from, to);
+    const freshCachedResult = getFreshJourneyResult(key);
+    if (freshCachedResult) {
+        return freshCachedResult;
+    }
 
-    // Return both departures as one array
-    return {
-        departures: uniqueDepartures
-    };
+    const staleCachedResult = getStaleJourneyResult(key);
+    const inFlightRequest = inFlightJourneyRequests.get(key);
+    if (inFlightRequest) {
+        return staleCachedResult || inFlightRequest.then(cloneJourneyResult);
+    }
+
+    if (staleCachedResult) {
+        startJourneyRefresh(key, from, to).catch((error) => {
+            const message = error?.message || error;
+            console.warn(`Background refresh failed for journey ${from} -> ${to}: ${message}`);
+        });
+        return staleCachedResult;
+    }
+
+    return startJourneyRefresh(key, from, to).then(cloneJourneyResult);
 }
 
 // Track in-flight past refreshes to avoid duplicate upstream calls per route
@@ -90,6 +99,90 @@ export function refreshPastDepartures(from, to) {
 
     inFlightPastRefreshes.set(key, promise);
     return promise;
+}
+
+function startJourneyRefresh(key, from, to) {
+    if (inFlightJourneyRequests.has(key)) {
+        return inFlightJourneyRequests.get(key);
+    }
+
+    const promise = enqueueJourneyRefresh(async () => {
+        const result = await fetchJourneyResult(from, to);
+        if (Array.isArray(result?.departures) && result.departures.length > 0) {
+            setRecentJourneyResult(key, result);
+        }
+        return result;
+    }).finally(() => {
+        inFlightJourneyRequests.delete(key);
+    });
+
+    inFlightJourneyRequests.set(key, promise);
+    return promise;
+}
+
+function enqueueJourneyRefresh(run) {
+    return new Promise((resolve, reject) => {
+        queuedJourneyRefreshes.push({ run, resolve, reject });
+        processJourneyRefreshQueue();
+    });
+}
+
+function processJourneyRefreshQueue() {
+    const concurrency = normalizedJourneyRefreshConcurrency();
+    while (activeJourneyRefreshes < concurrency && queuedJourneyRefreshes.length > 0) {
+        const task = queuedJourneyRefreshes.shift();
+        if (!task) {
+            return;
+        }
+
+        activeJourneyRefreshes += 1;
+        Promise.resolve()
+            .then(task.run)
+            .then(task.resolve, task.reject)
+            .finally(() => {
+                activeJourneyRefreshes = Math.max(0, activeJourneyRefreshes - 1);
+                processJourneyRefreshQueue();
+            });
+    }
+}
+
+function normalizedJourneyRefreshConcurrency() {
+    if (!Number.isFinite(JOURNEY_REFRESH_CONCURRENCY) || JOURNEY_REFRESH_CONCURRENCY <= 0) {
+        return 1;
+    }
+    return Math.max(1, Math.trunc(JOURNEY_REFRESH_CONCURRENCY));
+}
+
+async function fetchJourneyResult(from, to) {
+    // Only fetch now and future; past cache refresh is handled separately
+    const [departuresNow, departuresFuture] = await Promise.all([
+        getLiveDepartureBoard(from, to, 0),
+        getLiveDepartureBoard(from, to, 119)
+    ]);
+
+    // Gracefully handle partial failures: merge whichever arrays are available
+    const nowList = Array.isArray(departuresNow.departures) ? departuresNow.departures : [];
+    const futureList = Array.isArray(departuresFuture.departures) ? departuresFuture.departures : [];
+    if (nowList.length === 0 && futureList.length === 0) {
+        return { error: 'Failed to get data from API' };
+    }
+
+    const departures = nowList.concat(futureList);
+    // Dedupe by serviceID and prefer entries that still have a platform.
+    const uniqueByService = new Map();
+    departures.forEach((departure) => {
+        const existing = uniqueByService.get(departure.serviceID);
+        if (!existing || shouldPreferDeparture(existing, departure)) {
+            uniqueByService.set(departure.serviceID, departure);
+        }
+    });
+    const uniqueDepartures = Array.from(uniqueByService.values());
+
+    applyPlatformFallbackCache(uniqueDepartures, from, to);
+
+    return {
+        departures: uniqueDepartures
+    };
 }
 
 // Fetches data from the live departure board API to provide upcoming departures
@@ -209,6 +302,67 @@ function shouldPreferDeparture(current, candidate) {
     return false;
 }
 
+function journeyRequestKey(from, to) {
+    return `${(from || '').trim().toUpperCase()}-${(to || '').trim().toUpperCase()}`;
+}
+
+function cloneJourneyResult(result) {
+    if (!result || typeof result !== 'object') {
+        return result;
+    }
+
+    return {
+        ...result,
+        departures: Array.isArray(result.departures)
+            ? result.departures.map((departure) => ({
+                ...departure,
+                departure_time: departure?.departure_time ? { ...departure.departure_time } : departure?.departure_time,
+                destination: departure?.destination ? { ...departure.destination } : departure?.destination,
+                origin: departure?.origin ? { ...departure.origin } : departure?.origin
+            }))
+            : result.departures
+    };
+}
+
+function setRecentJourneyResult(key, result, nowMs = Date.now()) {
+    if (!Number.isFinite(JOURNEY_RESULT_STALE_TTL_MS) || JOURNEY_RESULT_STALE_TTL_MS <= 0) {
+        return;
+    }
+
+    recentJourneyResults.set(key, {
+        result: cloneJourneyResult(result),
+        cachedAtMs: nowMs
+    });
+}
+
+function getFreshJourneyResult(key, nowMs = Date.now()) {
+    return getJourneyResultWithinTtl(key, JOURNEY_RESULT_FRESH_TTL_MS, nowMs);
+}
+
+function getStaleJourneyResult(key, nowMs = Date.now()) {
+    return getJourneyResultWithinTtl(key, JOURNEY_RESULT_STALE_TTL_MS, nowMs);
+}
+
+function getJourneyResultWithinTtl(key, ttlMs, nowMs = Date.now()) {
+    if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
+        return null;
+    }
+
+    const cached = recentJourneyResults.get(key);
+    if (!cached) {
+        return null;
+    }
+
+    if ((nowMs - cached.cachedAtMs) > ttlMs) {
+        if (ttlMs >= JOURNEY_RESULT_STALE_TTL_MS) {
+            recentJourneyResults.delete(key);
+        }
+        return null;
+    }
+
+    return cloneJourneyResult(cached.result);
+}
+
 function normalizePlatform(platform) {
     if (typeof platform !== 'string') {
         return null;
@@ -258,6 +412,19 @@ function cleanupPlatformFallbackCache() {
     for (const [key, entry] of platformFallbackCache.entries()) {
         if (!entry || !entry.lastUpdatedAtMs || (nowMs - entry.lastUpdatedAtMs) > PLATFORM_CACHE_ENTRY_TTL_MS) {
             platformFallbackCache.delete(key);
+        }
+    }
+}
+
+function cleanupRecentJourneyResults(nowMs = Date.now()) {
+    if (!Number.isFinite(JOURNEY_RESULT_STALE_TTL_MS) || JOURNEY_RESULT_STALE_TTL_MS <= 0) {
+        recentJourneyResults.clear();
+        return;
+    }
+
+    for (const [key, entry] of recentJourneyResults.entries()) {
+        if (!entry || !entry.cachedAtMs || (nowMs - entry.cachedAtMs) > JOURNEY_RESULT_STALE_TTL_MS) {
+            recentJourneyResults.delete(key);
         }
     }
 }
