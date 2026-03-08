@@ -28,7 +28,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "short",
           "min": 0
         },
         "overrides": []
@@ -138,13 +138,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "(sum(rate(upstream_api_requests_total{outcome=\"failure\"}[5m]))) or vector(0)",
-          "legendFormat": "bad req/sec",
+          "expr": "(sum(increase(upstream_api_requests_total{outcome=\"failure\"}[$__rate_interval]))) or vector(0)",
+          "legendFormat": "bad req/count",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Bad Requests (4xx-5xx + errors)",
+      "title": "Bad Requests (Interval Count)",
       "type": "timeseries"
     },
     {
@@ -154,7 +154,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "short",
           "min": 0
         },
         "overrides": []
@@ -180,7 +180,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "(sum by(status) (rate(upstream_api_requests_total{outcome=\"failure\"}[5m]))) or vector(0)",
+          "expr": "(sum by(status) (increase(upstream_api_requests_total{outcome=\"failure\"}[$__rate_interval]))) or vector(0)",
           "legendFormat": "{{status}}",
           "range": true,
           "refId": "A"
@@ -238,7 +238,7 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
+          "unit": "short",
           "min": 0
         },
         "overrides": []
@@ -264,13 +264,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "(sum by(reason) (rate(upstream_api_retries_total[5m]))) or vector(0)",
+          "expr": "(sum by(reason) (increase(upstream_api_retries_total[$__rate_interval]))) or vector(0)",
           "legendFormat": "{{reason}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Retry Rate by Reason",
+      "title": "Retry Count by Reason",
       "type": "timeseries"
     },
     {

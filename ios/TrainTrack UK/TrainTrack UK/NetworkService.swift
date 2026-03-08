@@ -75,6 +75,9 @@ final class NetworkServicePhone {
     static let shared = NetworkServicePhone()
     private init() {}
 
+    private let maxDeparturePairsPerRequest = 4
+    private let departureBatchDelayRangeMs: ClosedRange<UInt64> = 0...500
+
     // Read the current host selection (production by default) from shared settings.
     private var base: String { ApiHostPreference.currentBaseURL }
     private var deviceToken: String { DeviceIdentity.deviceToken }
@@ -94,6 +97,26 @@ final class NetworkServicePhone {
     }
 
     func fetchDeparturesAggregated(pairs: [(from: String, to: String)]) async throws -> [String: [DepartureV2]] {
+        guard !pairs.isEmpty else { return [:] }
+        let chunkSize = max(1, maxDeparturePairsPerRequest)
+        var combined: [String: [DepartureV2]] = [:]
+        var startIndex = 0
+
+        while startIndex < pairs.count {
+            let endIndex = min(startIndex + chunkSize, pairs.count)
+            let chunk = Array(pairs[startIndex..<endIndex])
+            try await sleepBeforeDepartureBatch()
+            let partial = try await fetchDeparturesBatch(pairs: chunk)
+            for (key, value) in partial {
+                combined[key] = value
+            }
+            startIndex = endIndex
+        }
+
+        return combined
+    }
+
+    private func fetchDeparturesBatch(pairs: [(from: String, to: String)]) async throws -> [String: [DepartureV2]] {
         guard !pairs.isEmpty else { return [:] }
         let path = pairs.map { "from/\($0.from)/to/\($0.to)" }.joined(separator: "/")
         guard let url = URL(string: "\(base)/departures/\(path)") else { throw PhoneNetworkError.invalidURL }
@@ -123,6 +146,14 @@ final class NetworkServicePhone {
             }
         }
         return result
+    }
+
+    private func sleepBeforeDepartureBatch() async throws {
+        let delayMs = UInt64.random(in: departureBatchDelayRangeMs)
+        if delayMs == 0 {
+            return
+        }
+        try await Task.sleep(nanoseconds: delayMs * 1_000_000)
     }
 
     func fetchServiceDetailsAggregated(ids: [String]) async throws -> [String: ServiceDetails] {

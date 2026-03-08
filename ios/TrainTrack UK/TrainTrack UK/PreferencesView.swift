@@ -65,18 +65,85 @@ struct PreferencesView: View {
     var body: some View {
         Form {
 
-            #if DEBUG
-            Section("API Host (Testing)") {
-                Picker("API Host", selection: apiHostBinding) {
-                    ForEach(ApiHost.allCases) { host in
-                        Text(host.displayName).tag(host)
+            Section("Journey Updates") {
+                Text("Use the Start button at the top of a journey to begin a Live Activity and journey update notifications.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                Toggle("Mute notifications on arrival", isOn: $autoMuteOnArrival)
+                Text("When you arrive at a departure station, the notifications for that journey are automatically stopped. Requires 'Always' location permission.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                if autoMuteOnArrival {
+                    Stepper(value: $muteDelayMinutes, in: 1...10) {
+                        HStack {
+                            Text("Mute after")
+                            Spacer()
+                            Text("\(muteDelayMinutes) min\(muteDelayMinutes == 1 ? "" : "s") at station")
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    Toggle("End Live Activity on arrival", isOn: $autoEndLiveActivity)
+                    Text("Automatically dismiss the Live Activity widget from your lock screen and home screen after you arrive at a station.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
-                Text("Switch between production (\(ApiHost.prod.hostDescription)) and dev (\(ApiHost.dev.hostDescription)) for API calls. Intended for local testing.")
+
+                Picker("Live Activity duration", selection: $liveActivityDurationMinutes) {
+                    Text("30 min").tag(30)
+                    Text("1 hr").tag(60)
+                    Text("90 min").tag(90)
+                    Text("2 hr").tag(120)
+                }
+                .pickerStyle(.segmented)
+                Text("How long a Live Activity stays visible (unless dismissed manually or after arriving at a station). Default is 1 hour.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            #endif
+
+            Section("Notification Preferences") {
+                Toggle(NotificationType.summary.displayName, isOn: notificationTypeBinding(.summary))
+                Toggle(NotificationType.delays.displayName, isOn: notificationTypeBinding(.delays))
+                Toggle(NotificationType.platform.displayName, isOn: notificationTypeBinding(.platform))
+                Text("Pick at least one type. Service status summary at start time only applies to scheduled notifications.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if let notificationPreferencesError {
+                    Text(notificationPreferencesError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            }
+
+            Section("Scheduled Notifications") {
+                if notificationStore.isLoading {
+                    ProgressView("Loading…")
+                } else if notificationStore.subscriptions.isEmpty {
+                    Text("No scheduled notifications yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(notificationStore.subscriptions) { sub in
+                        if let schedule = resolvedScheduledRoute(for: sub) {
+                            NavigationLink {
+                                NotificationScheduleView(
+                                    group: schedule.group,
+                                    reverseGroup: schedule.reverseGroup
+                                )
+                                .environmentObject(notificationStore)
+                            } label: {
+                                scheduledNotificationRow(for: sub)
+                            }
+                        } else {
+                            scheduledNotificationRow(for: sub)
+                        }
+                    }
+                    .onDelete(perform: deleteScheduledNotifications)
+                }
+                Text("Notification types above apply to all schedules. You can schedule notifications for up to 3 journeys.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
 
             Section("Journey Sorting") {
                 Picker("Sort journeys by", selection: journeySortMode) {
@@ -138,57 +205,6 @@ struct PreferencesView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Notification Preferences") {
-                Toggle(NotificationType.summary.displayName, isOn: notificationTypeBinding(.summary))
-                Toggle(NotificationType.delays.displayName, isOn: notificationTypeBinding(.delays))
-                Toggle(NotificationType.platform.displayName, isOn: notificationTypeBinding(.platform))
-                Text("Pick at least one type. Service status summary at start time only applies to scheduled notifications, not ad hoc live-session ones.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                if let notificationPreferencesError {
-                    Text(notificationPreferencesError)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
-            }
-
-            Section("Live Activities") {
-                Text("Use the Start button at the top of a journey to begin a Live Activity and matching notifications manually.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-
-                Toggle("Mute notifications on arrival", isOn: $autoMuteOnArrival)
-                Text("When you arrive at a departure station, notifications for that journey are paused for the rest of the day. Requires 'Always' location permission.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-
-                if autoMuteOnArrival {
-                    Stepper(value: $muteDelayMinutes, in: 1...10) {
-                        HStack {
-                            Text("Mute after")
-                            Spacer()
-                            Text("\(muteDelayMinutes) min\(muteDelayMinutes == 1 ? "" : "s") at station")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Toggle("End Live Activity on arrival", isOn: $autoEndLiveActivity)
-                    Text("When notifications are muted, automatically dismiss the Live Activity widget from your lock screen and home screen.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                Picker("Live Activity duration", selection: $liveActivityDurationMinutes) {
-                    Text("30 min").tag(30)
-                    Text("1 hr").tag(60)
-                    Text("90 min").tag(90)
-                    Text("2 hr").tag(120)
-                }
-                .pickerStyle(.segmented)
-                Text("How long a Live Activity stays visible. Default is 1 hour.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
             Section("Warnings") {
                 Stepper(value: $minShortTrainCars, in: 1...12) {
                     HStack {
@@ -217,37 +233,17 @@ struct PreferencesView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Scheduled Notifications") {
-                if notificationStore.isLoading {
-                    ProgressView("Loading…")
-                } else if notificationStore.subscriptions.isEmpty {
-                    Text("No scheduled notifications yet.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(notificationStore.subscriptions) { sub in
-                        if let schedule = resolvedScheduledRoute(for: sub) {
-                            NavigationLink {
-                                NotificationScheduleView(
-                                    group: schedule.group,
-                                    reverseGroup: schedule.reverseGroup
-                                )
-                                .environmentObject(notificationStore)
-                            } label: {
-                                scheduledNotificationRow(for: sub)
-                            }
-                        } else {
-                            scheduledNotificationRow(for: sub)
-                        }
-                    }
-                    .onDelete(perform: deleteScheduledNotifications)
-                }
-                Text("Notification types above apply to all schedules. You can schedule notifications for up to 3 journeys.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
             #if DEBUG
             Section("Debug") {
+                Picker("API Host", selection: apiHostBinding) {
+                    ForEach(ApiHost.allCases) { host in
+                        Text(host.displayName).tag(host)
+                    }
+                }
+                Text("Switch between production (\(ApiHost.prod.hostDescription)) and dev (\(ApiHost.dev.hostDescription)) for API calls. Intended for local testing.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
                 Button("View Debug Logs") {
                     showDebugLogs = true
                 }
