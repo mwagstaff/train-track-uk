@@ -350,6 +350,50 @@ struct JourneyDetailsView: View {
                 }
             }
 
+            ForEach(currentGroup.legs) { leg in
+                Section(header: Text("\(leg.fromStation.name) → \(leg.toStation.name)")) {
+                    let legDepartures = departures(for: leg)
+                    if legDepartures.isEmpty {
+                        if #available(iOS 17.0, *) {
+                            ContentUnavailableView("No departures found",
+                                                   systemImage: "train.side.front.car",
+                                                   description: Text("Pull to refresh or try again soon."))
+                        } else {
+                            VStack(spacing: 8) {
+                                Image(systemName: "train.side.front.car").font(.system(size: 34)).foregroundStyle(.secondary)
+                                Text("No departures found").font(.headline)
+                                Text("Pull to refresh or try again soon.")
+                                    .font(.footnote).foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.vertical, 24)
+                        }
+                    } else {
+                        let visibleDepartures = displayedDepartures(for: leg)
+                        ForEach(visibleDepartures) { dep in
+                            HStack(spacing: 10) {
+                                NavigationLink(destination: ServiceMapView(serviceID: dep.serviceID, fromCRS: leg.fromStation.crs, toCRS: leg.toStation.crs)) {
+                                    DepartureRow(
+                                        dep: dep,
+                                        fromCRS: leg.fromStation.crs,
+                                        toCRS: leg.toStation.crs,
+                                        fromName: leg.fromStation.name,
+                                        toName: leg.toStation.name,
+                                        allDepartures: Array(legDepartures.prefix(8))
+                                    )
+                                }
+                                .buttonStyle(.plain)
+
+                                if currentGroup.legs.count == 1 {
+                                    DeparturePinButton(dep: dep, leg: leg)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            #if DEBUG
             // Debug: Proximity & Geofence Status
             if let firstLeg = currentGroup.legs.first {
                 Section(header: Text("Debug: Proximity & Geofence")) {
@@ -497,49 +541,7 @@ struct JourneyDetailsView: View {
                     }
                 }
             }
-
-            ForEach(currentGroup.legs) { leg in
-                Section(header: Text("\(leg.fromStation.name) → \(leg.toStation.name)")) {
-                    let legDepartures = departures(for: leg)
-                    if legDepartures.isEmpty {
-                        if #available(iOS 17.0, *) {
-                            ContentUnavailableView("No departures found",
-                                                   systemImage: "train.side.front.car",
-                                                   description: Text("Pull to refresh or try again soon."))
-                        } else {
-                            VStack(spacing: 8) {
-                                Image(systemName: "train.side.front.car").font(.system(size: 34)).foregroundStyle(.secondary)
-                                Text("No departures found").font(.headline)
-                                Text("Pull to refresh or try again soon.")
-                                    .font(.footnote).foregroundStyle(.secondary)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.vertical, 24)
-                        }
-                    } else {
-                        let visibleDepartures = displayedDepartures(for: leg)
-                        ForEach(visibleDepartures) { dep in
-                            HStack(spacing: 10) {
-                                NavigationLink(destination: ServiceMapView(serviceID: dep.serviceID, fromCRS: leg.fromStation.crs, toCRS: leg.toStation.crs)) {
-                                    DepartureRow(
-                                        dep: dep,
-                                        fromCRS: leg.fromStation.crs,
-                                        toCRS: leg.toStation.crs,
-                                        fromName: leg.fromStation.name,
-                                        toName: leg.toStation.name,
-                                        allDepartures: Array(legDepartures.prefix(8))
-                                    )
-                                }
-                                .buttonStyle(.plain)
-
-                                if currentGroup.legs.count == 1 {
-                                    DeparturePinButton(dep: dep, leg: leg)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            #endif
         }
         .sheet(isPresented: $showingNotificationSheet) {
             let otherGroup = showingReverse ? group : reverseGroup
