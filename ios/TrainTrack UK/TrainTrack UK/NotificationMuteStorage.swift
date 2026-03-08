@@ -48,14 +48,19 @@ enum NotificationMuteStorage {
     }
 
     static func mutedTimeLabel(from: String, to: String) -> String? {
-        guard let sharedDefaults = UserDefaults(suiteName: suiteName) else { return nil }
-        guard let mutedAtByLeg = sharedDefaults.dictionary(forKey: mutedLegsAtKey) as? [String: String] else { return nil }
-        let key = legKey(from: from, to: to)
-        guard let iso = mutedAtByLeg[key], let date = ISO8601DateFormatter().date(from: iso) else { return nil }
+        guard let date = mutedAtDate(from: from, to: to) else { return nil }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_GB")
         formatter.dateFormat = "HH:mm"
         return formatter.string(from: date)
+    }
+
+    static func mutedAtDate(from: String, to: String) -> Date? {
+        guard let sharedDefaults = UserDefaults(suiteName: suiteName) else { return nil }
+        guard let mutedAtByLeg = sharedDefaults.dictionary(forKey: mutedLegsAtKey) as? [String: String] else { return nil }
+        let key = legKey(from: from, to: to)
+        guard let iso = mutedAtByLeg[key] else { return nil }
+        return ISO8601DateFormatter().date(from: iso)
     }
 
     static func clearMute(from: String, to: String) {

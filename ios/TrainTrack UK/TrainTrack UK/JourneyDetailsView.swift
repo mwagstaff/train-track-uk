@@ -19,7 +19,6 @@ struct JourneyDetailsView: View {
     @State private var tick = Date()
     @State private var showingReverse = false
     @State private var showingNotificationSheet = false
-    @State private var liveSessionInfoMessage: String?
     @State private var liveSessionActionInFlight = false
     @Environment(\.scenePhase) private var scenePhase
 
@@ -64,46 +63,41 @@ struct JourneyDetailsView: View {
         notificationSubscription != nil || notificationStore.subscriptions.count < 3
     }
 
-    private var notificationMuteStatus: (detail: String, isMuted: Bool)? {
-        guard let subscription = liveSession ?? notificationSubscription else { return nil }
-        guard let firstLeg = currentGroup.legs.first else { return nil }
+    private var liveUpdatesSubtitle: (text: String, color: Color) {
+        guard let firstLeg = currentGroup.legs.first else {
+            return ("Start or schedule live updates for this journey", .secondary)
+        }
         let fromCode = firstLeg.fromStation.crs.uppercased()
         let toCode = firstLeg.toStation.crs.uppercased()
+        let stationName = firstLeg.fromStation.name
         let legKey = NotificationMuteStorage.legKey(from: fromCode, to: toCode)
 
-        if NotificationMuteStorage.isMutedToday(from: fromCode, to: toCode) {
-            if let timeLabel = NotificationMuteStorage.mutedTimeLabel(from: fromCode, to: toCode) {
-                return (detail: "Notifications muted at \(timeLabel) today", isMuted: true)
+        let localMutedAt = NotificationMuteStorage.mutedAtDate(from: fromCode, to: toCode)
+        let serverMutedAt: Date? = {
+            guard let subscription = liveSession ?? notificationSubscription,
+                  let mutedDate = subscription.mutedByLegDay?[legKey],
+                  mutedDate == currentDateKeyUTC(),
+                  let mutedAt = subscription.mutedAtByLegDay?[legKey] else {
+                return nil
             }
-            return (detail: "Notifications muted for today", isMuted: true)
-        }
+            return ISO8601DateFormatter().date(from: mutedAt)
+        }()
+        let mutedAt = [localMutedAt, serverMutedAt].compactMap { $0 }.max()
+        let startedAt = (liveSession ?? notificationSubscription).flatMap { $0.createdAt ?? $0.updatedAt }
 
-        if let mutedDate = subscription.mutedByLegDay?[legKey],
-           mutedDate == currentDateKeyUTC() {
-            let mutedAt = subscription.mutedAtByLegDay?[legKey]
-            if let timeLabel = mutedAt.flatMap(formatTime) {
-                return (detail: "Notifications muted at \(timeLabel) today", isMuted: true)
+        if let startedAt {
+            if let mutedAt, mutedAt >= startedAt {
+                let timeLabel = formatTime(mutedAt)
+                return ("Live updates stopped at \(timeLabel) when you arrived at \(stationName)", .orange)
             }
-            return (detail: "Notifications muted for today", isMuted: true)
+            return ("Live updates started at \(formatTime(startedAt))", .secondary)
         }
 
-        return nil
-    }
+        if let mutedAt {
+            return ("Live updates stopped at \(formatTime(mutedAt)) when you arrived at \(stationName)", .orange)
+        }
 
-    private var updatesStatus: (text: String, icon: String, color: Color)? {
-        if let liveSessionInfoMessage, !liveSessionInfoMessage.isEmpty {
-            return (liveSessionInfoMessage, "info.circle", .secondary)
-        }
-        if let muteStatus = notificationMuteStatus {
-            return (muteStatus.detail, "bell.slash.fill", muteStatus.isMuted ? .orange : .secondary)
-        }
-        if let subscription = notificationSubscription {
-            return ("Scheduled \(subscription.daysLabel)", "calendar", .secondary)
-        }
-        if !canScheduleNotifications {
-            return ("Schedule limit reached", "calendar.badge.exclamationmark", .secondary)
-        }
-        return nil
+        return ("Start or schedule live updates for this journey", .secondary)
     }
 
     private func departures(for leg: Journey) -> [DepartureV2] {
@@ -299,12 +293,10 @@ struct JourneyDetailsView: View {
                 JourneyUpdatesRow(
                     isLiveActive: liveSession != nil,
                     isBusy: liveSessionActionInFlight,
-                    liveActiveCount: notificationStore.liveSessions.count,
                     isScheduled: notificationSubscription != nil,
                     isScheduleDisabled: !canScheduleNotifications,
-                    statusText: updatesStatus?.text,
-                    statusIcon: updatesStatus?.icon,
-                    statusColor: updatesStatus?.color,
+                    subtitle: liveUpdatesSubtitle.text,
+                    subtitleColor: liveUpdatesSubtitle.color,
                     onToggleLive: {
                         toggleLiveSession()
                     },
@@ -627,8 +619,6 @@ struct JourneyDetailsView: View {
         liveSessionActionInFlight = true
         defer { liveSessionActionInFlight = false }
 
-        liveSessionInfoMessage = nil
-
         let allowed = await NotificationAuthorizationManager.ensureAuthorized()
         guard allowed else {
             let message = "Notifications are disabled in Settings"
@@ -656,7 +646,6 @@ struct JourneyDetailsView: View {
         if let replacement {
             do {
                 try await stopLiveSession(replacement)
-                liveSessionInfoMessage = "Oldest live update replaced to make room for this journey."
                 ToastStore.shared.show("Replaced oldest live update", icon: "arrow.triangle.2.circlepath")
             } catch {
                 activityMgr.lastMessage = error.localizedDescription
@@ -672,6 +661,8 @@ struct JourneyDetailsView: View {
 
         do {
             _ = try await notificationStore.upsertLiveSession(buildLiveSessionRequest(pushToken: pushToken))
+            clearCurrentJourneyMute()
+            tick = Date()
             ToastStore.shared.show("Journey updates started", icon: "dot.radiowaves.left.and.right")
         } catch {
             await stopLiveActivities(for: legsForActivity)
@@ -687,7 +678,6 @@ struct JourneyDetailsView: View {
 
         do {
             try await stopLiveSession(liveSession)
-            liveSessionInfoMessage = nil
             ToastStore.shared.show("Journey updates stopped", icon: "stop.fill")
         } catch {
             activityMgr.lastMessage = error.localizedDescription
@@ -742,6 +732,15 @@ struct JourneyDetailsView: View {
     private func stopLiveActivities(for journeys: [Journey]) async {
         for leg in journeys {
             await activityMgr.stop(for: leg)
+        }
+    }
+
+    private func clearCurrentJourneyMute() {
+        for leg in currentGroup.legs {
+            NotificationMuteStorage.clearMute(
+                from: leg.fromStation.crs.uppercased(),
+                to: leg.toStation.crs.uppercased()
+            )
         }
     }
 
@@ -819,14 +818,6 @@ struct JourneyDetailsView: View {
             muteOnArrival: muteOnArrival,
             activeUntil: activeUntil
         )
-    }
-
-    private func sessionTitle(for session: NotificationSubscription) -> String {
-        let first = session.legs.first
-        let last = session.legs.last
-        let from = first?.fromName ?? first?.from ?? currentGroup.startStation.name
-        let to = last?.toName ?? last?.to ?? currentGroup.endStation.name
-        return "\(from) → \(to)"
     }
 
     private func currentDayOfWeek() -> DayOfWeek {
@@ -977,6 +968,10 @@ struct JourneyDetailsView: View {
     private func formatTime(_ isoString: String) -> String? {
         let formatter = ISO8601DateFormatter()
         guard let date = formatter.date(from: isoString) else { return nil }
+        return formatTime(date)
+    }
+
+    private func formatTime(_ date: Date) -> String {
         let output = DateFormatter()
         output.dateFormat = "HH:mm"
         return output.string(from: date)
@@ -1599,67 +1594,41 @@ private struct DepartureRow: View {
 
 // MARK: - Journey Updates Row
 private struct JourneyUpdatesRow: View {
+    private let buttonSize: CGFloat = 34
+
     let isLiveActive: Bool
     let isBusy: Bool
-    let liveActiveCount: Int
     let isScheduled: Bool
     let isScheduleDisabled: Bool
-    let statusText: String?
-    let statusIcon: String?
-    let statusColor: Color?
+    let subtitle: String
+    let subtitleColor: Color
     var onToggleLive: () -> Void
     var onOpenSchedule: () -> Void
 
-    private var subtitle: String {
-        if isLiveActive {
-            return "Live updates are on for this journey"
-        }
-        if liveActiveCount >= 3 {
-            return "Tap Start for live updates. The oldest one will be replaced."
-        }
-        return "Tap Start for live updates on this journey"
-    }
-
-    private var scheduleTitle: String {
-        isScheduled ? "Scheduled" : "Schedule"
-    }
-
     private var scheduleIcon: String {
-        isScheduled ? "checkmark.circle.fill" : "calendar.badge.plus"
+        isScheduled ? "clock.fill" : "clock"
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "dot.radiowaves.left.and.right")
-                    .foregroundStyle(isLiveActive ? .blue : .secondary)
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .foregroundStyle(isLiveActive ? .blue : .secondary)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Journey updates")
-                        .font(.subheadline)
-                        .fontWeight(.semibold)
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-
-                Spacer()
-
-                Grid(alignment: .trailing, horizontalSpacing: 0, verticalSpacing: 6) {
-                    GridRow {
-                        liveButton
-                    }
-                    GridRow {
-                        scheduleButton
-                    }
-                }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Journey updates")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(subtitleColor)
+                    .lineLimit(2)
             }
 
-            if let statusText, let statusIcon {
-                Label(statusText, systemImage: statusIcon)
-                    .font(.caption)
-                    .foregroundStyle(statusColor ?? .secondary)
+            Spacer(minLength: 8)
+
+            HStack(spacing: 6) {
+                liveButton
+                scheduleButton
             }
         }
         .padding(.vertical, 2)
@@ -1671,17 +1640,17 @@ private struct JourneyUpdatesRow: View {
         } label: {
             if isBusy {
                 ProgressView()
+                    .frame(width: buttonSize, height: buttonSize)
             } else {
-                Text(isLiveActive ? "Stop" : "Start")
-                    .fontWeight(.medium)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+                Image(systemName: isLiveActive ? "stop.fill" : "play.fill")
+                    .frame(width: buttonSize, height: buttonSize)
             }
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
         .tint(isLiveActive ? .red : .blue)
         .disabled(isBusy)
+        .accessibilityLabel(isLiveActive ? "Stop live updates" : "Start live updates")
         .accessibilityHint(isLiveActive ? "Stops live updates for this journey." : "Starts live updates for this journey.")
     }
 
@@ -1689,15 +1658,14 @@ private struct JourneyUpdatesRow: View {
         Button {
             onOpenSchedule()
         } label: {
-            Label(scheduleTitle, systemImage: scheduleIcon)
-                .fontWeight(.medium)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
+            Image(systemName: scheduleIcon)
+                .frame(width: buttonSize, height: buttonSize)
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
         .tint(isScheduled ? .green : .blue)
         .disabled(isScheduleDisabled)
+        .accessibilityLabel(isScheduled ? "Scheduled live updates" : "Schedule live updates")
         .accessibilityHint(isScheduled ? "Opens the schedule for this journey." : "Choose days and times for scheduled updates.")
     }
 }
