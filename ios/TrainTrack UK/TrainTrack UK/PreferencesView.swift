@@ -225,25 +225,21 @@ struct PreferencesView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(notificationStore.subscriptions) { sub in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(sub.routeTitle)
-                                .font(.subheadline)
-                                .fontWeight(.semibold)
-                            Text("\(sub.daysLabel) • \(sub.windowLabel)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle())
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) {
-                                notificationPendingDelete = sub
-                                showNotificationDeleteDialog = true
+                        if let schedule = resolvedScheduledRoute(for: sub) {
+                            NavigationLink {
+                                NotificationScheduleView(
+                                    group: schedule.group,
+                                    reverseGroup: schedule.reverseGroup
+                                )
+                                .environmentObject(notificationStore)
                             } label: {
-                                Label("Delete", systemImage: "trash")
+                                scheduledNotificationRow(for: sub)
                             }
+                        } else {
+                            scheduledNotificationRow(for: sub)
                         }
                     }
+                    .onDelete(perform: deleteScheduledNotifications)
                 }
                 Text("Notification types above apply to all schedules. You can schedule notifications for up to 3 journeys.")
                     .font(.footnote)
@@ -349,6 +345,107 @@ struct PreferencesView: View {
             }
         }
     }
+
+    private func deleteScheduledNotifications(at offsets: IndexSet) {
+        guard let index = offsets.first,
+              notificationStore.subscriptions.indices.contains(index) else { return }
+        notificationPendingDelete = notificationStore.subscriptions[index]
+        showNotificationDeleteDialog = true
+    }
+
+    private func scheduledNotificationRow(for sub: NotificationSubscription) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(scheduledNotificationTitle(for: sub))
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            Text("\(sub.daysLabel) • \(sub.windowLabel)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func scheduledNotificationTitle(for subscription: NotificationSubscription) -> String {
+        if let splitIndex = returnSplitIndex(for: subscription) {
+            let outbound = Array(subscription.legs.prefix(splitIndex))
+            guard let first = outbound.first, let last = outbound.last else {
+                return subscription.routeTitle
+            }
+            let from = first.fromName ?? first.from
+            let to = last.toName ?? last.to
+            return "\(from) → \(to) (and return)"
+        }
+        return subscription.routeTitle
+    }
+
+    private func resolvedScheduledRoute(for subscription: NotificationSubscription) -> ResolvedScheduledRoute? {
+        guard !subscription.legs.isEmpty else { return nil }
+        if let splitIndex = returnSplitIndex(for: subscription) {
+            let outbound = Array(subscription.legs.prefix(splitIndex))
+            let inbound = Array(subscription.legs.dropFirst(splitIndex))
+            return ResolvedScheduledRoute(
+                group: makeJourneyGroup(from: outbound),
+                reverseGroup: makeJourneyGroup(from: inbound)
+            )
+        }
+
+        return ResolvedScheduledRoute(
+            group: makeJourneyGroup(from: subscription.legs),
+            reverseGroup: nil
+        )
+    }
+
+    private func returnSplitIndex(for subscription: NotificationSubscription) -> Int? {
+        guard subscription.legs.count >= 2 else { return nil }
+
+        for splitIndex in 1..<subscription.legs.count {
+            let outbound = Array(subscription.legs.prefix(splitIndex))
+            let inbound = Array(subscription.legs.dropFirst(splitIndex))
+            if stationSequence(for: inbound) == stationSequence(for: outbound).reversed() {
+                return splitIndex
+            }
+        }
+
+        return nil
+    }
+
+    private func stationSequence(for legs: [NotificationLeg]) -> [String] {
+        guard let first = legs.first else { return [] }
+        return [first.from.uppercased()] + legs.map { $0.to.uppercased() }
+    }
+
+    private func makeJourneyGroup(from legs: [NotificationLeg]) -> JourneyGroup {
+        let groupId = UUID()
+        let journeys = legs.enumerated().map { index, leg in
+            Journey(
+                id: UUID(),
+                groupId: groupId,
+                legIndex: index,
+                fromStation: station(from: leg.from, name: leg.fromName),
+                toStation: station(from: leg.to, name: leg.toName),
+                createdAt: Date(),
+                favorite: false
+            )
+        }
+        return JourneyGroup(id: groupId, legs: journeys)
+    }
+
+    private func station(from crs: String, name: String?) -> Station {
+        if let actual = StationsService.shared.stations.first(where: { $0.crs.caseInsensitiveCompare(crs) == .orderedSame }) {
+            return actual
+        }
+        return Station(
+            crs: crs.uppercased(),
+            name: name ?? crs.uppercased(),
+            longitude: "0",
+            latitude: "0"
+        )
+    }
+}
+
+private struct ResolvedScheduledRoute {
+    let group: JourneyGroup
+    let reverseGroup: JourneyGroup?
 }
 
 #Preview {
