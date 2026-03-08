@@ -1,7 +1,15 @@
+import os from 'os';
 import client from 'prom-client';
+
+const DEFAULT_METRIC_LABELS = Object.freeze({
+    service_name: process.env.PROMETHEUS_SERVICE_NAME || process.env.FLY_APP_NAME || 'train-track-api',
+    instance_id: process.env.FLY_ALLOC_ID || process.env.HOSTNAME || os.hostname() || 'unknown',
+    pid: String(process.pid)
+});
 
 // Create a Registry to register the metrics
 const register = new client.Registry();
+register.setDefaultLabels(DEFAULT_METRIC_LABELS);
 
 // Add default process/runtime metrics from Node.js.
 client.collectDefaultMetrics({ register });
@@ -239,6 +247,32 @@ function normalizeUpstreamUrl(url) {
     } catch {
         return url;
     }
+}
+
+function escapePrometheusLabelValue(value) {
+    return String(value)
+        .replace(/\\/g, '\\\\')
+        .replace(/\n/g, '\\n')
+        .replace(/"/g, '\\"');
+}
+
+function formatMetricLabels(labels = {}) {
+    const mergedLabels = { ...DEFAULT_METRIC_LABELS, ...labels };
+    const labelEntries = Object.entries(mergedLabels);
+
+    if (labelEntries.length === 0) {
+        return '';
+    }
+
+    return `{${labelEntries.map(([key, value]) => `${key}="${escapePrometheusLabelValue(value)}"`).join(',')}}`;
+}
+
+function appendGaugeMetric(name, help, value, labels = {}) {
+    const numericValue = Number(value);
+
+    return `\n# HELP ${name} ${help}\n`
+        + `# TYPE ${name} gauge\n`
+        + `${name}${formatMetricLabels(labels)} ${Number.isFinite(numericValue) ? numericValue : 0}\n`;
 }
 
 // Middleware to track metrics for inbound HTTP requests.
@@ -499,9 +533,12 @@ function getTopUrisByDuration() {
 
     let output = '';
     sorted.forEach((item, index) => {
-        output += `# HELP top_uri_duration_${index + 1} Top ${index + 1} URI by request duration\n`;
-        output += `# TYPE top_uri_duration_${index + 1} gauge\n`;
-        output += `top_uri_duration_${index + 1}{path="${item.path}"} ${item.duration}\n`;
+        output += appendGaugeMetric(
+            `top_uri_duration_${index + 1}`,
+            `Top ${index + 1} URI by request duration`,
+            item.duration,
+            { path: item.path }
+        );
     });
 
     return output;
@@ -538,29 +575,41 @@ export async function getMetrics() {
 
     const percentiles = calculatePercentiles();
 
-    metrics += '\n# HELP http_request_duration_min_ms Minimum HTTP request duration in milliseconds\n';
-    metrics += '# TYPE http_request_duration_min_ms gauge\n';
-    metrics += `http_request_duration_min_ms ${percentiles.min}\n`;
+    metrics += appendGaugeMetric(
+        'http_request_duration_min_ms',
+        'Minimum HTTP request duration in milliseconds',
+        percentiles.min
+    );
 
-    metrics += '\n# HELP http_request_duration_max_ms Maximum HTTP request duration in milliseconds\n';
-    metrics += '# TYPE http_request_duration_max_ms gauge\n';
-    metrics += `http_request_duration_max_ms ${percentiles.max}\n`;
+    metrics += appendGaugeMetric(
+        'http_request_duration_max_ms',
+        'Maximum HTTP request duration in milliseconds',
+        percentiles.max
+    );
 
-    metrics += '\n# HELP http_request_duration_avg_ms Average HTTP request duration in milliseconds\n';
-    metrics += '# TYPE http_request_duration_avg_ms gauge\n';
-    metrics += `http_request_duration_avg_ms ${percentiles.avg}\n`;
+    metrics += appendGaugeMetric(
+        'http_request_duration_avg_ms',
+        'Average HTTP request duration in milliseconds',
+        percentiles.avg
+    );
 
-    metrics += '\n# HELP http_request_duration_p90_ms 90th percentile HTTP request duration in milliseconds\n';
-    metrics += '# TYPE http_request_duration_p90_ms gauge\n';
-    metrics += `http_request_duration_p90_ms ${percentiles.p90}\n`;
+    metrics += appendGaugeMetric(
+        'http_request_duration_p90_ms',
+        '90th percentile HTTP request duration in milliseconds',
+        percentiles.p90
+    );
 
-    metrics += '\n# HELP http_request_duration_p95_ms 95th percentile HTTP request duration in milliseconds\n';
-    metrics += '# TYPE http_request_duration_p95_ms gauge\n';
-    metrics += `http_request_duration_p95_ms ${percentiles.p95}\n`;
+    metrics += appendGaugeMetric(
+        'http_request_duration_p95_ms',
+        '95th percentile HTTP request duration in milliseconds',
+        percentiles.p95
+    );
 
-    metrics += '\n# HELP http_request_duration_p99_ms 99th percentile HTTP request duration in milliseconds\n';
-    metrics += '# TYPE http_request_duration_p99_ms gauge\n';
-    metrics += `http_request_duration_p99_ms ${percentiles.p99}\n`;
+    metrics += appendGaugeMetric(
+        'http_request_duration_p99_ms',
+        '99th percentile HTTP request duration in milliseconds',
+        percentiles.p99
+    );
 
     metrics += '\n' + getTopUrisByDuration();
 

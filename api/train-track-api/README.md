@@ -14,6 +14,7 @@ API for the [TrainTrack UK](https://apps.apple.com/gb/app/traintrack-uk/id650420
 
 - Endpoint: `GET /metrics` (Prometheus exposition format)
 - Includes Node.js runtime/process metrics from `prom-client` default collectors
+- All exported metrics are labeled with `service_name`, `instance_id`, and `pid` so Grafana can target the active Train Track API process on shared hosts
 - Includes custom metrics for:
   - Inbound API request throughput/latency
   - Upstream Rail API call throughput/latency/retries, including per-method URL/status counters

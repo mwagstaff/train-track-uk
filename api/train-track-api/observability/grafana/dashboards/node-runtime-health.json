@@ -54,14 +54,14 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "process_resident_memory_bytes",
+          "expr": "process_resident_memory_bytes{service_name=\"$service_name\",instance_id=\"$instance_id\",pid=\"$pid\"}",
           "legendFormat": "RSS",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "nodejs_external_memory_bytes",
+          "expr": "nodejs_external_memory_bytes{service_name=\"$service_name\",instance_id=\"$instance_id\",pid=\"$pid\"}",
           "legendFormat": "External",
           "range": true,
           "refId": "B"
@@ -103,14 +103,14 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "nodejs_heap_size_used_bytes",
+          "expr": "nodejs_heap_size_used_bytes{service_name=\"$service_name\",instance_id=\"$instance_id\",pid=\"$pid\"}",
           "legendFormat": "Heap Used",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "nodejs_heap_size_total_bytes",
+          "expr": "nodejs_heap_size_total_bytes{service_name=\"$service_name\",instance_id=\"$instance_id\",pid=\"$pid\"}",
           "legendFormat": "Heap Total",
           "range": true,
           "refId": "B"
@@ -153,7 +153,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "rate(process_cpu_seconds_total[5m])",
+          "expr": "rate(process_cpu_seconds_total{service_name=\"$service_name\",instance_id=\"$instance_id\",pid=\"$pid\"}[5m])",
           "legendFormat": "CPU",
           "range": true,
           "refId": "A"
@@ -196,7 +196,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "nodejs_eventloop_lag_p99_seconds * 1000",
+          "expr": "nodejs_eventloop_lag_p99_seconds{service_name=\"$service_name\",instance_id=\"$instance_id\",pid=\"$pid\"} * 1000",
           "legendFormat": "p99",
           "range": true,
           "refId": "A"
@@ -240,7 +240,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "time() - max(process_start_time_seconds)",
+          "expr": "time() - process_start_time_seconds{service_name=\"$service_name\",instance_id=\"$instance_id\",pid=\"$pid\"}",
           "refId": "A"
         }
       ],
@@ -282,7 +282,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "max(process_start_time_seconds) * 1000",
+          "expr": "process_start_time_seconds{service_name=\"$service_name\",instance_id=\"$instance_id\",pid=\"$pid\"} * 1000",
           "refId": "A"
         }
       ],
@@ -298,7 +298,73 @@
     "runtime"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "current": {
+          "selected": true,
+          "text": "train-track-api",
+          "value": "train-track-api"
+        },
+        "hide": 2,
+        "label": "Service",
+        "name": "service_name",
+        "options": [
+          {
+            "selected": true,
+            "text": "train-track-api",
+            "value": "train-track-api"
+          }
+        ],
+        "query": "train-track-api",
+        "type": "constant"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": ""
+        },
+        "definition": "label_values(process_start_time_seconds{service_name=\"$service_name\"}, instance_id)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Instance",
+        "multi": false,
+        "name": "instance_id",
+        "options": [],
+        "query": "label_values(process_start_time_seconds{service_name=\"$service_name\"}, instance_id)",
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": false,
+          "text": "",
+          "value": ""
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": ""
+        },
+        "definition": "query_result(topk(1, max by (pid) (process_start_time_seconds{service_name=\"$service_name\", instance_id=\"$instance_id\"})))",
+        "hide": 0,
+        "includeAll": false,
+        "label": "PID",
+        "multi": false,
+        "name": "pid",
+        "options": [],
+        "query": "query_result(topk(1, max by (pid) (process_start_time_seconds{service_name=\"$service_name\", instance_id=\"$instance_id\"})))",
+        "refresh": 1,
+        "regex": "/pid=\"([^\"]+)\"/",
+        "sort": 3,
+        "type": "query"
+      }
+    ]
   },
   "time": {
     "from": "now-6h",
@@ -308,6 +374,6 @@
   "timezone": "",
   "title": "Node.js Runtime Health",
   "uid": "tt-node-runtime",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

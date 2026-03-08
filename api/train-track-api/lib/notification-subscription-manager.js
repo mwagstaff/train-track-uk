@@ -553,7 +553,14 @@ class NotificationSubscriptionManager {
         // When muting for today (i.e. triggered by geofence arrival), send a
         // confirmation push so the user knows notifications have been muted.
         if (dateKey === todayKey) {
-            const mutedNotification = buildMutedMessage(subscription, leg);
+            let snapshot = null;
+            try {
+                snapshot = await getDeparturesSnapshot(leg.from, leg.to);
+            } catch (error) {
+                console.warn('[notifications] Failed to fetch departures snapshot for muted notification:', error?.message || error);
+            }
+
+            const mutedNotification = buildMutedMessage(subscription, leg, snapshot);
             const pushResult = await this.pushClient.sendNotification(
                 subscription.pushToken,
                 mutedNotification.payload,
@@ -782,11 +789,78 @@ function buildPlatformMessage(subscription, leg, dep) {
     return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'platform'), 'platform');
 }
 
-function buildMutedMessage(subscription, leg) {
+function buildMutedMessage(subscription, leg, snapshot = null) {
     const fromLabel = leg.fromName || leg.from;
     const toLabel = leg.toName || leg.to;
-    const body = `Notifications for ${fromLabel} → ${toLabel} have been muted for today. Have a good journey! 🚆`;
+    const body = buildMutedMessageBody(leg, snapshot);
     return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'muted'), 'muted');
+}
+
+function buildMutedMessageBody(leg, snapshot) {
+    const fromLabel = leg.fromName || leg.from;
+    const toLabel = leg.toName || leg.to;
+    const welcome = `Welcome to ${fromLabel}!`;
+    const primary = Array.isArray(snapshot?.departures) ? snapshot.departures[0] : null;
+
+    if (!primary) {
+        return `Notifications for ${fromLabel} → ${toLabel} have been muted for today. Have a good journey! 🚆`;
+    }
+
+    if (primary.isCancelled) {
+        const nextAvailable = snapshot.departures.find((dep) => dep && !dep.isCancelled);
+        const cancelledTime = formatDepartureTime(primary);
+        if (!nextAvailable) {
+            return `${welcome} The ${cancelledTime} departure has been cancelled. There are no later departures listed for ${toLabel} right now.`;
+        }
+
+        return `${welcome} The ${cancelledTime} departure has been cancelled. Next train to ${toLabel} is the ${formatDepartureTime(nextAvailable)} service${formatPlatformSuffix(nextAvailable)}.`;
+    }
+
+    if (isUnknownDelay(primary)) {
+        return `${welcome} Your next train to ${toLabel} is delayed for an unknown period of time${formatUnknownDelayPlatformSuffix(primary)}.`;
+    }
+
+    const delayMinutes = calculateDelayMinutes(primary.scheduled, primary.estimated);
+    if (delayMinutes > 0) {
+        return `${welcome} Your next train to ${toLabel} is scheduled to depart ${delayMinutes} minute${delayMinutes === 1 ? '' : 's'} late at ${formatEstimatedDepartureTime(primary)}${formatPlatformSuffix(primary)}.`;
+    }
+
+    if (hasPlatform(primary)) {
+        return `${welcome} Your next train to ${toLabel} is the ${formatDepartureTime(primary)} from platform ${primary.platform}, currently on time.`;
+    }
+
+    return `${welcome} Your next train to ${toLabel} is the ${formatDepartureTime(primary)}, currently on time, platform TBC.`;
+}
+
+function hasPlatform(dep) {
+    return typeof dep?.platform === 'string' && dep.platform.trim().length > 0;
+}
+
+function isUnknownDelay(dep) {
+    return typeof dep?.estimated === 'string' && dep.estimated.trim().toLowerCase() === 'delayed';
+}
+
+function formatDepartureTime(dep) {
+    return getValidDepartureTime(dep?.scheduled) || getValidDepartureTime(dep?.estimated) || 'scheduled service';
+}
+
+function formatEstimatedDepartureTime(dep) {
+    return getValidDepartureTime(dep?.estimated) || formatDepartureTime(dep);
+}
+
+function getValidDepartureTime(value) {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    return moment(trimmed, 'HH:mm', true).isValid() ? trimmed : null;
+}
+
+function formatPlatformSuffix(dep) {
+    return hasPlatform(dep) ? ` from platform ${dep.platform.trim()}` : ', platform TBC';
+}
+
+function formatUnknownDelayPlatformSuffix(dep) {
+    return hasPlatform(dep) ? `, due to depart from platform ${dep.platform.trim()}` : ', platform TBC';
 }
 
 function buildNotificationPayload(title, body, meta = {}, type = 'unknown') {
