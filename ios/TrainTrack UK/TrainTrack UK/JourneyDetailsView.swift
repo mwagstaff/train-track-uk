@@ -70,31 +70,25 @@ struct JourneyDetailsView: View {
         let fromCode = firstLeg.fromStation.crs.uppercased()
         let toCode = firstLeg.toStation.crs.uppercased()
         let stationName = firstLeg.fromStation.name
-        let legKey = NotificationMuteStorage.legKey(from: fromCode, to: toCode)
-
         let localMutedAt = NotificationMuteStorage.mutedAtDate(from: fromCode, to: toCode)
-        let serverMutedAt: Date? = {
-            guard let subscription = liveSession ?? notificationSubscription,
-                  let mutedDate = subscription.mutedByLegDay?[legKey],
-                  mutedDate == currentDateKeyUTC(),
-                  let mutedAt = subscription.mutedAtByLegDay?[legKey] else {
-                return nil
-            }
-            return ISO8601DateFormatter().date(from: mutedAt)
-        }()
-        let mutedAt = [localMutedAt, serverMutedAt].compactMap { $0 }.max()
-        let startedAt = (liveSession ?? notificationSubscription).flatMap { $0.createdAt ?? $0.updatedAt }
+        let startedAt = liveSession.flatMap { $0.createdAt ?? $0.updatedAt }
 
         if let startedAt {
-            if let mutedAt, mutedAt >= startedAt {
-                let timeLabel = formatTime(mutedAt)
+            if let localMutedAt, localMutedAt >= startedAt {
+                let timeLabel = formatTime(localMutedAt)
                 return ("Live updates stopped at \(timeLabel) when you arrived at \(stationName)", .orange)
             }
             return ("Live updates started at \(formatTime(startedAt))", .secondary)
         }
 
-        if let mutedAt {
-            return ("Live updates stopped at \(formatTime(mutedAt)) when you arrived at \(stationName)", .orange)
+        if NotificationMuteStorage.isMutedToday(from: fromCode, to: toCode),
+           let localMutedAt {
+            return ("Live updates stopped at \(formatTime(localMutedAt)) when you arrived at \(stationName)", .orange)
+        }
+
+        if let subscription = notificationSubscription,
+           let nextSchedule = nextScheduledStartDescription(for: subscription) {
+            return ("Journey updates scheduled to start \(nextSchedule)", .secondary)
         }
 
         return ("Start or schedule live updates for this journey", .secondary)
@@ -956,15 +950,6 @@ struct JourneyDetailsView: View {
         ToastStore.shared.show("Cleared local mute for today", icon: "bell")
     }
 
-    private func currentDateKeyUTC() -> String {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.locale = Locale(identifier: "en_GB")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date())
-    }
-
     private func formatTime(_ isoString: String) -> String? {
         let formatter = ISO8601DateFormatter()
         guard let date = formatter.date(from: isoString) else { return nil }
@@ -975,6 +960,78 @@ struct JourneyDetailsView: View {
         let output = DateFormatter()
         output.dateFormat = "HH:mm"
         return output.string(from: date)
+    }
+
+    private func nextScheduledStartDescription(for subscription: NotificationSubscription) -> String? {
+        guard !subscription.daysOfWeek.isEmpty,
+              let startValue = subscription.legs.first(where: \.enabled)?.windowStart ?? subscription.legs.first?.windowStart,
+              let startTime = timeFromHHmm(startValue) else {
+            return nil
+        }
+
+        let calendar = Calendar.current
+        let now = Date()
+        let currentWeekday = calendar.component(.weekday, from: now)
+
+        let candidates = subscription.daysOfWeek.compactMap { day -> (date: Date, label: String)? in
+            let weekday = weekdayNumber(for: day)
+            let label = weekdayLabel(for: day)
+            var delta = weekday - currentWeekday
+            if delta < 0 {
+                delta += 7
+            }
+
+            guard let baseDate = calendar.date(byAdding: .day, value: delta, to: now) else { return nil }
+            let dayComponents = calendar.dateComponents([.year, .month, .day], from: baseDate)
+            guard var candidate = calendar.date(from: dayComponents) else { return nil }
+            candidate = calendar.date(
+                bySettingHour: calendar.component(.hour, from: startTime),
+                minute: calendar.component(.minute, from: startTime),
+                second: 0,
+                of: candidate
+            ) ?? candidate
+            if candidate < now {
+                candidate = calendar.date(byAdding: .day, value: 7, to: candidate) ?? candidate
+            }
+            return (candidate, label)
+        }
+
+        guard let next = candidates.min(by: { $0.date < $1.date }) else { return nil }
+        return "on \(next.label) at \(formatTime(next.date))"
+    }
+
+    private func timeFromHHmm(_ value: String) -> Date? {
+        let parts = value.split(separator: ":")
+        guard parts.count == 2,
+              let hour = Int(parts[0]),
+              let minute = Int(parts[1]) else {
+            return nil
+        }
+        return Calendar.current.date(bySettingHour: hour, minute: minute, second: 0, of: Date())
+    }
+
+    private func weekdayNumber(for day: DayOfWeek) -> Int {
+        switch day {
+        case .sun: return 1
+        case .mon: return 2
+        case .tue: return 3
+        case .wed: return 4
+        case .thu: return 5
+        case .fri: return 6
+        case .sat: return 7
+        }
+    }
+
+    private func weekdayLabel(for day: DayOfWeek) -> String {
+        switch day {
+        case .mon: return "Monday"
+        case .tue: return "Tuesday"
+        case .wed: return "Wednesday"
+        case .thu: return "Thursday"
+        case .fri: return "Friday"
+        case .sat: return "Saturday"
+        case .sun: return "Sunday"
+        }
     }
 
     private func manualRefresh() async {
