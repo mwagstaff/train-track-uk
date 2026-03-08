@@ -30,10 +30,15 @@ struct PreferencesView: View {
     @AppStorage("showClosestJourneyLegOnly") private var showClosestJourneyLegOnly: Bool = true
     @AppStorage("showTransferWarnings") private var showTransferWarnings: Bool = true
     @AppStorage("transferWarningThresholdMinutes") private var transferWarningThresholdMinutes: Int = 3
+    @AppStorage(NotificationPreferences.summaryKey, store: NotificationPreferences.store) private var notifySummary: Bool = true
+    @AppStorage(NotificationPreferences.delaysKey, store: NotificationPreferences.store) private var notifyDelays: Bool = true
+    @AppStorage(NotificationPreferences.platformKey, store: NotificationPreferences.store) private var notifyPlatform: Bool = true
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
     @State private var notificationPendingDelete: NotificationSubscription? = nil
     @State private var showNotificationDeleteDialog = false
     @State private var showDebugLogs = false
+    @State private var notificationPreferencesError: String? = nil
+    @State private var notificationPreferencesSyncTask: Task<Void, Never>? = nil
 
     private var journeySortMode: Binding<JourneySortMode> {
         Binding(
@@ -47,6 +52,14 @@ struct PreferencesView: View {
             get: { ApiHost(rawValue: apiHostRaw) ?? .prod },
             set: { apiHostRaw = $0.rawValue }
         )
+    }
+
+    private var selectedNotificationTypeCount: Int {
+        [notifySummary, notifyDelays, notifyPlatform].filter { $0 }.count
+    }
+
+    private var notificationPreferencesSignature: String {
+        "\(notifySummary)-\(notifyDelays)-\(notifyPlatform)"
     }
 
     var body: some View {
@@ -123,6 +136,20 @@ struct PreferencesView: View {
                 Text("Shows a warning icon in the journey summary when your change time is below the chosen threshold.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Notification Preferences") {
+                Toggle(NotificationType.summary.displayName, isOn: notificationTypeBinding(.summary))
+                Toggle(NotificationType.delays.displayName, isOn: notificationTypeBinding(.delays))
+                Toggle(NotificationType.platform.displayName, isOn: notificationTypeBinding(.platform))
+                Text("Pick at least one type. Service status summary at start time only applies to scheduled notifications, not ad hoc live-session ones.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if let notificationPreferencesError {
+                    Text(notificationPreferencesError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
             }
 
             Section("Live Activities") {
@@ -205,9 +232,6 @@ struct PreferencesView: View {
                             Text("\(sub.daysLabel) • \(sub.windowLabel)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                            Text(sub.typeLabel)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
@@ -221,7 +245,7 @@ struct PreferencesView: View {
                         }
                     }
                 }
-                Text("You can schedule notifications for up to 3 journeys.")
+                Text("Notification types above apply to all schedules. You can schedule notifications for up to 3 journeys.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -254,6 +278,9 @@ struct PreferencesView: View {
         .onChange(of: moderatelyCloseMiles) { newValue in
             if newValue < veryCloseMiles { veryCloseMiles = newValue }
         }
+        .onChange(of: notificationPreferencesSignature) { _ in
+            syncNotificationPreferences()
+        }
         .confirmationDialog(
             "Delete schedule?",
             isPresented: $showNotificationDeleteDialog,
@@ -270,6 +297,56 @@ struct PreferencesView: View {
         }
         .sheet(isPresented: $showDebugLogs) {
             DebugLogView()
+        }
+    }
+
+    private func notificationTypeBinding(_ type: NotificationType) -> Binding<Bool> {
+        Binding(
+            get: { notificationTypeValue(type) },
+            set: { newValue in
+                let wasEnabled = notificationTypeValue(type)
+                if wasEnabled && !newValue && selectedNotificationTypeCount == 1 {
+                    return
+                }
+                setNotificationTypeValue(newValue, for: type)
+            }
+        )
+    }
+
+    private func notificationTypeValue(_ type: NotificationType) -> Bool {
+        switch type {
+        case .summary:
+            return notifySummary
+        case .delays:
+            return notifyDelays
+        case .platform:
+            return notifyPlatform
+        }
+    }
+
+    private func setNotificationTypeValue(_ value: Bool, for type: NotificationType) {
+        switch type {
+        case .summary:
+            notifySummary = value
+        case .delays:
+            notifyDelays = value
+        case .platform:
+            notifyPlatform = value
+        }
+    }
+
+    private func syncNotificationPreferences() {
+        notificationPreferencesSyncTask?.cancel()
+        notificationPreferencesSyncTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            do {
+                try await notificationStore.applyGlobalNotificationTypes()
+                notificationPreferencesError = nil
+            } catch {
+                guard !Task.isCancelled else { return }
+                notificationPreferencesError = error.localizedDescription
+            }
         }
     }
 }

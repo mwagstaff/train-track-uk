@@ -147,8 +147,8 @@ class NotificationSubscriptionManager {
             throw new Error('At least one day of week is required');
         }
 
-        const notificationTypes = normalizeTypes(typesInput);
-        if (notificationTypes.length === 0) {
+        const notificationTypes = normalizeTypes(typesInput, source);
+        if (source === SCHEDULED_SOURCE && notificationTypes.length === 0) {
             throw new Error('At least one notification type is required');
         }
 
@@ -300,11 +300,13 @@ class NotificationSubscriptionManager {
                 continue;
             }
 
-            if (subscription.notificationTypes.includes('summary')) {
+            const notificationTypes = getEffectiveNotificationTypes(subscription);
+
+            if (notificationTypes.includes('summary')) {
                 await this.sendSummaryIfNeeded(subscription, leg, legKey, snapshot);
             }
 
-            await this.sendUpdateNotifications(subscription, leg, legKey, snapshot);
+            await this.sendUpdateNotifications(subscription, leg, legKey, snapshot, notificationTypes);
         }
     }
 
@@ -373,12 +375,13 @@ class NotificationSubscriptionManager {
         });
     }
 
-    async sendUpdateNotifications(subscription, leg, legKey, snapshot) {
+    async sendUpdateNotifications(subscription, leg, legKey, snapshot, notificationTypes = getEffectiveNotificationTypes(subscription)) {
         if (this.isMutedToday(subscription, legKey)) {
             return;
         }
         const previous = subscription.lastStateByLeg[legKey] || {};
         const nextState = {};
+        const nextDepartureServiceID = snapshot.departures[0]?.serviceID || null;
 
         for (const dep of snapshot.departures) {
             const serviceID = dep.serviceID;
@@ -398,16 +401,18 @@ class NotificationSubscriptionManager {
                 continue;
             }
 
-            if (subscription.notificationTypes.includes('delays')) {
+            const isNextDeparture = Boolean(nextDepartureServiceID) && serviceID === nextDepartureServiceID;
+
+            if (notificationTypes.includes('delays')) {
                 if (current.isCancelled && !prev.isCancelled) {
                     await this.sendNotification(subscription, buildCancellationMessage(subscription, leg, current), leg);
-                } else if (current.delayMinutes > 0 && current.delayMinutes !== prev.delayMinutes) {
+                } else if (isNextDeparture && current.delayMinutes > 0 && current.delayMinutes !== prev.delayMinutes) {
                     await this.sendNotification(subscription, buildDelayMessage(subscription, leg, current), leg);
                 }
             }
 
-            if (subscription.notificationTypes.includes('platform')) {
-                if (prev.platform && current.platform && prev.platform !== current.platform) {
+            if (notificationTypes.includes('platform')) {
+                if (isNextDeparture && prev.platform && current.platform && prev.platform !== current.platform) {
                     await this.sendNotification(subscription, buildPlatformMessage(subscription, leg, current), leg);
                 }
             }
@@ -501,7 +506,7 @@ class NotificationSubscriptionManager {
             payload: notification?.payload ?? null,
             response: result || null,
             metadata: {
-                notification_types: subscription.notificationTypes,
+                notification_types: getEffectiveNotificationTypes(subscription),
                 days_of_week: subscription.daysOfWeek
             }
         }).catch((error) => {
@@ -515,7 +520,7 @@ class NotificationSubscriptionManager {
             device_id: subscription.deviceId,
             route_key: subscription.routeKey,
             days_of_week: subscription.daysOfWeek,
-            notification_types: subscription.notificationTypes,
+            notification_types: getEffectiveNotificationTypes(subscription),
             use_sandbox: subscription.useSandbox,
             mute_on_arrival: subscription.muteOnArrival,
             source: this.subscriptionSource(subscription),
@@ -644,11 +649,14 @@ function normalizeDays(daysInput) {
     return Array.from(result);
 }
 
-function normalizeTypes(typesInput) {
+function normalizeTypes(typesInput, source = SCHEDULED_SOURCE) {
     const raw = Array.isArray(typesInput) ? typesInput : [];
-    return raw
+    const types = raw
         .map((t) => (typeof t === 'string' ? t.trim().toLowerCase() : ''))
         .filter((t) => VALID_TYPES.has(t));
+    return source === LIVE_SESSION_SOURCE
+        ? types.filter((type) => type !== 'summary')
+        : types;
 }
 
 function normalizeSource(value) {
@@ -716,6 +724,10 @@ function normalizeIsoDate(value) {
     const timestamp = Date.parse(value);
     if (!Number.isFinite(timestamp)) return null;
     return new Date(timestamp).toISOString();
+}
+
+function getEffectiveNotificationTypes(subscription) {
+    return normalizeTypes(subscription?.notificationTypes, normalizeSource(subscription?.source));
 }
 
 async function getDeparturesSnapshot(fromStation, toStation) {

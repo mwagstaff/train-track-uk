@@ -786,7 +786,7 @@ struct JourneyDetailsView: View {
             liveSessionLegs = resolvedLegs
         }
 
-        let notificationTypes = notificationSubscription?.notificationTypes ?? [.summary, .delays, .platform]
+        let notificationTypes = NotificationPreferences.effectiveTypes(for: .liveSession)
         let muteOnArrival = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
         let activeUntil = Date().addingTimeInterval(Double(liveActivityDurationMinutes * 60))
 

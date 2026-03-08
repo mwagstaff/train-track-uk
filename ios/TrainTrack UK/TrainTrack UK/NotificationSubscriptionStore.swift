@@ -186,6 +186,73 @@ final class NotificationSubscriptionStore: ObservableObject {
     var canCreateNew: Bool { subscriptions.count < 3 }
     var canCreateNewLiveSession: Bool { liveSessions.count < 3 }
 
+    func applyGlobalNotificationTypes() async throws {
+        let scheduled = subscriptions
+        let live = liveSessions
+        guard !(scheduled.isEmpty && live.isEmpty) else { return }
+
+        await NotificationAuthorizationManager.registerIfAuthorized()
+        guard let pushToken = await NotificationPushTokenStore.waitForToken(timeoutSeconds: 6.0),
+              !pushToken.isEmpty else {
+            throw NotificationServiceError(message: "Waiting for a push token. Try again in a moment.")
+        }
+
+        #if DEBUG
+        let useSandbox = true
+        #else
+        let useSandbox = false
+        #endif
+
+        let scheduledTypes = NotificationPreferences.effectiveTypes(for: .scheduled)
+        let liveTypes = NotificationPreferences.effectiveTypes(for: .liveSession)
+
+        for subscription in scheduled {
+            let request = NotificationSubscriptionRequest(
+                subscriptionId: subscription.id,
+                deviceId: DeviceIdentity.deviceToken,
+                pushToken: pushToken,
+                routeKey: subscription.routeKey,
+                daysOfWeek: subscription.daysOfWeek,
+                notificationTypes: scheduledTypes,
+                legs: subscription.legs,
+                windowStart: subscription.legs.first?.windowStart,
+                windowEnd: subscription.legs.first?.windowEnd,
+                from: subscription.legs.first?.from,
+                to: subscription.legs.last?.to,
+                fromName: subscription.legs.first?.fromName,
+                toName: subscription.legs.last?.toName,
+                useSandbox: useSandbox,
+                muteOnArrival: subscription.muteOnArrival,
+                activeUntil: nil
+            )
+            _ = try await service.upsertSubscription(request)
+        }
+
+        for session in live {
+            let request = NotificationSubscriptionRequest(
+                subscriptionId: session.id,
+                deviceId: DeviceIdentity.deviceToken,
+                pushToken: pushToken,
+                routeKey: session.routeKey,
+                daysOfWeek: session.daysOfWeek,
+                notificationTypes: liveTypes,
+                legs: session.legs,
+                windowStart: session.legs.first?.windowStart,
+                windowEnd: session.legs.first?.windowEnd,
+                from: session.legs.first?.from,
+                to: session.legs.last?.to,
+                fromName: session.legs.first?.fromName,
+                toName: session.legs.last?.toName,
+                useSandbox: useSandbox,
+                muteOnArrival: session.muteOnArrival,
+                activeUntil: session.activeUntil
+            )
+            _ = try await service.upsertLiveSession(request)
+        }
+
+        await refresh()
+    }
+
     private func syncGeofences() async {
         await NotificationGeofenceManager.shared.sync(subscriptions: combinedSubscriptions)
     }

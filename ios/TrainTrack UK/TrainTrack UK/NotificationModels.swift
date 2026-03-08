@@ -21,6 +21,48 @@ enum NotificationType: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+enum NotificationPreferences {
+    static let store: UserDefaults = .standard
+    static let summaryKey = "notificationPreferences.summary"
+    static let delaysKey = "notificationPreferences.delays"
+    static let platformKey = "notificationPreferences.platform"
+
+    static func selectedTypes() -> [NotificationType] {
+        let selected = NotificationType.allCases.filter { isEnabled($0) }
+        return selected.isEmpty ? NotificationType.allCases : selected
+    }
+
+    static func effectiveTypes(for source: NotificationSubscriptionSource) -> [NotificationType] {
+        selectedTypes().filter { type in
+            switch (source, type) {
+            case (.liveSession, .summary):
+                return false
+            default:
+                return true
+            }
+        }
+    }
+
+    static func isEnabled(_ type: NotificationType) -> Bool {
+        let key = storageKey(for: type)
+        if store.object(forKey: key) == nil {
+            return true
+        }
+        return store.bool(forKey: key)
+    }
+
+    static func storageKey(for type: NotificationType) -> String {
+        switch type {
+        case .summary:
+            return summaryKey
+        case .delays:
+            return delaysKey
+        case .platform:
+            return platformKey
+        }
+    }
+}
+
 enum DayOfWeek: String, CaseIterable, Codable, Identifiable {
     case mon, tue, wed, thu, fri, sat, sun
 
@@ -119,6 +161,7 @@ struct NotificationSubscription: Codable, Identifiable, Hashable {
     }
 
     var typeLabel: String {
+        guard !notificationTypes.isEmpty else { return "No active alerts" }
         let labels = notificationTypes.map { type in
             switch type {
             case .summary: return "Summary"

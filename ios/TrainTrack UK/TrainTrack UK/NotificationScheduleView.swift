@@ -9,7 +9,6 @@ struct NotificationScheduleView: View {
 
     @State private var legs: [NotificationLeg]
     @State private var selectedDays: Set<DayOfWeek>
-    @State private var selectedTypes: Set<NotificationType>
     @State private var errorMessage: String?
     @State private var isSaving = false
     @State private var isDeleting = false
@@ -41,7 +40,6 @@ struct NotificationScheduleView: View {
         }
         _legs = State(initialValue: initialLegs)
         _selectedDays = State(initialValue: [.mon, .tue, .wed, .thu, .fri])
-        _selectedTypes = State(initialValue: [.summary, .delays, .platform])
     }
 
     private var routeKey: String {
@@ -58,7 +56,7 @@ struct NotificationScheduleView: View {
     private var hasEnabledLegs: Bool { legs.contains(where: { $0.enabled }) }
 
     private var canSave: Bool {
-        !selectedDays.isEmpty && !selectedTypes.isEmpty && hasEnabledLegs && !isSaving
+        !selectedDays.isEmpty && hasEnabledLegs && !isSaving
     }
 
     var body: some View {
@@ -92,15 +90,6 @@ struct NotificationScheduleView: View {
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
-                }
-
-                Section("Notification types") {
-                    ForEach(NotificationType.allCases) { kind in
-                        Toggle(kind.displayName, isOn: binding(for: kind))
-                    }
-                    Text("Pick at least one type.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
                 }
 
                 if let errorMessage {
@@ -150,7 +139,6 @@ struct NotificationScheduleView: View {
         guard !didApplyExisting, let existing else { return }
         didApplyExisting = true
         selectedDays = Set(existing.daysOfWeek)
-        selectedTypes = Set(existing.notificationTypes)
         let existingById = Dictionary(uniqueKeysWithValues: existing.legs.map { ($0.id, $0) })
         for index in legs.indices {
             if let existingLeg = existingById[legs[index].id] {
@@ -238,19 +226,6 @@ struct NotificationScheduleView: View {
         clampLegWindow(index)
     }
 
-    private func binding(for type: NotificationType) -> Binding<Bool> {
-        Binding(
-            get: { selectedTypes.contains(type) },
-            set: { newValue in
-                if newValue {
-                    selectedTypes.insert(type)
-                } else {
-                    selectedTypes.remove(type)
-                }
-            }
-        )
-    }
-
     private func timeFromString(_ value: String) -> Date? {
         let parts = value.split(separator: ":")
         guard parts.count == 2,
@@ -294,7 +269,7 @@ struct NotificationScheduleView: View {
                 pushToken: pushToken,
                 routeKey: routeKey,
                 daysOfWeek: Array(selectedDays),
-                notificationTypes: Array(selectedTypes),
+                notificationTypes: NotificationPreferences.effectiveTypes(for: .scheduled),
                 legs: legs,
                 windowStart: primaryLeg?.windowStart,
                 windowEnd: primaryLeg?.windowEnd,
