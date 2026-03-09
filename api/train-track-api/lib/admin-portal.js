@@ -74,6 +74,7 @@ export function registerAdminRoutes(app) {
 
 function renderAdminPage({ query, limit, subscriptions, notifications, geofenceEvents = [], liveActivitySessions = [] }) {
     const now = new Date();
+    const scheduledSubscriptions = subscriptions.filter((subscription) => subscription?.source !== 'live_session');
 
     // ── Live Activity Sessions (in-memory) ───────────────────────────────────
     const liveActivityRows = liveActivitySessions.length === 0
@@ -105,7 +106,7 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
             }).join('');
 
     // ── Scheduled notification subscriptions ─────────────────────────────────
-    const subscriptionRows = subscriptions.map((subscription) => {
+    const subscriptionRows = scheduledSubscriptions.map((subscription) => {
         const scheduleStart = formatLegSchedule(subscription.legs, 'windowStart');
         const scheduleEnd = formatLegSchedule(subscription.legs, 'windowEnd');
         const stationNames = formatStationNames(subscription.legs);
@@ -336,7 +337,7 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
         </section>
 
         <section class="panel">
-            <h2>🗓️ Scheduled Notification Subscriptions (Redis) <span class="panel-count">${subscriptions.length}</span></h2>
+            <h2>🗓️ Scheduled Notification Subscriptions (Redis) <span class="panel-count">${scheduledSubscriptions.length}</span></h2>
             <div class="table-wrap">
                 <table>
                     <thead>

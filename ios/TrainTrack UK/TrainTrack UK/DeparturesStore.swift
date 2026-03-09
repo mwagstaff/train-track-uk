@@ -84,6 +84,7 @@ final class DeparturesStore: ObservableObject {
     private var timerCancellable: AnyCancellable?
     private var journeysCancellable: AnyCancellable?
     private var pinnedCleanupCancellable: AnyCancellable?
+    private var initialRefreshTask: Task<Void, Never>?
     private var lastWidgetReloadAt: Date? = nil
     private let pinnedStorageKey = "pinned_departures_v1"
     private let pinnedCleanupIntervalSeconds: TimeInterval = 60
@@ -104,15 +105,18 @@ final class DeparturesStore: ObservableObject {
             Task { await runPinnedCleanupNow() }
             return
         }
-        // React immediately to journey changes
+        // React to journey changes after the explicit startup refresh path has run.
         journeysCancellable = journeyStore.$journeys
+            .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] journeys in
                 guard let self else { return }
                 Task { await self.refresh(for: journeys) }
             }
-        // Initial fetch
-        Task { await refresh(for: journeyStore.journeys) }
+        initialRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            await self.refreshPrioritizingFavourites(for: journeyStore.journeys)
+        }
         // Every 20 seconds
         timerCancellable = Timer.publish(every: 20, on: .main, in: .common)
             .autoconnect()
@@ -132,8 +136,12 @@ final class DeparturesStore: ObservableObject {
     func stopPolling() {
         timerCancellable?.cancel()
         timerCancellable = nil
+        journeysCancellable?.cancel()
+        journeysCancellable = nil
         pinnedCleanupCancellable?.cancel()
         pinnedCleanupCancellable = nil
+        initialRefreshTask?.cancel()
+        initialRefreshTask = nil
     }
 
     func refreshNow(journeyStore: JourneyStore) {
@@ -178,26 +186,80 @@ final class DeparturesStore: ObservableObject {
     }
 
     private func refresh(for journeys: [Journey]) async {
+        await refresh(
+            for: journeys,
+            replacingExistingDepartures: true,
+            delayBeforeEachBatch: true
+        )
+    }
+
+    private func refreshPrioritizingFavourites(for journeys: [Journey]) async {
+        let favouriteJourneys = journeys.filter(\.favorite)
+        guard !favouriteJourneys.isEmpty else {
+            await refresh(for: journeys)
+            return
+        }
+
+        await refresh(
+            for: favouriteJourneys,
+            replacingExistingDepartures: false,
+            delayBeforeEachBatch: false
+        )
+        guard !Task.isCancelled else { return }
+
+        let remainingJourneys = journeys.filter { !$0.favorite }
+        if remainingJourneys.isEmpty {
+            return
+        }
+
+        await refresh(
+            for: remainingJourneys,
+            replacingExistingDepartures: false,
+            delayBeforeEachBatch: false
+        )
+    }
+
+    private func refresh(
+        for journeys: [Journey],
+        replacingExistingDepartures: Bool,
+        delayBeforeEachBatch: Bool
+    ) async {
         let pairs = uniquePairs(journeyPairs(from: journeys))
         if pairs.isEmpty {
+            if replacingExistingDepartures {
+                departuresByPair = [:]
+            }
             await runPinnedCleanupNow()
             return
         }
         do {
-            let map = try await NetworkServicePhone.shared.fetchDeparturesAggregated(pairs: pairs)
-            self.departuresByPair = map
-            await runPinnedCleanupNow()
-            // Nudge widgets to refresh, throttled to about once per minute while app is active
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                let now = Date()
-                if self.lastWidgetReloadAt == nil || now.timeIntervalSince(self.lastWidgetReloadAt!) > 60 {
-                    self.lastWidgetReloadAt = now
-                    WidgetCenter.shared.reloadTimelines(ofKind: "ClosestFavouriteWidget")
+            let map = try await NetworkServicePhone.shared.fetchDeparturesAggregated(
+                pairs: pairs,
+                delayBeforeEachBatch: delayBeforeEachBatch
+            )
+            if replacingExistingDepartures {
+                departuresByPair = map
+            } else {
+                for (key, value) in map {
+                    departuresByPair[key] = value
                 }
             }
+            await runPinnedCleanupNow()
+            reloadClosestFavouriteWidgetIfNeeded()
         } catch {
             // swallow errors for now
+        }
+    }
+
+    private func reloadClosestFavouriteWidgetIfNeeded() {
+        // Nudge widgets to refresh, throttled to about once per minute while app is active.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let now = Date()
+            if self.lastWidgetReloadAt == nil || now.timeIntervalSince(self.lastWidgetReloadAt!) > 60 {
+                self.lastWidgetReloadAt = now
+                WidgetCenter.shared.reloadTimelines(ofKind: "ClosestFavouriteWidget")
+            }
         }
     }
 

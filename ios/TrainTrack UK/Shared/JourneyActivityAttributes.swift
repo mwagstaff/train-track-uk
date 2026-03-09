@@ -13,6 +13,9 @@ public struct JourneyActivityAttributes: ActivityAttributes {
         public var statusText: String?
         public var delayMinutes: Int
         public var activityID: String?
+        public var scheduleKey: String?
+        public var windowStart: String?
+        public var windowEnd: String?
 
         public init(
             fromCRS: String,
@@ -24,7 +27,10 @@ public struct JourneyActivityAttributes: ActivityAttributes {
             estimated: String,
             statusText: String?,
             delayMinutes: Int,
-            activityID: String? = nil
+            activityID: String? = nil,
+            scheduleKey: String? = nil,
+            windowStart: String? = nil,
+            windowEnd: String? = nil
         ) {
             self.fromCRS = fromCRS
             self.toCRS = toCRS
@@ -36,10 +42,13 @@ public struct JourneyActivityAttributes: ActivityAttributes {
             self.statusText = statusText
             self.delayMinutes = delayMinutes
             self.activityID = activityID
+            self.scheduleKey = scheduleKey
+            self.windowStart = windowStart
+            self.windowEnd = windowEnd
         }
 
         enum CodingKeys: String, CodingKey {
-            case fromCRS, toCRS, destinationTitle, arrivalLabel, length, platform, estimated, statusText, delayMinutes, activityID
+            case fromCRS, toCRS, destinationTitle, arrivalLabel, length, platform, estimated, statusText, delayMinutes, activityID, scheduleKey, windowStart, windowEnd
         }
     }
 

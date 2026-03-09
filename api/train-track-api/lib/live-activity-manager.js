@@ -28,7 +28,21 @@ class LiveActivityManager {
         }, this.pollIntervalMs).unref?.();
     }
 
-    registerSubscription({ deviceId, activityId, pushToken, fromStation, toStation, preferredServiceId, useSandbox, muteOnArrival, muteDelayMinutes, autoEndOnArrival }) {
+    registerSubscription({
+        deviceId,
+        activityId,
+        pushToken,
+        fromStation,
+        toStation,
+        preferredServiceId,
+        useSandbox,
+        muteOnArrival,
+        muteDelayMinutes,
+        autoEndOnArrival,
+        scheduleKey,
+        windowStart,
+        windowEnd
+    }) {
         const key = this.buildKey(deviceId, activityId);
         const existing = this.subscriptions.get(key);
 
@@ -66,7 +80,10 @@ class LiveActivityManager {
             lastPushAt: existing?.lastPushAt || null,
             revision: existing?.revision || 0,
             tokenUpdatedAt: new Date().toISOString(),
-            appIsActive: existing?.appIsActive ?? false
+            appIsActive: existing?.appIsActive ?? false,
+            scheduleKey: scheduleKey || existing?.scheduleKey || null,
+            windowStart: windowStart || existing?.windowStart || null,
+            windowEnd: windowEnd || existing?.windowEnd || null
         };
 
         this.subscriptions.set(key, subscription);
@@ -518,8 +535,15 @@ class LiveActivityManager {
             lastUpdated: moment(snapshot.fetchedAt).unix(), // Convert to Unix timestamp for iOS Date decoding
             activityID: subscription.activityId, // Include activity ID for iOS ContentState
             revision: subscription.revision || 0,
-            appIsActive
+            appIsActive,
+            scheduleKey: this.ensureOptionalString(subscription.scheduleKey),
+            windowStart: this.ensureOptionalString(subscription.windowStart),
+            windowEnd: this.ensureOptionalString(subscription.windowEnd)
         };
+    }
+
+    ensureOptionalString(value) {
+        return typeof value === 'string' && value.length > 0 ? value : null;
     }
 
     computeRichStatus(dep, serviceDetails) {

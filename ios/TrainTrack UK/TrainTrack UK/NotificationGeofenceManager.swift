@@ -1,6 +1,7 @@
 import Foundation
 import CoreLocation
 import UserNotifications
+import UIKit
 
 // MARK: - Shared Utilities
 
@@ -456,14 +457,16 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
     static let sessionIdentifier = "dev.skynolimit.traintrack.notifications.mute"
 
     private lazy var session: URLSession = {
-        let config = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
-        config.isDiscretionary = false
-        config.waitsForConnectivity = true
+        let config = URLSessionConfiguration.ephemeral
+        config.waitsForConnectivity = false
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 20
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
     private var responseData: [Int: Data] = [:] // Store data by task identifier
     private var uploadFiles: [Int: URL] = [:]
+    private var backgroundTasks: [Int: AppBackgroundTaskToken] = [:]
     private let syncQueue = DispatchQueue(label: "dev.skynolimit.traintrack.notifications.mute.sync")
 
     func enqueueMute(subscriptionId: String, from: String, to: String, delayMinutes: Int = 0) {
@@ -507,10 +510,14 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             let task = session.uploadTask(with: request, fromFile: tempFile)
             syncQueue.async {
                 self.uploadFiles[task.taskIdentifier] = tempFile
+                self.backgroundTasks[task.taskIdentifier] = AppBackgroundTaskToken(name: "notification-mute-request")
             }
             task.resume()
         } else {
-            let task = URLSession.shared.uploadTask(with: request, from: body)
+            let task = session.uploadTask(with: request, from: body)
+            syncQueue.async {
+                self.backgroundTasks[task.taskIdentifier] = AppBackgroundTaskToken(name: "notification-mute-request")
+            }
             task.resume()
         }
 
@@ -538,6 +545,7 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             if let temp = self.uploadFiles.removeValue(forKey: taskId) {
                 try? FileManager.default.removeItem(at: temp)
             }
+            self.backgroundTasks.removeValue(forKey: taskId)?.end()
             return data
         }
 
@@ -584,11 +592,6 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
         }
     }
 
-    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-        print("✅ Background URL session finished all events")
-        BackgroundSessionCoordinator.shared.complete(identifier: session.configuration.identifier)
-    }
-
     private func writePayloadToTempFile(_ data: Data) -> URL? {
         let tempDir = FileManager.default.temporaryDirectory
         let fileURL = tempDir.appendingPathComponent("mute_payload_\(UUID().uuidString).json")
@@ -620,24 +623,57 @@ final class BackgroundSessionCoordinator {
     }
 }
 
+private final class AppBackgroundTaskToken {
+    private var identifier: UIBackgroundTaskIdentifier = .invalid
+
+    init(name: String) {
+        let start = {
+            self.identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+                self?.end()
+            }
+        }
+        if Thread.isMainThread {
+            start()
+        } else {
+            DispatchQueue.main.sync(execute: start)
+        }
+    }
+
+    func end() {
+        let current = identifier
+        guard current != .invalid else { return }
+        identifier = .invalid
+        let finish = {
+            UIApplication.shared.endBackgroundTask(current)
+        }
+        if Thread.isMainThread {
+            finish()
+        } else {
+            DispatchQueue.main.async(execute: finish)
+        }
+    }
+}
+
 // MARK: - Geofence Event Sender
 // Sends a diagnostic event to the server whenever a CLRegion boundary is crossed.
-// Uses a background URLSession so requests complete even when the app is woken
-// from a force-closed state to handle a geofence event.
+// Uses an immediate URLSession request wrapped in a short background task so the
+// upload is not deferred by iOS transfer scheduling after a geofence wake.
 
 final class GeofenceEventSender: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
     static let shared = GeofenceEventSender()
     static let sessionIdentifier = "dev.skynolimit.traintrack.notifications.geofence"
 
     private lazy var session: URLSession = {
-        let config = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
-        config.isDiscretionary = false
-        config.waitsForConnectivity = true
+        let config = URLSessionConfiguration.ephemeral
+        config.waitsForConnectivity = false
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 20
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
     private let syncQueue = DispatchQueue(label: "dev.skynolimit.traintrack.geofence.sync")
     private var uploadFiles: [Int: URL] = [:]
+    private var backgroundTasks: [Int: AppBackgroundTaskToken] = [:]
 
     private override init() { super.init() }
 
@@ -671,10 +707,17 @@ final class GeofenceEventSender: NSObject, URLSessionDelegate, URLSessionTaskDel
         let fileURL = tempDir.appendingPathComponent("geofence_event_\(UUID().uuidString).json")
         if (try? body.write(to: fileURL, options: .atomic)) != nil {
             let task = session.uploadTask(with: request, fromFile: fileURL)
-            syncQueue.async { self.uploadFiles[task.taskIdentifier] = fileURL }
+            syncQueue.async {
+                self.uploadFiles[task.taskIdentifier] = fileURL
+                self.backgroundTasks[task.taskIdentifier] = AppBackgroundTaskToken(name: "geofence-event-upload")
+            }
             task.resume()
         } else {
-            URLSession.shared.uploadTask(with: request, from: body).resume()
+            let task = session.uploadTask(with: request, from: body)
+            syncQueue.async {
+                self.backgroundTasks[task.taskIdentifier] = AppBackgroundTaskToken(name: "geofence-event-upload")
+            }
+            task.resume()
         }
     }
 
@@ -684,16 +727,13 @@ final class GeofenceEventSender: NSObject, URLSessionDelegate, URLSessionTaskDel
             if let temp = self.uploadFiles.removeValue(forKey: taskId) {
                 try? FileManager.default.removeItem(at: temp)
             }
+            self.backgroundTasks.removeValue(forKey: taskId)?.end()
         }
         if let error = error {
             print("❌ [GeofenceEvent] Request failed: \(error.localizedDescription)")
         } else if let response = task.response as? HTTPURLResponse {
             print("📡 [GeofenceEvent] Response: \(response.statusCode)")
         }
-    }
-
-    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-        BackgroundSessionCoordinator.shared.complete(identifier: session.configuration.identifier)
     }
 }
 
@@ -707,14 +747,16 @@ final class LiveActivityArrivalSender: NSObject, URLSessionDelegate, URLSessionT
     static let sessionIdentifier = "dev.skynolimit.traintrack.liveactivity.arrive"
 
     private lazy var session: URLSession = {
-        let config = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
-        config.isDiscretionary = false
-        config.waitsForConnectivity = true
+        let config = URLSessionConfiguration.ephemeral
+        config.waitsForConnectivity = false
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 20
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
     private let syncQueue = DispatchQueue(label: "dev.skynolimit.traintrack.liveactivity.arrive.sync")
     private var uploadFiles: [Int: URL] = [:]
+    private var backgroundTasks: [Int: AppBackgroundTaskToken] = [:]
 
     private override init() { super.init() }
 
@@ -744,10 +786,17 @@ final class LiveActivityArrivalSender: NSObject, URLSessionDelegate, URLSessionT
         let fileURL = tempDir.appendingPathComponent("la_arrive_\(UUID().uuidString).json")
         if (try? body.write(to: fileURL, options: .atomic)) != nil {
             let task = session.uploadTask(with: request, fromFile: fileURL)
-            syncQueue.async { self.uploadFiles[task.taskIdentifier] = fileURL }
+            syncQueue.async {
+                self.uploadFiles[task.taskIdentifier] = fileURL
+                self.backgroundTasks[task.taskIdentifier] = AppBackgroundTaskToken(name: "live-activity-arrive")
+            }
             task.resume()
         } else {
-            URLSession.shared.uploadTask(with: request, from: body).resume()
+            let task = session.uploadTask(with: request, from: body)
+            syncQueue.async {
+                self.backgroundTasks[task.taskIdentifier] = AppBackgroundTaskToken(name: "live-activity-arrive")
+            }
+            task.resume()
         }
 
         print("📡 [LiveActivityArrival] Sent arrive event \(from.uppercased())→\(to.uppercased())")
@@ -759,16 +808,13 @@ final class LiveActivityArrivalSender: NSObject, URLSessionDelegate, URLSessionT
             if let temp = self.uploadFiles.removeValue(forKey: taskId) {
                 try? FileManager.default.removeItem(at: temp)
             }
+            self.backgroundTasks.removeValue(forKey: taskId)?.end()
         }
         if let error = error {
             print("❌ [LiveActivityArrival] Request failed: \(error.localizedDescription)")
         } else if let response = task.response as? HTTPURLResponse {
             print("📡 [LiveActivityArrival] Response: \(response.statusCode)")
         }
-    }
-
-    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
-        BackgroundSessionCoordinator.shared.complete(identifier: session.configuration.identifier)
     }
 }
 

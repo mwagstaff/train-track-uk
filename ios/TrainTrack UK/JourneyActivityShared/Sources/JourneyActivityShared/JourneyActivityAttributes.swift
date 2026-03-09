@@ -52,6 +52,9 @@ public struct JourneyActivityAttributes: Codable, Hashable {
         /// True when the app has checked in with the server recently (within ~2 min).
         /// Used to show the navigation-arrow indicator on the Live Activity widget.
         public var appIsActive: Bool
+        public var scheduleKey: String?
+        public var windowStart: String?
+        public var windowEnd: String?
 
         public init(
             fromCRS: String,
@@ -67,7 +70,10 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             lastUpdated: Date = Date(),
             activityID: String? = nil,
             revision: Int? = nil,
-            appIsActive: Bool = false
+            appIsActive: Bool = false,
+            scheduleKey: String? = nil,
+            windowStart: String? = nil,
+            windowEnd: String? = nil
         ) {
             self.fromCRS = fromCRS
             self.toCRS = toCRS
@@ -83,10 +89,13 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             self.activityID = activityID
             self.revision = revision
             self.appIsActive = appIsActive
+            self.scheduleKey = scheduleKey
+            self.windowStart = windowStart
+            self.windowEnd = windowEnd
         }
 
         private enum CodingKeys: String, CodingKey {
-            case fromCRS, toCRS, destinationTitle, arrivalLabel, length, platform, estimated, statusText, delayMinutes, upcomingDepartures, lastUpdated, activityID, revision, appIsActive
+            case fromCRS, toCRS, destinationTitle, arrivalLabel, length, platform, estimated, statusText, delayMinutes, upcomingDepartures, lastUpdated, activityID, revision, appIsActive, scheduleKey, windowStart, windowEnd
         }
 
         public init(from decoder: Decoder) throws {
@@ -104,6 +113,9 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             activityID = try container.decodeIfPresent(String.self, forKey: .activityID)
             revision = try container.decodeIfPresent(Int.self, forKey: .revision)
             appIsActive = try container.decodeIfPresent(Bool.self, forKey: .appIsActive) ?? false
+            scheduleKey = try container.decodeIfPresent(String.self, forKey: .scheduleKey)
+            windowStart = try container.decodeIfPresent(String.self, forKey: .windowStart)
+            windowEnd = try container.decodeIfPresent(String.self, forKey: .windowEnd)
 
             // Handle lastUpdated as Unix timestamp (server sends integer seconds since epoch)
             if let timestamp = try? container.decode(Double.self, forKey: .lastUpdated) {

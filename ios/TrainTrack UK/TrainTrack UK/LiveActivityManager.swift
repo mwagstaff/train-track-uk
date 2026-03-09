@@ -34,11 +34,13 @@ final class LiveActivityManager: ObservableObject {
     private var activityUpdatesTask: Task<Void, Never>? = nil
     private var stateMonitorTasks: [Activity<JourneyActivityAttributes>.ID: Task<Void, Never>] = [:]
     private var pushTokenTasks: [Activity<JourneyActivityAttributes>.ID: Task<Void, Never>] = [:]
+    private var pushToStartTokenTask: Task<Void, Never>? = nil
     private var lastEndedAt: Date? = nil
     private let autoRestartSuppressionWindow: TimeInterval = 10
     private let durationKey = "liveActivityDurationMinutes"
     private var lastBackendCheckInAt: Date? = nil
     private let backendCheckInMinIntervalSeconds: TimeInterval = 5
+    private var lastRegisteredPushToStartToken: String? = nil
 
     // Live Activity lifetime; set to nil to disable auto-expiry and rely on manual dismissal.
     private let activityExpiryInterval: TimeInterval? = nil
@@ -70,6 +72,7 @@ final class LiveActivityManager: ObservableObject {
 
     private init() {
         startActivityLifecycleLogging()
+        startPushToStartTokenObservation()
         scheduleGlobalActivityMonitor()
         updatePublishedState()
     }
@@ -77,6 +80,7 @@ final class LiveActivityManager: ObservableObject {
     deinit {
         activityUpdatesTask?.cancel()
         stateMonitorTasks.values.forEach { $0.cancel() }
+        pushToStartTokenTask?.cancel()
     }
 
     /// Check if there's an active Live Activity for the given journey
@@ -157,8 +161,15 @@ final class LiveActivityManager: ObservableObject {
         }
     }
 
-    func start(for journey: Journey, depStore: DeparturesStore, preferredServiceID: String? = nil, triggeredByUser: Bool = false, bypassSuppression: Bool = false) async {
-        guard triggeredByUser else {
+    func start(
+        for journey: Journey,
+        depStore: DeparturesStore,
+        preferredServiceID: String? = nil,
+        triggeredByUser: Bool = false,
+        bypassSuppression: Bool = false,
+        allowAutomaticStart: Bool = false
+    ) async {
+        guard triggeredByUser || allowAutomaticStart else {
             print("🚫 [LiveActivity] Start ignored (not user-triggered; auto-starts disabled)")
             return
         }
@@ -256,6 +267,14 @@ final class LiveActivityManager: ObservableObject {
                 print("⏳ [LiveActivity] Waiting for push token via pushTokenUpdates stream (requested pushType=.token)")
             } else {
                 print("📡 [LiveActivity] Initial push token already available; will still watch for updates")
+                let tokenString = encodePushToken(act.pushToken!)
+                _ = await sendLiveActivityRegistration(
+                    activityID: act.id,
+                    tokenString: tokenString,
+                    fromCRS: journey.fromStation.crs,
+                    toCRS: journey.toStation.crs,
+                    preferredServiceID: preferredServiceID
+                )
             }
 
             // Create tracked activity with its own timers
@@ -363,6 +382,7 @@ final class LiveActivityManager: ObservableObject {
 
         // Remove from tracked activities
         trackedActivities[activityID] = nil
+        ScheduledLiveActivityAutoStartManager.shared.removeRecord(activityID: activityID)
 
         // Unregister from backend so server stops polling
         await sendLiveActivityUnregistration(activityID: activityID)
@@ -731,6 +751,7 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func handleActivityUpdate(_ activity: Activity<JourneyActivityAttributes>) async {
+        await registerRemoteStartedActivityIfNeeded(activity)
         self.logger.info("[ActivityMonitor] Activity emitted id=\(activity.id, privacy: .public) state=\(self.describe(state: activity.activityState), privacy: .public)")
         logActivitySnapshot(activity, context: "activityUpdates emit")
         stateMonitorTasks[activity.id]?.cancel()
@@ -747,6 +768,71 @@ final class LiveActivityManager: ObservableObject {
             }
             self.logger.info("[ActivityMonitor] Activity \(activity.id, privacy: .public) state stream ended")
             self.stateMonitorTasks[activity.id] = nil
+        }
+    }
+
+    private func registerRemoteStartedActivityIfNeeded(_ activity: Activity<JourneyActivityAttributes>) async {
+        await replaceScheduledActivityIfNeeded(with: activity)
+        guard trackedActivities[activity.id] == nil else { return }
+
+        let fromCRS = activity.contentState.fromCRS.uppercased()
+        let toCRS = activity.contentState.toCRS.uppercased()
+
+        var tracked = TrackedActivity(
+            activity: activity,
+            fromCRS: fromCRS,
+            toCRS: toCRS,
+            startedAt: Date(),
+            preferredServiceID: nil
+        )
+        tracked.fallbackEndTimer = scheduleFallbackEnd(for: activity.id)
+        trackedActivities[activity.id] = tracked
+        watchPushToken(for: activity, fromCRS: fromCRS, toCRS: toCRS)
+        if let tokenData = activity.pushToken {
+            let tokenString = encodePushToken(tokenData)
+            Task { @MainActor in
+                _ = await self.sendLiveActivityRegistration(
+                    activityID: activity.id,
+                    tokenString: tokenString,
+                    fromCRS: fromCRS,
+                    toCRS: toCRS,
+                    scheduleKey: activity.contentState.scheduleKey,
+                    windowStart: activity.contentState.windowStart,
+                    windowEnd: activity.contentState.windowEnd
+                )
+            }
+        }
+        updatePublishedState()
+    }
+
+    private func replaceScheduledActivityIfNeeded(with activity: Activity<JourneyActivityAttributes>) async {
+        guard let scheduleKey = activity.contentState.scheduleKey,
+              !scheduleKey.isEmpty else {
+            return
+        }
+
+        let trackedDuplicateIDs = trackedActivities.compactMap { entry -> String? in
+            guard entry.key != activity.id,
+                  entry.value.activity.contentState.scheduleKey == scheduleKey else {
+                return nil
+            }
+            return entry.key
+        }
+
+        for activityID in trackedDuplicateIDs {
+            await stopActivity(activityID: activityID)
+        }
+
+        let untrackedDuplicates = Activity<JourneyActivityAttributes>.activities.filter {
+            $0.id != activity.id
+                && $0.contentState.scheduleKey == scheduleKey
+                && trackedActivities[$0.id] == nil
+        }
+
+        for duplicate in untrackedDuplicates {
+            await duplicate.end(nil, dismissalPolicy: .immediate)
+            await sendLiveActivityUnregistration(activityID: duplicate.id)
+            ScheduledLiveActivityAutoStartManager.shared.removeRecord(activityID: duplicate.id)
         }
     }
 
@@ -820,6 +906,32 @@ final class LiveActivityManager: ObservableObject {
         lastEndedAt = Date()
     }
 
+    private func startPushToStartTokenObservation() {
+        guard #available(iOS 17.2, *) else { return }
+
+        pushToStartTokenTask?.cancel()
+        pushToStartTokenTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            if let current = Activity<JourneyActivityAttributes>.pushToStartToken {
+                await self.registerPushToStartTokenIfNeeded(current)
+            }
+
+            for await tokenData in Activity<JourneyActivityAttributes>.pushToStartTokenUpdates {
+                await self.registerPushToStartTokenIfNeeded(tokenData)
+            }
+        }
+    }
+
+    private func registerPushToStartTokenIfNeeded(_ tokenData: Data) async {
+        let tokenString = encodePushToken(tokenData)
+        guard tokenString != lastRegisteredPushToStartToken else { return }
+        let success = await sendPushToStartTokenRegistration(tokenString: tokenString)
+        if success {
+            lastRegisteredPushToStartToken = tokenString
+        }
+    }
+
     // MARK: - Push token / backend registration
     private func watchPushToken(for activity: Activity<JourneyActivityAttributes>, fromCRS: String, toCRS: String) {
         pushTokenTasks[activity.id]?.cancel()
@@ -846,7 +958,10 @@ final class LiveActivityManager: ObservableObject {
                             tokenString: tokenString,
                             fromCRS: fromCRS,
                             toCRS: toCRS,
-                            preferredServiceID: preferredServiceID
+                            preferredServiceID: preferredServiceID,
+                            scheduleKey: activity.contentState.scheduleKey,
+                            windowStart: activity.contentState.windowStart,
+                            windowEnd: activity.contentState.windowEnd
                         )
                         if !success {
                             retryCount += 1
@@ -878,7 +993,10 @@ final class LiveActivityManager: ObservableObject {
         tokenString: String,
         fromCRS: String,
         toCRS: String,
-        preferredServiceID: String? = nil
+        preferredServiceID: String? = nil,
+        scheduleKey: String? = nil,
+        windowStart: String? = nil,
+        windowEnd: String? = nil
     ) async -> Bool {
         let base = ApiHostPreference.currentBaseURL
         let urlString = "\(base)/live_activities"
@@ -914,6 +1032,15 @@ final class LiveActivityManager: ObservableObject {
         ]
         if let preferredServiceID, !preferredServiceID.isEmpty {
             payload["preferred_service_id"] = preferredServiceID
+        }
+        if let scheduleKey, !scheduleKey.isEmpty {
+            payload["schedule_key"] = scheduleKey
+        }
+        if let windowStart, !windowStart.isEmpty {
+            payload["window_start"] = windowStart
+        }
+        if let windowEnd, !windowEnd.isEmpty {
+            payload["window_end"] = windowEnd
         }
 
         var request = URLRequest(url: url)
@@ -954,6 +1081,58 @@ final class LiveActivityManager: ObservableObject {
         } catch {
             print("❌ [LiveActivity] Network error registering live activity: \(error)")
             logger.error("[LiveActivity] Network error registering live activity: \(String(describing: error), privacy: .public)")
+            return false
+        }
+    }
+
+    @discardableResult
+    private func sendPushToStartTokenRegistration(tokenString: String) async -> Bool {
+        let base = ApiHostPreference.currentBaseURL
+        let urlString = "\(base)/live_activities/push_to_start_tokens"
+        guard let url = URL(string: urlString) else {
+            logger.error("[LiveActivity] Invalid push-to-start registration URL: \(urlString, privacy: .public)")
+            return false
+        }
+
+        #if DEBUG
+        let isDebugBuild = true
+        #else
+        let isDebugBuild = false
+        #endif
+
+        let payload: [String: Any] = [
+            "device_id": DeviceIdentity.deviceToken,
+            "push_to_start_token": tokenString,
+            "use_sandbox": isDebugBuild
+        ]
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(DeviceIdentity.deviceToken, forHTTPHeaderField: "X-Device-Token")
+        request.timeoutInterval = 15
+
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
+        } catch {
+            logger.error("[LiveActivity] Failed to encode push-to-start registration payload: \(String(describing: error), privacy: .public)")
+            return false
+        }
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                return false
+            }
+            if (200...299).contains(http.statusCode) {
+                logger.info("[LiveActivity] Push-to-start token registered successfully")
+                return true
+            }
+            let body = String(data: data, encoding: .utf8) ?? "<no body>"
+            logger.error("[LiveActivity] Push-to-start registration failed: status=\(http.statusCode) body=\(body, privacy: .public)")
+            return false
+        } catch {
+            logger.error("[LiveActivity] Network error registering push-to-start token: \(String(describing: error), privacy: .public)")
             return false
         }
     }

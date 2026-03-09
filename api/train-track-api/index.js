@@ -17,6 +17,7 @@ import { liveActivityManager } from './lib/live-activity-manager.js';
 import { notificationSubscriptionManager } from './lib/notification-subscription-manager.js';
 import { registerAdminRoutes } from './lib/admin-portal.js';
 import { recordGeofenceEvent } from './lib/admin-data-store.js';
+import { pushToStartTokenStore } from './lib/push-to-start-token-store.js';
 import path from 'path';
 
 function isLiveActivityLoggingEnabled() {
@@ -153,6 +154,9 @@ app.use('/api/v2/live_activities', (req, res, next) => {
     if (maskedBody.live_activity_push_token) {
         maskedBody.live_activity_push_token = maskToken(maskedBody.live_activity_push_token);
     }
+    if (maskedBody.push_to_start_token) {
+        maskedBody.push_to_start_token = maskToken(maskedBody.push_to_start_token);
+    }
     console.log(
         '[live-activity] incoming',
         JSON.stringify({
@@ -183,7 +187,21 @@ app.get('/metrics', async (req, res) => {
 });
 
 app.post('/api/v2/live_activities', async (req, res) => {
-    const { device_id, activity_id, live_activity_push_token, from, to, use_sandbox, preferred_service_id, mute_on_arrival, mute_delay_minutes, auto_end_on_arrival } = req.body || {};
+    const {
+        device_id,
+        activity_id,
+        live_activity_push_token,
+        from,
+        to,
+        use_sandbox,
+        preferred_service_id,
+        mute_on_arrival,
+        mute_delay_minutes,
+        auto_end_on_arrival,
+        schedule_key,
+        window_start,
+        window_end
+    } = req.body || {};
     const { canonicalDeviceId, bodyDeviceId, headerDeviceId, hasMismatch } = resolveRequestDeviceIds(req, device_id);
     if (!canonicalDeviceId || !activity_id || !live_activity_push_token || !from || !to) {
         logLiveActivityRequest('register_failed_validation', req, {
@@ -222,7 +240,10 @@ app.post('/api/v2/live_activities', async (req, res) => {
         useSandbox: Boolean(use_sandbox),
         muteOnArrival: mute_on_arrival === true || mute_on_arrival === 'true',
         muteDelayMinutes: mute_delay_minutes !== undefined ? Number(mute_delay_minutes) : undefined,
-        autoEndOnArrival: auto_end_on_arrival === true || auto_end_on_arrival === 'true'
+        autoEndOnArrival: auto_end_on_arrival === true || auto_end_on_arrival === 'true',
+        scheduleKey: typeof schedule_key === 'string' ? schedule_key : null,
+        windowStart: typeof window_start === 'string' ? window_start : null,
+        windowEnd: typeof window_end === 'string' ? window_end : null
     });
     recordPushTokenRegistration({
         channel: 'live_activity',
@@ -253,6 +274,54 @@ app.post('/api/v2/live_activities', async (req, res) => {
         next_departures: snapshot.departures,
         last_updated: snapshot.fetchedAt
     });
+});
+
+app.post('/api/v2/live_activities/push_to_start_tokens', async (req, res) => {
+    const { device_id, push_to_start_token, use_sandbox } = req.body || {};
+    const { canonicalDeviceId, bodyDeviceId, headerDeviceId, hasMismatch } = resolveRequestDeviceIds(req, device_id);
+
+    if (!canonicalDeviceId || !push_to_start_token) {
+        logLiveActivityRequest('push_to_start_register_failed_validation', req, {
+            device_id: canonicalDeviceId || bodyDeviceId,
+            body_device_id: bodyDeviceId,
+            header_device_id: headerDeviceId,
+            push_to_start_token: maskToken(push_to_start_token)
+        });
+        return res.status(400).json({ error: 'device_id and push_to_start_token are required' });
+    }
+
+    logLiveActivityRequest('push_to_start_register', req, {
+        device_id: canonicalDeviceId,
+        body_device_id: bodyDeviceId,
+        header_device_id: headerDeviceId,
+        device_id_mismatch: hasMismatch,
+        push_to_start_token: maskToken(push_to_start_token),
+        use_sandbox: Boolean(use_sandbox)
+    });
+
+    try {
+        const record = await pushToStartTokenStore.upsert({
+            deviceId: canonicalDeviceId,
+            pushToStartToken: push_to_start_token,
+            useSandbox: Boolean(use_sandbox)
+        });
+        recordPushTokenRegistration({
+            channel: 'live_activity',
+            environment: record.useSandbox ? 'sandbox' : 'prod'
+        });
+        res.json({
+            status: 'registered',
+            device_id: record.deviceId,
+            use_sandbox: record.useSandbox,
+            updated_at: record.updatedAt
+        });
+    } catch (error) {
+        logLiveActivityRequest('push_to_start_register_failed', req, {
+            device_id: canonicalDeviceId,
+            error: error?.message || error
+        });
+        res.status(500).json({ error: error?.message || error });
+    }
 });
 
 app.delete('/api/v2/live_activities', async (req, res) => {

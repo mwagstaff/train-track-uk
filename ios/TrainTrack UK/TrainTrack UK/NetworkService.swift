@@ -96,7 +96,10 @@ final class NetworkServicePhone {
         maxIdsPerRequest = max(1, n)
     }
 
-    func fetchDeparturesAggregated(pairs: [(from: String, to: String)]) async throws -> [String: [DepartureV2]] {
+    func fetchDeparturesAggregated(
+        pairs: [(from: String, to: String)],
+        delayBeforeEachBatch: Bool = true
+    ) async throws -> [String: [DepartureV2]] {
         guard !pairs.isEmpty else { return [:] }
         let chunkSize = max(1, maxDeparturePairsPerRequest)
         var combined: [String: [DepartureV2]] = [:]
@@ -105,7 +108,9 @@ final class NetworkServicePhone {
         while startIndex < pairs.count {
             let endIndex = min(startIndex + chunkSize, pairs.count)
             let chunk = Array(pairs[startIndex..<endIndex])
-            try await sleepBeforeDepartureBatch()
+            if delayBeforeEachBatch {
+                try await sleepBeforeDepartureBatch()
+            }
             let partial = try await fetchDeparturesBatch(pairs: chunk)
             for (key, value) in partial {
                 combined[key] = value

@@ -160,12 +160,14 @@ export class NotificationPushClient {
     async sendSingleRequest({ host, deviceToken, payload, jwt }) {
         const session = http2.connect(`https://${host}`);
         const body = JSON.stringify(payload);
+        const pushType = payload?.aps?.alert ? 'alert' : 'background';
+        const priority = pushType === 'background' ? '5' : '10';
         const headers = {
             ':method': 'POST',
             ':path': `/3/device/${deviceToken}`,
             'apns-topic': this.topic,
-            'apns-push-type': 'alert',
-            'apns-priority': '10',
+            'apns-push-type': pushType,
+            'apns-priority': priority,
             authorization: `bearer ${jwt}`,
             'content-type': 'application/json'
         };

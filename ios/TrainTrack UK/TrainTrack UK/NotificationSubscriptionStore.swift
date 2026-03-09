@@ -139,13 +139,8 @@ final class NotificationSubscriptionStore: ObservableObject {
 
     func upsert(_ requestBody: NotificationSubscriptionRequest) async throws -> NotificationSubscription {
         let subscription = try await service.upsertSubscription(requestBody)
-        if let index = subscriptions.firstIndex(where: { $0.id == subscription.id }) {
-            subscriptions[index] = subscription
-        } else {
-            subscriptions.append(subscription)
-        }
-        await syncGeofences()
-        return subscription
+        await refresh()
+        return subscriptions.first(where: { $0.id == subscription.id }) ?? subscription
     }
 
     func delete(id: String) async throws {

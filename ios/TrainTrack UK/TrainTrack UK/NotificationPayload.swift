@@ -9,6 +9,8 @@ enum NotificationPayloadKeys {
     static let toName = "to_name"
     static let legKey = "leg_key"
     static let alertType = "alert_type"
+    static let windowStart = "window_start"
+    static let windowEnd = "window_end"
 }
 
 enum NotificationCategoryId {

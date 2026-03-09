@@ -2,8 +2,10 @@ import moment from 'moment';
 import crypto from 'crypto';
 import { getTrainTimes } from './realtime-trains-api.js';
 import { NotificationPushClient } from './notification-push-client.js';
+import { LiveActivityPushClient } from './live-activity-push-client.js';
 import redis from './redis-client.js';
 import { recordNotificationEvent } from './admin-data-store.js';
+import { pushToStartTokenStore } from './push-to-start-token-store.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.NOTIFICATION_POLL_INTERVAL_SECONDS || '30');
 const MAX_SUBSCRIPTIONS_PER_DEVICE = Number(process.env.NOTIFICATION_MAX_SUBSCRIPTIONS || '3');
@@ -24,6 +26,7 @@ class NotificationSubscriptionManager {
     constructor() {
         this.subscriptions = new Map();
         this.pushClient = new NotificationPushClient();
+        this.liveActivityPushClient = new LiveActivityPushClient();
         this.pollIntervalMs = DEFAULT_POLL_INTERVAL_SECONDS * 1000;
         this.isPolling = false;
         // Polling loop is started by init() after Redis hydration.
@@ -179,13 +182,31 @@ class NotificationSubscriptionManager {
             throw new Error('route_key is required');
         }
 
-        const existing = Array.from(this.subscriptions.values()).find(
-            (sub) => sub.deviceId === deviceId
-                && sub.routeKey === routeKey
-                && this.subscriptionSource(sub) === source
-        );
+        const existingById = subscriptionId
+            ? this.subscriptions.get(subscriptionId)
+            : null;
+        const existing = (
+            existingById
+            && existingById.deviceId === deviceId
+            && this.subscriptionSource(existingById) === source
+        )
+            ? existingById
+            : Array.from(this.subscriptions.values()).find(
+                (sub) => sub.deviceId === deviceId
+                    && sub.routeKey === routeKey
+                    && this.subscriptionSource(sub) === source
+            );
+        const overlappingScheduledSubscriptions = source === SCHEDULED_SOURCE
+            ? Array.from(this.subscriptions.values()).filter((sub) =>
+                sub.deviceId === deviceId
+                && sub.id !== existing?.id
+                && this.subscriptionSource(sub) === SCHEDULED_SOURCE
+                && scheduledSubscriptionsOverlap(sub, daysOfWeek, normalizedLegs)
+            )
+            : [];
         const deviceCount = this.countSubscriptionsForDevice(deviceId, { source });
-        if (!existing && deviceCount >= MAX_SUBSCRIPTIONS_PER_DEVICE) {
+        const effectiveDeviceCount = Math.max(0, deviceCount - overlappingScheduledSubscriptions.length);
+        if (!existing && effectiveDeviceCount >= MAX_SUBSCRIPTIONS_PER_DEVICE) {
             if (source === LIVE_SESSION_SOURCE) {
                 throw new Error(`Maximum of ${MAX_SUBSCRIPTIONS_PER_DEVICE} live journeys reached`);
             }
@@ -199,6 +220,7 @@ class NotificationSubscriptionManager {
         const resolvedActiveUntil = source === LIVE_SESSION_SOURCE
             ? normalizeIsoDate(activeUntil) || existing?.activeUntil || nowIso
             : null;
+        const resetScheduledDeliveryState = source === SCHEDULED_SOURCE && Boolean(existing);
 
         const subscription = {
             id: existing?.id || subscriptionId || crypto.randomUUID(),
@@ -214,15 +236,20 @@ class NotificationSubscriptionManager {
             activeUntil: resolvedActiveUntil,
             createdAt: existing?.createdAt || nowIso,
             updatedAt: nowIso,
-            lastSummarySentByLeg: existing?.lastSummarySentByLeg || {},
-            lastStateByLeg: existing?.lastStateByLeg || {},
-            mutedByLegDay: existing?.mutedByLegDay || {},
-            mutedAtByLegDay: existing?.mutedAtByLegDay || {},
+            lastSummarySentByLeg: resetScheduledDeliveryState ? {} : (existing?.lastSummarySentByLeg || {}),
+            lastAutoStartSentByLeg: resetScheduledDeliveryState ? {} : (existing?.lastAutoStartSentByLeg || {}),
+            lastStateByLeg: resetScheduledDeliveryState ? {} : (existing?.lastStateByLeg || {}),
+            mutedByLegDay: resetScheduledDeliveryState ? {} : (existing?.mutedByLegDay || {}),
+            mutedAtByLegDay: resetScheduledDeliveryState ? {} : (existing?.mutedAtByLegDay || {}),
             lastActiveAt: existing?.lastActiveAt || null
         };
 
         this.subscriptions.set(subscription.id, subscription);
         await this._saveSubscription(subscription);
+        await Promise.all(overlappingScheduledSubscriptions.map(async (staleSubscription) => {
+            this.subscriptions.delete(staleSubscription.id);
+            await this._deleteFromRedis(staleSubscription.id);
+        }));
         return this.publicSubscription(subscription);
     }
 
@@ -302,12 +329,112 @@ class NotificationSubscriptionManager {
 
             const notificationTypes = getEffectiveNotificationTypes(subscription);
 
+            if (this.subscriptionSource(subscription) === SCHEDULED_SOURCE) {
+                await this.sendScheduledLiveActivityStartIfNeeded(subscription, leg, legKey, snapshot, notificationTypes);
+            }
+
             if (notificationTypes.includes('summary')) {
                 await this.sendSummaryIfNeeded(subscription, leg, legKey, snapshot);
             }
 
             await this.sendUpdateNotifications(subscription, leg, legKey, snapshot, notificationTypes);
         }
+    }
+
+    async sendScheduledLiveActivityStartIfNeeded(subscription, leg, legKey, snapshot, notificationTypes = getEffectiveNotificationTypes(subscription)) {
+        if (this.isMutedToday(subscription, legKey)) {
+            return;
+        }
+        const todayKey = moment().format('YYYY-MM-DD');
+        if (subscription.lastAutoStartSentByLeg?.[legKey] === todayKey) {
+            return;
+        }
+
+        const activeSubscription = this.getActiveSubscriptionForPush(subscription.id, leg, 'scheduled_live_activity_start_pre_send');
+        if (!activeSubscription) {
+            return;
+        }
+
+        const pushToStartRecord = await pushToStartTokenStore.get(activeSubscription.deviceId);
+        let pushResult = null;
+        let usedPushToStart = false;
+
+        if (pushToStartRecord?.pushToStartToken) {
+            const startPush = buildScheduledLiveActivityStartPush(
+                activeSubscription,
+                leg,
+                snapshot,
+                todayKey,
+                { prefersSeparateSummary: notificationTypes.includes('summary') }
+            );
+            pushResult = await this.liveActivityPushClient.sendLiveActivityUpdate(
+                pushToStartRecord.pushToStartToken,
+                startPush.payload,
+                {
+                    useSandbox: pushToStartRecord.useSandbox === true,
+                    event: startPush.type
+                }
+            );
+            this.logScheduledStartEvent(activeSubscription, leg, startPush, pushResult, {
+                environment: pushToStartRecord.useSandbox === true ? 'sandbox' : 'prod',
+                token: pushToStartRecord.pushToStartToken,
+                mode: 'push_to_start'
+            });
+            console.log('[notifications] scheduled_live_activity_start_push_to_start', JSON.stringify({
+                subscription_id: activeSubscription.id,
+                device_id: activeSubscription.deviceId,
+                route_key: activeSubscription.routeKey,
+                leg: legKey,
+                use_sandbox: pushToStartRecord.useSandbox === true,
+                status: pushResult?.status,
+                reason: pushResult?.body?.reason || null
+            }));
+
+            if (pushResult?.isBadToken) {
+                await pushToStartTokenStore.delete(activeSubscription.deviceId);
+            } else if (typeof pushResult?.status === 'number' && pushResult.status >= 200 && pushResult.status < 300) {
+                usedPushToStart = true;
+            }
+        }
+
+        if (!usedPushToStart) {
+            const notification = buildScheduledLiveActivityStartMessage(activeSubscription, leg);
+            pushResult = await this.pushClient.sendNotification(
+                activeSubscription.pushToken,
+                notification.payload,
+                { useSandbox: activeSubscription.useSandbox, event: notification.type }
+            );
+            this.logSendEvent(activeSubscription, leg, notification, pushResult);
+            console.log('[notifications] scheduled_live_activity_start_push_fallback', JSON.stringify({
+                subscription_id: activeSubscription.id,
+                device_id: activeSubscription.deviceId,
+                route_key: activeSubscription.routeKey,
+                leg: legKey,
+                use_sandbox: activeSubscription.useSandbox,
+                status: pushResult?.status,
+                reason: pushResult?.body?.reason || null
+            }));
+            if (pushResult?.isBadToken) {
+                console.warn('[notifications] bad_token_delete', JSON.stringify({
+                    subscription_id: activeSubscription.id,
+                    device_id: activeSubscription.deviceId,
+                    route_key: activeSubscription.routeKey,
+                    context: 'sendScheduledLiveActivityStartIfNeeded'
+                }));
+                this.subscriptions.delete(activeSubscription.id);
+                await this._deleteFromRedis(activeSubscription.id);
+                return;
+            }
+        }
+
+        if (!(typeof pushResult?.status === 'number' && pushResult.status >= 200 && pushResult.status < 300)) {
+            return;
+        }
+
+        activeSubscription.lastAutoStartSentByLeg[legKey] = todayKey;
+        this._saveSubscription(activeSubscription).catch((err) => {
+            console.error('[notifications] Failed to persist scheduled live activity send markers:', err?.message || err);
+        });
     }
 
     async sendSummaryIfNeeded(subscription, leg, legKey, snapshot) {
@@ -511,6 +638,35 @@ class NotificationSubscriptionManager {
             }
         }).catch((error) => {
             console.error('[admin] Failed to log notification send event:', error?.message || error);
+        });
+    }
+
+    logScheduledStartEvent(subscription, leg, notification, result, { environment, token, mode }) {
+        const status = result?.status ?? null;
+        const success = typeof status === 'number' && status >= 200 && status < 300;
+        recordNotificationEvent({
+            channel: 'live_activity',
+            type: notification?.type || 'scheduled_live_activity_start',
+            success,
+            status,
+            error: result?.error || result?.body?.reason || result?.reason || null,
+            apns_environment: environment,
+            subscription_id: subscription.id,
+            device_id: subscription.deviceId,
+            route_key: subscription.routeKey,
+            from_station: leg?.from || null,
+            to_station: leg?.to || null,
+            token: token || null,
+            is_bad_token: Boolean(result?.isBadToken),
+            payload: notification?.payload ?? null,
+            response: result || null,
+            metadata: {
+                mode,
+                notification_types: getEffectiveNotificationTypes(subscription),
+                days_of_week: subscription.daysOfWeek
+            }
+        }).catch((error) => {
+            console.error('[admin] Failed to log scheduled live activity start event:', error?.message || error);
         });
     }
 
@@ -770,6 +926,48 @@ function buildSummaryMessage(subscription, leg, snapshot) {
     return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'summary'), 'summary');
 }
 
+function buildScheduledLiveActivityStartMessage(subscription, leg) {
+    return buildNotificationPayload(null, null, buildLegMeta(subscription, leg, 'scheduled_live_activity_start'), 'scheduled_live_activity_start');
+}
+
+function buildScheduledLiveActivityStartPush(
+    subscription,
+    leg,
+    snapshot,
+    todayKey,
+    { prefersSeparateSummary = false } = {}
+) {
+    const summary = buildSummaryMessage(subscription, leg, snapshot);
+    const alert = prefersSeparateSummary
+        ? {
+            title: `${leg.fromName || leg.from} → ${leg.toName || leg.to}`,
+            body: 'Live Activity started.'
+        }
+        : (summary?.payload?.aps?.alert || {
+        title: `${leg.fromName || leg.from} → ${leg.toName || leg.to}`,
+        body: 'Live Activity started.'
+    });
+    const timestamp = snapshot?.fetchedAt ? moment(snapshot.fetchedAt).unix() : moment().unix();
+    const displayName = `${leg.fromName || leg.from} → ${leg.toName || leg.to}`;
+
+    return {
+        type: 'scheduled_live_activity_start',
+        payload: {
+            aps: {
+                timestamp,
+                event: 'start',
+                'attributes-type': 'JourneyActivityAttributes',
+                attributes: {
+                    displayName
+                },
+                'content-state': buildScheduledStartContentState(subscription, leg, snapshot, todayKey),
+                alert
+            },
+            ...buildLegMeta(subscription, leg, 'scheduled_live_activity_start')
+        }
+    };
+}
+
 function buildStatusText(dep) {
     if (dep.isCancelled) {
         return '❌ Cancelled';
@@ -853,6 +1051,72 @@ function buildMutedMessageBody(leg, snapshot) {
     return `${welcome} Your next train to ${toLabel} is the ${formatDepartureTime(primary)}, currently on time, platform TBC.`;
 }
 
+function buildScheduledStartContentState(subscription, leg, snapshot, todayKey) {
+    const primary = snapshot?.departures?.[0] || {};
+    const departures = Array.isArray(snapshot?.departures) ? snapshot.departures : [];
+
+    return {
+        fromCRS: leg.from,
+        toCRS: leg.to,
+        destinationTitle: leg.toName || leg.to,
+        arrivalLabel: null,
+        length: null,
+        platform: primary.platform || 'TBC',
+        estimated: primary.estimated || primary.scheduled || '—',
+        statusText: primary.scheduled ? buildStatusText(primary) : null,
+        delayMinutes: calculateDelayMinutes(primary.scheduled, primary.estimated),
+        upcomingDepartures: departures.slice(1, 4).map((dep) => ({
+            time: dep.estimated || dep.scheduled || '—',
+            delayMinutes: calculateDelayMinutes(dep.scheduled, dep.estimated),
+            isCancelled: Boolean(dep.isCancelled),
+            platform: dep.platform || null,
+            hasFasterLaterService: false
+        })),
+        lastUpdated: snapshot?.fetchedAt ? moment(snapshot.fetchedAt).unix() : moment().unix(),
+        activityID: null,
+        revision: 0,
+        appIsActive: false,
+        scheduleKey: buildScheduleKey(leg, todayKey),
+        windowStart: leg.windowStart,
+        windowEnd: leg.windowEnd
+    };
+}
+
+function buildScheduleKey(leg, todayKey = moment().format('YYYY-MM-DD')) {
+    return `${String(leg.from || '').toUpperCase()}-${String(leg.to || '').toUpperCase()}|${leg.windowStart}|${leg.windowEnd}|${todayKey}`;
+}
+
+function scheduledSubscriptionsOverlap(existingSubscription, nextDaysOfWeek, nextLegs) {
+    const existingDays = new Set(Array.isArray(existingSubscription?.daysOfWeek) ? existingSubscription.daysOfWeek : []);
+    const nextDays = new Set(Array.isArray(nextDaysOfWeek) ? nextDaysOfWeek : []);
+    const hasSharedDay = nextDays.size === 0
+        ? true
+        : Array.from(nextDays).some((day) => existingDays.has(day));
+
+    if (!hasSharedDay) {
+        return false;
+    }
+
+    const nextLegKeys = new Set(
+        (Array.isArray(nextLegs) ? nextLegs : [])
+            .filter((leg) => leg?.enabled)
+            .map((leg) => scheduledLegKey(leg))
+    );
+
+    return (Array.isArray(existingSubscription?.legs) ? existingSubscription.legs : []).some(
+        (leg) => leg?.enabled && nextLegKeys.has(scheduledLegKey(leg))
+    );
+}
+
+function scheduledLegKey(leg) {
+    return [
+        String(leg?.from || '').toUpperCase(),
+        String(leg?.to || '').toUpperCase(),
+        leg?.windowStart || '',
+        leg?.windowEnd || ''
+    ].join('|');
+}
+
 function hasPlatform(dep) {
     return typeof dep?.platform === 'string' && dep.platform.trim().length > 0;
 }
@@ -885,15 +1149,19 @@ function formatUnknownDelayPlatformSuffix(dep) {
 }
 
 function buildNotificationPayload(title, body, meta = {}, type = 'unknown') {
+    const aps = {};
+    if (title || body) {
+        aps.alert = { title, body };
+        aps.sound = 'default';
+        aps['mutable-content'] = 1;
+        aps.category = 'JOURNEY_LEG_ALERT';
+    } else {
+        aps['content-available'] = 1;
+    }
     return {
         type,
         payload: {
-            aps: {
-                alert: { title, body },
-                sound: 'default',
-                'mutable-content': 1,
-                category: 'JOURNEY_LEG_ALERT'
-            },
+            aps,
             ...meta
         }
     };
@@ -906,7 +1174,9 @@ function buildLegMeta(subscription, leg, alertType) {
         from: leg.from,
         to: leg.to,
         leg_key: `${leg.from}-${leg.to}`,
-        alert_type: alertType
+        alert_type: alertType,
+        window_start: leg.windowStart,
+        window_end: leg.windowEnd
     };
     if (leg.fromName) meta.from_name = leg.fromName;
     if (leg.toName) meta.to_name = leg.toName;

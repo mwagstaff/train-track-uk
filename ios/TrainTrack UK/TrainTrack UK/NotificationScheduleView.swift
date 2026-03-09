@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct NotificationScheduleView: View {
     let group: JourneyGroup
@@ -13,7 +14,9 @@ struct NotificationScheduleView: View {
     @State private var isSaving = false
     @State private var isDeleting = false
     @State private var showDeleteDialog = false
+    @State private var showUnsavedChangesDialog = false
     @State private var didApplyExisting = false
+    @State private var initialDraftState: ScheduleDraftState?
 
     private let maxWindowMinutes = 120
 
@@ -55,6 +58,22 @@ struct NotificationScheduleView: View {
 
     private var hasEnabledLegs: Bool { legs.contains(where: { $0.enabled }) }
 
+    private var orderedSelectedDays: [DayOfWeek] {
+        DayOfWeek.allCases.filter(selectedDays.contains)
+    }
+
+    private var draftState: ScheduleDraftState {
+        ScheduleDraftState(days: orderedSelectedDays, legs: legs)
+    }
+
+    private var hasUnsavedChanges: Bool {
+        if existing == nil {
+            return true
+        }
+        guard let initialDraftState else { return false }
+        return draftState != initialDraftState
+    }
+
     private var canSave: Bool {
         !selectedDays.isEmpty && hasEnabledLegs && !isSaving
     }
@@ -63,9 +82,12 @@ struct NotificationScheduleView: View {
         NavigationStack {
             Form {
                 Section("Days") {
-                    HStack(spacing: 6) {
+                    LazyVGrid(
+                        columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: DayOfWeek.allCases.count),
+                        spacing: 8
+                    ) {
                         ForEach(DayOfWeek.allCases) { day in
-                            dayButton(day)
+                            dayCheckbox(day)
                         }
                     }
                 }
@@ -99,13 +121,6 @@ struct NotificationScheduleView: View {
                     }
                 }
 
-                Section {
-                    Button(existing == nil ? "Schedule notifications" : "Update schedule") {
-                        save()
-                    }
-                    .disabled(!canSave)
-                }
-
                 if existing != nil {
                     Section {
                         Button("Delete schedule", role: .destructive) {
@@ -114,8 +129,31 @@ struct NotificationScheduleView: View {
                     }
                 }
             }
-            .navigationTitle("Schedule notifications")
+            .navigationTitle("Schedule journey updates")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        attemptDismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .accessibilityLabel("Close")
+                    .disabled(isSaving || isDeleting)
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    if hasUnsavedChanges {
+                        Button {
+                            save()
+                        } label: {
+                            Image(systemName: "checkmark")
+                        }
+                        .accessibilityLabel(existing == nil ? "Schedule journey updates" : "Save changes")
+                        .disabled(!canSave)
+                    }
+                }
+            }
             .confirmationDialog(
                 "Delete schedule?",
                 isPresented: $showDeleteDialog
@@ -127,11 +165,34 @@ struct NotificationScheduleView: View {
             } message: {
                 Text("This will remove scheduled notifications for this journey.")
             }
+            .confirmationDialog(
+                "Save changes before closing?",
+                isPresented: $showUnsavedChangesDialog,
+                titleVisibility: .visible
+            ) {
+                if canSave {
+                    Button(existing == nil ? "Schedule journey updates" : "Save changes") {
+                        save()
+                    }
+                }
+                Button("Discard changes", role: .destructive) {
+                    dismiss()
+                }
+                Button("Keep editing", role: .cancel) { }
+            } message: {
+                Text("You have unsaved notification changes for this journey.")
+            }
             .task {
                 await NotificationAuthorizationManager.registerIfAuthorized()
                 await notificationStore.refresh()
                 applyExistingIfNeeded()
+                captureInitialDraftStateIfNeeded()
             }
+            .background(
+                SheetDismissGuard(isDisabled: hasUnsavedChanges || isSaving || isDeleting) {
+                    attemptDismiss()
+                }
+            )
         }
     }
 
@@ -164,18 +225,36 @@ struct NotificationScheduleView: View {
         }
     }
 
-    private func dayButton(_ day: DayOfWeek) -> some View {
+    private func dayCheckbox(_ day: DayOfWeek) -> some View {
         let isSelected = selectedDays.contains(day)
-        return Button(day.shortLabel) {
-            if isSelected {
-                selectedDays.remove(day)
-            } else {
-                selectedDays.insert(day)
+        return Button {
+            toggleDay(day)
+        } label: {
+            VStack(spacing: 6) {
+                Text(day.shortLabel)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? .blue : .secondary)
             }
         }
-        .buttonStyle(.bordered)
-        .tint(isSelected ? .blue : .gray)
-        .frame(maxWidth: .infinity)
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, minHeight: 52)
+        .contentShape(Rectangle())
+        .accessibilityLabel(day.shortLabel)
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
+    }
+
+    private func toggleDay(_ day: DayOfWeek) {
+        if selectedDays.contains(day) {
+            selectedDays.remove(day)
+        } else {
+            selectedDays.insert(day)
+        }
     }
 
     private func legLabel(_ leg: NotificationLeg) -> String {
@@ -240,6 +319,20 @@ struct NotificationScheduleView: View {
         return formatter.string(from: date)
     }
 
+    private func captureInitialDraftStateIfNeeded() {
+        guard initialDraftState == nil else { return }
+        initialDraftState = draftState
+    }
+
+    private func attemptDismiss() {
+        guard !isSaving && !isDeleting else { return }
+        if hasUnsavedChanges {
+            showUnsavedChangesDialog = true
+        } else {
+            dismiss()
+        }
+    }
+
     private func save() {
         guard canSave else { return }
         Task {
@@ -268,7 +361,7 @@ struct NotificationScheduleView: View {
                 deviceId: DeviceIdentity.deviceToken,
                 pushToken: pushToken,
                 routeKey: routeKey,
-                daysOfWeek: Array(selectedDays),
+                daysOfWeek: orderedSelectedDays,
                 notificationTypes: NotificationPreferences.effectiveTypes(for: .scheduled),
                 legs: legs,
                 windowStart: primaryLeg?.windowStart,
@@ -331,6 +424,52 @@ struct NotificationScheduleView: View {
                 .environmentObject(NotificationSubscriptionStore.shared)
         } else {
             Text("No journeys for preview")
+        }
+    }
+}
+
+private struct ScheduleDraftState: Equatable {
+    let days: [DayOfWeek]
+    let legs: [NotificationLeg]
+}
+
+private struct SheetDismissGuard: UIViewControllerRepresentable {
+    let isDisabled: Bool
+    let onAttemptToDismiss: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isDisabled: isDisabled, onAttemptToDismiss: onAttemptToDismiss)
+    }
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        UIViewController()
+    }
+
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
+        context.coordinator.isDisabled = isDisabled
+        context.coordinator.onAttemptToDismiss = onAttemptToDismiss
+
+        DispatchQueue.main.async {
+            uiViewController.parent?.presentationController?.delegate = context.coordinator
+        }
+    }
+
+    final class Coordinator: NSObject, UIAdaptivePresentationControllerDelegate {
+        var isDisabled: Bool
+        var onAttemptToDismiss: () -> Void
+
+        init(isDisabled: Bool, onAttemptToDismiss: @escaping () -> Void) {
+            self.isDisabled = isDisabled
+            self.onAttemptToDismiss = onAttemptToDismiss
+        }
+
+        func presentationControllerShouldDismiss(_ presentationController: UIPresentationController) -> Bool {
+            !isDisabled
+        }
+
+        func presentationControllerDidAttemptToDismiss(_ presentationController: UIPresentationController) {
+            guard isDisabled else { return }
+            onAttemptToDismiss()
         }
     }
 }

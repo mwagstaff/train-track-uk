@@ -60,6 +60,7 @@ struct TrainTrackUKApp: App {
                 print("📍 [App] App became active - refreshing notification subscriptions & geofences")
                 Task {
                     await NotificationSubscriptionStore.shared.refresh()
+                    await ScheduledLiveActivityAutoStartManager.shared.startEligibleScheduledLiveActivities()
                 }
 
                 // Check if we should auto-return to favourites
