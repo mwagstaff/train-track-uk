@@ -4,6 +4,7 @@ enum NotificationMuteStorage {
     static let suiteName = "group.dev.skynolimit.traintrack"
     private static let mutedLegsKey = "mutedLegsToday"
     private static let mutedLegsAtKey = "mutedLegsTodayAt"
+    private static let pendingLiveActivityAutoEndKey = "pendingLiveActivityAutoEndOnDeparture"
 
     static func currentDateKey() -> String {
         let formatter = DateFormatter()
@@ -75,6 +76,52 @@ enum NotificationMuteStorage {
         if var mutedAtByLeg = sharedDefaults.dictionary(forKey: mutedLegsAtKey) as? [String: String] {
             mutedAtByLeg.removeValue(forKey: key)
             sharedDefaults.set(mutedAtByLeg, forKey: mutedLegsAtKey)
+        }
+    }
+
+    @discardableResult
+    static func markPendingLiveActivityAutoEndOnDeparture(from: String, to: String) -> String {
+        guard let sharedDefaults = UserDefaults(suiteName: suiteName) else {
+            return currentDateKey()
+        }
+
+        let key = legKey(from: from, to: to)
+        let dateKey = currentDateKey()
+        var pending = sharedDefaults.dictionary(forKey: pendingLiveActivityAutoEndKey) as? [String: String] ?? [:]
+        pending[key] = dateKey
+        sharedDefaults.set(pending, forKey: pendingLiveActivityAutoEndKey)
+        return dateKey
+    }
+
+    static func hasPendingLiveActivityAutoEndOnDeparture(from: String, to: String, dateKey: String? = nil) -> Bool {
+        guard let sharedDefaults = UserDefaults(suiteName: suiteName) else { return false }
+        guard let pending = sharedDefaults.dictionary(forKey: pendingLiveActivityAutoEndKey) as? [String: String] else { return false }
+        let key = legKey(from: from, to: to)
+        let today = dateKey ?? currentDateKey()
+        return pending[key] == today
+    }
+
+    @discardableResult
+    static func consumePendingLiveActivityAutoEndOnDeparture(from: String, to: String, dateKey: String? = nil) -> Bool {
+        guard let sharedDefaults = UserDefaults(suiteName: suiteName) else { return false }
+        let key = legKey(from: from, to: to)
+        let today = dateKey ?? currentDateKey()
+        guard var pending = sharedDefaults.dictionary(forKey: pendingLiveActivityAutoEndKey) as? [String: String],
+              pending[key] == today else {
+            return false
+        }
+
+        pending.removeValue(forKey: key)
+        sharedDefaults.set(pending, forKey: pendingLiveActivityAutoEndKey)
+        return true
+    }
+
+    static func clearPendingLiveActivityAutoEndOnDeparture(from: String, to: String) {
+        guard let sharedDefaults = UserDefaults(suiteName: suiteName) else { return }
+        let key = legKey(from: from, to: to)
+        if var pending = sharedDefaults.dictionary(forKey: pendingLiveActivityAutoEndKey) as? [String: String] {
+            pending.removeValue(forKey: key)
+            sharedDefaults.set(pending, forKey: pendingLiveActivityAutoEndKey)
         }
     }
 }

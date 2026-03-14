@@ -278,6 +278,28 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         let message = "Exited region: \(circular.identifier)\nFrom: \(parsed.from.uppercased()) To: \(parsed.to.uppercased())"
         Task { @MainActor in
             DebugLogStore.shared.log(message, category: "Geofence")
+
+            let autoEndEnabled = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? true
+            let hasPendingAutoEnd = NotificationMuteStorage.hasPendingLiveActivityAutoEndOnDeparture(from: parsed.from, to: parsed.to)
+
+            guard autoEndEnabled else {
+                if hasPendingAutoEnd {
+                    NotificationMuteStorage.clearPendingLiveActivityAutoEndOnDeparture(from: parsed.from, to: parsed.to)
+                    let skipMsg = "Geofence exit for \(parsed.from)→\(parsed.to) — auto-end disabled, clearing pending Live Activity departure end"
+                    DebugLogStore.shared.log(skipMsg, category: "Geofence")
+                    print("📍 \(skipMsg)")
+                }
+                return
+            }
+
+            guard NotificationMuteStorage.consumePendingLiveActivityAutoEndOnDeparture(from: parsed.from, to: parsed.to) else {
+                return
+            }
+
+            let endMsg = "Geofence exit for \(parsed.from)→\(parsed.to) — sending departure event to end Live Activity"
+            DebugLogStore.shared.log(endMsg, category: "Geofence")
+            print("🏁 \(endMsg)")
+            LiveActivityDepartureSender.shared.sendDeparture(from: parsed.from, to: parsed.to)
         }
         print("📍 \(message)")
     }
@@ -397,7 +419,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             // from also sending a terminate request during the server-side delay window.
             self.markLegMutedLocally(from: from, to: to)
 
-            let delayMinutes = simulate ? 0 : ((UserDefaults.standard.object(forKey: "muteDelayMinutes") as? Int) ?? 5)
+            let delayMinutes = simulate ? 0 : ((UserDefaults.standard.object(forKey: "muteDelayMinutes") as? Int) ?? 3)
             let msg = delayMinutes > 0
                 ? "Sending mute request with \(delayMinutes)-min server-side delay for \(from)→\(to)"
                 : "Sending immediate mute request for \(from)→\(to)"
@@ -413,13 +435,16 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 delayMinutes: delayMinutes
             )
 
-            // If the user has opted in, also ask the server to end the Live Activity
-            let autoEnd = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? false
+            // If the user has opted in, queue the Live Activity to end after the next
+            // geofence exit, which is a better proxy for the train having departed.
+            let autoEnd = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? true
             if autoEnd {
-                let endMsg = "autoEndLiveActivity enabled — sending arrive event to server for \(from)→\(to)"
+                let endMsg = "autoEndLiveActivity enabled — queueing Live Activity end for next geofence exit \(from)→\(to)"
                 DebugLogStore.shared.log(endMsg, category: "Mute")
                 print("🏁 \(endMsg)")
-                LiveActivityArrivalSender.shared.sendArrival(from: from, to: to)
+                NotificationMuteStorage.markPendingLiveActivityAutoEndOnDeparture(from: from, to: to)
+            } else {
+                NotificationMuteStorage.clearPendingLiveActivityAutoEndOnDeparture(from: from, to: to)
             }
         }
     }
@@ -737,14 +762,14 @@ final class GeofenceEventSender: NSObject, URLSessionDelegate, URLSessionTaskDel
     }
 }
 
-// MARK: - Live Activity Arrival Sender
-// Notifies the server when the user has arrived at a departure station so the server
-// can end the Live Activity push (if autoEndOnArrival is enabled for that subscription).
+// MARK: - Live Activity Departure Sender
+// Notifies the server when the user has left the departure station geofence so the server
+// can end the Live Activity push (if autoEndOnDeparture is enabled for that subscription).
 // Uses a background URLSession so the request completes even from a background geofence wake.
 
-final class LiveActivityArrivalSender: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
-    static let shared = LiveActivityArrivalSender()
-    static let sessionIdentifier = "dev.skynolimit.traintrack.liveactivity.arrive"
+final class LiveActivityDepartureSender: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
+    static let shared = LiveActivityDepartureSender()
+    static let sessionIdentifier = "dev.skynolimit.traintrack.liveactivity.depart"
 
     private lazy var session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -754,16 +779,16 @@ final class LiveActivityArrivalSender: NSObject, URLSessionDelegate, URLSessionT
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
-    private let syncQueue = DispatchQueue(label: "dev.skynolimit.traintrack.liveactivity.arrive.sync")
+    private let syncQueue = DispatchQueue(label: "dev.skynolimit.traintrack.liveactivity.depart.sync")
     private var uploadFiles: [Int: URL] = [:]
     private var backgroundTasks: [Int: AppBackgroundTaskToken] = [:]
 
     private override init() { super.init() }
 
-    func sendArrival(from: String, to: String) {
+    func sendDeparture(from: String, to: String) {
         let baseURL = ApiHostPreference.currentBaseURL
-        guard let url = URL(string: "\(baseURL)/live_activities/arrive") else {
-            print("❌ [LiveActivityArrival] Invalid URL")
+        guard let url = URL(string: "\(baseURL)/live_activities/depart") else {
+            print("❌ [LiveActivityDeparture] Invalid URL")
             return
         }
 
@@ -778,28 +803,28 @@ final class LiveActivityArrivalSender: NSObject, URLSessionDelegate, URLSessionT
             "to": to.uppercased()
         ]
         guard let body = try? JSONSerialization.data(withJSONObject: payload) else {
-            print("❌ [LiveActivityArrival] Failed to encode payload")
+            print("❌ [LiveActivityDeparture] Failed to encode payload")
             return
         }
 
         let tempDir = FileManager.default.temporaryDirectory
-        let fileURL = tempDir.appendingPathComponent("la_arrive_\(UUID().uuidString).json")
+        let fileURL = tempDir.appendingPathComponent("la_depart_\(UUID().uuidString).json")
         if (try? body.write(to: fileURL, options: .atomic)) != nil {
             let task = session.uploadTask(with: request, fromFile: fileURL)
             syncQueue.async {
                 self.uploadFiles[task.taskIdentifier] = fileURL
-                self.backgroundTasks[task.taskIdentifier] = AppBackgroundTaskToken(name: "live-activity-arrive")
+                self.backgroundTasks[task.taskIdentifier] = AppBackgroundTaskToken(name: "live-activity-depart")
             }
             task.resume()
         } else {
             let task = session.uploadTask(with: request, from: body)
             syncQueue.async {
-                self.backgroundTasks[task.taskIdentifier] = AppBackgroundTaskToken(name: "live-activity-arrive")
+                self.backgroundTasks[task.taskIdentifier] = AppBackgroundTaskToken(name: "live-activity-depart")
             }
             task.resume()
         }
 
-        print("📡 [LiveActivityArrival] Sent arrive event \(from.uppercased())→\(to.uppercased())")
+        print("📡 [LiveActivityDeparture] Sent departure event \(from.uppercased())→\(to.uppercased())")
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
@@ -811,9 +836,9 @@ final class LiveActivityArrivalSender: NSObject, URLSessionDelegate, URLSessionT
             self.backgroundTasks.removeValue(forKey: taskId)?.end()
         }
         if let error = error {
-            print("❌ [LiveActivityArrival] Request failed: \(error.localizedDescription)")
+            print("❌ [LiveActivityDeparture] Request failed: \(error.localizedDescription)")
         } else if let response = task.response as? HTTPURLResponse {
-            print("📡 [LiveActivityArrival] Response: \(response.statusCode)")
+            print("📡 [LiveActivityDeparture] Response: \(response.statusCode)")
         }
     }
 }

@@ -44,11 +44,11 @@ struct Live_ActivityLiveActivity: Widget {
                         Text("Departs")
                             .font(.caption2)
                             .foregroundColor(.secondary)
-                        Text(context.state.estimated)
-                            .font(.title2)
-                            .fontWeight(.bold)
-                            .monospacedDigit()
-                            .foregroundColor(estimatedTimeColor(context.state.delayMinutes))
+                        PrimaryDepartureTimeText(
+                            state: context.state,
+                            font: .title2,
+                            weight: .bold
+                        )
                     }
                 }
                 DynamicIslandExpandedRegion(.bottom) {
@@ -59,14 +59,19 @@ struct Live_ActivityLiveActivity: Widget {
                                 .fontWeight(.semibold)
                                 .lineLimit(1)
                             Spacer()
-                            if let length = context.state.length, length > 0 {
+                            if context.state.isCancelled {
+                                Text("Cancelled")
+                                    .font(.caption)
+                                    .fontWeight(.semibold)
+                                    .foregroundStyle(.red)
+                            } else if let length = context.state.length, length > 0 {
                                 Text("\(length) cars")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
                         }
 
-                        if let status = context.state.statusText {
+                        if let status = primaryStatusText(for: context.state) {
                             HStack(spacing: 6) {
                                 Circle()
                                     .fill(statusColor(context.state.delayMinutes))
@@ -88,16 +93,16 @@ struct Live_ActivityLiveActivity: Widget {
                     PlatformPill(platform: context.state.platform, font: .caption, horizontalPadding: 6, verticalPadding: 1.5)
                 }
             } compactTrailing: {
-                Text(context.state.estimated)
-                    .font(.caption)
-                    .fontWeight(.semibold)
-                    .monospacedDigit()
-                    .foregroundColor(estimatedTimeColor(context.state.delayMinutes))
+                PrimaryDepartureTimeText(
+                    state: context.state,
+                    font: .caption,
+                    weight: .semibold
+                )
             } minimal: {
                 Image(systemName: "train.side.front.car")
                     .font(.caption2)
             }
-            .keylineTint(estimatedTimeColor(context.state.delayMinutes))
+            .keylineTint(primaryAccentColor(for: context.state))
             .widgetURL(deepLinkURL(for: context))
         }
     }
@@ -145,11 +150,11 @@ struct LiveActivityLockScreenView: View {
                     Text("Departs")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    Text(state.estimated)
-                        .font(.title)
-                        .fontWeight(.bold)
-                        .monospacedDigit()
-                        .foregroundColor(estimatedTimeColor(state.delayMinutes))
+                    PrimaryDepartureTimeText(
+                        state: state,
+                        font: .title,
+                        weight: .bold
+                    )
                 }
 
                 Spacer()
@@ -165,7 +170,12 @@ struct LiveActivityLockScreenView: View {
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
-                    if let length = state.length, length > 0 {
+                    if state.isCancelled {
+                        Text("Cancelled")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.red)
+                    } else if let length = state.length, length > 0 {
                         Text("\(length) cars")
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -184,7 +194,7 @@ struct LiveActivityLockScreenView: View {
             }
 
             // Live status
-            if let status = state.statusText, !status.isEmpty {
+            if let status = primaryStatusText(for: state) {
                 HStack(spacing: 6) {
                     Circle()
                         .fill(statusColor(state.delayMinutes))
@@ -328,6 +338,28 @@ private struct PlatformPill: View {
     }
 }
 
+private struct PrimaryDepartureTimeText: View {
+    let state: JourneyActivityAttributes.ContentState
+    let font: Font
+    let weight: Font.Weight
+
+    private var text: String {
+        if state.isCancelled {
+            return state.scheduledDeparture ?? state.estimated
+        }
+        return state.estimated
+    }
+
+    var body: some View {
+        Text(text)
+            .font(font)
+            .fontWeight(weight)
+            .monospacedDigit()
+            .foregroundStyle(primaryAccentColor(for: state))
+            .strikethrough(state.isCancelled, color: .red)
+    }
+}
+
 private func estimatedTimeColor(_ delayMinutes: Int) -> Color {
     if delayMinutes >= 5 {
         return .red
@@ -344,6 +376,24 @@ private func statusColor(_ delayMinutes: Int) -> Color {
         return .yellow
     }
     return .green
+}
+
+private func primaryAccentColor(for state: JourneyActivityAttributes.ContentState) -> Color {
+    if state.isCancelled {
+        return .red
+    }
+    return estimatedTimeColor(state.delayMinutes)
+}
+
+private func primaryStatusText(for state: JourneyActivityAttributes.ContentState) -> String? {
+    guard let status = state.statusText?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !status.isEmpty else {
+        return nil
+    }
+    if state.isCancelled && status.caseInsensitiveCompare("Cancelled") == .orderedSame {
+        return nil
+    }
+    return status
 }
 
 private func formatLastUpdated(_ date: Date) -> String {
@@ -382,9 +432,11 @@ extension JourneyActivityAttributes.ContentState {
             toCRS: "KTH",
             destinationTitle: "Kent House",
             arrivalLabel: "Arr 09:47",
+            scheduledDeparture: "09:35",
             length: 8,
             platform: "2",
             estimated: "09:35",
+            isCancelled: false,
             statusText: "Currently on time, between Clapham Junction and Battersea Park",
             delayMinutes: 0,
             upcomingDepartures: [
@@ -401,9 +453,11 @@ extension JourneyActivityAttributes.ContentState {
             toCRS: "KTH",
             destinationTitle: "Orpington via Bromley South",
             arrivalLabel: "Arr 10:12",
+            scheduledDeparture: "09:48",
             length: 4,
             platform: "15",
             estimated: "09:48",
+            isCancelled: false,
             statusText: "Currently 7 minutes late, approaching London Victoria",
             delayMinutes: 7,
             upcomingDepartures: [

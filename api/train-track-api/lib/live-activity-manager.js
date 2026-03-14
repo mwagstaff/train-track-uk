@@ -39,6 +39,7 @@ class LiveActivityManager {
         muteOnArrival,
         muteDelayMinutes,
         autoEndOnArrival,
+        autoEndOnDeparture,
         scheduleKey,
         windowStart,
         windowEnd
@@ -75,6 +76,7 @@ class LiveActivityManager {
                 ? Math.min(10, Math.max(1, Math.round(Number(muteDelayMinutes))))
                 : (existing?.muteDelayMinutes ?? 5),
             autoEndOnArrival: autoEndOnArrival !== undefined ? Boolean(autoEndOnArrival) : (existing?.autoEndOnArrival ?? false),
+            autoEndOnDeparture: autoEndOnDeparture !== undefined ? Boolean(autoEndOnDeparture) : (existing?.autoEndOnDeparture ?? false),
             createdAt: existing?.createdAt || new Date().toISOString(),
             lastSnapshot: existing?.lastSnapshot || null,
             lastPushAt: existing?.lastPushAt || null,
@@ -112,6 +114,8 @@ class LiveActivityManager {
             metadata: {
                 preferred_service_id: subscription.preferredServiceId || null,
                 mute_on_arrival: subscription.muteOnArrival,
+                auto_end_on_arrival: subscription.autoEndOnArrival,
+                auto_end_on_departure: subscription.autoEndOnDeparture,
                 created_at: subscription.createdAt || null
             }
         }).catch((error) => {
@@ -472,13 +476,13 @@ class LiveActivityManager {
             .filter((dep) => dep.scheduled || dep.estimated)
             .filter((dep) => {
                 // Filter out trains that have already departed (give 1 minute grace period)
-                const depTime = this.parseTime(dep.estimated || dep.scheduled);
+                const depTime = this.parseTime(this.getTimeString(dep.estimated, dep.scheduled, dep.scheduled || ''));
                 const gracePeriodMs = 60 * 1000; // 1 minute
                 return depTime > (now.valueOf() - gracePeriodMs);
             })
             .sort((a, b) => {
-                const timeA = this.parseTime(a.estimated || a.scheduled);
-                const timeB = this.parseTime(b.estimated || b.scheduled);
+                const timeA = this.parseTime(this.getTimeString(a.estimated, a.scheduled, a.scheduled || ''));
+                const timeB = this.parseTime(this.getTimeString(b.estimated, b.scheduled, b.scheduled || ''));
                 return timeA - timeB;
             });
     }
@@ -526,9 +530,11 @@ class LiveActivityManager {
             toCRS: this.ensureString(subscription.toStation),
             destinationTitle,
             arrivalLabel: null,
+            scheduledDeparture: this.ensureOptionalString(primary.scheduled),
             length: Number.isFinite(primary.length) && primary.length > 0 ? primary.length : null,
             platform,
             estimated,
+            isCancelled: Boolean(primary.isCancelled),
             statusText: this.buildStatusText(primary),
             delayMinutes,
             upcomingDepartures,
@@ -1062,6 +1068,41 @@ class LiveActivityManager {
         return { ended: results.reduce((sum, v) => sum + v, 0) };
     }
 
+    /**
+     * Called when the iOS app detects the user has left the departure station geofence.
+     * Ends any matching Live Activity subscriptions that have autoEndOnDeparture enabled.
+     */
+    async handleDeparture(deviceId, { fromStation = null, toStation = null, fallbackDeviceIds = [] } = {}) {
+        const candidateDeviceIds = this.uniqueDeviceIds([deviceId, ...fallbackDeviceIds]);
+        if (candidateDeviceIds.length === 0) return { ended: 0 };
+
+        const subs = this.findSubscriptionsByDeviceIds(candidateDeviceIds).filter((sub) => {
+            if (!sub.autoEndOnDeparture) return false;
+            if (fromStation && sub.fromStation?.toUpperCase() !== fromStation.toUpperCase()) return false;
+            if (toStation && sub.toStation?.toUpperCase() !== toStation.toUpperCase()) return false;
+            return true;
+        });
+
+        if (subs.length === 0) {
+            this.log(`[live-activity] departure_no_subscriptions ${candidateDeviceIds.join(',')} (autoEndOnDeparture=false or no match)`);
+            return { ended: 0 };
+        }
+
+        const results = await Promise.all(subs.map(async (sub) => {
+            try {
+                await this.sendEndUpdate(sub);
+                this.log(`[live-activity] ended_on_departure ${sub.deviceId}/${sub.activityId}`);
+                return 1;
+            } catch (error) {
+                const key = this.buildKey(sub.deviceId, sub.activityId);
+                console.error(`[live-activity] departure end failed for ${key}: ${error?.message || error}`);
+                return 0;
+            }
+        }));
+
+        return { ended: results.reduce((sum, v) => sum + v, 0) };
+    }
+
     maskToken(token) {
         if (!token || typeof token !== 'string') return 'null';
         if (token.length <= 16) return token.slice(0, 6) + '***';
@@ -1127,6 +1168,7 @@ class LiveActivityManager {
             muteOnArrival: sub.muteOnArrival,
             muteDelayMinutes: sub.muteDelayMinutes ?? 5,
             autoEndOnArrival: Boolean(sub.autoEndOnArrival),
+            autoEndOnDeparture: Boolean(sub.autoEndOnDeparture),
             useSandbox: sub.useSandbox,
             createdAt: sub.createdAt,
             tokenUpdatedAt: sub.tokenUpdatedAt,

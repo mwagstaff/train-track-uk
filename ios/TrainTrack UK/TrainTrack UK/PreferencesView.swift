@@ -25,8 +25,8 @@ struct PreferencesView: View {
     @AppStorage(ApiHostPreference.storageKey, store: ApiHostPreference.store) private var apiHostRaw: String = ApiHost.prod.rawValue
     @AppStorage("autoReturnToFavouritesMinutes") private var autoReturnMinutes: Int = 0
     @AppStorage("autoMuteOnArrival") private var autoMuteOnArrival: Bool = true
-    @AppStorage("muteDelayMinutes") private var muteDelayMinutes: Int = 5
-    @AppStorage("autoEndLiveActivity") private var autoEndLiveActivity: Bool = false
+    @AppStorage("muteDelayMinutes") private var muteDelayMinutes: Int = 3
+    @AppStorage("autoEndLiveActivity") private var autoEndLiveActivity: Bool = true
     @AppStorage("showClosestJourneyLegOnly") private var showClosestJourneyLegOnly: Bool = true
     @AppStorage("showTransferWarnings") private var showTransferWarnings: Bool = true
     @AppStorage("transferWarningThresholdMinutes") private var transferWarningThresholdMinutes: Int = 3
@@ -84,8 +84,8 @@ struct PreferencesView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    Toggle("End Live Activity on arrival", isOn: $autoEndLiveActivity)
-                    Text("Automatically dismiss the Live Activity widget from your lock screen and home screen after you arrive at a station.")
+                    Toggle("End Live Activity on departure", isOn: $autoEndLiveActivity)
+                    Text("Automatically dismiss the Live Activity widget after you leave the departure station area and your journey is underway.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
@@ -97,7 +97,7 @@ struct PreferencesView: View {
                     Text("2 hr").tag(120)
                 }
                 .pickerStyle(.segmented)
-                Text("How long a Live Activity stays visible (unless dismissed manually or after arriving at a station). Default is 1 hour.")
+                Text("How long a Live Activity stays visible (unless dismissed manually or after leaving a departure station). Default is 1 hour.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

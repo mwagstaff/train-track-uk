@@ -1013,42 +1013,45 @@ function buildMutedMessage(subscription, leg, snapshot = null) {
 function buildMutedMessageBody(leg, snapshot) {
     const fromLabel = leg.fromName || leg.from;
     const toLabel = leg.toName || leg.to;
-    const welcome = `Welcome to ${fromLabel}!`;
+    const welcome = `Welcome to ${fromLabel}.`;
     const departures = Array.isArray(snapshot?.departures) ? snapshot.departures : null;
     const primary = departures?.[0] || null;
 
     if (departures && departures.length === 0) {
-        return `${welcome} Sorry, but I couldn't find any upcoming departures to ${toLabel}. Please check station information.`;
+        return `${welcome} I couldn't find any upcoming departures to ${toLabel}. Please check station information.`;
     }
 
     if (!primary || snapshot?.error) {
-        return `Notifications for ${fromLabel} → ${toLabel} have been muted for today. Have a good journey! 🚆`;
+        return `${welcome} Notifications are muted for today.`;
     }
 
     if (primary.isCancelled) {
         const nextAvailable = snapshot.departures.find((dep) => dep && !dep.isCancelled);
         const cancelledTime = formatDepartureTime(primary);
         if (!nextAvailable) {
-            return `${welcome} The ${cancelledTime} departure has been cancelled. There are no later departures listed for ${toLabel} right now.`;
+            return `${welcome} ${cancelledTime} to ${toLabel} is cancelled. No later trains are listed right now.`;
         }
 
-        return `${welcome} The ${cancelledTime} departure has been cancelled. Next train to ${toLabel} is the ${formatDepartureTime(nextAvailable)} service${formatPlatformSuffix(nextAvailable)}.`;
+        return `${welcome} ${cancelledTime} to ${toLabel} is cancelled. Next train: ${formatDepartureTime(nextAvailable)}${formatPlatformSuffix(nextAvailable)}.`;
     }
 
     if (isUnknownDelay(primary)) {
-        return `${welcome} Your next train to ${toLabel} is delayed for an unknown period of time${formatUnknownDelayPlatformSuffix(primary)}.`;
+        return `${welcome} Next train to ${toLabel} is delayed${formatUnknownDelayPlatformSuffix(primary)}.`;
     }
 
     const delayMinutes = calculateDelayMinutes(primary.scheduled, primary.estimated);
     if (delayMinutes > 0) {
-        return `${welcome} Your next train to ${toLabel} is scheduled to depart ${delayMinutes} minute${delayMinutes === 1 ? '' : 's'} late at ${formatEstimatedDepartureTime(primary)}${formatPlatformSuffix(primary)}.`;
+        if (hasPlatform(primary)) {
+            return `${welcome} Next train to ${toLabel}: ${formatEstimatedDepartureTime(primary)} from platform ${primary.platform.trim()}, ${delayMinutes} minute${delayMinutes === 1 ? '' : 's'} late.`;
+        }
+        return `${welcome} Next train to ${toLabel}: ${formatEstimatedDepartureTime(primary)}, ${delayMinutes} minute${delayMinutes === 1 ? '' : 's'} late. Platform TBC.`;
     }
 
     if (hasPlatform(primary)) {
-        return `${welcome} Your next train to ${toLabel} is the ${formatDepartureTime(primary)} from platform ${primary.platform}, currently on time.`;
+        return `${welcome} Next train to ${toLabel}: ${formatDepartureTime(primary)} from platform ${primary.platform.trim()}, on time.`;
     }
 
-    return `${welcome} Your next train to ${toLabel} is the ${formatDepartureTime(primary)}, currently on time, platform TBC.`;
+    return `${welcome} Next train to ${toLabel}: ${formatDepartureTime(primary)}, on time. Platform TBC.`;
 }
 
 function buildScheduledStartContentState(subscription, leg, snapshot, todayKey) {
@@ -1060,9 +1063,11 @@ function buildScheduledStartContentState(subscription, leg, snapshot, todayKey) 
         toCRS: leg.to,
         destinationTitle: leg.toName || leg.to,
         arrivalLabel: null,
+        scheduledDeparture: primary.scheduled || null,
         length: null,
         platform: primary.platform || 'TBC',
         estimated: primary.estimated || primary.scheduled || '—',
+        isCancelled: Boolean(primary.isCancelled),
         statusText: primary.scheduled ? buildStatusText(primary) : null,
         delayMinutes: calculateDelayMinutes(primary.scheduled, primary.estimated),
         upcomingDepartures: departures.slice(1, 4).map((dep) => ({
@@ -1145,7 +1150,7 @@ function formatPlatformSuffix(dep) {
 }
 
 function formatUnknownDelayPlatformSuffix(dep) {
-    return hasPlatform(dep) ? `, due to depart from platform ${dep.platform.trim()}` : ', platform TBC';
+    return hasPlatform(dep) ? `. Due from platform ${dep.platform.trim()}` : '. Platform TBC';
 }
 
 function buildNotificationPayload(title, body, meta = {}, type = 'unknown') {

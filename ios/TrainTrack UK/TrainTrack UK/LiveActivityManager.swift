@@ -605,7 +605,9 @@ final class LiveActivityManager: ObservableObject {
         var statusText: String? = nil
         var delayMins: Int = 0
         if let n = next {
-            if let details = depStore.serviceDetailsById[n.serviceID] {
+            if n.isCancelled {
+                statusText = nil
+            } else if let details = depStore.serviceDetailsById[n.serviceID] {
                 if let cp = details.allStations.first(where: { $0.crs == journey.toStation.crs }) {
                     if let et = cp.et, !et.isEmpty, et.lowercased() != "on time" { arrival = "Arr \(et)" } else { arrival = "Arr \(cp.st)" }
                 }
@@ -616,7 +618,8 @@ final class LiveActivityManager: ObservableObject {
             }
         }
         let platform = next?.platform?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? (next?.platform ?? "TBC") : "TBC"
-        let est = next?.departureTime.estimated ?? "—"
+        let est = displayDepartureTime(for: next)
+        let scheduledDeparture = next?.departureTime.scheduled
         let length = next?.length
 
         // Build upcoming departures (skip the first one as it's the main departure, get next 3)
@@ -648,9 +651,11 @@ final class LiveActivityManager: ObservableObject {
             toCRS: journey.toStation.crs,
             destinationTitle: title,
             arrivalLabel: arrival,
+            scheduledDeparture: scheduledDeparture,
             length: length,
             platform: platform,
             estimated: est,
+            isCancelled: next?.isCancelled ?? false,
             statusText: statusText,
             delayMinutes: delayMins,
             upcomingDepartures: upcoming,
@@ -664,7 +669,7 @@ final class LiveActivityManager: ObservableObject {
            let preferred = allDepartures.first(where: { $0.serviceID == preferredServiceID }) {
             return preferred
         }
-        return filteredDepartures.first(where: { !$0.isCancelled }) ?? filteredDepartures.first
+        return filteredDepartures.first
     }
 
     private func calculateDelayMinutes(scheduled: String, estimated: String?) -> Int {
@@ -736,6 +741,16 @@ final class LiveActivityManager: ObservableObject {
         components.minute = m
         components.second = 0
         return calendar.date(from: components)
+    }
+
+    private func displayDepartureTime(for departure: DepartureV2?) -> String {
+        guard let departure else { return "—" }
+        let estimated = departure.departureTime.estimated.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowered = estimated.lowercased()
+        if estimated.isEmpty || lowered == "delayed" || lowered == "cancelled" || lowered == "on time" {
+            return departure.departureTime.scheduled
+        }
+        return estimated
     }
 
     private func startActivityLifecycleLogging() {
@@ -1017,8 +1032,8 @@ final class LiveActivityManager: ObservableObject {
         #endif
 
         let muteOnArrival = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
-        let muteDelayMinutes = (UserDefaults.standard.object(forKey: "muteDelayMinutes") as? Int) ?? 5
-        let autoEndLiveActivity = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? false
+        let muteDelayMinutes = (UserDefaults.standard.object(forKey: "muteDelayMinutes") as? Int) ?? 3
+        let autoEndLiveActivity = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? true
         var payload: [String: Any] = [
             "device_id": deviceID,
             "activity_id": activityID,
@@ -1028,7 +1043,8 @@ final class LiveActivityManager: ObservableObject {
             "use_sandbox": isDebugBuild,
             "mute_on_arrival": muteOnArrival,
             "mute_delay_minutes": muteDelayMinutes,
-            "auto_end_on_arrival": autoEndLiveActivity
+            "auto_end_on_arrival": false,
+            "auto_end_on_departure": autoEndLiveActivity
         ]
         if let preferredServiceID, !preferredServiceID.isEmpty {
             payload["preferred_service_id"] = preferredServiceID

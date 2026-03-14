@@ -198,6 +198,7 @@ app.post('/api/v2/live_activities', async (req, res) => {
         mute_on_arrival,
         mute_delay_minutes,
         auto_end_on_arrival,
+        auto_end_on_departure,
         schedule_key,
         window_start,
         window_end
@@ -241,6 +242,7 @@ app.post('/api/v2/live_activities', async (req, res) => {
         muteOnArrival: mute_on_arrival === true || mute_on_arrival === 'true',
         muteDelayMinutes: mute_delay_minutes !== undefined ? Number(mute_delay_minutes) : undefined,
         autoEndOnArrival: auto_end_on_arrival === true || auto_end_on_arrival === 'true',
+        autoEndOnDeparture: auto_end_on_departure === true || auto_end_on_departure === 'true',
         scheduleKey: typeof schedule_key === 'string' ? schedule_key : null,
         windowStart: typeof window_start === 'string' ? window_start : null,
         windowEnd: typeof window_end === 'string' ? window_end : null
@@ -429,6 +431,45 @@ app.post('/api/v2/live_activities/arrive', async (req, res) => {
     } catch (error) {
         const message = error?.message || error;
         console.error(`[live-activity] arrive failed for ${canonicalDeviceId}: ${message}`);
+        res.status(500).json({ error: message });
+    }
+});
+
+app.post('/api/v2/live_activities/depart', async (req, res) => {
+    const { device_id, from, to } = req.body || {};
+    const { canonicalDeviceId, bodyDeviceId, headerDeviceId, fallbackDeviceIds, hasMismatch } = resolveRequestDeviceIds(req, device_id);
+    if (!canonicalDeviceId) {
+        logLiveActivityRequest('depart_failed_validation', req, {
+            device_id: canonicalDeviceId || bodyDeviceId,
+            body_device_id: bodyDeviceId,
+            header_device_id: headerDeviceId
+        });
+        return res.status(400).json({ error: 'device_id is required' });
+    }
+
+    logLiveActivityRequest('depart', req, {
+        device_id: canonicalDeviceId,
+        body_device_id: bodyDeviceId,
+        header_device_id: headerDeviceId,
+        device_id_mismatch: hasMismatch,
+        from,
+        to
+    });
+
+    try {
+        const result = await liveActivityManager.handleDeparture(canonicalDeviceId, {
+            fromStation: from || null,
+            toStation: to || null,
+            fallbackDeviceIds
+        });
+        res.json({
+            status: 'ok',
+            device_id: canonicalDeviceId,
+            ...result
+        });
+    } catch (error) {
+        const message = error?.message || error;
+        console.error(`[live-activity] depart failed for ${canonicalDeviceId}: ${message}`);
         res.status(500).json({ error: message });
     }
 });

@@ -40,9 +40,11 @@ public struct JourneyActivityAttributes: Codable, Hashable {
         public var toCRS: String
         public var destinationTitle: String
         public var arrivalLabel: String?
+        public var scheduledDeparture: String?
         public var length: Int?
         public var platform: String
         public var estimated: String
+        public var isCancelled: Bool
         public var statusText: String?
         public var delayMinutes: Int
         public var upcomingDepartures: [UpcomingDeparture]
@@ -61,9 +63,11 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             toCRS: String,
             destinationTitle: String,
             arrivalLabel: String?,
+            scheduledDeparture: String? = nil,
             length: Int?,
             platform: String,
             estimated: String,
+            isCancelled: Bool = false,
             statusText: String?,
             delayMinutes: Int,
             upcomingDepartures: [UpcomingDeparture] = [],
@@ -79,9 +83,11 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             self.toCRS = toCRS
             self.destinationTitle = destinationTitle
             self.arrivalLabel = arrivalLabel
+            self.scheduledDeparture = scheduledDeparture
             self.length = length
             self.platform = platform
             self.estimated = estimated
+            self.isCancelled = isCancelled
             self.statusText = statusText
             self.delayMinutes = delayMinutes
             self.upcomingDepartures = upcomingDepartures
@@ -95,7 +101,7 @@ public struct JourneyActivityAttributes: Codable, Hashable {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case fromCRS, toCRS, destinationTitle, arrivalLabel, length, platform, estimated, statusText, delayMinutes, upcomingDepartures, lastUpdated, activityID, revision, appIsActive, scheduleKey, windowStart, windowEnd
+            case fromCRS, toCRS, destinationTitle, arrivalLabel, scheduledDeparture, length, platform, estimated, isCancelled, statusText, delayMinutes, upcomingDepartures, lastUpdated, activityID, revision, appIsActive, scheduleKey, windowStart, windowEnd
         }
 
         public init(from decoder: Decoder) throws {
@@ -104,9 +110,11 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             toCRS = try container.decode(String.self, forKey: .toCRS)
             destinationTitle = try container.decode(String.self, forKey: .destinationTitle)
             arrivalLabel = try container.decodeIfPresent(String.self, forKey: .arrivalLabel)
+            scheduledDeparture = try container.decodeIfPresent(String.self, forKey: .scheduledDeparture)
             length = try container.decodeIfPresent(Int.self, forKey: .length)
             platform = try container.decode(String.self, forKey: .platform)
             estimated = try container.decode(String.self, forKey: .estimated)
+            isCancelled = try container.decodeIfPresent(Bool.self, forKey: .isCancelled) ?? false
             statusText = try container.decodeIfPresent(String.self, forKey: .statusText)
             delayMinutes = try container.decode(Int.self, forKey: .delayMinutes)
             upcomingDepartures = try container.decodeIfPresent([UpcomingDeparture].self, forKey: .upcomingDepartures) ?? []
