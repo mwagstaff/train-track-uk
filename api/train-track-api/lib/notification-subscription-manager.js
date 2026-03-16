@@ -6,6 +6,7 @@ import { LiveActivityPushClient } from './live-activity-push-client.js';
 import redis from './redis-client.js';
 import { recordNotificationEvent } from './admin-data-store.js';
 import { pushToStartTokenStore } from './push-to-start-token-store.js';
+import { sleep } from './retry-utils.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.NOTIFICATION_POLL_INTERVAL_SECONDS || '30');
 const MAX_SUBSCRIPTIONS_PER_DEVICE = Number(process.env.NOTIFICATION_MAX_SUBSCRIPTIONS || '3');
@@ -721,33 +722,48 @@ class NotificationSubscriptionManager {
                 console.warn('[notifications] Failed to fetch departures snapshot for muted notification:', error?.message || error);
             }
 
-            const mutedNotification = buildMutedMessage(subscription, leg, snapshot);
-            const pushResult = await this.pushClient.sendNotification(
-                subscription.pushToken,
-                mutedNotification.payload,
-                { useSandbox: subscription.useSandbox, event: mutedNotification.type }
-            );
-            this.logSendEvent(subscription, leg, mutedNotification, pushResult);
+            const mutedNotifications = buildMutedMessages(subscription, leg, snapshot);
+            const pushResults = [];
+
+            for (let index = 0; index < mutedNotifications.length; index += 1) {
+                const mutedNotification = mutedNotifications[index];
+                if (index > 0) {
+                    await sleep(1000);
+                }
+
+                const pushResult = await this.pushClient.sendNotification(
+                    subscription.pushToken,
+                    mutedNotification.payload,
+                    { useSandbox: subscription.useSandbox, event: mutedNotification.type }
+                );
+                pushResults.push({
+                    type: mutedNotification.type,
+                    status: pushResult?.status ?? null,
+                    reason: pushResult?.body?.reason || null
+                });
+                this.logSendEvent(subscription, leg, mutedNotification, pushResult);
+
+                if (pushResult?.isBadToken) {
+                    console.warn('[notifications] bad_token_delete', JSON.stringify({
+                        subscription_id: subscription.id,
+                        device_id: subscription.deviceId,
+                        route_key: subscription.routeKey,
+                        context: 'muteLegForDate'
+                    }));
+                    this.subscriptions.delete(subscription.id);
+                    await this._deleteFromRedis(subscription.id);
+                    return null;
+                }
+            }
+
             console.log('[notifications] mute_on_arrival', JSON.stringify({
                 subscription_id: subscription.id,
                 device_id: subscription.deviceId,
                 route_key: subscription.routeKey,
                 leg: legKey,
                 use_sandbox: subscription.useSandbox,
-                status: pushResult?.status,
-                reason: pushResult?.body?.reason || null
+                notifications: pushResults
             }));
-            if (pushResult?.isBadToken) {
-                console.warn('[notifications] bad_token_delete', JSON.stringify({
-                    subscription_id: subscription.id,
-                    device_id: subscription.deviceId,
-                    route_key: subscription.routeKey,
-                    context: 'muteLegForDate'
-                }));
-                this.subscriptions.delete(subscription.id);
-                await this._deleteFromRedis(subscription.id);
-                return null;
-            }
         }
 
         return dateKey;
@@ -1003,55 +1019,69 @@ function buildPlatformMessage(subscription, leg, dep) {
     return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'platform'), 'platform');
 }
 
-function buildMutedMessage(subscription, leg, snapshot = null) {
+function buildMutedMessages(subscription, leg, snapshot = null) {
     const fromLabel = leg.fromName || leg.from;
     const toLabel = leg.toName || leg.to;
-    const body = buildMutedMessageBody(leg, snapshot);
-    return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'muted'), 'muted');
+    return [
+        buildNotificationPayload(
+            `${fromLabel} → ${toLabel}`,
+            buildMutedGreetingBody(leg),
+            buildLegMeta(subscription, leg, 'muted_greeting'),
+            'muted_greeting'
+        ),
+        buildNotificationPayload(
+            `${fromLabel} → ${toLabel}`,
+            buildMutedStatusBody(leg, snapshot),
+            buildLegMeta(subscription, leg, 'muted_status'),
+            'muted_status'
+        )
+    ];
 }
 
-function buildMutedMessageBody(leg, snapshot) {
-    const fromLabel = leg.fromName || leg.from;
+function buildMutedGreetingBody(leg) {
+    return `Welcome to ${formatStationGreetingName(leg.fromName || leg.from)}`;
+}
+
+function buildMutedStatusBody(leg, snapshot) {
     const toLabel = leg.toName || leg.to;
-    const welcome = `Welcome to ${fromLabel}.`;
     const departures = Array.isArray(snapshot?.departures) ? snapshot.departures : null;
     const primary = departures?.[0] || null;
 
     if (departures && departures.length === 0) {
-        return `${welcome} I couldn't find any upcoming departures to ${toLabel}. Please check station information.`;
+        return `No upcoming departures to ${toLabel}. Please check station information.`;
     }
 
     if (!primary || snapshot?.error) {
-        return `${welcome} Notifications are muted for today.`;
+        return 'Notifications are muted for today.';
     }
 
     if (primary.isCancelled) {
         const nextAvailable = snapshot.departures.find((dep) => dep && !dep.isCancelled);
         const cancelledTime = formatDepartureTime(primary);
         if (!nextAvailable) {
-            return `${welcome} ${cancelledTime} to ${toLabel} is cancelled. No later trains are listed right now.`;
+            return `${cancelledTime} to ${toLabel} is cancelled. No later trains are listed right now.`;
         }
 
-        return `${welcome} ${cancelledTime} to ${toLabel} is cancelled. Next train: ${formatDepartureTime(nextAvailable)}${formatPlatformSuffix(nextAvailable)}.`;
+        return `${cancelledTime} to ${toLabel} is cancelled. Next train: ${formatDepartureTime(nextAvailable)}${formatPlatformSuffix(nextAvailable)}.`;
     }
 
     if (isUnknownDelay(primary)) {
-        return `${welcome} Next train to ${toLabel} is delayed${formatUnknownDelayPlatformSuffix(primary)}.`;
+        return `Next train is delayed${formatUnknownDelayPlatformSuffix(primary)}.`;
     }
 
     const delayMinutes = calculateDelayMinutes(primary.scheduled, primary.estimated);
     if (delayMinutes > 0) {
         if (hasPlatform(primary)) {
-            return `${welcome} Next train to ${toLabel}: ${formatEstimatedDepartureTime(primary)} from platform ${primary.platform.trim()}, ${delayMinutes} minute${delayMinutes === 1 ? '' : 's'} late.`;
+            return `${formatEstimatedDepartureTime(primary)} from platform ${primary.platform.trim()}, ${delayMinutes} minute${delayMinutes === 1 ? '' : 's'} late.`;
         }
-        return `${welcome} Next train to ${toLabel}: ${formatEstimatedDepartureTime(primary)}, ${delayMinutes} minute${delayMinutes === 1 ? '' : 's'} late. Platform TBC.`;
+        return `${formatEstimatedDepartureTime(primary)}, ${delayMinutes} minute${delayMinutes === 1 ? '' : 's'} late. Platform TBC.`;
     }
 
     if (hasPlatform(primary)) {
-        return `${welcome} Next train to ${toLabel}: ${formatDepartureTime(primary)} from platform ${primary.platform.trim()}, on time.`;
+        return `${formatDepartureTime(primary)} from platform ${primary.platform.trim()}, on time.`;
     }
 
-    return `${welcome} Next train to ${toLabel}: ${formatDepartureTime(primary)}, on time. Platform TBC.`;
+    return `${formatDepartureTime(primary)}, on time. Platform TBC.`;
 }
 
 function buildScheduledStartContentState(subscription, leg, snapshot, todayKey) {
@@ -1151,6 +1181,11 @@ function formatPlatformSuffix(dep) {
 
 function formatUnknownDelayPlatformSuffix(dep) {
     return hasPlatform(dep) ? `. Due from platform ${dep.platform.trim()}` : '. Platform TBC';
+}
+
+function formatStationGreetingName(value) {
+    const label = typeof value === 'string' && value.trim().length > 0 ? value.trim() : 'your station';
+    return / station$/i.test(label) ? label : `${label} station`;
 }
 
 function buildNotificationPayload(title, body, meta = {}, type = 'unknown') {
