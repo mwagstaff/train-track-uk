@@ -116,13 +116,8 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
         BackgroundSessionCoordinator.shared.register(identifier: identifier, completion: completionHandler)
         // Ensure the relevant background session delegate is instantiated so iOS
         // can deliver its completion events.
-        switch identifier {
-        case NotificationMuteRequestSender.sessionIdentifier:
-            _ = NotificationMuteRequestSender.shared
-        case GeofenceEventSender.sessionIdentifier:
+        if identifier == GeofenceEventSender.sessionIdentifier {
             _ = GeofenceEventSender.shared
-        default:
-            break
         }
     }
 
