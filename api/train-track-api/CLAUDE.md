@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Important: All Code Changes Must Be Made Locally
+
+Always make code changes to the local files in this repository. Never edit files directly on the remote server (via SSH or otherwise) — deploys rsync from this local directory and will overwrite any server-side edits.
+
 ## Development Commands
 
 - `npm run dev` - Start development server with hot reload (runs `./.dev.sh` which includes environment variables and nodemon)

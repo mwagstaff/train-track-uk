@@ -482,16 +482,17 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
     static let sessionIdentifier = "dev.skynolimit.traintrack.notifications.mute"
 
     private lazy var session: URLSession = {
-        let config = URLSessionConfiguration.ephemeral
-        config.waitsForConnectivity = false
-        config.timeoutIntervalForRequest = 15
-        config.timeoutIntervalForResource = 20
+        // Background configuration hands the transfer to nsurlsessiond so it survives
+        // app suspension after a geofence wake. isDiscretionary = false ensures the
+        // request goes out promptly rather than being deferred to optimal conditions.
+        let config = URLSessionConfiguration.background(withIdentifier: Self.sessionIdentifier)
+        config.isDiscretionary = false
+        config.sessionSendsLaunchEvents = true
         return URLSession(configuration: config, delegate: self, delegateQueue: nil)
     }()
 
     private var responseData: [Int: Data] = [:] // Store data by task identifier
     private var uploadFiles: [Int: URL] = [:]
-    private var backgroundTasks: [Int: AppBackgroundTaskToken] = [:]
     private let syncQueue = DispatchQueue(label: "dev.skynolimit.traintrack.notifications.mute.sync")
 
     func enqueueMute(subscriptionId: String, from: String, to: String, delayMinutes: Int = 0) {
@@ -531,20 +532,18 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             }
         }
 
-        if let tempFile = writePayloadToTempFile(body) {
-            let task = session.uploadTask(with: request, fromFile: tempFile)
-            syncQueue.async {
-                self.uploadFiles[task.taskIdentifier] = tempFile
-                self.backgroundTasks[task.taskIdentifier] = AppBackgroundTaskToken(name: "notification-mute-request")
-            }
-            task.resume()
-        } else {
-            let task = session.uploadTask(with: request, from: body)
-            syncQueue.async {
-                self.backgroundTasks[task.taskIdentifier] = AppBackgroundTaskToken(name: "notification-mute-request")
-            }
-            task.resume()
+        // Background URLSession requires file-based uploads; data-task uploads are not supported.
+        guard let tempFile = writePayloadToTempFile(body) else {
+            let errorMsg = "Failed to write mute payload to temp file — aborting"
+            Task { @MainActor in DebugLogStore.shared.log(errorMsg, category: "Error") }
+            print("❌ \(errorMsg)")
+            return
         }
+        let task = session.uploadTask(with: request, fromFile: tempFile)
+        syncQueue.async {
+            self.uploadFiles[task.taskIdentifier] = tempFile
+        }
+        task.resume()
 
         let msg = "Mute request task started for \(from.uppercased()) → \(to.uppercased())"
         Task { @MainActor in DebugLogStore.shared.log(msg, category: "Mute") }
@@ -570,7 +569,6 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             if let temp = self.uploadFiles.removeValue(forKey: taskId) {
                 try? FileManager.default.removeItem(at: temp)
             }
-            self.backgroundTasks.removeValue(forKey: taskId)?.end()
             return data
         }
 
@@ -615,6 +613,10 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
                 MuteRequestDebugStore.shared.update(status: "ok", response: nil)
             }
         }
+    }
+
+    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        BackgroundSessionCoordinator.shared.complete(identifier: session.configuration.identifier)
     }
 
     private func writePayloadToTempFile(_ data: Data) -> URL? {

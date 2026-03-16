@@ -49,6 +49,13 @@ class NotificationSubscriptionManager {
                     if (err || !val) continue;
                     try {
                         const sub = JSON.parse(val);
+                        // Migrate: fill in fields added after initial schema to avoid
+                        // "Cannot set properties of undefined" on old Redis records.
+                        sub.lastAutoStartSentByLeg = sub.lastAutoStartSentByLeg || {};
+                        sub.lastSummarySentByLeg   = sub.lastSummarySentByLeg   || {};
+                        sub.lastStateByLeg         = sub.lastStateByLeg         || {};
+                        sub.mutedByLegDay          = sub.mutedByLegDay          || {};
+                        sub.mutedAtByLegDay        = sub.mutedAtByLegDay        || {};
                         this.subscriptions.set(sub.id, sub);
                         loaded++;
                     } catch (e) {
