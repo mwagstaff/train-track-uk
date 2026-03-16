@@ -229,8 +229,16 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             eventType: "enter"
         )
 
+        // Claim a background task synchronously BEFORE this method returns.
+        // Without this, iOS can re-suspend the app immediately after didEnterRegion
+        // returns — before the @MainActor task below has had a chance to run.
+        // The token is released inside the task (via defer) once triggerMuteFlow
+        // has been awaited and enqueueMute has been called.
+        let muteFlowToken = AppBackgroundTaskToken(name: "geofence-entry-mute-flow")
+
         let message = "Entered region: \(circular.identifier)\nSub: \(parsed.subscriptionId)\nFrom: \(parsed.from.uppercased()) To: \(parsed.to.uppercased())"
         Task { @MainActor in
+            defer { muteFlowToken.end() }
             DebugLogStore.shared.log(message, category: "Geofence")
             print("📍 \(message)")
 
@@ -255,8 +263,8 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 return
             }
 
-            // Apply delay then mute (and optionally end Live Activity)
-            self.triggerMuteFlow(
+            // await ensures muteFlowToken is not released until enqueueMute has been called.
+            await self.triggerMuteFlow(
                 subscriptionId: parsed.subscriptionId,
                 from: parsed.from,
                 to: parsed.to
@@ -353,8 +361,11 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
         guard state == .inside else { return }
 
+        let muteFlowToken = AppBackgroundTaskToken(name: "geofence-state-mute-flow")
+
         // Treat being inside as an entry — trigger the mute flow.
         Task { @MainActor in
+            defer { muteFlowToken.end() }
             guard !NotificationMuteStorage.isMutedToday(from: parsed.from, to: parsed.to) else {
                 let skipMsg = "Already muted today for \(parsed.from)→\(parsed.to) — skipping duplicate"
                 DebugLogStore.shared.log(skipMsg, category: "Mute")
@@ -383,7 +394,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
             let entryMsg = "Already inside geofence — triggering mute: \(parsed.from) → \(parsed.to)"
             DebugLogStore.shared.log(entryMsg, category: "Geofence")
-            self.triggerMuteFlow(
+            await self.triggerMuteFlow(
                 subscriptionId: parsed.subscriptionId,
                 from: parsed.from,
                 to: parsed.to
@@ -394,6 +405,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     /// Triggers the mute flow immediately — delay is applied server-side.
     /// Called from both `didEnterRegion` and `didDetermineState(.inside)`.
     ///
+    /// **Why async**: Callers hold an `AppBackgroundTaskToken` to keep the app alive
+    /// after a background geofence wake. Making this function async (instead of
+    /// wrapping in an internal Task) lets the caller `await` it, so the token is
+    /// not released until `enqueueMute` has been called and the background URLSession
+    /// upload task is queued.
+    ///
     /// **Why no client-side sleep**: iOS only grants ~30 s of background execution after a
     /// geofence wake, so `Task.sleep` is unreliable for delays > a few seconds. Instead,
     /// we pass `delay_minutes` to the server which applies the wait via `setTimeout`
@@ -402,50 +419,48 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     ///
     /// - Parameter simulate: When true the delay is zero (used by the debug simulate-arrival action).
     func triggerMuteFlow(subscriptionId: String, from: String, to: String,
-                         sendNotification: Bool = true, simulate: Bool = false) {
-        Task { @MainActor in
-            // Guard against duplicate calls — both didEnterRegion and didDetermineState can fire
-            // for the same region event. Since both outer tasks are @MainActor and this inner
-            // task is also @MainActor (serial), the first call marks locally then the second
-            // hits this guard and returns cleanly.
-            guard !NotificationMuteStorage.isMutedToday(from: from, to: to) else {
-                let skipMsg = "triggerMuteFlow: already muted today for \(from)→\(to) — skipping duplicate"
-                DebugLogStore.shared.log(skipMsg, category: "Mute")
-                print("⏭ \(skipMsg)")
-                return
-            }
+                         sendNotification: Bool = true, simulate: Bool = false) async {
+        // Guard against duplicate calls — both didEnterRegion and didDetermineState can fire
+        // for the same region event. Since this function runs on @MainActor (via class
+        // default isolation), the first call marks locally then any concurrent second call
+        // hits this guard and returns cleanly.
+        guard !NotificationMuteStorage.isMutedToday(from: from, to: to) else {
+            let skipMsg = "triggerMuteFlow: already muted today for \(from)→\(to) — skipping duplicate"
+            DebugLogStore.shared.log(skipMsg, category: "Mute")
+            print("⏭ \(skipMsg)")
+            return
+        }
 
-            // Mark locally immediately — prevents the second triggerMuteFlow call (above guard)
-            // from also sending a terminate request during the server-side delay window.
-            self.markLegMutedLocally(from: from, to: to)
+        // Mark locally immediately — prevents any concurrent triggerMuteFlow call (above guard)
+        // from also sending a terminate request during the server-side delay window.
+        markLegMutedLocally(from: from, to: to)
 
-            let delayMinutes = simulate ? 0 : ((UserDefaults.standard.object(forKey: "muteDelayMinutes") as? Int) ?? 3)
-            let msg = delayMinutes > 0
-                ? "Sending mute request with \(delayMinutes)-min server-side delay for \(from)→\(to)"
-                : "Sending immediate mute request for \(from)→\(to)"
-            DebugLogStore.shared.log(msg, category: "Mute")
-            print("⏳ \(msg)")
+        let delayMinutes = simulate ? 0 : ((UserDefaults.standard.object(forKey: "muteDelayMinutes") as? Int) ?? 3)
+        let msg = delayMinutes > 0
+            ? "Sending mute request with \(delayMinutes)-min server-side delay for \(from)→\(to)"
+            : "Sending immediate mute request for \(from)→\(to)"
+        DebugLogStore.shared.log(msg, category: "Mute")
+        print("⏳ \(msg)")
 
-            // The terminate request is sent immediately via background URLSession (reliable
-            // even after iOS suspends the app). The server delays the actual mute + push.
-            NotificationMuteRequestSender.shared.enqueueMute(
-                subscriptionId: subscriptionId,
-                from: from,
-                to: to,
-                delayMinutes: delayMinutes
-            )
+        // The terminate request is sent immediately via background URLSession (reliable
+        // even after iOS suspends the app). The server delays the actual mute + push.
+        NotificationMuteRequestSender.shared.enqueueMute(
+            subscriptionId: subscriptionId,
+            from: from,
+            to: to,
+            delayMinutes: delayMinutes
+        )
 
-            // If the user has opted in, queue the Live Activity to end after the next
-            // geofence exit, which is a better proxy for the train having departed.
-            let autoEnd = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? true
-            if autoEnd {
-                let endMsg = "autoEndLiveActivity enabled — queueing Live Activity end for next geofence exit \(from)→\(to)"
-                DebugLogStore.shared.log(endMsg, category: "Mute")
-                print("🏁 \(endMsg)")
-                NotificationMuteStorage.markPendingLiveActivityAutoEndOnDeparture(from: from, to: to)
-            } else {
-                NotificationMuteStorage.clearPendingLiveActivityAutoEndOnDeparture(from: from, to: to)
-            }
+        // If the user has opted in, queue the Live Activity to end after the next
+        // geofence exit, which is a better proxy for the train having departed.
+        let autoEnd = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? true
+        if autoEnd {
+            let endMsg = "autoEndLiveActivity enabled — queueing Live Activity end for next geofence exit \(from)→\(to)"
+            DebugLogStore.shared.log(endMsg, category: "Mute")
+            print("🏁 \(endMsg)")
+            NotificationMuteStorage.markPendingLiveActivityAutoEndOnDeparture(from: from, to: to)
+        } else {
+            NotificationMuteStorage.clearPendingLiveActivityAutoEndOnDeparture(from: from, to: to)
         }
     }
 
@@ -455,8 +470,10 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             DebugLogStore.shared.log(msg, category: "Geofence")
         }
         print("🧪 \(msg)")
-        triggerMuteFlow(subscriptionId: subscriptionId, from: from, to: to,
-                        sendNotification: sendNotification, simulate: true)
+        Task {
+            await triggerMuteFlow(subscriptionId: subscriptionId, from: from, to: to,
+                                  sendNotification: sendNotification, simulate: true)
+        }
     }
 
     private func markLegMutedLocally(from: String, to: String) {
