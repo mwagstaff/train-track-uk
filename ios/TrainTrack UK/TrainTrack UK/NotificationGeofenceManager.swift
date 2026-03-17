@@ -37,6 +37,25 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     //   5. App was NOT force-quit by the user — user swipe-close prevents re-launch.
     private var locationServiceSession: Any?
 
+    // CLBackgroundActivitySession (iOS 17+) — keeps the app process alive in background
+    // while region monitoring is active. Without this, iOS suspends the app between
+    // geofence events; when a region boundary is crossed the app gets only a brief
+    // ~10–30 s wake window. The async Task in didEnterRegion and the subsequent HTTP
+    // request must both complete within that window — if iOS re-suspends the process
+    // before the Task runs, the mute request is silently dropped.
+    //
+    // Holding a CLBackgroundActivitySession ensures the app remains live whenever
+    // geofences are registered, so didEnterRegion fires in an already-running process
+    // with no race condition. This is the same approach used by My Boris Bikes
+    // (DockArrivalMonitoringService.startBackgroundActivitySessionIfNeeded).
+    //
+    // The session is started in sync() when there are active geofences and stopped
+    // when all geofences are removed. It shows the standard blue background-location
+    // indicator, which is appropriate given the app requires Always authorisation.
+    //
+    // Stored as Any? to avoid @available spreading everywhere.
+    private var backgroundActivitySession: Any?
+
     private override init() {
         super.init()
         manager.delegate = self
@@ -117,6 +136,20 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         // didDetermineState(.inside) will, and we trigger the mute from there.
         for (_, region) in desired {
             manager.requestState(for: region)
+        }
+
+        // Start or stop the CLBackgroundActivitySession to match geofence activity.
+        // The session must be created/destroyed on iOS 17+ only.
+        if #available(iOS 17.0, *) {
+            if desired.isEmpty {
+                if backgroundActivitySession != nil {
+                    backgroundActivitySession = nil
+                    print("📍 [GeofenceManager] Stopped CLBackgroundActivitySession (no active geofences)")
+                }
+            } else if backgroundActivitySession == nil {
+                backgroundActivitySession = CLBackgroundActivitySession()
+                print("📍 [GeofenceManager] Started CLBackgroundActivitySession (\(desired.count) active geofence(s))")
+            }
         }
 
         let syncMsg = "Geofence sync: \(desired.count) desired, +\(addedCount) added, -\(removedCount) removed"
