@@ -65,6 +65,22 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             // and ensures events are delivered even after the app is OS-terminated.
             locationServiceSession = CLServiceSession(authorization: .always)
         }
+        // CLLocationManager.monitoredRegions persists across app launches. If geofences
+        // are already registered from a previous session, create CLBackgroundActivitySession
+        // immediately so the app process is kept alive from the very first moment of a cold
+        // background launch. Without this, sync() (which creates the session) only runs when
+        // the app is foregrounded — so a cold background launch triggered by a geofence event
+        // has no session, leaving the mute HTTP request dependent solely on beginBackgroundTask
+        // (~30 s), which iOS can cut short under memory pressure or background budget exhaustion.
+        if #available(iOS 17.0, *) {
+            let hasExistingRegions = manager.monitoredRegions.contains {
+                $0.identifier.hasPrefix(regionPrefix)
+            }
+            if hasExistingRegions {
+                backgroundActivitySession = CLBackgroundActivitySession()
+                print("📍 [GeofenceManager] Started CLBackgroundActivitySession at init (existing geofences detected)")
+            }
+        }
     }
 
     func requestAlwaysAuthorizationIfNeeded() {
