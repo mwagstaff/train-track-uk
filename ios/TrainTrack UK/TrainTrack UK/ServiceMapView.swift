@@ -143,9 +143,12 @@ struct ServiceMapView: View {
                         Text(s.locationName)
                             .font(.body)
                             .foregroundStyle(nameColor)
-                        Text(timeLabel(for: s, isFinal: index == list.count - 1))
-                            .font(.caption)
-                            .foregroundStyle(timeColor)
+                            .strikethrough(s.isCancelledAtStation, color: nameColor)
+                        if !s.isCancelledAtStation {
+                            Text(timeLabel(for: s, isFinal: index == list.count - 1))
+                                .font(.caption)
+                                .foregroundStyle(timeColor)
+                        }
                     }
                 }
                 .padding(.vertical, 9)

@@ -532,8 +532,39 @@ final class LiveActivityManager: ObservableObject {
                 $0.value.fromCRS == journey.fromStation.crs && $0.value.toCRS == journey.toStation.crs
             }?.value.preferredServiceID
         }()
+        let relevantDeps = relevantDepartures(from: deps)
+        let effectivePreferredServiceID = preferredServiceID.flatMap { preferredServiceID in
+            relevantDeps.contains(where: { $0.serviceID == preferredServiceID }) ? preferredServiceID : nil
+        }
+
+        if let activityID,
+           preferredServiceID != effectivePreferredServiceID,
+           var tracked = trackedActivities[activityID] {
+            tracked.preferredServiceID = effectivePreferredServiceID
+            trackedActivities[activityID] = tracked
+
+            if let expiredPreferredServiceID = preferredServiceID {
+                print("↪️ [LiveActivity] Preferred service \(expiredPreferredServiceID) is no longer relevant for \(journey.fromStation.crs) → \(journey.toStation.crs); falling back to the next live departure")
+            }
+
+            if let tokenData = tracked.activity.pushToken {
+                let tokenString = encodePushToken(tokenData)
+                _ = await sendLiveActivityRegistration(
+                    activityID: activityID,
+                    tokenString: tokenString,
+                    fromCRS: journey.fromStation.crs,
+                    toCRS: journey.toStation.crs,
+                    preferredServiceID: effectivePreferredServiceID
+                )
+            }
+        }
+
         print("🔄 [LiveActivity] Found \(deps.count) departures after refresh")
-        if let selectedDep = selectPrimaryDeparture(preferredServiceID: preferredServiceID, allDepartures: deps, filteredDepartures: deps) {
+        if let selectedDep = selectPrimaryDeparture(
+            preferredServiceID: effectivePreferredServiceID,
+            allDepartures: deps,
+            filteredDepartures: relevantDeps
+        ) {
             print("✅ [LiveActivity] Fetched departure data, selected service: \(selectedDep.serviceID), platform: \(selectedDep.platform ?? "TBC"), time: \(selectedDep.departureTime.estimated ?? selectedDep.departureTime.scheduled)")
             os_log("[LiveActivity] Selected service: %{public}@, platform: %{public}@", selectedDep.serviceID, selectedDep.platform ?? "TBC")
             await depStore.ensureServiceDetails(for: [selectedDep.serviceID], force: true)
@@ -583,16 +614,7 @@ final class LiveActivityManager: ObservableObject {
 
     private func contentState(for journey: Journey, depStore: DeparturesStore, preferredServiceID: String? = nil) async -> JourneyActivityAttributes.ContentState {
         let allDeps = depStore.departures(for: journey)
-        // Filter out trains that have already departed (1 minute grace period)
-        let now = Date()
-        let gracePeriodSeconds: TimeInterval = 60
-        let departureStillRelevant: (DepartureV2) -> Bool = { dep in
-            guard let depTime = self.parseHHmmToDate(dep.departureTime.estimated ?? dep.departureTime.scheduled) else {
-                return true // Keep if we can't parse time
-            }
-            return depTime.timeIntervalSince(now) > -gracePeriodSeconds
-        }
-        let deps = allDeps.filter(departureStillRelevant)
+        let deps = relevantDepartures(from: allDeps)
         let next = selectPrimaryDeparture(preferredServiceID: preferredServiceID, allDepartures: allDeps, filteredDepartures: deps)
         let title: String = {
             if let first = next?.destination.first {
@@ -628,7 +650,7 @@ final class LiveActivityManager: ObservableObject {
             if let next,
                let selectedIndex = allDeps.firstIndex(where: { $0.serviceID == next.serviceID }) {
                 let tail = Array(allDeps.suffix(from: selectedIndex + 1))
-                return Array(tail.filter(departureStillRelevant).prefix(3))
+                return Array(tail.filter(isDepartureStillRelevant).prefix(3))
             }
             return Array(deps.dropFirst().prefix(3))
         }()
@@ -666,10 +688,23 @@ final class LiveActivityManager: ObservableObject {
 
     private func selectPrimaryDeparture(preferredServiceID: String?, allDepartures: [DepartureV2], filteredDepartures: [DepartureV2]) -> DepartureV2? {
         if let preferredServiceID,
-           let preferred = allDepartures.first(where: { $0.serviceID == preferredServiceID }) {
+           let preferred = filteredDepartures.first(where: { $0.serviceID == preferredServiceID }) {
             return preferred
         }
         return filteredDepartures.first
+    }
+
+    private func relevantDepartures(from departures: [DepartureV2]) -> [DepartureV2] {
+        departures.filter(isDepartureStillRelevant)
+    }
+
+    private func isDepartureStillRelevant(_ departure: DepartureV2) -> Bool {
+        let now = Date()
+        let gracePeriodSeconds: TimeInterval = 60
+        guard let depTime = parseHHmmToDate(displayDepartureTime(for: departure)) else {
+            return true
+        }
+        return depTime.timeIntervalSince(now) > -gracePeriodSeconds
     }
 
     private func calculateDelayMinutes(scheduled: String, estimated: String?) -> Int {
