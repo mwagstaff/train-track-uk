@@ -83,7 +83,6 @@ struct FavouritesView: View {
     private var lifecycleView: some View {
         navigationView
             .onAppear {
-                location.request()
                 refreshManualOrder()
             }
             .onDisappear {

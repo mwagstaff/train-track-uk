@@ -76,6 +76,7 @@ struct TrainTrackUKApp: App {
             } else if newPhase == .background {
                 backgroundedAt = Date()
                 print("💤 [App] App moved to background at \(backgroundedAt!)")
+                NotificationGeofenceManager.shared.stopLocationActivityIfIdle()
             }
         }
     }

@@ -549,7 +549,6 @@ struct JourneyDetailsView: View {
         }
         .toolbar { toolbar }
         .onAppear {
-            location.request()
             if reverseGroup == nil {
                 showingReverse = false
             }
@@ -626,6 +625,11 @@ struct JourneyDetailsView: View {
             activityMgr.lastMessage = message
             ToastStore.shared.show(message, icon: "exclamationmark.triangle.fill")
             return
+        }
+
+        let autoMuteOnArrival = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
+        if autoMuteOnArrival {
+            NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
         }
 
         var replacement: NotificationSubscription?

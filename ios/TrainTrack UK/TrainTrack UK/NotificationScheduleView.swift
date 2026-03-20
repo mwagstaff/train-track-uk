@@ -344,6 +344,12 @@ struct NotificationScheduleView: View {
                 isSaving = false
                 return
             }
+
+            let autoMuteOnArrival = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
+            if autoMuteOnArrival {
+                NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
+            }
+
             guard let pushToken = await NotificationPushTokenStore.waitForToken(timeoutSeconds: 6.0) else {
                 errorMessage = "Waiting for a push token. Try again in a moment."
                 isSaving = false
@@ -371,7 +377,7 @@ struct NotificationScheduleView: View {
                 fromName: primaryLeg?.fromName,
                 toName: primaryLeg?.toName,
                 useSandbox: useSandbox,
-                muteOnArrival: (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true,
+                muteOnArrival: autoMuteOnArrival,
                 activeUntil: nil
             )
 

@@ -181,10 +181,14 @@ private final class NotificationLocationProvider: NSObject, CLLocationManagerDel
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
+        manager.showsBackgroundLocationIndicator = false
+        print("📍 [NotificationLocationProvider] init auth=\(manager.authorizationStatus.rawValue)")
     }
 
     func requestLocation() async -> CLLocation? {
+        print("📍 [NotificationLocationProvider] requestLocation auth=\(manager.authorizationStatus.rawValue)")
         if let existing = manager.location, Date().timeIntervalSince(existing.timestamp) < 120 {
+            print("📍 [NotificationLocationProvider] using recent cached manager.location")
             return existing
         }
 
@@ -193,10 +197,13 @@ private final class NotificationLocationProvider: NSObject, CLLocationManagerDel
             let status = manager.authorizationStatus
             switch status {
             case .authorizedAlways, .authorizedWhenInUse:
+                print("📍 [NotificationLocationProvider] requestLocation()")
                 manager.requestLocation()
             case .notDetermined:
+                print("📍 [NotificationLocationProvider] requesting WhenInUse authorization")
                 manager.requestWhenInUseAuthorization()
             case .denied, .restricted:
+                print("📍 [NotificationLocationProvider] request denied/restricted")
                 self.continuation = nil
                 continuation.resume(returning: nil)
             @unknown default:
@@ -208,8 +215,10 @@ private final class NotificationLocationProvider: NSObject, CLLocationManagerDel
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         guard let continuation = continuation else { return }
+        print("📍 [NotificationLocationProvider] authorization changed -> \(manager.authorizationStatus.rawValue)")
         switch manager.authorizationStatus {
         case .authorizedAlways, .authorizedWhenInUse:
+            print("📍 [NotificationLocationProvider] requestLocation() after authorization change")
             manager.requestLocation()
         case .denied, .restricted:
             self.continuation = nil
@@ -224,12 +233,16 @@ private final class NotificationLocationProvider: NSObject, CLLocationManagerDel
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let continuation = continuation else { return }
+        if let loc = locations.last {
+            print("📍 [NotificationLocationProvider] didUpdateLocations lat=\(loc.coordinate.latitude) lng=\(loc.coordinate.longitude)")
+        }
         self.continuation = nil
         continuation.resume(returning: locations.last)
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         guard let continuation = continuation else { return }
+        print("📍 [NotificationLocationProvider] didFailWithError \(error.localizedDescription)")
         self.continuation = nil
         continuation.resume(returning: nil)
     }

@@ -19,12 +19,9 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     private nonisolated let regionPrefix = "tt_notify_mute"
     static let regionRadiusMeters: CLLocationDistance = 250
 
-    // iOS 18+ requires an active CLServiceSession to guarantee reliable delivery
-    // of region monitoring events to the app, including cold-launch from terminated state.
-    // Stored as Any? to avoid @available spreading everywhere — we simply cast when needed.
-    // The session must be kept alive for the lifetime of the manager (hence a stored property,
-    // not a local variable). Creating it with .always tells the system this app needs
-    // "Always" location authorization and keeps region monitoring events flowing.
+    // iOS 18+ uses CLServiceSession to express the app's "Always" authorization need
+    // for this geofencing workflow. Stored as Any? to avoid @available spreading
+    // everywhere — we simply cast when needed.
     //
     // On iOS 17 and below, requestAlwaysAuthorization() handles auth instead.
     //
@@ -59,34 +56,17 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     private override init() {
         super.init()
         manager.delegate = self
-        manager.allowsBackgroundLocationUpdates = true
-        if #available(iOS 18.0, *) {
-            // Create session immediately — this registers our intent with the system
-            // and ensures events are delivered even after the app is OS-terminated.
-            locationServiceSession = CLServiceSession(authorization: .always)
-        }
-        // CLLocationManager.monitoredRegions persists across app launches. If geofences
-        // are already registered from a previous session, create CLBackgroundActivitySession
-        // immediately so the app process is kept alive from the very first moment of a cold
-        // background launch. Without this, sync() (which creates the session) only runs when
-        // the app is foregrounded — so a cold background launch triggered by a geofence event
-        // has no session, leaving the mute HTTP request dependent solely on beginBackgroundTask
-        // (~30 s), which iOS can cut short under memory pressure or background budget exhaustion.
-        if #available(iOS 17.0, *) {
-            let hasExistingRegions = manager.monitoredRegions.contains {
-                $0.identifier.hasPrefix(regionPrefix)
-            }
-            if hasExistingRegions {
-                backgroundActivitySession = CLBackgroundActivitySession()
-                print("📍 [GeofenceManager] Started CLBackgroundActivitySession at init (existing geofences detected)")
-            }
-        }
+        // Keep background location disabled until there is an active live journey
+        // that actually needs region monitoring.
+        manager.allowsBackgroundLocationUpdates = false
+        manager.showsBackgroundLocationIndicator = false
+        print("📍 [GeofenceManager] init auth=\(manager.authorizationStatus.rawValue) monitored=\(manager.monitoredRegions.count)")
     }
 
     func requestAlwaysAuthorizationIfNeeded() {
+        print("📍 [GeofenceManager] requestAlwaysAuthorizationIfNeeded auth=\(manager.authorizationStatus.rawValue)")
         if #available(iOS 18.0, *) {
-            // On iOS 18+, CLServiceSession (created in init) handles authorization
-            // requests automatically — no need to call requestAlwaysAuthorization().
+            ensureLocationServiceSessionIfNeeded()
             return
         }
         switch manager.authorizationStatus {
@@ -103,9 +83,42 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         }
     }
 
+    func stopLocationActivityIfIdle() {
+        let trackedRegions = manager.monitoredRegions.filter { $0.identifier.hasPrefix(regionPrefix) }
+        guard trackedRegions.isEmpty else { return }
+        print("📍 [GeofenceManager] stopLocationActivityIfIdle: no tracked regions, clearing background location state")
+        updateBackgroundLocationState(hasActiveGeofences: false)
+    }
+
     func sync(subscriptions: [NotificationSubscription]) async {
         guard CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else { return }
-        guard manager.authorizationStatus == .authorizedAlways else { return }
+        let existing = manager.monitoredRegions.filter { $0.identifier.hasPrefix(regionPrefix) }
+
+        guard !subscriptions.isEmpty else {
+            stopMonitoring(Array(existing))
+            updateBackgroundLocationState(hasActiveGeofences: false)
+            let syncMsg = "Geofence sync: 0 desired, +0 added, -\(existing.count) removed"
+            Task { @MainActor in
+                DebugLogStore.shared.log(syncMsg, category: "Geofence")
+            }
+            print("📍 \(syncMsg)")
+            return
+        }
+
+        if #available(iOS 18.0, *) {
+            ensureLocationServiceSessionIfNeeded()
+        }
+
+        guard manager.authorizationStatus == .authorizedAlways else {
+            stopMonitoring(Array(existing))
+            updateBackgroundLocationState(hasActiveGeofences: false)
+            let syncMsg = "Geofence sync skipped: Always location authorization not granted"
+            Task { @MainActor in
+                DebugLogStore.shared.log(syncMsg, category: "Geofence")
+            }
+            print("📍 \(syncMsg)")
+            return
+        }
 
         if StationsService.shared.stations.isEmpty {
             try? await StationsService.shared.loadStations()
@@ -129,7 +142,6 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         }
 
         let desired = desiredRegions(subscriptions: subscriptions, stationsByCrs: stationsByCrs)
-        let existing = manager.monitoredRegions.filter { $0.identifier.hasPrefix(regionPrefix) }
 
         var removedCount = 0
         for region in existing where desired[region.identifier] == nil {
@@ -156,23 +168,54 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
         // Start or stop the CLBackgroundActivitySession to match geofence activity.
         // The session must be created/destroyed on iOS 17+ only.
-        if #available(iOS 17.0, *) {
-            if desired.isEmpty {
-                if backgroundActivitySession != nil {
-                    backgroundActivitySession = nil
-                    print("📍 [GeofenceManager] Stopped CLBackgroundActivitySession (no active geofences)")
-                }
-            } else if backgroundActivitySession == nil {
-                backgroundActivitySession = CLBackgroundActivitySession()
-                print("📍 [GeofenceManager] Started CLBackgroundActivitySession (\(desired.count) active geofence(s))")
-            }
-        }
+        updateBackgroundLocationState(hasActiveGeofences: !desired.isEmpty)
 
         let syncMsg = "Geofence sync: \(desired.count) desired, +\(addedCount) added, -\(removedCount) removed"
         Task { @MainActor in
             DebugLogStore.shared.log(syncMsg, category: "Geofence")
         }
         print("📍 \(syncMsg)")
+    }
+
+    private func stopMonitoring(_ regions: [CLRegion]) {
+        for region in regions {
+            manager.stopMonitoring(for: region)
+        }
+    }
+
+    private func ensureLocationServiceSessionIfNeeded() {
+        guard #available(iOS 18.0, *) else { return }
+        guard locationServiceSession == nil else { return }
+        locationServiceSession = CLServiceSession(authorization: .always)
+        print("📍 [GeofenceManager] Started CLServiceSession(.always)")
+    }
+
+    private func updateBackgroundLocationState(hasActiveGeofences: Bool) {
+        manager.allowsBackgroundLocationUpdates = hasActiveGeofences
+        print("📍 [GeofenceManager] updateBackgroundLocationState active=\(hasActiveGeofences) allowsBackground=\(manager.allowsBackgroundLocationUpdates)")
+
+        if #available(iOS 17.0, *) {
+            if hasActiveGeofences {
+                if backgroundActivitySession == nil {
+                    backgroundActivitySession = CLBackgroundActivitySession()
+                    print("📍 [GeofenceManager] Started CLBackgroundActivitySession")
+                }
+            } else if let session = backgroundActivitySession as? CLBackgroundActivitySession {
+                session.invalidate()
+                backgroundActivitySession = nil
+                print("📍 [GeofenceManager] Stopped CLBackgroundActivitySession")
+            } else {
+                backgroundActivitySession = nil
+            }
+        }
+
+        if #available(iOS 18.0, *), !hasActiveGeofences {
+            if let session = locationServiceSession as? CLServiceSession {
+                session.invalidate()
+                print("📍 [GeofenceManager] Invalidated CLServiceSession (no active geofences)")
+            }
+            locationServiceSession = nil
+        }
     }
 
     private func desiredRegions(

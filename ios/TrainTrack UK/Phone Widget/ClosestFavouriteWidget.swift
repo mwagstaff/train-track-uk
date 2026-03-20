@@ -358,60 +358,6 @@ private final class NetworkServiceWidget {
     }
 }
 
-// MARK: - Location fetcher (best-effort, with short timeout)
-private final class OneShotLocationFetcher: NSObject, CLLocationManagerDelegate {
-    private let manager = CLLocationManager()
-    private var continuation: CheckedContinuation<CLLocation?, Never>?
-    private var timeoutWork: DispatchWorkItem?
-
-    override init() {
-        super.init()
-        manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyKilometer
-    }
-
-    func fetch(timeout: TimeInterval = 1.5) async -> CLLocation? {
-        // Widgets cannot prompt for location permission. Only use if already authorized.
-        let status = manager.authorizationStatus
-        if !(status == .authorizedAlways || status == .authorizedWhenInUse) {
-            Logger.widget.debug("Location not authorized for widget; skipping")
-            return nil
-        }
-
-        manager.requestLocation()
-        return await withCheckedContinuation { (c: CheckedContinuation<CLLocation?, Never>) in
-            self.continuation = c
-            let work = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                if let cont = self.continuation {
-                    Logger.widget.debug("Location timeout fired; returning nil")
-                    self.continuation = nil
-                    cont.resume(returning: nil)
-                }
-            }
-            self.timeoutWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + timeout, execute: work)
-        }
-    }
-
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        timeoutWork?.cancel(); timeoutWork = nil
-        if let cont = continuation {
-            Logger.widget.debug("Location success from widget")
-            continuation = nil
-            cont.resume(returning: locations.last)
-        }
-    }
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        timeoutWork?.cancel(); timeoutWork = nil
-        if let cont = continuation {
-            Logger.widget.error("Location failed: \(error.localizedDescription, privacy: .public)")
-            continuation = nil
-            cont.resume(returning: nil)
-        }
-    }
-}
-
 // MARK: - Timeline entry
 private struct ClosestFavouriteEntry: TimelineEntry {
     let date: Date
@@ -504,14 +450,9 @@ private struct ClosestFavouriteProvider: TimelineProvider {
         var dbg: [String] = []
         let journeys = loadJourneys()
         let sharedLoc = loadSharedLocation()
-        let location: CLLocation?
-        if let s = sharedLoc {
-            location = s
-        } else {
-            location = await OneShotLocationFetcher().fetch()
-        }
+        let location = sharedLoc
         dbg.append("journeys=\(journeys.count)")
-        dbg.append(sharedLoc != nil ? "loc=shared" : (location == nil ? "loc=nil" : "loc=ok"))
+        dbg.append(sharedLoc != nil ? "loc=shared" : "loc=nil")
         Logger.widget.info("Journeys available: \(journeys.count, privacy: .public)")
         let j = closestFavourite(using: location, from: journeys)
         if j == nil { Logger.widget.info("No favourite journey available for widget") }

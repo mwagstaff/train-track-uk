@@ -118,6 +118,7 @@ final class NotificationSubscriptionStore: ObservableObject {
     @Published private(set) var liveSessions: [NotificationSubscription] = []
     @Published private(set) var isLoading = false
     @Published var lastError: String? = nil
+    private var hasLoadedRemoteState = false
 
     private let service = NotificationSubscriptionService.shared
 
@@ -130,6 +131,7 @@ final class NotificationSubscriptionStore: ObservableObject {
             async let liveSessionsTask = service.fetchLiveSessions()
             subscriptions = try await scheduledTask
             liveSessions = try await liveSessionsTask
+            hasLoadedRemoteState = true
             lastError = nil
             await syncGeofences()
         } catch {
@@ -139,6 +141,7 @@ final class NotificationSubscriptionStore: ObservableObject {
 
     func upsert(_ requestBody: NotificationSubscriptionRequest) async throws -> NotificationSubscription {
         let subscription = try await service.upsertSubscription(requestBody)
+        hasLoadedRemoteState = true
         await refresh()
         return subscriptions.first(where: { $0.id == subscription.id }) ?? subscription
     }
@@ -146,6 +149,7 @@ final class NotificationSubscriptionStore: ObservableObject {
     func delete(id: String) async throws {
         try await service.deleteSubscription(id: id)
         subscriptions.removeAll { $0.id == id }
+        hasLoadedRemoteState = true
         await syncGeofences()
     }
 
@@ -160,6 +164,7 @@ final class NotificationSubscriptionStore: ObservableObject {
         } else {
             liveSessions.append(subscription)
         }
+        hasLoadedRemoteState = true
         await syncGeofences()
         return subscription
     }
@@ -167,6 +172,7 @@ final class NotificationSubscriptionStore: ObservableObject {
     func deleteLiveSession(id: String) async throws {
         try await service.deleteLiveSession(id: id)
         liveSessions.removeAll { $0.id == id }
+        hasLoadedRemoteState = true
         await syncGeofences()
     }
 
@@ -180,6 +186,11 @@ final class NotificationSubscriptionStore: ObservableObject {
 
     var canCreateNew: Bool { subscriptions.count < 3 }
     var canCreateNewLiveSession: Bool { liveSessions.count < 3 }
+
+    func syncGeofencesNow() async {
+        guard hasLoadedRemoteState else { return }
+        await syncGeofences()
+    }
 
     func applyGlobalNotificationTypes() async throws {
         let scheduled = subscriptions
@@ -249,7 +260,40 @@ final class NotificationSubscriptionStore: ObservableObject {
     }
 
     private func syncGeofences() async {
-        await NotificationGeofenceManager.shared.sync(subscriptions: combinedSubscriptions)
+        await NotificationGeofenceManager.shared.sync(subscriptions: geofenceEligibleLiveSessions)
+    }
+
+    private var geofenceEligibleLiveSessions: [NotificationSubscription] {
+        let activeJourneyKeys = Set(
+            LiveActivityManager.shared.activeJourneys.map {
+                "\($0.fromCRS.uppercased())->\($0.toCRS.uppercased())"
+            }
+        )
+
+        return liveSessions.compactMap { session in
+            let activeLegs = session.legs.filter { leg in
+                guard leg.enabled else { return false }
+                let key = "\(leg.from.uppercased())->\(leg.to.uppercased())"
+                return activeJourneyKeys.contains(key)
+            }
+            guard !activeLegs.isEmpty else { return nil }
+
+            return NotificationSubscription(
+                id: session.id,
+                deviceId: session.deviceId,
+                routeKey: session.routeKey,
+                daysOfWeek: session.daysOfWeek,
+                notificationTypes: session.notificationTypes,
+                legs: activeLegs,
+                muteOnArrival: session.muteOnArrival,
+                source: session.source,
+                activeUntil: session.activeUntil,
+                mutedByLegDay: session.mutedByLegDay,
+                mutedAtByLegDay: session.mutedAtByLegDay,
+                createdAt: session.createdAt,
+                updatedAt: session.updatedAt
+            )
+        }
     }
 }
 

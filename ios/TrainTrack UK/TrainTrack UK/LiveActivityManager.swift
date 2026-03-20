@@ -73,7 +73,6 @@ final class LiveActivityManager: ObservableObject {
     private init() {
         startActivityLifecycleLogging()
         startPushToStartTokenObservation()
-        scheduleGlobalActivityMonitor()
         updatePublishedState()
     }
 
@@ -389,6 +388,9 @@ final class LiveActivityManager: ObservableObject {
 
         // Update published state
         updatePublishedState()
+        Task { @MainActor in
+            await NotificationSubscriptionStore.shared.syncGeofencesNow()
+        }
 
         lastEndedAt = Date()
         os_log("[LiveActivity] Activity %{public}@ stopped", activityID)
@@ -422,6 +424,9 @@ final class LiveActivityManager: ObservableObject {
             await sendLiveActivityUnregistration(activityID: activity.id)
         }
         updatePublishedState()
+        Task { @MainActor in
+            await NotificationSubscriptionStore.shared.syncGeofencesNow()
+        }
         lastEndedAt = Date()
     }
 
@@ -440,7 +445,25 @@ final class LiveActivityManager: ObservableObject {
             return true
         }
         isActive = !activeJourneys.isEmpty
+        updateGlobalActivityMonitor()
         print("📊 [LiveActivity] State updated: isActive=\(isActive), activeJourneys=\(activeJourneys.map { "\($0.fromCRS)→\($0.toCRS)" })")
+    }
+
+    private func updateGlobalActivityMonitor() {
+        let hasAnyActivities = !trackedActivities.isEmpty || !Activity<JourneyActivityAttributes>.activities.isEmpty
+
+        if hasAnyActivities {
+            guard monitorTimer == nil else { return }
+            scheduleGlobalActivityMonitor()
+            print("🛰️ [LiveActivity] Started global monitor")
+            return
+        }
+
+        if let timer = monitorTimer {
+            timer.invalidate()
+            monitorTimer = nil
+            print("🛰️ [LiveActivity] Stopped global monitor (no activities)")
+        }
     }
 
     private func systemActivities(forFromCRS fromCRS: String, toCRS: String) -> [Activity<JourneyActivityAttributes>] {
@@ -953,6 +976,9 @@ final class LiveActivityManager: ObservableObject {
 
         // Update published state
         updatePublishedState()
+        Task { @MainActor in
+            await NotificationSubscriptionStore.shared.syncGeofencesNow()
+        }
         lastEndedAt = Date()
     }
 
@@ -1240,6 +1266,11 @@ final class LiveActivityManager: ObservableObject {
     }
 
     func sendImmediateBackendCheckIn(force: Bool = false) async {
+        let hasAnyActivities = !trackedActivities.isEmpty || !Activity<JourneyActivityAttributes>.activities.isEmpty
+        if !force, !hasAnyActivities {
+            logger.info("[LiveActivity] Skipping check-in because no activities are active")
+            return
+        }
         if !force, let last = lastBackendCheckInAt, Date().timeIntervalSince(last) < backendCheckInMinIntervalSeconds {
             return
         }

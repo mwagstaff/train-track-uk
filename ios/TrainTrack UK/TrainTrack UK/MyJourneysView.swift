@@ -127,7 +127,6 @@ struct MyJourneysView: View {
     private var lifecycleView: some View {
         navigationView
             .onAppear {
-                location.request()
                 refreshManualOrder()
             }
             .onDisappear {
@@ -844,9 +843,6 @@ struct PinnedJourneysView: View {
         }
         .navigationTitle("Pinned")
         .scrollDismissesKeyboard(.interactively)
-        .onAppear {
-            location.request()
-        }
         .onChange(of: searchText) { value in
             debounceTask?.cancel()
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)

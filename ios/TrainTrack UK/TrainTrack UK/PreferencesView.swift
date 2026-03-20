@@ -254,14 +254,6 @@ struct PreferencesView: View {
         .task {
             await notificationStore.refresh()
             try? await StationsService.shared.loadStations()
-            if autoMuteOnArrival {
-                NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
-            }
-        }
-        .onChange(of: autoMuteOnArrival) { newValue in
-            if newValue {
-                NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
-            }
         }
         .onChange(of: veryCloseMiles) { newValue in
             // Keep thresholds sensible: moderately >= veryClose
