@@ -24,6 +24,9 @@ struct PreferencesView: View {
     @AppStorage("journeySortMode") private var journeySortModeRaw: String = JourneySortMode.distance.rawValue
     @AppStorage(ApiHostPreference.storageKey, store: ApiHostPreference.store) private var apiHostRaw: String = ApiHost.prod.rawValue
     @AppStorage("autoReturnToFavouritesMinutes") private var autoReturnMinutes: Int = 0
+    @AppStorage("autoMuteOnArrival") private var autoMuteOnArrival: Bool = true
+    @AppStorage("muteDelayMinutes") private var muteDelayMinutes: Int = 3
+    @AppStorage("autoEndLiveActivity") private var autoEndLiveActivity: Bool = true
     @AppStorage("showClosestJourneyLegOnly") private var showClosestJourneyLegOnly: Bool = true
     @AppStorage("showTransferWarnings") private var showTransferWarnings: Bool = true
     @AppStorage("transferWarningThresholdMinutes") private var transferWarningThresholdMinutes: Int = 3
@@ -88,9 +91,25 @@ struct PreferencesView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                Text("Journey updates stop automatically when you reach your departure station, when you dismiss the Live Activity, when you tap Stop in the app, or after 2 hours. Background location still requires 'Always' permission.")
+                Toggle("Mute notifications on arrival", isOn: $autoMuteOnArrival)
+                Text("When you arrive at a departure station, the notifications for that journey are automatically stopped. Requires 'Always' location permission.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                if autoMuteOnArrival {
+                    Stepper(value: $muteDelayMinutes, in: 1...10) {
+                        HStack {
+                            Text("Mute after")
+                            Spacer()
+                            Text("\(muteDelayMinutes) min\(muteDelayMinutes == 1 ? "" : "s") at station")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Toggle("End Live Activity on departure", isOn: $autoEndLiveActivity)
+                    Text("Automatically dismiss the Live Activity widget after you leave the departure station area and your journey is underway.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
 
                 Picker("Live Activity duration", selection: $liveActivityDurationMinutes) {
                     Text("30 min").tag(30)
@@ -424,9 +443,8 @@ struct PreferencesView: View {
     }
 
     private func isActive(_ sub: NotificationSubscription) -> Bool {
-        // Scheduled subscriptions fire on a timetable — they are never "Active" in the real-time sense
+        // Scheduled subscriptions fire on a timetable — never "Active" in the real-time sense
         guard !isScheduled(sub) else { return false }
-        // Live sessions are active until their expiry
         guard let activeUntil = sub.activeUntil else { return true }
         return activeUntil > Date()
     }

@@ -122,6 +122,27 @@ final class NotificationSubscriptionStore: ObservableObject {
 
     private let service = NotificationSubscriptionService.shared
 
+    // MARK: - Local subscription ID registry
+    // Tracks the IDs of subscriptions this device has intentionally created.
+    // On each refresh the server list is reconciled against this registry so
+    // any orphaned server-side entries (e.g. from a failed delete or a
+    // previous save that generated a new ID) are automatically pruned.
+
+    private static let knownIDsKey = "knownSubscriptionIDs"
+    private static let knownIDsBootstrappedKey = "knownSubscriptionIDsBootstrapped"
+
+    private var knownSubscriptionIDs: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: Self.knownIDsKey) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: Self.knownIDsKey) }
+    }
+
+    private var hasBootstrappedKnownIDs: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.knownIDsBootstrappedKey) }
+        set { UserDefaults.standard.set(newValue, forKey: Self.knownIDsBootstrappedKey) }
+    }
+
+    // MARK: - Refresh
+
     func refresh() async {
         guard !isLoading else { return }
         isLoading = true
@@ -129,8 +150,10 @@ final class NotificationSubscriptionStore: ObservableObject {
         do {
             async let scheduledTask = service.fetchSubscriptions()
             async let liveSessionsTask = service.fetchLiveSessions()
-            subscriptions = try await scheduledTask
-            liveSessions = try await liveSessionsTask
+            let fetched = try await scheduledTask
+            let fetchedLive = try await liveSessionsTask
+            subscriptions = await reconcileSubscriptions(fetched)
+            liveSessions = fetchedLive
             hasLoadedRemoteState = true
             lastError = nil
             await syncGeofences()
@@ -139,8 +162,39 @@ final class NotificationSubscriptionStore: ObservableObject {
         }
     }
 
+    /// Compares the server-returned subscriptions against the device's local registry.
+    /// First call bootstraps the registry from the server list. Subsequent calls delete
+    /// any IDs the server has that this device never registered, then return only the
+    /// known subscriptions.
+    private func reconcileSubscriptions(_ serverSubscriptions: [NotificationSubscription]) async -> [NotificationSubscription] {
+        guard hasBootstrappedKnownIDs else {
+            let ids = Set(serverSubscriptions.map(\.id))
+            knownSubscriptionIDs = ids
+            hasBootstrappedKnownIDs = true
+            print("🔑 [Store] Bootstrapped \(ids.count) known subscription ID(s)")
+            return serverSubscriptions
+        }
+
+        let known = knownSubscriptionIDs
+        let orphans = serverSubscriptions.filter { !known.contains($0.id) }
+
+        if !orphans.isEmpty {
+            print("🧹 [Store] Pruning \(orphans.count) orphaned server subscription(s): \(orphans.map(\.id))")
+            for orphan in orphans {
+                try? await service.deleteSubscription(id: orphan.id)
+            }
+        }
+
+        return serverSubscriptions.filter { known.contains($0.id) }
+    }
+
+    // MARK: - Mutations
+
     func upsert(_ requestBody: NotificationSubscriptionRequest) async throws -> NotificationSubscription {
         let subscription = try await service.upsertSubscription(requestBody)
+        var known = knownSubscriptionIDs
+        known.insert(subscription.id)
+        knownSubscriptionIDs = known
         hasLoadedRemoteState = true
         await refresh()
         return subscriptions.first(where: { $0.id == subscription.id }) ?? subscription
@@ -149,6 +203,9 @@ final class NotificationSubscriptionStore: ObservableObject {
     func delete(id: String) async throws {
         try await service.deleteSubscription(id: id)
         subscriptions.removeAll { $0.id == id }
+        var known = knownSubscriptionIDs
+        known.remove(id)
+        knownSubscriptionIDs = known
         hasLoadedRemoteState = true
         await syncGeofences()
     }
