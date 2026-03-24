@@ -6,6 +6,7 @@ import {
     listGeofenceEvents
 } from './admin-data-store.js';
 import { liveActivityManager } from './live-activity-manager.js';
+import { getDeviceLastSeen } from './metrics.js';
 
 const DEFAULT_LIMIT = 500;
 const DEFAULT_NOTIFICATION_LIMIT = 20;
@@ -111,9 +112,20 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
         const scheduleEnd = formatLegSchedule(subscription.legs, 'windowEnd');
         const stationNames = formatStationNames(subscription.legs);
         const days = formatDays(subscription.daysOfWeek);
+        const lastSeenTs = getDeviceLastSeen(subscription.deviceId);
+        const lastSeenAgeMs = lastSeenTs ? (now - lastSeenTs) : null;
+        const lastSeenCell = lastSeenTs
+            ? (() => {
+                const ago = relativeTime(new Date(lastSeenTs), now);
+                const stale = lastSeenAgeMs > 7 * 24 * 60 * 60 * 1000;
+                const color = stale ? 'color:#c0392b;font-weight:600' : 'color:#27ae60';
+                return `<span style="${color}" title="${new Date(lastSeenTs).toISOString()}">${ago}</span>`;
+            })()
+            : '<span class="never">—</span>';
+        const subId = escapeHtml(subscription.id || '');
         return `
-            <tr>
-                <td>${escapeHtml(subscription.id || '')}</td>
+            <tr id="sub-row-${subId}">
+                <td>${subId}</td>
                 <td>${formatDate(subscription.createdAt)}</td>
                 <td class="token">${escapeHtml(subscription.pushToken || '')}</td>
                 <td>${subscription.useSandbox ? 'sandbox' : 'prod'}</td>
@@ -121,7 +133,12 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
                 <td>${escapeHtml(scheduleStart)}</td>
                 <td>${escapeHtml(scheduleEnd)}</td>
                 <td>${escapeHtml(days)}</td>
-                <td><a href="admin/subscriptions/${encodeURIComponent(subscription.id || '')}">View JSON</a></td>
+                <td>${lastSeenCell}</td>
+                <td>
+                    <a href="admin/subscriptions/${encodeURIComponent(subscription.id || '')}">View JSON</a>
+                    &nbsp;
+                    <button onclick="deleteSubscription('${subId}')" style="cursor:pointer;background:#e74c3c;color:#fff;border:none;border-radius:4px;padding:2px 8px;font-size:0.8em">Delete</button>
+                </td>
             </tr>
         `;
     }).join('');
@@ -350,16 +367,37 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
                             <th>Schedule Start</th>
                             <th>Schedule End</th>
                             <th>Days</th>
-                            <th>Raw</th>
+                            <th>Device Last Seen</th>
+                            <th>Actions</th>
                         </tr>
                     </thead>
                     <tbody>
-                        ${subscriptionRows || `<tr><td class="empty" colspan="9">No subscriptions found.</td></tr>`}
+                        ${subscriptionRows || `<tr><td class="empty" colspan="10">No subscriptions found.</td></tr>`}
                     </tbody>
                 </table>
             </div>
         </section>
     </div>
+<script>
+async function deleteSubscription(id) {
+    if (!confirm('Delete subscription ' + id + '?\\n\\nThis will permanently remove it from Redis.')) return;
+    try {
+        const res = await fetch('/api/v2/notifications/debug/subscriptions', {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ subscription_id: id })
+        });
+        const json = await res.json().catch(() => ({}));
+        if (res.ok && json.status !== 'not_found') {
+            document.getElementById('sub-row-' + id)?.remove();
+        } else {
+            alert('Delete failed: ' + (json.error || json.status || res.status));
+        }
+    } catch (e) {
+        alert('Delete failed: ' + e.message);
+    }
+}
+</script>
 </body>
 </html>`;
 }
