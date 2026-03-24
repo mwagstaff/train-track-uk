@@ -16,10 +16,14 @@ struct Live_ActivityLiveActivity: Widget {
         var components = URLComponents()
         components.scheme = "traintrack"
         components.host = "journey"
-        components.queryItems = [
+        var queryItems = [
             URLQueryItem(name: "from", value: context.state.fromCRS),
             URLQueryItem(name: "to", value: context.state.toCRS)
         ]
+        if !context.state.journeyUpdatesEnabled {
+            queryItems.append(URLQueryItem(name: "activate_updates", value: "1"))
+        }
+        components.queryItems = queryItems
         return components.url
     }
 
@@ -83,6 +87,10 @@ struct Live_ActivityLiveActivity: Widget {
                                 Spacer()
                             }
                         }
+
+                        if !context.state.journeyUpdatesEnabled {
+                            ActivationPromptBanner()
+                        }
                     }
                     .padding(.horizontal, 8)
                 }
@@ -113,26 +121,36 @@ struct LiveActivityLockScreenView: View {
     let state: JourneyActivityAttributes.ContentState
     let attributes: JourneyActivityAttributes
 
+    private var showsActivationBanner: Bool {
+        !state.journeyUpdatesEnabled
+    }
+
     private var deepLinkURL: URL? {
         var components = URLComponents()
         components.scheme = "traintrack"
         components.host = "journey"
-        components.queryItems = [
+        var queryItems = [
             URLQueryItem(name: "from", value: state.fromCRS),
             URLQueryItem(name: "to", value: state.toCRS)
         ]
+        if !state.journeyUpdatesEnabled {
+            queryItems.append(URLQueryItem(name: "activate_updates", value: "1"))
+        }
+        components.queryItems = queryItems
         return components.url
     }
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: showsActivationBanner ? 8 : 12) {
             // Header with journey name and optional app-active indicator
             HStack {
                 Image(systemName: "train.side.front.car")
-                    .font(.headline)
+                    .font(showsActivationBanner ? .subheadline : .headline)
                 Text(attributes.displayName)
-                    .font(.headline)
+                    .font(showsActivationBanner ? .subheadline : .headline)
                     .fontWeight(.semibold)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                 Spacer()
                 // Navigation arrow: shown when the app is open and tracking
                 if state.appIsActive {
@@ -152,7 +170,7 @@ struct LiveActivityLockScreenView: View {
                         .foregroundColor(.secondary)
                     PrimaryDepartureTimeText(
                         state: state,
-                        font: .title,
+                        font: showsActivationBanner ? .title2 : .title,
                         weight: .bold
                     )
                 }
@@ -165,7 +183,7 @@ struct LiveActivityLockScreenView: View {
                         .font(.subheadline)
                         .fontWeight(.semibold)
                         .lineLimit(1)
-                    if let arrivalLabel = state.arrivalLabel {
+                    if !showsActivationBanner, let arrivalLabel = state.arrivalLabel {
                         Text(arrivalLabel)
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -189,7 +207,12 @@ struct LiveActivityLockScreenView: View {
                     Text("Platform")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    PlatformPill(platform: state.platform, font: .title, horizontalPadding: 10, verticalPadding: 3)
+                    PlatformPill(
+                        platform: state.platform,
+                        font: showsActivationBanner ? .title2 : .title,
+                        horizontalPadding: showsActivationBanner ? 8 : 10,
+                        verticalPadding: showsActivationBanner ? 2 : 3
+                    )
                 }
             }
 
@@ -209,7 +232,7 @@ struct LiveActivityLockScreenView: View {
             }
 
             // Upcoming departures
-            if !state.upcomingDepartures.isEmpty {
+            if !showsActivationBanner && !state.upcomingDepartures.isEmpty {
                 HStack(spacing: 4) {
                     ForEach(Array(state.upcomingDepartures.prefix(3).enumerated()), id: \.offset) { _, departure in
                         HStack(spacing: 10) {
@@ -239,8 +262,12 @@ struct LiveActivityLockScreenView: View {
                     }
                 }
             }
+
+            if !state.journeyUpdatesEnabled {
+                ActivationPromptBanner()
+            }
         }
-        .padding(16)
+        .padding(showsActivationBanner ? 12 : 16)
         .widgetURL(deepLinkURL)
     }
 }
@@ -357,6 +384,21 @@ private struct PrimaryDepartureTimeText: View {
             .monospacedDigit()
             .foregroundStyle(primaryAccentColor(for: state))
             .strikethrough(state.isCancelled, color: .red)
+    }
+}
+
+private struct ActivationPromptBanner: View {
+    var body: some View {
+        Text("Tap to activate journey updates")
+            .font(.caption2)
+            .fontWeight(.semibold)
+            .foregroundStyle(.black)
+            .frame(maxWidth: .infinity)
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 

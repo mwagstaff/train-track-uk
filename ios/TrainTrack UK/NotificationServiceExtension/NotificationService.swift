@@ -99,7 +99,14 @@ class NotificationService: UNNotificationServiceExtension {
             options: []
         )
 
-        UNUserNotificationCenter.current().setNotificationCategories([journeyCategory, arrivalCategory])
+        let activationCategory = UNNotificationCategory(
+            identifier: "JOURNEY_UPDATES_ACTIVATION",
+            actions: [],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        UNUserNotificationCenter.current().setNotificationCategories([journeyCategory, arrivalCategory, activationCategory])
     }
 
     private func isLegMutedToday(from: String, to: String) -> Bool {

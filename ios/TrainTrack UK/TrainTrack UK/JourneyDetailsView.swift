@@ -12,6 +12,7 @@ struct JourneyDetailsView: View {
     @EnvironmentObject var journeyStore: JourneyStore
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
     @EnvironmentObject var muteDebugStore: MuteRequestDebugStore
+    @EnvironmentObject var deepLink: DeepLinkRouter
     @AppStorage("liveActivityDurationMinutes") private var liveActivityDurationMinutes: Int = 60
     @StateObject private var location = LocationManagerPhone()
 
@@ -552,10 +553,16 @@ struct JourneyDetailsView: View {
             if reverseGroup == nil {
                 showingReverse = false
             }
+            deepLink.setVisibleJourney(currentGroup)
+            handlePendingJourneyActivationIfNeeded()
+        }
+        .onDisappear {
+            deepLink.clearVisibleJourney(currentGroup)
         }
         .task {
             await notificationStore.refresh()
             await prefetchServiceDetailsIfNeeded()
+            handlePendingJourneyActivationIfNeeded()
         }
         .refreshable { await manualRefresh() }
         .onReceive(Timer.publish(every: 20, on: .main, in: .common).autoconnect()) { _ in
@@ -571,12 +578,15 @@ struct JourneyDetailsView: View {
             if newPhase == .active {
                 // Force UI refresh when app becomes active
                 tick = Date()
+                handlePendingJourneyActivationIfNeeded()
             }
         }
         .onChange(of: showingReverse) { _ in
             Task {
                 await prefetchServiceDetailsIfNeeded()
             }
+            deepLink.setVisibleJourney(currentGroup)
+            handlePendingJourneyActivationIfNeeded()
         }
     }
 
@@ -627,10 +637,7 @@ struct JourneyDetailsView: View {
             return
         }
 
-        let autoMuteOnArrival = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
-        if autoMuteOnArrival {
-            NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
-        }
+        NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
 
         var replacement: NotificationSubscription?
         if liveSession == nil,
@@ -659,9 +666,10 @@ struct JourneyDetailsView: View {
 
         do {
             _ = try await notificationStore.upsertLiveSession(buildLiveSessionRequest(pushToken: pushToken))
+            await activityMgr.setJourneyUpdatesEnabled(for: legsForActivity, enabled: true, depStore: depStore)
             clearCurrentJourneyMute()
             tick = Date()
-            ToastStore.shared.show("Journey updates started", icon: "dot.radiowaves.left.and.right")
+            ToastStore.shared.show("Live updates are active for your journey", icon: "dot.radiowaves.left.and.right")
         } catch {
             await stopLiveActivities(for: legsForActivity)
             activityMgr.lastMessage = error.localizedDescription
@@ -789,8 +797,8 @@ struct JourneyDetailsView: View {
         }
 
         let notificationTypes = NotificationPreferences.effectiveTypes(for: .liveSession)
-        let muteOnArrival = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
-        let activeUntil = Date().addingTimeInterval(Double(liveActivityDurationMinutes * 60))
+        let cappedDurationMinutes = min(120, max(1, liveActivityDurationMinutes))
+        let activeUntil = Date().addingTimeInterval(Double(cappedDurationMinutes * 60))
 
         #if DEBUG
         let useSandbox = true
@@ -813,9 +821,22 @@ struct JourneyDetailsView: View {
             fromName: currentGroup.startStation.name,
             toName: currentGroup.endStation.name,
             useSandbox: useSandbox,
-            muteOnArrival: muteOnArrival,
+            muteOnArrival: true,
             activeUntil: activeUntil
         )
+    }
+
+    private func handlePendingJourneyActivationIfNeeded() {
+        guard deepLink.consumeJourneyActivationIfNeeded(for: currentGroup) != nil else { return }
+        guard !liveSessionActionInFlight else { return }
+        Task {
+            if liveSession == nil {
+                await startCurrentLiveSession()
+            } else {
+                await activityMgr.setJourneyUpdatesEnabled(for: legsForActivity, enabled: true, depStore: depStore)
+                ToastStore.shared.show("Live updates are active for your journey", icon: "dot.radiowaves.left.and.right")
+            }
+        }
     }
 
     private func currentDayOfWeek() -> DayOfWeek {

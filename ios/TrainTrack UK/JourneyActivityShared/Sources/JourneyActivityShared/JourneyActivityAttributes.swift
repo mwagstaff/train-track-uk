@@ -54,6 +54,9 @@ public struct JourneyActivityAttributes: Codable, Hashable {
         /// True when the app has checked in with the server recently (within ~2 min).
         /// Used to show the navigation-arrow indicator on the Live Activity widget.
         public var appIsActive: Bool
+        /// False for scheduled journeys that still require the user to open the app
+        /// and explicitly activate notifications/background tracking.
+        public var journeyUpdatesEnabled: Bool
         public var scheduleKey: String?
         public var windowStart: String?
         public var windowEnd: String?
@@ -75,6 +78,7 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             activityID: String? = nil,
             revision: Int? = nil,
             appIsActive: Bool = false,
+            journeyUpdatesEnabled: Bool = true,
             scheduleKey: String? = nil,
             windowStart: String? = nil,
             windowEnd: String? = nil
@@ -95,13 +99,14 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             self.activityID = activityID
             self.revision = revision
             self.appIsActive = appIsActive
+            self.journeyUpdatesEnabled = journeyUpdatesEnabled
             self.scheduleKey = scheduleKey
             self.windowStart = windowStart
             self.windowEnd = windowEnd
         }
 
         private enum CodingKeys: String, CodingKey {
-            case fromCRS, toCRS, destinationTitle, arrivalLabel, scheduledDeparture, length, platform, estimated, isCancelled, statusText, delayMinutes, upcomingDepartures, lastUpdated, activityID, revision, appIsActive, scheduleKey, windowStart, windowEnd
+            case fromCRS, toCRS, destinationTitle, arrivalLabel, scheduledDeparture, length, platform, estimated, isCancelled, statusText, delayMinutes, upcomingDepartures, lastUpdated, activityID, revision, appIsActive, journeyUpdatesEnabled, scheduleKey, windowStart, windowEnd
         }
 
         public init(from decoder: Decoder) throws {
@@ -121,6 +126,7 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             activityID = try container.decodeIfPresent(String.self, forKey: .activityID)
             revision = try container.decodeIfPresent(Int.self, forKey: .revision)
             appIsActive = try container.decodeIfPresent(Bool.self, forKey: .appIsActive) ?? false
+            journeyUpdatesEnabled = try container.decodeIfPresent(Bool.self, forKey: .journeyUpdatesEnabled) ?? true
             scheduleKey = try container.decodeIfPresent(String.self, forKey: .scheduleKey)
             windowStart = try container.decodeIfPresent(String.self, forKey: .windowStart)
             windowEnd = try container.decodeIfPresent(String.self, forKey: .windowEnd)

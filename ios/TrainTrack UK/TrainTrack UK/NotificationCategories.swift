@@ -23,6 +23,13 @@ enum NotificationCategoryRegistrar {
             options: []
         )
 
-        UNUserNotificationCenter.current().setNotificationCategories([journeyCategory, arrivalCategory])
+        let activationCategory = UNNotificationCategory(
+            identifier: NotificationCategoryId.journeyUpdatesActivation,
+            actions: [],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        UNUserNotificationCenter.current().setNotificationCategories([journeyCategory, arrivalCategory, activationCategory])
     }
 }

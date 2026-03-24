@@ -176,6 +176,35 @@ final class NotificationSubscriptionStore: ObservableObject {
         await syncGeofences()
     }
 
+    func deleteLiveSessions(containingFrom from: String, to: String) async {
+        let fromCode = from.uppercased()
+        let toCode = to.uppercased()
+        let matchingIDs = liveSessions.compactMap { session -> String? in
+            session.legs.contains(where: { $0.from.uppercased() == fromCode && $0.to.uppercased() == toCode })
+                ? session.id
+                : nil
+        }
+        guard !matchingIDs.isEmpty else { return }
+        for id in matchingIDs {
+            do {
+                try await deleteLiveSession(id: id)
+            } catch {
+                continue
+            }
+        }
+    }
+
+    func deleteAllLiveSessions() async {
+        let ids = liveSessions.map(\.id)
+        for id in ids {
+            do {
+                try await deleteLiveSession(id: id)
+            } catch {
+                continue
+            }
+        }
+    }
+
     func liveSession(for routeKey: String) -> NotificationSubscription? {
         liveSessions.first { $0.routeKey == routeKey }
     }
@@ -264,18 +293,13 @@ final class NotificationSubscriptionStore: ObservableObject {
     }
 
     private var geofenceEligibleLiveSessions: [NotificationSubscription] {
-        let activeJourneyKeys = Set(
-            LiveActivityManager.shared.activeJourneys.map {
-                "\($0.fromCRS.uppercased())->\($0.toCRS.uppercased())"
-            }
-        )
-
         return liveSessions.compactMap { session in
-            let activeLegs = session.legs.filter { leg in
-                guard leg.enabled else { return false }
-                let key = "\(leg.from.uppercased())->\(leg.to.uppercased())"
-                return activeJourneyKeys.contains(key)
+            guard session.muteOnArrival != false else { return nil }
+            if let activeUntil = session.activeUntil, activeUntil <= Date() {
+                return nil
             }
+
+            let activeLegs = session.legs.filter(\.enabled)
             guard !activeLegs.isEmpty else { return nil }
 
             return NotificationSubscription(

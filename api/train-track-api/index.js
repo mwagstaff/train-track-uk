@@ -112,17 +112,36 @@ function logLiveActivityStartup() {
 }
 
 const ENV_LOG_FILE_PATH = path.join(os.tmpdir(), 'train-track-api-env.log');
-const DEBUG_ENV_KEYS = [
-    'APNS_KEY_ID',
-    'APNS_TEAM_ID',
-    'LIVE_DEPARTURE_BOARD_API_KEY',
-    'SERVICE_DETAILS_API_KEY'
-];
+
+function getApnsConfigurationState() {
+    const notificationConfigured = notificationSubscriptionManager.pushClient.isConfigured();
+    const liveActivityConfigured = liveActivityManager.pushClient.isConfigured();
+    const authKeyInlinePresent = Boolean(process.env.APNS_AUTH_KEY);
+    const authKeyPath = process.env.APNS_AUTH_KEY_PATH || path.join(process.cwd(), 'certs', 'APNS_AuthKey_SkyNoLimit_SandboxAndProd.p8');
+    const authKeyFilePresent = fs.existsSync(authKeyPath);
+
+    return {
+        notificationConfigured,
+        liveActivityConfigured,
+        authKeyInlinePresent,
+        authKeyPath,
+        authKeyFilePresent
+    };
+}
 
 function writeEnvironmentSnapshotToTempLog() {
-    const trackedValues = Object.fromEntries(
-        DEBUG_ENV_KEYS.map((key) => [key, process.env[key] ?? '<unset>'])
-    );
+    const apnsConfig = getApnsConfigurationState();
+    const trackedValues = {
+        APNS_KEY_ID: process.env.APNS_KEY_ID ?? '<unset>',
+        APNS_TEAM_ID: process.env.APNS_TEAM_ID ?? '<unset>',
+        APNS_AUTH_KEY_PRESENT: apnsConfig.authKeyInlinePresent,
+        APNS_AUTH_KEY_PATH: apnsConfig.authKeyPath,
+        APNS_AUTH_KEY_FILE_PRESENT: apnsConfig.authKeyFilePresent,
+        APNS_NOTIFICATION_CONFIGURED: apnsConfig.notificationConfigured,
+        APNS_LIVE_ACTIVITY_CONFIGURED: apnsConfig.liveActivityConfigured,
+        LIVE_DEPARTURE_BOARD_API_KEY: process.env.LIVE_DEPARTURE_BOARD_API_KEY ?? '<unset>',
+        SERVICE_DETAILS_API_KEY: process.env.SERVICE_DETAILS_API_KEY ?? '<unset>'
+    };
     const allEnvVars = Object.fromEntries(
         Object.entries(process.env).sort(([left], [right]) => left.localeCompare(right))
     );
@@ -173,7 +192,17 @@ app.use('/api/v2/live_activities', (req, res, next) => {
 app.use(metricsMiddleware);
 
 app.get('/healthcheck', (req, res) => {
-    res.json({ status: 'ok' });
+    const apnsConfig = getApnsConfigurationState();
+    res.json({
+        status: 'ok',
+        apns: {
+            notification_configured: apnsConfig.notificationConfigured,
+            live_activity_configured: apnsConfig.liveActivityConfigured,
+            auth_key_inline_present: apnsConfig.authKeyInlinePresent,
+            auth_key_path: apnsConfig.authKeyPath,
+            auth_key_file_present: apnsConfig.authKeyFilePresent
+        }
+    });
 });
 
 app.get('/metrics', async (req, res) => {
@@ -200,6 +229,7 @@ app.post('/api/v2/live_activities', async (req, res) => {
         auto_end_on_arrival,
         auto_end_on_departure,
         schedule_key,
+        journey_updates_enabled,
         window_start,
         window_end
     } = req.body || {};
@@ -244,6 +274,7 @@ app.post('/api/v2/live_activities', async (req, res) => {
         autoEndOnArrival: auto_end_on_arrival === true || auto_end_on_arrival === 'true',
         autoEndOnDeparture: auto_end_on_departure === true || auto_end_on_departure === 'true',
         scheduleKey: typeof schedule_key === 'string' ? schedule_key : null,
+        journeyUpdatesEnabled: journey_updates_enabled === undefined ? undefined : (journey_updates_enabled === true || journey_updates_enabled === 'true'),
         windowStart: typeof window_start === 'string' ? window_start : null,
         windowEnd: typeof window_end === 'string' ? window_end : null
     });
@@ -347,12 +378,12 @@ app.delete('/api/v2/live_activities', async (req, res) => {
         activity_id
     });
 
-    const removed = liveActivityManager.unregisterSubscription(canonicalDeviceId, activity_id, {
+    const removedSubscription = liveActivityManager.unregisterSubscription(canonicalDeviceId, activity_id, {
         fallbackDeviceIds
     });
 
     res.json({
-        status: removed ? 'unregistered' : 'not_found',
+        status: removedSubscription ? 'unregistered' : 'not_found',
         device_id: canonicalDeviceId,
         activity_id
     });
@@ -499,6 +530,21 @@ app.post('/api/v2/notifications/subscriptions', async (req, res) => {
         legs_count: Array.isArray(legs) ? legs.length : 0,
         push_token: maskToken(push_token)
     });
+
+    const apnsConfig = getApnsConfigurationState();
+    if (!apnsConfig.notificationConfigured || !apnsConfig.liveActivityConfigured) {
+        const error = 'Journey updates are temporarily unavailable because APNs credentials are not configured on the server.';
+        logNotificationRequest('register_unavailable', req, {
+            device_id,
+            route_key,
+            notification_apns_configured: apnsConfig.notificationConfigured,
+            live_activity_apns_configured: apnsConfig.liveActivityConfigured,
+            auth_key_inline_present: apnsConfig.authKeyInlinePresent,
+            auth_key_path: apnsConfig.authKeyPath,
+            auth_key_file_present: apnsConfig.authKeyFilePresent
+        });
+        return res.status(503).json({ error });
+    }
 
     try {
         const subscription = await notificationSubscriptionManager.upsertSubscription({

@@ -5,6 +5,7 @@ struct NotificationScheduleView: View {
     let group: JourneyGroup
     let reverseGroup: JourneyGroup?
 
+    @EnvironmentObject var activityMgr: LiveActivityManager
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
     @Environment(\.dismiss) private var dismiss
 
@@ -348,6 +349,13 @@ struct NotificationScheduleView: View {
             let autoMuteOnArrival = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
             if autoMuteOnArrival {
                 NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
+            }
+
+            let pushToStartReady = await activityMgr.ensurePushToStartTokenRegistered()
+            guard pushToStartReady else {
+                errorMessage = "Live Activity server start isn't ready yet. Please try again in a moment."
+                isSaving = false
+                return
             }
 
             guard let pushToken = await NotificationPushTokenStore.waitForToken(timeoutSeconds: 6.0) else {

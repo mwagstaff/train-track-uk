@@ -15,5 +15,6 @@ struct DeepLinkJourneySheet: View {
                     }
                 }
         }
+        .modifier(JourneyUpdatesChrome(includeToast: false))
     }
 }

@@ -11,6 +11,8 @@ import { sleep } from './retry-utils.js';
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.NOTIFICATION_POLL_INTERVAL_SECONDS || '30');
 const MAX_SUBSCRIPTIONS_PER_DEVICE = Number(process.env.NOTIFICATION_MAX_SUBSCRIPTIONS || '3');
 const MAX_WINDOW_MINUTES = 120;
+const MAX_LIVE_SESSION_DURATION_MS = 2 * 60 * 60 * 1000;
+const ACTIVATION_PROMPT_DELAY_MS = 30 * 1000;
 const SCHEDULED_SOURCE = 'scheduled';
 const LIVE_SESSION_SOURCE = 'live_session';
 
@@ -52,6 +54,8 @@ class NotificationSubscriptionManager {
                         // Migrate: fill in fields added after initial schema to avoid
                         // "Cannot set properties of undefined" on old Redis records.
                         sub.lastAutoStartSentByLeg = sub.lastAutoStartSentByLeg || {};
+                        sub.lastAutoStartSentAtByLeg = sub.lastAutoStartSentAtByLeg || {};
+                        sub.lastActivationPromptSentByLeg = sub.lastActivationPromptSentByLeg || {};
                         sub.lastSummarySentByLeg   = sub.lastSummarySentByLeg   || {};
                         sub.lastStateByLeg         = sub.lastStateByLeg         || {};
                         sub.mutedByLegDay          = sub.mutedByLegDay          || {};
@@ -226,7 +230,7 @@ class NotificationSubscriptionManager {
             ? (existing?.muteOnArrival ?? true)
             : Boolean(muteOnArrival);
         const resolvedActiveUntil = source === LIVE_SESSION_SOURCE
-            ? normalizeIsoDate(activeUntil) || existing?.activeUntil || nowIso
+            ? resolveLiveSessionActiveUntil(activeUntil, existing?.activeUntil)
             : null;
         const resetScheduledDeliveryState = source === SCHEDULED_SOURCE && Boolean(existing);
 
@@ -246,6 +250,8 @@ class NotificationSubscriptionManager {
             updatedAt: nowIso,
             lastSummarySentByLeg: resetScheduledDeliveryState ? {} : (existing?.lastSummarySentByLeg || {}),
             lastAutoStartSentByLeg: resetScheduledDeliveryState ? {} : (existing?.lastAutoStartSentByLeg || {}),
+            lastAutoStartSentAtByLeg: resetScheduledDeliveryState ? {} : (existing?.lastAutoStartSentAtByLeg || {}),
+            lastActivationPromptSentByLeg: resetScheduledDeliveryState ? {} : (existing?.lastActivationPromptSentByLeg || {}),
             lastStateByLeg: resetScheduledDeliveryState ? {} : (existing?.lastStateByLeg || {}),
             mutedByLegDay: resetScheduledDeliveryState ? {} : (existing?.mutedByLegDay || {}),
             mutedAtByLegDay: resetScheduledDeliveryState ? {} : (existing?.mutedAtByLegDay || {}),
@@ -268,6 +274,33 @@ class NotificationSubscriptionManager {
         this.subscriptions.delete(subscriptionId);
         await this._deleteFromRedis(subscriptionId);
         return true;
+    }
+
+    async deleteLiveSessionsForLeg({ deviceId, from, to, fallbackDeviceIds = [] }) {
+        const fromCode = typeof from === 'string' ? from.trim().toUpperCase() : '';
+        const toCode = typeof to === 'string' ? to.trim().toUpperCase() : '';
+        if (!deviceId || !fromCode || !toCode) return 0;
+
+        const candidateDeviceIds = new Set(
+            [deviceId, ...fallbackDeviceIds]
+                .filter((value) => typeof value === 'string' && value.trim().length > 0)
+                .map((value) => value.trim())
+        );
+        const matching = Array.from(this.subscriptions.values()).filter((sub) => {
+            if (this.subscriptionSource(sub) !== LIVE_SESSION_SOURCE) return false;
+            if (!candidateDeviceIds.has(sub.deviceId)) return false;
+            return Array.isArray(sub.legs) && sub.legs.some((leg) =>
+                String(leg?.from || '').trim().toUpperCase() === fromCode
+                    && String(leg?.to || '').trim().toUpperCase() === toCode
+            );
+        });
+
+        await Promise.all(matching.map((sub) => this.deleteSubscription({
+            deviceId: sub.deviceId,
+            subscriptionId: sub.id
+        })));
+
+        return matching.length;
     }
 
     countSubscriptionsForDevice(deviceId, { source = null } = {}) {
@@ -339,13 +372,16 @@ class NotificationSubscriptionManager {
 
             if (this.subscriptionSource(subscription) === SCHEDULED_SOURCE) {
                 await this.sendScheduledLiveActivityStartIfNeeded(subscription, leg, legKey, snapshot, notificationTypes);
+                await this.sendActivationPromptIfNeeded(subscription, leg, legKey);
             }
 
-            if (notificationTypes.includes('summary')) {
+            if (this.subscriptionSource(subscription) === SCHEDULED_SOURCE || notificationTypes.includes('summary')) {
                 await this.sendSummaryIfNeeded(subscription, leg, legKey, snapshot);
             }
 
-            await this.sendUpdateNotifications(subscription, leg, legKey, snapshot, notificationTypes);
+            if (this.subscriptionSource(subscription) === LIVE_SESSION_SOURCE) {
+                await this.sendUpdateNotifications(subscription, leg, legKey, snapshot, notificationTypes);
+            }
         }
     }
 
@@ -406,33 +442,14 @@ class NotificationSubscriptionManager {
         }
 
         if (!usedPushToStart) {
-            const notification = buildScheduledLiveActivityStartMessage(activeSubscription, leg);
-            pushResult = await this.pushClient.sendNotification(
-                activeSubscription.pushToken,
-                notification.payload,
-                { useSandbox: activeSubscription.useSandbox, event: notification.type }
-            );
-            this.logSendEvent(activeSubscription, leg, notification, pushResult);
-            console.log('[notifications] scheduled_live_activity_start_push_fallback', JSON.stringify({
+            console.warn('[notifications] scheduled_live_activity_start_skipped', JSON.stringify({
                 subscription_id: activeSubscription.id,
                 device_id: activeSubscription.deviceId,
                 route_key: activeSubscription.routeKey,
                 leg: legKey,
-                use_sandbox: activeSubscription.useSandbox,
-                status: pushResult?.status,
-                reason: pushResult?.body?.reason || null
+                reason: pushToStartRecord?.pushToStartToken ? 'push_to_start_failed' : 'missing_push_to_start_token'
             }));
-            if (pushResult?.isBadToken) {
-                console.warn('[notifications] bad_token_delete', JSON.stringify({
-                    subscription_id: activeSubscription.id,
-                    device_id: activeSubscription.deviceId,
-                    route_key: activeSubscription.routeKey,
-                    context: 'sendScheduledLiveActivityStartIfNeeded'
-                }));
-                this.subscriptions.delete(activeSubscription.id);
-                await this._deleteFromRedis(activeSubscription.id);
-                return;
-            }
+            return;
         }
 
         if (!(typeof pushResult?.status === 'number' && pushResult.status >= 200 && pushResult.status < 300)) {
@@ -440,8 +457,80 @@ class NotificationSubscriptionManager {
         }
 
         activeSubscription.lastAutoStartSentByLeg[legKey] = todayKey;
+        activeSubscription.lastAutoStartSentAtByLeg[legKey] = new Date().toISOString();
         this._saveSubscription(activeSubscription).catch((err) => {
             console.error('[notifications] Failed to persist scheduled live activity send markers:', err?.message || err);
+        });
+    }
+
+    async sendActivationPromptIfNeeded(subscription, leg, legKey) {
+        if (this.isMutedToday(subscription, legKey)) {
+            return;
+        }
+        const todayKey = moment().format('YYYY-MM-DD');
+        if (subscription.lastActivationPromptSentByLeg?.[legKey] === todayKey) {
+            return;
+        }
+
+        const startedAt = Date.parse(subscription.lastAutoStartSentAtByLeg?.[legKey] || '');
+        if (!Number.isFinite(startedAt) || (Date.now() - startedAt) < ACTIVATION_PROMPT_DELAY_MS) {
+            return;
+        }
+        const hasLiveSession = Array.from(this.subscriptions.values()).some((candidate) => {
+            if (candidate.deviceId !== subscription.deviceId) return false;
+            if (this.subscriptionSource(candidate) !== LIVE_SESSION_SOURCE) return false;
+            if (this.isExpiredLiveSession(candidate)) return false;
+            return Array.isArray(candidate.legs) && candidate.legs.some((candidateLeg) =>
+                `${candidateLeg.from}-${candidateLeg.to}` === legKey
+            );
+        });
+        if (hasLiveSession) {
+            subscription.lastActivationPromptSentByLeg[legKey] = todayKey;
+            this._saveSubscription(subscription).catch((err) => {
+                console.error('[notifications] Failed to persist activation prompt suppression:', err?.message || err);
+            });
+            return;
+        }
+
+        const activeSubscription = this.getActiveSubscriptionForPush(subscription.id, leg, 'activation_prompt_pre_send');
+        if (!activeSubscription) {
+            return;
+        }
+
+        const prompt = buildActivationPromptMessage(activeSubscription, leg);
+        const pushResult = await this.pushClient.sendNotification(
+            activeSubscription.pushToken,
+            prompt.payload,
+            { useSandbox: activeSubscription.useSandbox, event: prompt.type }
+        );
+        this.logSendEvent(activeSubscription, leg, prompt, pushResult);
+        console.log('[notifications] activation_prompt_push', JSON.stringify({
+            subscription_id: activeSubscription.id,
+            device_id: activeSubscription.deviceId,
+            route_key: activeSubscription.routeKey,
+            leg: legKey,
+            use_sandbox: activeSubscription.useSandbox,
+            status: pushResult?.status,
+            reason: pushResult?.body?.reason || null
+        }));
+        if (pushResult?.isBadToken) {
+            console.warn('[notifications] bad_token_delete', JSON.stringify({
+                subscription_id: activeSubscription.id,
+                device_id: activeSubscription.deviceId,
+                route_key: activeSubscription.routeKey,
+                context: 'sendActivationPromptIfNeeded'
+            }));
+            this.subscriptions.delete(activeSubscription.id);
+            await this._deleteFromRedis(activeSubscription.id);
+            return;
+        }
+        if (!(typeof pushResult?.status === 'number' && pushResult.status >= 200 && pushResult.status < 300)) {
+            return;
+        }
+
+        activeSubscription.lastActivationPromptSentByLeg[legKey] = todayKey;
+        this._saveSubscription(activeSubscription).catch((err) => {
+            console.error('[notifications] Failed to persist activation prompt markers:', err?.message || err);
         });
     }
 
@@ -489,7 +578,7 @@ class NotificationSubscriptionManager {
             leg: legKey,
             use_sandbox: activeSubscription.useSandbox,
             status: pushResult?.status,
-            reason: pushResult?.body?.reason || null
+            reason: pushResult?.body?.reason || pushResult?.reason || null
         }));
         if (pushResult?.isBadToken) {
             console.warn('[notifications] bad_token_delete', JSON.stringify({
@@ -578,7 +667,7 @@ class NotificationSubscriptionManager {
             route_key: activeSubscription.routeKey,
             use_sandbox: activeSubscription.useSandbox,
             status: result?.status,
-            reason: result?.body?.reason || null
+            reason: result?.body?.reason || result?.reason || null
         }));
         if (result?.isBadToken) {
             console.warn('[notifications] bad_token_delete', JSON.stringify({
@@ -773,6 +862,11 @@ class NotificationSubscriptionManager {
             }));
         }
 
+        if (this.subscriptionSource(subscription) === LIVE_SESSION_SOURCE) {
+            this.subscriptions.delete(subscription.id);
+            await this._deleteFromRedis(subscription.id);
+        }
+
         return dateKey;
     }
 
@@ -905,6 +999,17 @@ function normalizeIsoDate(value) {
     return new Date(timestamp).toISOString();
 }
 
+function resolveLiveSessionActiveUntil(activeUntil, existingActiveUntil = null) {
+    const now = Date.now();
+    const maxAllowed = now + MAX_LIVE_SESSION_DURATION_MS;
+    const preferred = normalizeIsoDate(activeUntil) || normalizeIsoDate(existingActiveUntil);
+    const preferredTimestamp = preferred ? Date.parse(preferred) : NaN;
+    const clampedTimestamp = Number.isFinite(preferredTimestamp)
+        ? Math.min(Math.max(preferredTimestamp, now), maxAllowed)
+        : maxAllowed;
+    return new Date(clampedTimestamp).toISOString();
+}
+
 function getEffectiveNotificationTypes(subscription) {
     return normalizeTypes(subscription?.notificationTypes, normalizeSource(subscription?.source));
 }
@@ -949,8 +1054,30 @@ function buildSummaryMessage(subscription, leg, snapshot) {
     return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'summary'), 'summary');
 }
 
-function buildScheduledLiveActivityStartMessage(subscription, leg) {
-    return buildNotificationPayload(null, null, buildLegMeta(subscription, leg, 'scheduled_live_activity_start'), 'scheduled_live_activity_start');
+function buildScheduledLiveActivityStartMessage(subscription, leg, snapshot) {
+    const summary = buildSummaryMessage(subscription, leg, snapshot);
+    const title = summary?.payload?.aps?.alert?.title || `${leg.fromName || leg.from} → ${leg.toName || leg.to}`;
+    const body = summary?.payload?.aps?.alert?.body || 'Tap to view your scheduled journey.';
+    return buildNotificationPayload(
+        title,
+        body,
+        buildLegMeta(subscription, leg, 'scheduled_live_activity_start'),
+        'scheduled_live_activity_start',
+        'JOURNEY_LEG_ALERT',
+        { includeContentAvailable: true }
+    );
+}
+
+function buildActivationPromptMessage(subscription, leg) {
+    const fromLabel = leg.fromName || leg.from;
+    const toLabel = leg.toName || leg.to;
+    return buildNotificationPayload(
+        `${fromLabel} → ${toLabel}`,
+        'Tap to activate journey updates',
+        buildLegMeta(subscription, leg, 'activation_prompt'),
+        'activation_prompt',
+        'JOURNEY_UPDATES_ACTIVATION'
+    );
 }
 
 function buildScheduledLiveActivityStartPush(
@@ -1118,6 +1245,7 @@ function buildScheduledStartContentState(subscription, leg, snapshot, todayKey) 
         activityID: null,
         revision: 0,
         appIsActive: false,
+        journeyUpdatesEnabled: false,
         scheduleKey: buildScheduleKey(leg, todayKey),
         windowStart: leg.windowStart,
         windowEnd: leg.windowEnd
@@ -1195,13 +1323,23 @@ function formatStationGreetingName(value) {
     return / station$/i.test(label) ? label : `${label} station`;
 }
 
-function buildNotificationPayload(title, body, meta = {}, type = 'unknown') {
+function buildNotificationPayload(
+    title,
+    body,
+    meta = {},
+    type = 'unknown',
+    category = 'JOURNEY_LEG_ALERT',
+    { includeContentAvailable = false } = {}
+) {
     const aps = {};
     if (title || body) {
         aps.alert = { title, body };
         aps.sound = 'default';
         aps['mutable-content'] = 1;
-        aps.category = 'JOURNEY_LEG_ALERT';
+        aps.category = category;
+        if (includeContentAvailable) {
+            aps['content-available'] = 1;
+        }
     } else {
         aps['content-available'] = 1;
     }

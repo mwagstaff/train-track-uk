@@ -21,6 +21,11 @@ final class NotificationAlertHandler {
         let content = response.notification.request.content
         guard var info = NotificationLegInfo(content: content) else { return }
 
+        if info.alertType == "activation_prompt" {
+            await openJourneyForActivation(info: &info)
+            return
+        }
+
         switch response.actionIdentifier {
         case NotificationActionId.muteLegForToday:
             await muteLegForToday(info: &info, requireGeofence: false)
@@ -81,6 +86,14 @@ final class NotificationAlertHandler {
 
         showToast(message: alreadyMuted ? "Already muted \(info.displayLabel) for today" : "Muted \(info.displayLabel) for today")
         await NotificationSubscriptionStore.shared.refresh()
+    }
+
+    private func openJourneyForActivation(info: inout NotificationLegInfo) async {
+        if info.fromCode == nil || info.toCode == nil {
+            await info.resolveStationCodesIfNeeded()
+        }
+        guard let fromCode = info.fromCode, let toCode = info.toCode else { return }
+        await DeepLinkRouter.shared.openJourney(from: fromCode, to: toCode, activateUpdates: true)
     }
 
     private func isInsideGeofence(location: CLLocation, station: Station) -> Bool {

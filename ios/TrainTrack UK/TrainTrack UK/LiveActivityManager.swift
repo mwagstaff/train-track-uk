@@ -26,6 +26,10 @@ final class LiveActivityManager: ObservableObject {
         let toCRS: String
         let startedAt: Date
         var preferredServiceID: String?
+        var journeyUpdatesEnabled: Bool
+        var scheduleKey: String?
+        var windowStart: String?
+        var windowEnd: String?
         var timer: Timer?
         var fallbackEndTimer: Timer?
     }
@@ -55,7 +59,7 @@ final class LiveActivityManager: ObservableObject {
     // User-configurable duration in minutes (default 60). Reads from UserDefaults.
     private var durationSeconds: TimeInterval {
         let storedMinutes = UserDefaults.standard.integer(forKey: durationKey)
-        let minutes = storedMinutes == 0 ? 60 : storedMinutes
+        let minutes = min(120, max(1, storedMinutes == 0 ? 60 : storedMinutes))
         let seconds = Double(minutes * 60)
         print("🔧 [LiveActivity] Duration preference: \(minutes) minute\(minutes == 1 ? "" : "s") (\(seconds) seconds)")
         return seconds
@@ -166,7 +170,11 @@ final class LiveActivityManager: ObservableObject {
         preferredServiceID: String? = nil,
         triggeredByUser: Bool = false,
         bypassSuppression: Bool = false,
-        allowAutomaticStart: Bool = false
+        allowAutomaticStart: Bool = false,
+        journeyUpdatesEnabled: Bool = true,
+        scheduleKey: String? = nil,
+        windowStart: String? = nil,
+        windowEnd: String? = nil
     ) async {
         guard triggeredByUser || allowAutomaticStart else {
             print("🚫 [LiveActivity] Start ignored (not user-triggered; auto-starts disabled)")
@@ -174,6 +182,20 @@ final class LiveActivityManager: ObservableObject {
         }
         if !bypassSuppression, let lastEndedAt, Date().timeIntervalSince(lastEndedAt) < autoRestartSuppressionWindow {
             print("🚫 [LiveActivity] Start suppressed to avoid immediate auto-restart (last end \(Date().timeIntervalSince(lastEndedAt))s ago)")
+            return
+        }
+
+        let applicationState = UIApplication.shared.applicationState
+        if allowAutomaticStart && !triggeredByUser && applicationState != .active {
+            print("🚫 [LiveActivity] Automatic start skipped because app is not foreground (state=\(applicationState.rawValue))")
+            os_log("[LiveActivity] Automatic start skipped because app is not foreground", type: .info)
+
+            for activity in systemActivities(
+                forFromCRS: journey.fromStation.crs.uppercased(),
+                toCRS: journey.toStation.crs.uppercased()
+            ) where trackedActivities[activity.id] == nil {
+                await registerRemoteStartedActivityIfNeeded(activity)
+            }
             return
         }
 
@@ -193,7 +215,11 @@ final class LiveActivityManager: ObservableObject {
                         tokenString: tokenString,
                         fromCRS: journey.fromStation.crs,
                         toCRS: journey.toStation.crs,
-                        preferredServiceID: preferredServiceID
+                        preferredServiceID: preferredServiceID,
+                        journeyUpdatesEnabled: tracked.journeyUpdatesEnabled,
+                        scheduleKey: tracked.scheduleKey,
+                        windowStart: tracked.windowStart,
+                        windowEnd: tracked.windowEnd
                     )
                 }
                 await refreshAndUpdate(for: journey, depStore: depStore, activityID: existingActivityID)
@@ -232,7 +258,15 @@ final class LiveActivityManager: ObservableObject {
         os_log("[LiveActivity] Request start for %{public}@ → %{public}@", journey.fromStation.crs, journey.toStation.crs)
 
         // Compute initial state
-        let initial = await contentState(for: journey, depStore: depStore, preferredServiceID: preferredServiceID)
+        let initial = await contentState(
+            for: journey,
+            depStore: depStore,
+            preferredServiceID: preferredServiceID,
+            journeyUpdatesEnabled: journeyUpdatesEnabled,
+            scheduleKey: scheduleKey,
+            windowStart: windowStart,
+            windowEnd: windowEnd
+        )
         print("🚂 [LiveActivity] Initial state: platform=\(initial.platform), est=\(initial.estimated), dest=\(initial.destinationTitle)")
         os_log("[LiveActivity] Initial content state: fromCRS=%{public}@, toCRS=%{public}@, dest=%{public}@, platform=%{public}@, est=%{public}@",
                initial.fromCRS, initial.toCRS, initial.destinationTitle, initial.platform, initial.estimated)
@@ -272,7 +306,11 @@ final class LiveActivityManager: ObservableObject {
                     tokenString: tokenString,
                     fromCRS: journey.fromStation.crs,
                     toCRS: journey.toStation.crs,
-                    preferredServiceID: preferredServiceID
+                    preferredServiceID: preferredServiceID,
+                    journeyUpdatesEnabled: journeyUpdatesEnabled,
+                    scheduleKey: scheduleKey,
+                    windowStart: windowStart,
+                    windowEnd: windowEnd
                 )
             }
 
@@ -282,7 +320,11 @@ final class LiveActivityManager: ObservableObject {
                 fromCRS: journey.fromStation.crs,
                 toCRS: journey.toStation.crs,
                 startedAt: Date(),
-                preferredServiceID: preferredServiceID
+                preferredServiceID: preferredServiceID,
+                journeyUpdatesEnabled: journeyUpdatesEnabled,
+                scheduleKey: scheduleKey,
+                windowStart: windowStart,
+                windowEnd: windowEnd
             )
 
             // Schedule update timer for this activity
@@ -309,6 +351,7 @@ final class LiveActivityManager: ObservableObject {
 
             print("✅ [LiveActivity] ===== START COMPLETED SUCCESSFULLY =====")
             print("✅ [LiveActivity] Now tracking \(trackedActivities.count) activities")
+            lastMessage = nil
             os_log("[LiveActivity] ===== START COMPLETED SUCCESSFULLY =====")
         } catch {
             print("❌ [LiveActivity] ===== START FAILED =====")
@@ -318,7 +361,17 @@ final class LiveActivityManager: ObservableObject {
                 print("❌ [LiveActivity] Error domain: \(nsError.domain), code: \(nsError.code)")
                 print("❌ [LiveActivity] Error userInfo: \(nsError.userInfo)")
             }
-            lastMessage = "Unable to start Live Activity: \(error.localizedDescription)"
+            let shouldSuppress = shouldSuppressStartError(
+                error,
+                triggeredByUser: triggeredByUser,
+                allowAutomaticStart: allowAutomaticStart,
+                journey: journey
+            )
+            if shouldSuppress {
+                lastMessage = nil
+            } else {
+                lastMessage = "Unable to start Live Activity: \(error.localizedDescription)"
+            }
             os_log("[LiveActivity] ===== START FAILED =====", type: .error)
             os_log("[LiveActivity] Error: %{public}@", error.localizedDescription)
             os_log("[LiveActivity] Error details: %{public}@", String(describing: error))
@@ -430,6 +483,69 @@ final class LiveActivityManager: ObservableObject {
         lastEndedAt = Date()
     }
 
+    func stopMatching(fromCRS: String, toCRS: String) async {
+        let trackedMatches = trackedActivities.values.contains {
+            $0.fromCRS.uppercased() == fromCRS.uppercased() && $0.toCRS.uppercased() == toCRS.uppercased()
+        }
+        if trackedMatches || !systemActivities(forFromCRS: fromCRS.uppercased(), toCRS: toCRS.uppercased()).isEmpty {
+            if let fromStation = StationsService.shared.stations.first(where: { $0.crs.caseInsensitiveCompare(fromCRS) == .orderedSame }),
+               let toStation = StationsService.shared.stations.first(where: { $0.crs.caseInsensitiveCompare(toCRS) == .orderedSame }) {
+                await stop(for: Journey(fromStation: fromStation, toStation: toStation, favorite: false))
+                return
+            }
+        }
+        for activity in systemActivities(forFromCRS: fromCRS.uppercased(), toCRS: toCRS.uppercased()) {
+            await activity.end(nil, dismissalPolicy: .immediate)
+            await sendLiveActivityUnregistration(activityID: activity.id)
+        }
+    }
+
+    func setJourneyUpdatesEnabled(for journeys: [Journey], enabled: Bool, depStore: DeparturesStore) async {
+        for journey in journeys {
+            await setJourneyUpdatesEnabled(for: journey, enabled: enabled, depStore: depStore)
+        }
+        updatePublishedState()
+    }
+
+    func setJourneyUpdatesEnabled(for journey: Journey, enabled: Bool, depStore: DeparturesStore) async {
+        let fromCRS = journey.fromStation.crs.uppercased()
+        let toCRS = journey.toStation.crs.uppercased()
+
+        let systemMatches = systemActivities(forFromCRS: fromCRS, toCRS: toCRS)
+        for activity in systemMatches where trackedActivities[activity.id] == nil {
+            await registerRemoteStartedActivityIfNeeded(activity)
+        }
+
+        let trackedIDs = trackedActivities.compactMap { entry -> String? in
+            let tracked = entry.value
+            guard tracked.fromCRS.uppercased() == fromCRS, tracked.toCRS.uppercased() == toCRS else { return nil }
+            return entry.key
+        }
+
+        for activityID in trackedIDs {
+            guard var tracked = trackedActivities[activityID] else { continue }
+            guard tracked.journeyUpdatesEnabled != enabled else { continue }
+            tracked.journeyUpdatesEnabled = enabled
+            trackedActivities[activityID] = tracked
+
+            if let tokenData = tracked.activity.pushToken {
+                _ = await sendLiveActivityRegistration(
+                    activityID: activityID,
+                    tokenString: encodePushToken(tokenData),
+                    fromCRS: tracked.fromCRS,
+                    toCRS: tracked.toCRS,
+                    preferredServiceID: tracked.preferredServiceID,
+                    journeyUpdatesEnabled: enabled,
+                    scheduleKey: tracked.scheduleKey,
+                    windowStart: tracked.windowStart,
+                    windowEnd: tracked.windowEnd
+                )
+            }
+
+            await update(for: journey, depStore: depStore, activityID: activityID)
+        }
+    }
+
     /// Update the published state based on tracked activities
     private func updatePublishedState() {
         let trackedPairs = trackedActivities.values.map { ($0.fromCRS.uppercased(), $0.toCRS.uppercased()) }
@@ -470,6 +586,38 @@ final class LiveActivityManager: ObservableObject {
         Activity<JourneyActivityAttributes>.activities.filter {
             $0.contentState.fromCRS.uppercased() == fromCRS && $0.contentState.toCRS.uppercased() == toCRS
         }
+    }
+
+    private func shouldSuppressStartError(
+        _ error: Error,
+        triggeredByUser: Bool,
+        allowAutomaticStart: Bool,
+        journey: Journey
+    ) -> Bool {
+        let nsError = error as NSError
+        let combinedMessage = [
+            error.localizedDescription,
+            nsError.localizedDescription,
+            String(describing: nsError.userInfo)
+        ].joined(separator: " ")
+        let isForegroundRestriction = combinedMessage.localizedCaseInsensitiveContains("target is not foreground")
+
+        if !systemActivities(
+            forFromCRS: journey.fromStation.crs.uppercased(),
+            toCRS: journey.toStation.crs.uppercased()
+        ).isEmpty {
+            print("ℹ️ [LiveActivity] Suppressing start error because a matching activity already exists")
+            os_log("[LiveActivity] Suppressing start error because a matching activity already exists", type: .info)
+            return true
+        }
+
+        if isForegroundRestriction && (allowAutomaticStart || !triggeredByUser) {
+            print("ℹ️ [LiveActivity] Suppressing automatic foreground-only start error: \(error.localizedDescription)")
+            os_log("[LiveActivity] Suppressing automatic foreground-only start error: %{public}@", error.localizedDescription)
+            return true
+        }
+
+        return false
     }
 
     private func scheduleFallbackEnd(for activityID: String) -> Timer? {
@@ -577,7 +725,11 @@ final class LiveActivityManager: ObservableObject {
                     tokenString: tokenString,
                     fromCRS: journey.fromStation.crs,
                     toCRS: journey.toStation.crs,
-                    preferredServiceID: effectivePreferredServiceID
+                    preferredServiceID: effectivePreferredServiceID,
+                    journeyUpdatesEnabled: tracked.journeyUpdatesEnabled,
+                    scheduleKey: tracked.scheduleKey,
+                    windowStart: tracked.windowStart,
+                    windowEnd: tracked.windowEnd
                 )
             }
         }
@@ -609,7 +761,23 @@ final class LiveActivityManager: ObservableObject {
                 $0.value.fromCRS == journey.fromStation.crs && $0.value.toCRS == journey.toStation.crs
             }?.value.preferredServiceID
         }()
-        let state = await contentState(for: journey, depStore: depStore, preferredServiceID: preferredServiceID)
+        let trackedMetadata: TrackedActivity? = {
+            if let activityID {
+                return trackedActivities[activityID]
+            }
+            return trackedActivities.first {
+                $0.value.fromCRS == journey.fromStation.crs && $0.value.toCRS == journey.toStation.crs
+            }?.value
+        }()
+        let state = await contentState(
+            for: journey,
+            depStore: depStore,
+            preferredServiceID: preferredServiceID,
+            journeyUpdatesEnabled: trackedMetadata?.journeyUpdatesEnabled ?? true,
+            scheduleKey: trackedMetadata?.scheduleKey,
+            windowStart: trackedMetadata?.windowStart,
+            windowEnd: trackedMetadata?.windowEnd
+        )
 
         // Find the activity to update
         let activity: Activity<JourneyActivityAttributes>?
@@ -635,7 +803,15 @@ final class LiveActivityManager: ObservableObject {
         }
     }
 
-    private func contentState(for journey: Journey, depStore: DeparturesStore, preferredServiceID: String? = nil) async -> JourneyActivityAttributes.ContentState {
+    private func contentState(
+        for journey: Journey,
+        depStore: DeparturesStore,
+        preferredServiceID: String? = nil,
+        journeyUpdatesEnabled: Bool = true,
+        scheduleKey: String? = nil,
+        windowStart: String? = nil,
+        windowEnd: String? = nil
+    ) async -> JourneyActivityAttributes.ContentState {
         let allDeps = depStore.departures(for: journey)
         let deps = relevantDepartures(from: allDeps)
         let next = selectPrimaryDeparture(preferredServiceID: preferredServiceID, allDepartures: allDeps, filteredDepartures: deps)
@@ -704,7 +880,11 @@ final class LiveActivityManager: ObservableObject {
             statusText: statusText,
             delayMinutes: delayMins,
             upcomingDepartures: upcoming,
-            lastUpdated: Date()
+            lastUpdated: Date(),
+            journeyUpdatesEnabled: journeyUpdatesEnabled,
+            scheduleKey: scheduleKey,
+            windowStart: windowStart,
+            windowEnd: windowEnd
         )
         return state
     }
@@ -856,7 +1036,11 @@ final class LiveActivityManager: ObservableObject {
             fromCRS: fromCRS,
             toCRS: toCRS,
             startedAt: Date(),
-            preferredServiceID: nil
+            preferredServiceID: nil,
+            journeyUpdatesEnabled: activity.contentState.journeyUpdatesEnabled,
+            scheduleKey: activity.contentState.scheduleKey,
+            windowStart: activity.contentState.windowStart,
+            windowEnd: activity.contentState.windowEnd
         )
         tracked.fallbackEndTimer = scheduleFallbackEnd(for: activity.id)
         trackedActivities[activity.id] = tracked
@@ -869,6 +1053,7 @@ final class LiveActivityManager: ObservableObject {
                     tokenString: tokenString,
                     fromCRS: fromCRS,
                     toCRS: toCRS,
+                    journeyUpdatesEnabled: tracked.journeyUpdatesEnabled,
                     scheduleKey: activity.contentState.scheduleKey,
                     windowStart: activity.contentState.windowStart,
                     windowEnd: activity.contentState.windowEnd
@@ -970,8 +1155,9 @@ final class LiveActivityManager: ObservableObject {
         trackedActivities[activityID] = nil
 
         // Unregister from backend so server stops polling
-        Task {
+        Task { @MainActor in
             await sendLiveActivityUnregistration(activityID: activityID)
+            await NotificationSubscriptionStore.shared.deleteLiveSessions(containingFrom: tracked.fromCRS, to: tracked.toCRS)
         }
 
         // Update published state
@@ -1008,6 +1194,28 @@ final class LiveActivityManager: ObservableObject {
         }
     }
 
+    func ensurePushToStartTokenRegistered(timeoutSeconds: Double = 8.0) async -> Bool {
+        guard #available(iOS 17.2, *) else {
+            logger.error("[LiveActivity] Push-to-start requires iOS 17.2 or later")
+            return false
+        }
+
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            if let current = Activity<JourneyActivityAttributes>.pushToStartToken {
+                await registerPushToStartTokenIfNeeded(current)
+                if lastRegisteredPushToStartToken == encodePushToken(current) {
+                    return true
+                }
+            } else if lastRegisteredPushToStartToken != nil {
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+
+        return lastRegisteredPushToStartToken != nil
+    }
+
     // MARK: - Push token / backend registration
     private func watchPushToken(for activity: Activity<JourneyActivityAttributes>, fromCRS: String, toCRS: String) {
         pushTokenTasks[activity.id]?.cancel()
@@ -1035,6 +1243,7 @@ final class LiveActivityManager: ObservableObject {
                             fromCRS: fromCRS,
                             toCRS: toCRS,
                             preferredServiceID: preferredServiceID,
+                            journeyUpdatesEnabled: self.trackedActivities[activity.id]?.journeyUpdatesEnabled ?? activity.contentState.journeyUpdatesEnabled,
                             scheduleKey: activity.contentState.scheduleKey,
                             windowStart: activity.contentState.windowStart,
                             windowEnd: activity.contentState.windowEnd
@@ -1070,6 +1279,7 @@ final class LiveActivityManager: ObservableObject {
         fromCRS: String,
         toCRS: String,
         preferredServiceID: String? = nil,
+        journeyUpdatesEnabled: Bool = true,
         scheduleKey: String? = nil,
         windowStart: String? = nil,
         windowEnd: String? = nil
@@ -1092,7 +1302,6 @@ final class LiveActivityManager: ObservableObject {
         let isDebugBuild = false
         #endif
 
-        let muteOnArrival = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
         let muteDelayMinutes = (UserDefaults.standard.object(forKey: "muteDelayMinutes") as? Int) ?? 3
         let autoEndLiveActivity = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? true
         var payload: [String: Any] = [
@@ -1102,10 +1311,11 @@ final class LiveActivityManager: ObservableObject {
             "from": fromCRS,
             "to": toCRS,
             "use_sandbox": isDebugBuild,
-            "mute_on_arrival": muteOnArrival,
+            "mute_on_arrival": true,
             "mute_delay_minutes": muteDelayMinutes,
             "auto_end_on_arrival": false,
-            "auto_end_on_departure": autoEndLiveActivity
+            "auto_end_on_departure": autoEndLiveActivity,
+            "journey_updates_enabled": journeyUpdatesEnabled
         ]
         if let preferredServiceID, !preferredServiceID.isEmpty {
             payload["preferred_service_id"] = preferredServiceID

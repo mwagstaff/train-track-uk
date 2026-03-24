@@ -5,7 +5,11 @@ import UIKit
 
 @MainActor
 final class DeepLinkRouter: ObservableObject {
+    static let shared = DeepLinkRouter()
+
     @Published var pendingJourneyGroup: JourneyGroup? = nil
+    @Published private(set) var pendingJourneyActivation: JourneyActivationRequest? = nil
+    @Published private(set) var visibleJourneyRoute: JourneyRouteIdentity? = nil
 
     func handle(url: URL) {
         guard url.scheme == "traintrack" else { return }
@@ -36,9 +40,10 @@ final class DeepLinkRouter: ObservableObject {
         let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let from = comps?.queryItems?.first(where: { $0.name == "from" })?.value
         let to = comps?.queryItems?.first(where: { $0.name == "to" })?.value
+        let activateUpdates = comps?.queryItems?.first(where: { $0.name == "activate_updates" })?.value == "1"
         guard let from, let to else { return }
 
-        Task { await openJourney(from: from, to: to) }
+        Task { await openJourney(from: from, to: to, activateUpdates: activateUpdates) }
     }
 
     private func station(for crs: String) -> Station? {
@@ -58,10 +63,57 @@ final class DeepLinkRouter: ObservableObject {
         do { try await StationsService.shared.loadStations() } catch { }
     }
 
-    private func openJourney(from: String, to: String) async {
+    func openJourney(from: String, to: String, activateUpdates: Bool = false) async {
         if StationsService.shared.stations.isEmpty { await ensureStations() }
         if let group = findOrCreateJourneyGroup(from: from, to: to) {
             pendingJourneyGroup = group
+            pendingJourneyActivation = activateUpdates
+                ? JourneyActivationRequest(from: from, to: to)
+                : nil
         }
+    }
+
+    func consumeJourneyActivationIfNeeded(for group: JourneyGroup) -> JourneyActivationRequest? {
+        guard let activation = pendingJourneyActivation else { return nil }
+        let start = group.startStation.crs.uppercased()
+        let end = group.endStation.crs.uppercased()
+        guard activation.fromCRS == start, activation.toCRS == end else { return nil }
+        pendingJourneyActivation = nil
+        return activation
+    }
+
+    func setVisibleJourney(_ group: JourneyGroup) {
+        visibleJourneyRoute = JourneyRouteIdentity(group: group)
+    }
+
+    func clearVisibleJourney(_ group: JourneyGroup) {
+        let route = JourneyRouteIdentity(group: group)
+        if visibleJourneyRoute == route {
+            visibleJourneyRoute = nil
+        }
+    }
+}
+
+struct JourneyActivationRequest: Equatable {
+    let fromCRS: String
+    let toCRS: String
+
+    init(from: String, to: String) {
+        self.fromCRS = from.uppercased()
+        self.toCRS = to.uppercased()
+    }
+}
+
+struct JourneyRouteIdentity: Equatable {
+    let fromCRS: String
+    let toCRS: String
+
+    init(from: String, to: String) {
+        self.fromCRS = from.uppercased()
+        self.toCRS = to.uppercased()
+    }
+
+    init(group: JourneyGroup) {
+        self.init(from: group.startStation.crs, to: group.endStation.crs)
     }
 }

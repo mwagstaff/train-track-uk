@@ -24,9 +24,6 @@ struct PreferencesView: View {
     @AppStorage("journeySortMode") private var journeySortModeRaw: String = JourneySortMode.distance.rawValue
     @AppStorage(ApiHostPreference.storageKey, store: ApiHostPreference.store) private var apiHostRaw: String = ApiHost.prod.rawValue
     @AppStorage("autoReturnToFavouritesMinutes") private var autoReturnMinutes: Int = 0
-    @AppStorage("autoMuteOnArrival") private var autoMuteOnArrival: Bool = true
-    @AppStorage("muteDelayMinutes") private var muteDelayMinutes: Int = 3
-    @AppStorage("autoEndLiveActivity") private var autoEndLiveActivity: Bool = true
     @AppStorage("showClosestJourneyLegOnly") private var showClosestJourneyLegOnly: Bool = true
     @AppStorage("showTransferWarnings") private var showTransferWarnings: Bool = true
     @AppStorage("transferWarningThresholdMinutes") private var transferWarningThresholdMinutes: Int = 3
@@ -39,6 +36,10 @@ struct PreferencesView: View {
     @State private var showDebugLogs = false
     @State private var notificationPreferencesError: String? = nil
     @State private var notificationPreferencesSyncTask: Task<Void, Never>? = nil
+    @State private var pendingDeleteUpdate: NotificationSubscription? = nil
+    @State private var showUpdateDeleteDialog = false
+    @State private var viewingScheduledRoute: IdentifiableScheduledRoute? = nil
+    @State private var viewingLiveSession: NotificationSubscription? = nil
 
     private var journeySortMode: Binding<JourneySortMode> {
         Binding(
@@ -66,29 +67,30 @@ struct PreferencesView: View {
         Form {
 
             Section("Journey Updates") {
+                ForEach(journeyUpdateItems) { item in
+                    journeyUpdateRow(for: item)
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                pendingDeleteUpdate = item.subscription
+                                showUpdateDeleteDialog = true
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                }
+            }
+
+            Section {
                 Text("Use the Start button at the top of a journey to begin a Live Activity and journey update notifications.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                Toggle("Mute notifications on arrival", isOn: $autoMuteOnArrival)
-                Text("When you arrive at a departure station, the notifications for that journey are automatically stopped. Requires 'Always' location permission.")
+                Text("Journey updates stop automatically when you reach your departure station, when you dismiss the Live Activity, when you tap Stop in the app, or after 2 hours. Background location still requires 'Always' permission.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-
-                if autoMuteOnArrival {
-                    Stepper(value: $muteDelayMinutes, in: 1...10) {
-                        HStack {
-                            Text("Mute after")
-                            Spacer()
-                            Text("\(muteDelayMinutes) min\(muteDelayMinutes == 1 ? "" : "s") at station")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Toggle("End Live Activity on departure", isOn: $autoEndLiveActivity)
-                    Text("Automatically dismiss the Live Activity widget after you leave the departure station area and your journey is underway.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
 
                 Picker("Live Activity duration", selection: $liveActivityDurationMinutes) {
                     Text("30 min").tag(30)
@@ -282,6 +284,27 @@ struct PreferencesView: View {
         .sheet(isPresented: $showDebugLogs) {
             DebugLogView()
         }
+        .confirmationDialog(
+            "Delete journey update?",
+            isPresented: $showUpdateDeleteDialog,
+            presenting: pendingDeleteUpdate
+        ) { sub in
+            Button("Delete", role: .destructive) {
+                deleteUpdate(sub)
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: { sub in
+            Text(isScheduled(sub)
+                ? "This will remove the scheduled notifications for this journey."
+                : "This will stop live journey update notifications.")
+        }
+        .sheet(item: $viewingScheduledRoute) { route in
+            NotificationScheduleView(group: route.group, reverseGroup: route.reverseGroup)
+                .environmentObject(notificationStore)
+        }
+        .sheet(item: $viewingLiveSession) { session in
+            LiveSessionInfoSheet(session: session)
+        }
     }
 
     private func notificationTypeBinding(_ type: NotificationType) -> Binding<Bool> {
@@ -339,6 +362,83 @@ struct PreferencesView: View {
               notificationStore.subscriptions.indices.contains(index) else { return }
         notificationPendingDelete = notificationStore.subscriptions[index]
         showNotificationDeleteDialog = true
+    }
+
+    @ViewBuilder
+    private func journeyUpdateRow(for item: JourneyLegItem) -> some View {
+        let sub = item.subscription
+        let leg = item.leg
+        let scheduled = isScheduled(sub)
+        let fromName = leg.fromName ?? leg.from
+        let toName = leg.toName ?? leg.to
+        let active = isActive(sub)
+        Button {
+            if scheduled, let route = resolvedScheduledRoute(for: sub) {
+                viewingScheduledRoute = IdentifiableScheduledRoute(group: route.group, reverseGroup: route.reverseGroup)
+            } else if !scheduled {
+                viewingLiveSession = sub
+            }
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(scheduled ? "Scheduled" : "Adhoc")
+                            .font(.caption)
+                            .foregroundStyle(scheduled ? .blue : .orange)
+                        if leg.enabled {
+                            Text("• \(leg.windowStart)–\(leg.windowEnd)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if active {
+                            Text("Active")
+                                .font(.caption)
+                                .foregroundStyle(.green)
+                        }
+                    }
+                    Text("\(fromName) → \(toName)")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.primary)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var journeyUpdateItems: [JourneyLegItem] {
+        notificationStore.combinedSubscriptions.flatMap { sub in
+            sub.legs.map { leg in JourneyLegItem(subscription: sub, leg: leg) }
+        }
+    }
+
+    private func isScheduled(_ sub: NotificationSubscription) -> Bool {
+        notificationStore.subscriptions.contains(where: { $0.id == sub.id })
+    }
+
+    private func isActive(_ sub: NotificationSubscription) -> Bool {
+        // Scheduled subscriptions fire on a timetable — they are never "Active" in the real-time sense
+        guard !isScheduled(sub) else { return false }
+        // Live sessions are active until their expiry
+        guard let activeUntil = sub.activeUntil else { return true }
+        return activeUntil > Date()
+    }
+
+    private func deleteUpdate(_ sub: NotificationSubscription) {
+        Task {
+            if isScheduled(sub) {
+                try? await notificationStore.delete(id: sub.id)
+            } else {
+                try? await notificationStore.deleteLiveSession(id: sub.id)
+            }
+        }
     }
 
     private func scheduledNotificationRow(for sub: NotificationSubscription) -> some View {
@@ -434,6 +534,61 @@ struct PreferencesView: View {
 private struct ResolvedScheduledRoute {
     let group: JourneyGroup
     let reverseGroup: JourneyGroup?
+}
+
+private struct JourneyLegItem: Identifiable {
+    let id: String
+    let subscription: NotificationSubscription
+    let leg: NotificationLeg
+
+    init(subscription: NotificationSubscription, leg: NotificationLeg) {
+        self.id = "\(subscription.id)-\(leg.from)-\(leg.to)"
+        self.subscription = subscription
+        self.leg = leg
+    }
+}
+
+private struct IdentifiableScheduledRoute: Identifiable {
+    let id = UUID()
+    let group: JourneyGroup
+    let reverseGroup: JourneyGroup?
+}
+
+private struct LiveSessionInfoSheet: View {
+    let session: NotificationSubscription
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Journey") {
+                    let from = session.legs.first?.fromName ?? session.legs.first?.from ?? "Unknown"
+                    let to = session.legs.last?.toName ?? session.legs.last?.to ?? "Unknown"
+                    LabeledContent("From", value: from)
+                    LabeledContent("To", value: to)
+                    if session.legs.count > 1 {
+                        LabeledContent("Legs", value: "\(session.legs.count)")
+                    }
+                }
+                Section("Status") {
+                    if let activeUntil = session.activeUntil {
+                        let active = activeUntil > Date()
+                        LabeledContent("Active", value: active ? "Yes" : "No (expired)")
+                        LabeledContent("Active until", value: activeUntil.formatted(date: .abbreviated, time: .shortened))
+                    } else {
+                        LabeledContent("Active", value: "Yes")
+                    }
+                }
+            }
+            .navigationTitle("Adhoc Journey Update")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
 }
 
 #Preview {

@@ -10,7 +10,7 @@ import SwiftUI
 @main
 struct TrainTrackUKApp: App {
     @UIApplicationDelegateAdaptor(NotificationAppDelegate.self) var notificationDelegate
-    @StateObject private var deepLink = DeepLinkRouter()
+    @StateObject private var deepLink = DeepLinkRouter.shared
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("autoReturnToFavouritesMinutes") private var autoReturnMinutes: Int = 0
 
@@ -60,7 +60,6 @@ struct TrainTrackUKApp: App {
                 print("📍 [App] App became active - refreshing notification subscriptions & geofences")
                 Task {
                     await NotificationSubscriptionStore.shared.refresh()
-                    await ScheduledLiveActivityAutoStartManager.shared.startEligibleScheduledLiveActivities()
                 }
 
                 // Check if we should auto-return to favourites

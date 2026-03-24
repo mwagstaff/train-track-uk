@@ -231,7 +231,11 @@ final class ScheduledLiveActivityAutoStartManager {
             depStore: DeparturesStore.shared,
             triggeredByUser: false,
             bypassSuppression: true,
-            allowAutomaticStart: true
+            allowAutomaticStart: true,
+            journeyUpdatesEnabled: false,
+            scheduleKey: trigger.scheduleKey,
+            windowStart: trigger.windowStart,
+            windowEnd: trigger.windowEnd
         )
 
         guard LiveActivityManager.shared.isActive(for: journey),
@@ -239,7 +243,6 @@ final class ScheduledLiveActivityAutoStartManager {
             return false
         }
 
-        let liveSessionID = await registerLiveSession(trigger: trigger)
         var updatedRecords = loadRecords()
         updatedRecords.removeAll { $0.scheduleKey == scheduleKey }
         updatedRecords.append(ScheduledLiveActivityRecord(
@@ -250,68 +253,11 @@ final class ScheduledLiveActivityAutoStartManager {
             windowStart: trigger.windowStart,
             windowEnd: trigger.windowEnd,
             activityID: activityID,
-            liveSessionID: liveSessionID,
+            liveSessionID: nil,
             startedAt: Date()
         ))
         saveRecords(updatedRecords)
         return true
-    }
-
-    private func registerLiveSession(trigger: ScheduledLiveActivityTrigger) async -> String? {
-        let pushToken: String?
-        if let existingToken = NotificationPushTokenStore.token, !existingToken.isEmpty {
-            pushToken = existingToken
-        } else {
-            pushToken = await NotificationPushTokenStore.waitForToken(timeoutSeconds: 1.0)
-        }
-        guard let pushToken,
-              !pushToken.isEmpty else {
-            return nil
-        }
-
-        #if DEBUG
-        let useSandbox = true
-        #else
-        let useSandbox = false
-        #endif
-
-        let storedMinutes = UserDefaults.standard.integer(forKey: "liveActivityDurationMinutes")
-        let durationMinutes = storedMinutes == 0 ? 60 : max(1, storedMinutes)
-        let activeUntil = Date().addingTimeInterval(Double(durationMinutes * 60))
-        let request = NotificationSubscriptionRequest(
-            subscriptionId: nil,
-            deviceId: DeviceIdentity.deviceToken,
-            pushToken: pushToken,
-            routeKey: "\(trigger.from)-\(trigger.to)",
-            daysOfWeek: [currentDayOfWeek()],
-            notificationTypes: NotificationPreferences.effectiveTypes(for: .liveSession),
-            legs: [NotificationLeg(
-                from: trigger.from,
-                to: trigger.to,
-                fromName: trigger.fromName,
-                toName: trigger.toName,
-                enabled: true,
-                windowStart: trigger.windowStart,
-                windowEnd: trigger.windowEnd
-            )],
-            windowStart: trigger.windowStart,
-            windowEnd: trigger.windowEnd,
-            from: trigger.from,
-            to: trigger.to,
-            fromName: trigger.fromName,
-            toName: trigger.toName,
-            useSandbox: useSandbox,
-            muteOnArrival: (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true,
-            activeUntil: activeUntil
-        )
-
-        do {
-            let session = try await NotificationSubscriptionStore.shared.upsertLiveSession(request)
-            return session.id
-        } catch {
-            print("⚠️ [ScheduledLiveActivity] Failed to upsert live session: \(error.localizedDescription)")
-            return nil
-        }
     }
 
     private func stopExisting(record: ScheduledLiveActivityRecord) async {

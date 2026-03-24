@@ -26,35 +26,35 @@ struct ContentView: View {
         TabView(selection: $router.selected) {
             if depStore.hasPinnedItems {
                 NavigationStack(path: $pinnedPath) { PinnedJourneysView() }
+                    .modifier(JourneyUpdatesChrome(includeToast: true))
                     .tabItem { Label("Pinned", systemImage: "pin.fill") }
                     .tag(Tab.pinned)
             }
 
             NavigationStack(path: $favouritesPath) { FavouritesView() }
+                .modifier(JourneyUpdatesChrome(includeToast: true))
                 .tabItem { Label("Favourites", systemImage: "star.fill") }
                 .tag(Tab.favourites)
 
             NavigationStack(path: $myJourneysPath) { MyJourneysView() }
+                .modifier(JourneyUpdatesChrome(includeToast: true))
                 .tabItem { Label("My Journeys", systemImage: "list.bullet") }
                 .tag(Tab.myJourneys)
 
             NavigationStack(path: $addJourneyPath) { AddJourneyView() }
+                .modifier(JourneyUpdatesChrome(includeToast: true))
                 .tabItem { Label("Add Journey", systemImage: "plus.circle") }
                 .tag(Tab.addJourney)
 
             NavigationStack(path: $preferencesPath) { PreferencesView() }
+                .modifier(JourneyUpdatesChrome(includeToast: true))
                 .tabItem { Label("Preferences", systemImage: "gear") }
                 .tag(Tab.preferences)
 
             NavigationStack(path: $aboutPath) { AboutView() }
+                .modifier(JourneyUpdatesChrome(includeToast: true))
                 .tabItem { Label("About", systemImage: "info.circle") }
                 .tag(Tab.about)
-        }
-        .overlay(alignment: .top) {
-            if let toast = toastStore.toast {
-                ToastView(toast: toast)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
         }
         .animation(.easeOut(duration: 0.25), value: toastStore.toast)
         .onAppear {

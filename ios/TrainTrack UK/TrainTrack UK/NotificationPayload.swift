@@ -16,6 +16,7 @@ enum NotificationPayloadKeys {
 enum NotificationCategoryId {
     static let journeyLegAlert = "JOURNEY_LEG_ALERT"
     static let stationArrival = "STATION_ARRIVAL"
+    static let journeyUpdatesActivation = "JOURNEY_UPDATES_ACTIVATION"
 }
 
 enum NotificationActionId {

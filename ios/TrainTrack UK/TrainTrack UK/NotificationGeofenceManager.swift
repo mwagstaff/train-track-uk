@@ -334,15 +334,6 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             DebugLogStore.shared.log(message, category: "Geofence")
             print("📍 \(message)")
 
-            // Check global mute-on-arrival preference
-            let autoMuteEnabled = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
-            guard autoMuteEnabled else {
-                let skipMsg = "Geofence entry for \(parsed.from)→\(parsed.to) — mute on arrival disabled in preferences"
-                DebugLogStore.shared.log(skipMsg, category: "Geofence")
-                print("📍 \(skipMsg)")
-                return
-            }
-
             // Mute if within scheduled window, or if a live activity is active for this route.
             // This allows muting to work for manually-started live activities outside the usual window.
             let hasActiveLiveActivity = LiveActivityManager.shared.activeJourneys.contains(where: {
@@ -464,15 +455,6 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 return
             }
 
-            // Check global mute-on-arrival preference
-            let autoMuteEnabled = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
-            guard autoMuteEnabled else {
-                let skipMsg = "Inside geofence for \(parsed.from)→\(parsed.to) — mute on arrival disabled in preferences"
-                DebugLogStore.shared.log(skipMsg, category: "Geofence")
-                print("📍 \(skipMsg)")
-                return
-            }
-
             // Mute if within scheduled window, or if a live activity is active for this route.
             let hasActiveLiveActivity = LiveActivityManager.shared.activeJourneys.contains(where: {
                 $0.0.uppercased() == parsed.from.uppercased() && $0.1.uppercased() == parsed.to.uppercased()
@@ -543,17 +525,13 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             delayMinutes: delayMinutes
         )
 
-        // If the user has opted in, queue the Live Activity to end after the next
-        // geofence exit, which is a better proxy for the train having departed.
-        let autoEnd = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? true
-        if autoEnd {
-            let endMsg = "autoEndLiveActivity enabled — queueing Live Activity end for next geofence exit \(from)→\(to)"
-            DebugLogStore.shared.log(endMsg, category: "Mute")
-            print("🏁 \(endMsg)")
-            NotificationMuteStorage.markPendingLiveActivityAutoEndOnDeparture(from: from, to: to)
-        } else {
-            NotificationMuteStorage.clearPendingLiveActivityAutoEndOnDeparture(from: from, to: to)
-        }
+        NotificationMuteStorage.clearPendingLiveActivityAutoEndOnDeparture(from: from, to: to)
+
+        let endMsg = "Ending journey updates immediately for arrival at \(from)→\(to)"
+        DebugLogStore.shared.log(endMsg, category: "Mute")
+        print("🏁 \(endMsg)")
+        await LiveActivityManager.shared.stopMatching(fromCRS: from, toCRS: to)
+        await NotificationSubscriptionStore.shared.deleteLiveSessions(containingFrom: from, to: to)
     }
 
     func simulateArrival(subscriptionId: String, from: String, to: String, sendNotification: Bool = true) {

@@ -4,6 +4,7 @@ import { LiveActivityPushClient } from './live-activity-push-client.js';
 import { getServiceDetails } from './service-details.js';
 import { recordNotificationEvent } from './admin-data-store.js';
 import { getDeviceLastSeen } from './metrics.js';
+import { notificationSubscriptionManager } from './notification-subscription-manager.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.LIVE_ACTIVITY_POLL_INTERVAL_SECONDS || '20');
 const DEFAULT_END_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_END_AFTER_SECONDS || '7200'); // default 2 hours
@@ -41,6 +42,7 @@ class LiveActivityManager {
         autoEndOnArrival,
         autoEndOnDeparture,
         scheduleKey,
+        journeyUpdatesEnabled,
         windowStart,
         windowEnd
     }) {
@@ -83,6 +85,9 @@ class LiveActivityManager {
             revision: existing?.revision || 0,
             tokenUpdatedAt: new Date().toISOString(),
             appIsActive: existing?.appIsActive ?? false,
+            journeyUpdatesEnabled: journeyUpdatesEnabled !== undefined
+                ? Boolean(journeyUpdatesEnabled)
+                : (existing?.journeyUpdatesEnabled ?? !(scheduleKey || existing?.scheduleKey)),
             scheduleKey: scheduleKey || existing?.scheduleKey || null,
             windowStart: windowStart || existing?.windowStart || null,
             windowEnd: windowEnd || existing?.windowEnd || null
@@ -230,6 +235,9 @@ class LiveActivityManager {
                 console.log(`🗑️ [live-activity] Removing subscription ${key} due to bad/expired token`);
                 this.clearEndTimer(subscription);
                 this.subscriptions.delete(key);
+                this.deleteMatchingLiveSessions(subscription).catch((error) => {
+                    console.error(`[live-activity] Failed to delete matching live sessions for ${key}: ${error?.message || error}`);
+                });
                 return { sent: false, reason: 'bad_token', snapshot, payload, pushResponse };
             }
 
@@ -287,6 +295,7 @@ class LiveActivityManager {
         // Clean up subscription regardless of push result
         this.clearEndTimer(subscription);
         this.subscriptions.delete(key);
+        await this.deleteMatchingLiveSessions(subscription);
 
         // Log if token was bad/expired (expected when activity was already dismissed)
         if (pushResponse?.isBadToken) {
@@ -330,6 +339,7 @@ class LiveActivityManager {
             response: pushResponse || null,
             metadata: {
                 preferred_service_id: subscription.preferredServiceId || null,
+                journey_updates_enabled: Boolean(subscription.journeyUpdatesEnabled),
                 created_at: subscription.createdAt || null
             }
         }).catch((error) => {
@@ -542,6 +552,7 @@ class LiveActivityManager {
             activityID: subscription.activityId, // Include activity ID for iOS ContentState
             revision: subscription.revision || 0,
             appIsActive,
+            journeyUpdatesEnabled: Boolean(subscription.journeyUpdatesEnabled),
             scheduleKey: this.ensureOptionalString(subscription.scheduleKey),
             windowStart: this.ensureOptionalString(subscription.windowStart),
             windowEnd: this.ensureOptionalString(subscription.windowEnd)
@@ -826,17 +837,42 @@ class LiveActivityManager {
         return null;
     }
 
+    async deleteMatchingLiveSessions(subscription, { fallbackDeviceIds = [] } = {}) {
+        if (!subscription?.deviceId || !subscription?.fromStation || !subscription?.toStation) {
+            return 0;
+        }
+        return notificationSubscriptionManager.deleteLiveSessionsForLeg({
+            deviceId: subscription.deviceId,
+            from: subscription.fromStation,
+            to: subscription.toStation,
+            fallbackDeviceIds
+        });
+    }
+
     unregisterSubscription(deviceId, activityId, { fallbackDeviceIds = [] } = {}) {
         const subscription = this.getSubscription(deviceId, activityId, { fallbackDeviceIds });
         if (!subscription) {
             this.log(`[live-activity] unregister_not_found ${deviceId}/${activityId}`);
-            return false;
+            return null;
         }
         const key = this.buildKey(subscription.deviceId, subscription.activityId);
         this.clearEndTimer(subscription);
         this.subscriptions.delete(key);
         this.log(`[live-activity] unregistered ${deviceId}/${activityId}`);
-        return true;
+        this.deleteMatchingLiveSessions(subscription, { fallbackDeviceIds }).catch((error) => {
+            console.error(`[live-activity] Failed to delete matching live sessions for ${key}: ${error?.message || error}`);
+        });
+        return subscription;
+    }
+
+    async setJourneyUpdatesEnabled(deviceId, activityId, enabled, { fallbackDeviceIds = [], forceRefresh = true } = {}) {
+        const subscription = this.getSubscription(deviceId, activityId, { fallbackDeviceIds });
+        if (!subscription) return null;
+        subscription.journeyUpdatesEnabled = Boolean(enabled);
+        if (forceRefresh) {
+            await this.pollSubscription(subscription, { force: true });
+        }
+        return subscription;
     }
 
     async handleDeviceCheckIn(deviceId, { forceRefresh = true, fallbackDeviceIds = [], canonicalDeviceId = null } = {}) {
