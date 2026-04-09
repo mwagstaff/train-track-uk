@@ -87,6 +87,7 @@ The cache should only hold journeys where the departure time is 2 hours or less 
 #### V2 API (New - Supports multiple requests)
 
 - `GET /api/v2/departures/from/:fromStation/to/:toStation` - Get departures for one or more journey pairs
+- `GET /api/v2/departures/from/:fromStation/to/:toStation/at/:departureTime` - Get a single departure for a journey pair by `HH:mm` departure time
 - `GET /api/v2/service_details/:serviceId` - Get service details for one or more services
 
 ##### Multiple Departures (V2)
@@ -127,6 +128,35 @@ A single journey request like `GET /api/v2/departures/from/ECR/to/VIC` returns:
         ]
     }
 ]
+```
+
+`GET /api/v2/departures/from/:fromStation/to/:toStation/at/:departureTime` returns a single departure object for the first exact scheduled match, falling back to an exact estimated match if needed.
+
+Example:
+
+`GET /api/v2/departures/from/KTH/to/VIC/at/22:57`
+
+```json
+{
+    "departure_time": {
+        "scheduled": "22:57",
+        "estimated": "22:57"
+    },
+    "operator": "Southeastern",
+    "serviceType": "train",
+    "platform": "2",
+    "isCancelled": false,
+    "length": 8,
+    "destination": {
+        "crs": "VIC",
+        "locationName": "London Victoria"
+    },
+    "origin": {
+        "crs": "ORP",
+        "locationName": "Orpington"
+    },
+    "serviceID": "1995780KENTHOS_"
+}
 ```
 
 ##### Multiple Services (V2)

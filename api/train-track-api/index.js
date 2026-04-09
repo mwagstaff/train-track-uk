@@ -100,6 +100,25 @@ function logDepartureRequest(event, req, extra = {}) {
     );
 }
 
+function normalizeDepartureTime(value) {
+    return typeof value === 'string' ? value.trim() : '';
+}
+
+function isValidDepartureTime(value) {
+    return /^\d{2}:\d{2}$/.test(normalizeDepartureTime(value));
+}
+
+function findDepartureByTime(departures, departureTime) {
+    if (!Array.isArray(departures)) {
+        return null;
+    }
+
+    const normalizedDepartureTime = normalizeDepartureTime(departureTime);
+    return departures.find((departure) => departure?.departure_time?.scheduled === normalizedDepartureTime)
+        || departures.find((departure) => departure?.departure_time?.estimated === normalizedDepartureTime)
+        || null;
+}
+
 function logLiveActivityStartup() {
     const enabled = isLiveActivityLoggingEnabled();
     console.log(
@@ -782,6 +801,77 @@ app.get('/api/v1/departures/from/:fromStation', async (req, res) => {
 // V1 API - Original format for backward compatibility
 app.get('/api/v1/departures/from/:fromStation/to/:toStation', async (req, res) => {
     res.json(await getTrainTimes(req.params.fromStation, req.params.toStation));
+});
+
+app.get('/api/v2/departures/from/:fromStation/to/:toStation/at/:departureTime', async (req, res) => {
+    const { fromStation, toStation, departureTime } = req.params;
+    const normalizedTime = normalizeDepartureTime(departureTime);
+    const deviceId = normalizeDeviceId(req.get('X-Device-Token')) || null;
+
+    if (!isValidDepartureTime(normalizedTime)) {
+        logDepartureRequest('fetch_v2_single_failed_validation', req, {
+            device_id: deviceId,
+            from: fromStation,
+            to: toStation,
+            departure_time: normalizedTime
+        });
+        return res.status(400).json({ error: 'Invalid departure time. Use HH:mm format.' });
+    }
+
+    const startedAt = Date.now();
+    logDepartureRequest('fetch_v2_single', req, {
+        device_id: deviceId,
+        from: fromStation,
+        to: toStation,
+        departure_time: normalizedTime
+    });
+
+    try {
+        const data = await getTrainTimes(fromStation, toStation);
+        if (data?.error) {
+            logDepartureRequest('fetch_v2_single_failed', req, {
+                device_id: deviceId,
+                from: fromStation,
+                to: toStation,
+                departure_time: normalizedTime,
+                duration_ms: Date.now() - startedAt,
+                error: data.error
+            });
+            return res.status(502).json({ error: data.error });
+        }
+
+        const departure = findDepartureByTime(data?.departures, normalizedTime);
+        if (!departure) {
+            logDepartureRequest('fetch_v2_single_not_found', req, {
+                device_id: deviceId,
+                from: fromStation,
+                to: toStation,
+                departure_time: normalizedTime,
+                duration_ms: Date.now() - startedAt
+            });
+            return res.status(404).json({ error: `No service found for departure time ${normalizedTime}` });
+        }
+
+        logDepartureRequest('fetch_v2_single_completed', req, {
+            device_id: deviceId,
+            from: fromStation,
+            to: toStation,
+            departure_time: normalizedTime,
+            duration_ms: Date.now() - startedAt,
+            service_id: departure.serviceID
+        });
+        return res.json(departure);
+    } catch (error) {
+        logDepartureRequest('fetch_v2_single_failed', req, {
+            device_id: deviceId,
+            from: fromStation,
+            to: toStation,
+            departure_time: normalizedTime,
+            duration_ms: Date.now() - startedAt,
+            error: error?.message || error
+        });
+        throw error;
+    }
 });
 
 // V2 API - New array format supporting multiple journeys

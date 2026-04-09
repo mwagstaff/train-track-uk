@@ -839,7 +839,11 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         DebugLogStore.shared.log(endMsg, category: "Mute")
         print("🏁 \(endMsg)")
         await LiveActivityManager.shared.stopMatching(fromCRS: from, toCRS: to)
-        await NotificationSubscriptionStore.shared.deleteLiveSessions(containingFrom: from, to: to)
+        // Remove the live session locally so UI/geofences stop immediately, but do not
+        // DELETE it from the backend here. `/notifications/terminate` uses that server-side
+        // record to send the welcome + muted-status pushes, and deleting it first can race
+        // the terminate request and cause a 404/no confirmation notification.
+        await NotificationSubscriptionStore.shared.removeLiveSessionsLocally(containingFrom: from, to: to)
     }
 
     func simulateArrival(subscriptionId: String, from: String, to: String, sendNotification: Bool = true) {

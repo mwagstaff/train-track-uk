@@ -251,6 +251,18 @@ final class NotificationSubscriptionStore: ObservableObject {
         }
     }
 
+    func removeLiveSessionsLocally(containingFrom from: String, to: String) async {
+        let fromCode = from.uppercased()
+        let toCode = to.uppercased()
+        let originalCount = liveSessions.count
+        liveSessions.removeAll { session in
+            session.legs.contains(where: { $0.from.uppercased() == fromCode && $0.to.uppercased() == toCode })
+        }
+        guard liveSessions.count != originalCount else { return }
+        hasLoadedRemoteState = true
+        await syncGeofences()
+    }
+
     func deleteAllLiveSessions() async {
         let ids = liveSessions.map(\.id)
         for id in ids {
