@@ -1154,10 +1154,24 @@ final class LiveActivityManager: ObservableObject {
         // Remove from tracked activities
         trackedActivities[activityID] = nil
 
-        // Unregister from backend so server stops polling
+        let preserveNotificationLiveSession = NotificationMuteStorage.consumePendingLiveSessionPreserveOnArrival(
+            from: tracked.fromCRS,
+            to: tracked.toCRS
+        )
+
+        // Unregister the ActivityKit backend record so server polling for the Live Activity
+        // stops, but keep the notification live-session subscription on arrival-driven ends.
+        // `/notifications/terminate` needs that record to send the welcome + muted-status pushes.
         Task { @MainActor in
             await sendLiveActivityUnregistration(activityID: activityID)
-            await NotificationSubscriptionStore.shared.deleteLiveSessions(containingFrom: tracked.fromCRS, to: tracked.toCRS)
+            if preserveNotificationLiveSession {
+                let msg = "Preserving notification live session on arrival for \(tracked.fromCRS)→\(tracked.toCRS)"
+                DebugLogStore.shared.log(msg, category: "Mute")
+                print("📍 \(msg)")
+                await NotificationSubscriptionStore.shared.removeLiveSessionsLocally(containingFrom: tracked.fromCRS, to: tracked.toCRS)
+            } else {
+                await NotificationSubscriptionStore.shared.deleteLiveSessions(containingFrom: tracked.fromCRS, to: tracked.toCRS)
+            }
         }
 
         // Update published state

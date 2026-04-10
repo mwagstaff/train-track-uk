@@ -5,6 +5,7 @@ enum NotificationMuteStorage {
     private static let mutedLegsKey = "mutedLegsToday"
     private static let mutedLegsAtKey = "mutedLegsTodayAt"
     private static let pendingLiveActivityAutoEndKey = "pendingLiveActivityAutoEndOnDeparture"
+    private static let pendingArrivalCleanupKey = "pendingLiveSessionPreserveOnArrival"
 
     static func currentDateKey() -> String {
         let formatter = DateFormatter()
@@ -122,6 +123,44 @@ enum NotificationMuteStorage {
         if var pending = sharedDefaults.dictionary(forKey: pendingLiveActivityAutoEndKey) as? [String: String] {
             pending.removeValue(forKey: key)
             sharedDefaults.set(pending, forKey: pendingLiveActivityAutoEndKey)
+        }
+    }
+
+    @discardableResult
+    static func markPendingLiveSessionPreserveOnArrival(from: String, to: String) -> String {
+        guard let sharedDefaults = UserDefaults(suiteName: suiteName) else {
+            return currentDateKey()
+        }
+
+        let key = legKey(from: from, to: to)
+        let dateKey = currentDateKey()
+        var pending = sharedDefaults.dictionary(forKey: pendingArrivalCleanupKey) as? [String: String] ?? [:]
+        pending[key] = dateKey
+        sharedDefaults.set(pending, forKey: pendingArrivalCleanupKey)
+        return dateKey
+    }
+
+    @discardableResult
+    static func consumePendingLiveSessionPreserveOnArrival(from: String, to: String, dateKey: String? = nil) -> Bool {
+        guard let sharedDefaults = UserDefaults(suiteName: suiteName) else { return false }
+        let key = legKey(from: from, to: to)
+        let today = dateKey ?? currentDateKey()
+        guard var pending = sharedDefaults.dictionary(forKey: pendingArrivalCleanupKey) as? [String: String],
+              pending[key] == today else {
+            return false
+        }
+
+        pending.removeValue(forKey: key)
+        sharedDefaults.set(pending, forKey: pendingArrivalCleanupKey)
+        return true
+    }
+
+    static func clearPendingLiveSessionPreserveOnArrival(from: String, to: String) {
+        guard let sharedDefaults = UserDefaults(suiteName: suiteName) else { return }
+        let key = legKey(from: from, to: to)
+        if var pending = sharedDefaults.dictionary(forKey: pendingArrivalCleanupKey) as? [String: String] {
+            pending.removeValue(forKey: key)
+            sharedDefaults.set(pending, forKey: pendingArrivalCleanupKey)
         }
     }
 }

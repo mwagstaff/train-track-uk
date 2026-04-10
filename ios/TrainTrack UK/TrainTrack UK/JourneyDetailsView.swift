@@ -743,10 +743,10 @@ struct JourneyDetailsView: View {
 
     private func clearCurrentJourneyMute() {
         for leg in currentGroup.legs {
-            NotificationMuteStorage.clearMute(
-                from: leg.fromStation.crs.uppercased(),
-                to: leg.toStation.crs.uppercased()
-            )
+            let from = leg.fromStation.crs.uppercased()
+            let to = leg.toStation.crs.uppercased()
+            NotificationMuteStorage.clearMute(from: from, to: to)
+            NotificationMuteStorage.clearPendingLiveSessionPreserveOnArrival(from: from, to: to)
         }
     }
 

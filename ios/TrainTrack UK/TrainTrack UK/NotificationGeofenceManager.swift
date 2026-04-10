@@ -833,6 +833,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             delayMinutes: delayMinutes
         )
 
+        NotificationMuteStorage.markPendingLiveSessionPreserveOnArrival(from: from, to: to)
         NotificationMuteStorage.clearPendingLiveActivityAutoEndOnDeparture(from: from, to: to)
 
         let endMsg = "Ending journey updates immediately for arrival at \(from)→\(to)"

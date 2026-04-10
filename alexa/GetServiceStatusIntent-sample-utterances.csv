@@ -1,0 +1,24 @@
+check the {DepartureTime} departure from {StartStation} to {EndStation}
+check the {DepartureTime} train from {StartStation} to {EndStation}
+check the {DepartureTime} service from {StartStation} to {EndStation}
+check {DepartureTime} departure from {StartStation} to {EndStation}
+check {DepartureTime} train from {StartStation} to {EndStation}
+check {DepartureTime} service from {StartStation} to {EndStation}
+how is the {DepartureTime} departure from {StartStation} to {EndStation}
+how is the {DepartureTime} train from {StartStation} to {EndStation}
+how is the {DepartureTime} service from {StartStation} to {EndStation}
+how's the {DepartureTime} departure from {StartStation} to {EndStation}
+how's the {DepartureTime} train from {StartStation} to {EndStation}
+how's the {DepartureTime} service from {StartStation} to {EndStation}
+what is the status of the {DepartureTime} departure from {StartStation} to {EndStation}
+what is the status of the {DepartureTime} train from {StartStation} to {EndStation}
+what is the status of the {DepartureTime} service from {StartStation} to {EndStation}
+what's the status of the {DepartureTime} departure from {StartStation} to {EndStation}
+what's the status of the {DepartureTime} train from {StartStation} to {EndStation}
+what's the status of the {DepartureTime} service from {StartStation} to {EndStation}
+tell me the status of the {DepartureTime} departure from {StartStation} to {EndStation}
+tell me the status of the {DepartureTime} train from {StartStation} to {EndStation}
+tell me the status of the {DepartureTime} service from {StartStation} to {EndStation}
+is the {DepartureTime} departure from {StartStation} to {EndStation} on time
+is the {DepartureTime} train from {StartStation} to {EndStation} on time
+is the {DepartureTime} service from {StartStation} to {EndStation} on time
