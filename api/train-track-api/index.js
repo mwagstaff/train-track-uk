@@ -377,7 +377,7 @@ app.post('/api/v2/live_activities/push_to_start_tokens', async (req, res) => {
 });
 
 app.delete('/api/v2/live_activities', async (req, res) => {
-    const { device_id, activity_id } = req.body || {};
+    const { device_id, activity_id, preserve_notification_live_session } = req.body || {};
     const { canonicalDeviceId, bodyDeviceId, headerDeviceId, fallbackDeviceIds, hasMismatch } = resolveRequestDeviceIds(req, device_id);
     if (!canonicalDeviceId || !activity_id) {
         logLiveActivityRequest('unregister_failed_validation', req, {
@@ -394,11 +394,13 @@ app.delete('/api/v2/live_activities', async (req, res) => {
         body_device_id: bodyDeviceId,
         header_device_id: headerDeviceId,
         device_id_mismatch: hasMismatch,
-        activity_id
+        activity_id,
+        preserve_notification_live_session: preserve_notification_live_session === true || preserve_notification_live_session === 'true'
     });
 
     const removedSubscription = liveActivityManager.unregisterSubscription(canonicalDeviceId, activity_id, {
-        fallbackDeviceIds
+        fallbackDeviceIds,
+        preserveNotificationLiveSession: preserve_notification_live_session === true || preserve_notification_live_session === 'true'
     });
 
     res.json({

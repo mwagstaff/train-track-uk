@@ -1163,13 +1163,18 @@ final class LiveActivityManager: ObservableObject {
         // stops, but keep the notification live-session subscription on arrival-driven ends.
         // `/notifications/terminate` needs that record to send the welcome + muted-status pushes.
         Task { @MainActor in
-            await sendLiveActivityUnregistration(activityID: activityID)
             if preserveNotificationLiveSession {
+                NotificationMuteRequestSender.shared.deferLiveActivityUnregistration(
+                    activityID: activityID,
+                    from: tracked.fromCRS,
+                    to: tracked.toCRS
+                )
                 let msg = "Preserving notification live session on arrival for \(tracked.fromCRS)→\(tracked.toCRS)"
                 DebugLogStore.shared.log(msg, category: "Mute")
                 print("📍 \(msg)")
                 await NotificationSubscriptionStore.shared.removeLiveSessionsLocally(containingFrom: tracked.fromCRS, to: tracked.toCRS)
             } else {
+                await sendLiveActivityUnregistration(activityID: activityID)
                 await NotificationSubscriptionStore.shared.deleteLiveSessions(containingFrom: tracked.fromCRS, to: tracked.toCRS)
             }
         }
@@ -1438,7 +1443,10 @@ final class LiveActivityManager: ObservableObject {
         }
     }
 
-    private func sendLiveActivityUnregistration(activityID: String) async {
+    private func sendLiveActivityUnregistration(
+        activityID: String,
+        preserveNotificationLiveSession: Bool = false
+    ) async {
         let base = ApiHostPreference.currentBaseURL
         let urlString = "\(base)/live_activities"
         guard let url = URL(string: urlString) else {
@@ -1450,7 +1458,8 @@ final class LiveActivityManager: ObservableObject {
         let deviceID = DeviceIdentity.deviceToken
         let payload: [String: Any] = [
             "device_id": deviceID,
-            "activity_id": activityID
+            "activity_id": activityID,
+            "preserve_notification_live_session": preserveNotificationLiveSession
         ]
 
         var request = URLRequest(url: url)
@@ -1467,7 +1476,7 @@ final class LiveActivityManager: ObservableObject {
             return
         }
 
-        print("➡️ [LiveActivity] Unregistering activity \(activityID) at \(urlString)")
+        print("➡️ [LiveActivity] Unregistering activity \(activityID) at \(urlString) preserveNotificationLiveSession=\(preserveNotificationLiveSession)")
         logger.info("[LiveActivity] Unregistering live activity with backend: \(urlString, privacy: .public)")
 
         do {
@@ -1487,6 +1496,16 @@ final class LiveActivityManager: ObservableObject {
             print("❌ [LiveActivity] Network error unregistering live activity: \(error)")
             logger.error("[LiveActivity] Network error unregistering live activity: \(String(describing: error), privacy: .public)")
         }
+    }
+
+    func finalizeArrivalTriggeredActivityUnregistration(activityID: String, fromCRS: String, toCRS: String) async {
+        let msg = "Finalizing deferred Live Activity unregistration for \(fromCRS)→\(toCRS)"
+        DebugLogStore.shared.log(msg, category: "Mute")
+        print("📍 \(msg)")
+        await sendLiveActivityUnregistration(
+            activityID: activityID,
+            preserveNotificationLiveSession: false
+        )
     }
 
     func sendImmediateBackendCheckIn(force: Bool = false) async {

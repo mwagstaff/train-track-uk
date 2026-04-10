@@ -888,6 +888,11 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSessionTaskDelegate, URLSessionDataDelegate {
     static let shared = NotificationMuteRequestSender()
 
+    private struct RequestContext {
+        let from: String
+        let to: String
+    }
+
     private lazy var session: URLSession = {
         // Ephemeral session (NOT background) — the mute request is a small, time-sensitive
         // JSON POST that must complete within the ~30s geofence background execution window.
@@ -904,8 +909,31 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
     }()
 
     private var responseData: [Int: Data] = [:]
+    private var requestContexts: [Int: RequestContext] = [:]
     private var backgroundTasks: [Int: AppBackgroundTaskToken] = [:]
+    private var deferredLiveActivityUnregistrations: [String: Set<String>] = [:]
     private let syncQueue = DispatchQueue(label: "dev.skynolimit.traintrack.notifications.mute.sync")
+
+    private func legKey(from: String, to: String) -> String {
+        "\(from.uppercased())-\(to.uppercased())"
+    }
+
+    func deferLiveActivityUnregistration(activityID: String, from: String, to: String) {
+        let key = legKey(from: from, to: to)
+        syncQueue.async {
+            var pending = self.deferredLiveActivityUnregistrations[key] ?? []
+            pending.insert(activityID)
+            self.deferredLiveActivityUnregistrations[key] = pending
+        }
+    }
+
+    private func consumeDeferredLiveActivityUnregistrations(from: String, to: String) -> [String] {
+        let key = legKey(from: from, to: to)
+        return syncQueue.sync {
+            let pending = Array(self.deferredLiveActivityUnregistrations.removeValue(forKey: key) ?? [])
+            return pending
+        }
+    }
 
     func enqueueMute(subscriptionId: String, from: String, to: String, delayMinutes: Int = 0) {
         let baseURL = ApiHostPreference.currentBaseURL
@@ -954,6 +982,10 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
         let token = AppBackgroundTaskToken(name: "mute-upload")
         syncQueue.sync {
             self.backgroundTasks[task.taskIdentifier] = token
+            self.requestContexts[task.taskIdentifier] = RequestContext(
+                from: from.uppercased(),
+                to: to.uppercased()
+            )
         }
         task.resume()
 
@@ -975,12 +1007,13 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         let taskId = task.taskIdentifier
-        let data: Data? = syncQueue.sync {
+        let (data, context): (Data?, RequestContext?) = syncQueue.sync {
             let data = self.responseData[taskId]
             self.responseData.removeValue(forKey: taskId)
+            let context = self.requestContexts.removeValue(forKey: taskId)
             // Release the background task token now that the transfer is complete.
             self.backgroundTasks.removeValue(forKey: taskId)?.end()
-            return data
+            return (data, context)
         }
 
         if let error = error {
@@ -1017,6 +1050,19 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             print(response.statusCode == 200 ? "✅ \(msg)" : "⚠️ \(msg)")
             Task { @MainActor in
                 MuteRequestDebugStore.shared.update(status: "\(response.statusCode)", response: data.flatMap { String(data: $0, encoding: .utf8) })
+            }
+
+            if response.statusCode == 200, let context {
+                let pendingActivityIDs = consumeDeferredLiveActivityUnregistrations(from: context.from, to: context.to)
+                for activityID in pendingActivityIDs {
+                    Task { @MainActor in
+                        await LiveActivityManager.shared.finalizeArrivalTriggeredActivityUnregistration(
+                            activityID: activityID,
+                            fromCRS: context.from,
+                            toCRS: context.to
+                        )
+                    }
+                }
             }
         } else {
             let msg = "Mute request completed (no response details)"

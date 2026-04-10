@@ -849,7 +849,10 @@ class LiveActivityManager {
         });
     }
 
-    unregisterSubscription(deviceId, activityId, { fallbackDeviceIds = [] } = {}) {
+    unregisterSubscription(deviceId, activityId, {
+        fallbackDeviceIds = [],
+        preserveNotificationLiveSession = false
+    } = {}) {
         const subscription = this.getSubscription(deviceId, activityId, { fallbackDeviceIds });
         if (!subscription) {
             this.log(`[live-activity] unregister_not_found ${deviceId}/${activityId}`);
@@ -859,9 +862,13 @@ class LiveActivityManager {
         this.clearEndTimer(subscription);
         this.subscriptions.delete(key);
         this.log(`[live-activity] unregistered ${deviceId}/${activityId}`);
-        this.deleteMatchingLiveSessions(subscription, { fallbackDeviceIds }).catch((error) => {
-            console.error(`[live-activity] Failed to delete matching live sessions for ${key}: ${error?.message || error}`);
-        });
+        if (preserveNotificationLiveSession) {
+            this.log(`[live-activity] preserved_notification_live_session ${deviceId}/${activityId}`);
+        } else {
+            this.deleteMatchingLiveSessions(subscription, { fallbackDeviceIds }).catch((error) => {
+                console.error(`[live-activity] Failed to delete matching live sessions for ${key}: ${error?.message || error}`);
+            });
+        }
         return subscription;
     }
 
