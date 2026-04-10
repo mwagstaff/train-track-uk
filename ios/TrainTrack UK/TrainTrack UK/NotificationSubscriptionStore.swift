@@ -215,12 +215,39 @@ final class NotificationSubscriptionStore: ObservableObject {
     }
 
     func upsertLiveSession(_ requestBody: NotificationSubscriptionRequest) async throws -> NotificationSubscription {
+        let requestURL = "\(ApiHostPreference.currentBaseURL)/notifications/live_sessions"
+        let legSummary = requestBody.legs.map { "\($0.from.uppercased())→\($0.to.uppercased())[\($0.enabled ? "on" : "off")]" }.joined(separator: ", ")
+        DebugLogStore.shared.log(
+            """
+            Registering notification live session
+            URL: \(requestURL)
+            Device: \(DeviceIdentity.deviceToken)
+            Existing subscription: \(requestBody.subscriptionId ?? "nil")
+            Route: \(requestBody.routeKey)
+            Legs: \(legSummary.isEmpty ? "none" : legSummary)
+            """,
+            category: "Mute"
+        )
         let subscription = try await service.upsertLiveSession(requestBody)
         if let index = liveSessions.firstIndex(where: { $0.id == subscription.id }) {
             liveSessions[index] = subscription
         } else {
             liveSessions.append(subscription)
         }
+        let returnedLegSummary = subscription.legs.map { "\($0.from.uppercased())→\($0.to.uppercased())[\($0.enabled ? "on" : "off")]" }.joined(separator: ", ")
+        DebugLogStore.shared.log(
+            """
+            Registered notification live session
+            URL: \(requestURL)
+            Device: \(DeviceIdentity.deviceToken)
+            Existing subscription: \(requestBody.subscriptionId ?? "nil")
+            Returned subscription: \(subscription.id)
+            Route: \(subscription.routeKey)
+            Legs: \(returnedLegSummary.isEmpty ? "none" : returnedLegSummary)
+            Local live sessions: \(liveSessions.map(\.id).joined(separator: ", "))
+            """,
+            category: "Mute"
+        )
         hasLoadedRemoteState = true
         await syncGeofences()
         return subscription

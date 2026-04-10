@@ -839,7 +839,11 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         let endMsg = "Ending journey updates immediately for arrival at \(from)→\(to)"
         DebugLogStore.shared.log(endMsg, category: "Mute")
         print("🏁 \(endMsg)")
-        await LiveActivityManager.shared.stopMatching(fromCRS: from, toCRS: to)
+        await LiveActivityManager.shared.stopMatching(
+            fromCRS: from,
+            toCRS: to,
+            preserveNotificationLiveSession: true
+        )
         // Remove the live session locally so UI/geofences stop immediately, but do not
         // DELETE it from the backend here. `/notifications/terminate` uses that server-side
         // record to send the welcome + muted-status pushes, and deleting it first can race
@@ -889,8 +893,13 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
     static let shared = NotificationMuteRequestSender()
 
     private struct RequestContext {
+        let url: String
+        let deviceId: String
+        let subscriptionId: String
         let from: String
         let to: String
+        let delayMinutes: Int
+        let dateKey: String
     }
 
     private lazy var session: URLSession = {
@@ -983,8 +992,13 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
         syncQueue.sync {
             self.backgroundTasks[task.taskIdentifier] = token
             self.requestContexts[task.taskIdentifier] = RequestContext(
+                url: url.absoluteString,
+                deviceId: DeviceIdentity.deviceToken,
+                subscriptionId: subscriptionId,
                 from: from.uppercased(),
-                to: to.uppercased()
+                to: to.uppercased(),
+                delayMinutes: delayMinutes,
+                dateKey: currentDateKey()
             )
         }
         task.resume()
@@ -1017,7 +1031,14 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
         }
 
         if let error = error {
-            let msg = "Mute request failed: \(error.localizedDescription)"
+            var msg = "Mute request failed: \(error.localizedDescription)"
+            if let context {
+                msg += "\nURL: \(context.url)"
+                msg += "\nDevice: \(context.deviceId)"
+                msg += "\nSubscription: \(context.subscriptionId)"
+                msg += "\nLeg: \(context.from)→\(context.to)"
+                msg += "\nDate: \(context.dateKey) Delay: \(context.delayMinutes)m"
+            }
             Task { @MainActor in DebugLogStore.shared.log(msg, category: "Error") }
             print("❌ \(msg)")
             Task { @MainActor in
@@ -1025,6 +1046,13 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             }
         } else if let response = task.response as? HTTPURLResponse {
             var msg = "Mute request completed with status: \(response.statusCode)"
+            if let context {
+                msg += "\nURL: \(context.url)"
+                msg += "\nDevice: \(context.deviceId)"
+                msg += "\nSubscription: \(context.subscriptionId)"
+                msg += "\nLeg: \(context.from)→\(context.to)"
+                msg += "\nDate: \(context.dateKey) Delay: \(context.delayMinutes)m"
+            }
 
             if let data = data, !data.isEmpty, let responseString = String(data: data, encoding: .utf8) {
                 msg += "\nResponse: \(responseString)"

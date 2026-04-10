@@ -412,7 +412,10 @@ final class LiveActivityManager: ObservableObject {
     }
 
     /// Stop a specific Live Activity by its ID
-    func stopActivity(activityID: String) async {
+    func stopActivity(
+        activityID: String,
+        preserveNotificationLiveSession: Bool = false
+    ) async {
         guard let tracked = trackedActivities[activityID] else {
             print("⚠️ [LiveActivity] Cannot stop activity \(activityID) - not found in tracked activities")
             return
@@ -436,8 +439,21 @@ final class LiveActivityManager: ObservableObject {
         trackedActivities[activityID] = nil
         ScheduledLiveActivityAutoStartManager.shared.removeRecord(activityID: activityID)
 
-        // Unregister from backend so server stops polling
-        await sendLiveActivityUnregistration(activityID: activityID)
+        // Arrival-triggered stops must leave the notification live-session intact until
+        // `/notifications/terminate` succeeds; otherwise the backend loses the record
+        // it uses to send the welcome/muted push and returns 404.
+        if preserveNotificationLiveSession {
+            NotificationMuteRequestSender.shared.deferLiveActivityUnregistration(
+                activityID: activityID,
+                from: tracked.fromCRS,
+                to: tracked.toCRS
+            )
+            let msg = "Deferred Live Activity unregistration during stop for \(tracked.fromCRS)→\(tracked.toCRS)"
+            DebugLogStore.shared.log(msg, category: "Mute")
+            print("📍 \(msg)")
+        } else {
+            await sendLiveActivityUnregistration(activityID: activityID)
+        }
 
         // Update published state
         updatePublishedState()
@@ -450,7 +466,10 @@ final class LiveActivityManager: ObservableObject {
     }
 
     /// Stop the Live Activity for a specific journey
-    func stop(for journey: Journey) async {
+    func stop(
+        for journey: Journey,
+        preserveNotificationLiveSession: Bool = false
+    ) async {
         let fromCRS = journey.fromStation.crs.uppercased()
         let toCRS = journey.toStation.crs.uppercased()
 
@@ -461,7 +480,10 @@ final class LiveActivityManager: ObservableObject {
         }
         if !trackedIDs.isEmpty {
             for activityID in trackedIDs {
-                await stopActivity(activityID: activityID)
+                await stopActivity(
+                    activityID: activityID,
+                    preserveNotificationLiveSession: preserveNotificationLiveSession
+                )
             }
             return
         }
@@ -474,7 +496,18 @@ final class LiveActivityManager: ObservableObject {
 
         for activity in matchingActivities {
             await activity.end(nil, dismissalPolicy: .immediate)
-            await sendLiveActivityUnregistration(activityID: activity.id)
+            if preserveNotificationLiveSession {
+                NotificationMuteRequestSender.shared.deferLiveActivityUnregistration(
+                    activityID: activity.id,
+                    from: fromCRS,
+                    to: toCRS
+                )
+                let msg = "Deferred Live Activity unregistration during stop for \(fromCRS)→\(toCRS)"
+                DebugLogStore.shared.log(msg, category: "Mute")
+                print("📍 \(msg)")
+            } else {
+                await sendLiveActivityUnregistration(activityID: activity.id)
+            }
         }
         updatePublishedState()
         Task { @MainActor in
@@ -483,20 +516,38 @@ final class LiveActivityManager: ObservableObject {
         lastEndedAt = Date()
     }
 
-    func stopMatching(fromCRS: String, toCRS: String) async {
+    func stopMatching(
+        fromCRS: String,
+        toCRS: String,
+        preserveNotificationLiveSession: Bool = false
+    ) async {
         let trackedMatches = trackedActivities.values.contains {
             $0.fromCRS.uppercased() == fromCRS.uppercased() && $0.toCRS.uppercased() == toCRS.uppercased()
         }
         if trackedMatches || !systemActivities(forFromCRS: fromCRS.uppercased(), toCRS: toCRS.uppercased()).isEmpty {
             if let fromStation = StationsService.shared.stations.first(where: { $0.crs.caseInsensitiveCompare(fromCRS) == .orderedSame }),
                let toStation = StationsService.shared.stations.first(where: { $0.crs.caseInsensitiveCompare(toCRS) == .orderedSame }) {
-                await stop(for: Journey(fromStation: fromStation, toStation: toStation, favorite: false))
+                await stop(
+                    for: Journey(fromStation: fromStation, toStation: toStation, favorite: false),
+                    preserveNotificationLiveSession: preserveNotificationLiveSession
+                )
                 return
             }
         }
         for activity in systemActivities(forFromCRS: fromCRS.uppercased(), toCRS: toCRS.uppercased()) {
             await activity.end(nil, dismissalPolicy: .immediate)
-            await sendLiveActivityUnregistration(activityID: activity.id)
+            if preserveNotificationLiveSession {
+                NotificationMuteRequestSender.shared.deferLiveActivityUnregistration(
+                    activityID: activity.id,
+                    from: fromCRS,
+                    to: toCRS
+                )
+                let msg = "Deferred Live Activity unregistration during stop for \(fromCRS.uppercased())→\(toCRS.uppercased())"
+                DebugLogStore.shared.log(msg, category: "Mute")
+                print("📍 \(msg)")
+            } else {
+                await sendLiveActivityUnregistration(activityID: activity.id)
+            }
         }
     }
 
@@ -1476,6 +1527,8 @@ final class LiveActivityManager: ObservableObject {
             return
         }
 
+        let requestLog = "Live Activity unregistration request\nURL: \(urlString)\nActivity: \(activityID)\nDevice: \(deviceID)\nPreserve notification session: \(preserveNotificationLiveSession)"
+        DebugLogStore.shared.log(requestLog, category: "Mute")
         print("➡️ [LiveActivity] Unregistering activity \(activityID) at \(urlString) preserveNotificationLiveSession=\(preserveNotificationLiveSession)")
         logger.info("[LiveActivity] Unregistering live activity with backend: \(urlString, privacy: .public)")
 
@@ -1484,6 +1537,8 @@ final class LiveActivityManager: ObservableObject {
             if let http = response as? HTTPURLResponse {
                 let body = String(data: data, encoding: .utf8) ?? "<no body>"
                 let success = (200...299).contains(http.statusCode)
+                let responseLog = "Live Activity unregistration completed with status: \(http.statusCode)\nURL: \(urlString)\nActivity: \(activityID)\nPreserve notification session: \(preserveNotificationLiveSession)\nResponse: \(body)"
+                DebugLogStore.shared.log(responseLog, category: success ? "Mute" : "Error")
                 if success {
                     print("✅ [LiveActivity] Unregistration successful: status=\(http.statusCode) body=\(body)")
                     logger.info("[LiveActivity] Unregistration successful: status=\(http.statusCode)")
@@ -1493,6 +1548,8 @@ final class LiveActivityManager: ObservableObject {
                 }
             }
         } catch {
+            let errorLog = "Live Activity unregistration failed: \(error.localizedDescription)\nURL: \(urlString)\nActivity: \(activityID)\nPreserve notification session: \(preserveNotificationLiveSession)"
+            DebugLogStore.shared.log(errorLog, category: "Error")
             print("❌ [LiveActivity] Network error unregistering live activity: \(error)")
             logger.error("[LiveActivity] Network error unregistering live activity: \(String(describing: error), privacy: .public)")
         }

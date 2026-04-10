@@ -888,6 +888,15 @@ struct JourneyDetailsView: View {
                 ToastStore.shared.show("No active notifications found for this journey", icon: "exclamationmark.triangle.fill")
                 return
             }
+            DebugLogStore.shared.log(
+                """
+                Debug simulate arrival requested
+                Subscription: \(subscriptionId)
+                Leg: \(leg.fromStation.crs.uppercased())→\(leg.toStation.crs.uppercased())
+                Mode: \(delaySeconds == 0 ? "immediate mute flow" : "notification tap after \(Int(delaySeconds))s")
+                """,
+                category: "Mute"
+            )
             NotificationGeofenceManager.shared.simulateArrival(
                 subscriptionId: subscriptionId,
                 from: leg.fromStation.crs,
