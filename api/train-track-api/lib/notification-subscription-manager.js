@@ -2,19 +2,17 @@ import moment from 'moment';
 import crypto from 'crypto';
 import { getTrainTimes } from './realtime-trains-api.js';
 import { NotificationPushClient } from './notification-push-client.js';
-import { LiveActivityPushClient } from './live-activity-push-client.js';
 import redis from './redis-client.js';
 import { recordNotificationEvent } from './admin-data-store.js';
-import { pushToStartTokenStore } from './push-to-start-token-store.js';
 import { sleep } from './retry-utils.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.NOTIFICATION_POLL_INTERVAL_SECONDS || '30');
 const MAX_SUBSCRIPTIONS_PER_DEVICE = Number(process.env.NOTIFICATION_MAX_SUBSCRIPTIONS || '3');
 const MAX_WINDOW_MINUTES = 120;
 const MAX_LIVE_SESSION_DURATION_MS = 2 * 60 * 60 * 1000;
-const ACTIVATION_PROMPT_DELAY_MS = 30 * 1000;
 const SCHEDULED_SOURCE = 'scheduled';
 const LIVE_SESSION_SOURCE = 'live_session';
+const SUMMARY_START_GRACE_MINUTES = Math.max(1, Math.ceil(DEFAULT_POLL_INTERVAL_SECONDS / 60));
 
 const VALID_TYPES = new Set(['summary', 'delays', 'platform']);
 const DAY_MAP = {
@@ -29,7 +27,6 @@ class NotificationSubscriptionManager {
     constructor() {
         this.subscriptions = new Map();
         this.pushClient = new NotificationPushClient();
-        this.liveActivityPushClient = new LiveActivityPushClient();
         this.pollIntervalMs = DEFAULT_POLL_INTERVAL_SECONDS * 1000;
         this.isPolling = false;
         // Polling loop is started by init() after Redis hydration.
@@ -363,17 +360,15 @@ class NotificationSubscriptionManager {
             this._saveSubscription(subscription).catch((err) => {
                 console.error('[notifications] Failed to persist lastActiveAt:', err?.message || err);
             });
-            const snapshot = await getDeparturesSnapshot(leg.from, leg.to);
+            const snapshot = applyLastKnownPlatforms(
+                await getDeparturesSnapshot(leg.from, leg.to),
+                subscription.lastStateByLeg[legKey]
+            );
             if (!snapshot.departures.length) {
                 continue;
             }
 
             const notificationTypes = getEffectiveNotificationTypes(subscription);
-
-            if (this.subscriptionSource(subscription) === SCHEDULED_SOURCE) {
-                await this.sendScheduledLiveActivityStartIfNeeded(subscription, leg, legKey, snapshot, notificationTypes);
-                await this.sendActivationPromptIfNeeded(subscription, leg, legKey);
-            }
 
             if (this.subscriptionSource(subscription) === SCHEDULED_SOURCE || notificationTypes.includes('summary')) {
                 await this.sendSummaryIfNeeded(subscription, leg, legKey, snapshot);
@@ -383,155 +378,6 @@ class NotificationSubscriptionManager {
                 await this.sendUpdateNotifications(subscription, leg, legKey, snapshot, notificationTypes);
             }
         }
-    }
-
-    async sendScheduledLiveActivityStartIfNeeded(subscription, leg, legKey, snapshot, notificationTypes = getEffectiveNotificationTypes(subscription)) {
-        if (this.isMutedToday(subscription, legKey)) {
-            return;
-        }
-        const todayKey = moment().format('YYYY-MM-DD');
-        if (subscription.lastAutoStartSentByLeg?.[legKey] === todayKey) {
-            return;
-        }
-
-        const activeSubscription = this.getActiveSubscriptionForPush(subscription.id, leg, 'scheduled_live_activity_start_pre_send');
-        if (!activeSubscription) {
-            return;
-        }
-
-        const pushToStartRecord = await pushToStartTokenStore.get(activeSubscription.deviceId);
-        let pushResult = null;
-        let usedPushToStart = false;
-
-        if (pushToStartRecord?.pushToStartToken) {
-            const startPush = buildScheduledLiveActivityStartPush(
-                activeSubscription,
-                leg,
-                snapshot,
-                todayKey,
-                { prefersSeparateSummary: notificationTypes.includes('summary') }
-            );
-            pushResult = await this.liveActivityPushClient.sendLiveActivityUpdate(
-                pushToStartRecord.pushToStartToken,
-                startPush.payload,
-                {
-                    useSandbox: pushToStartRecord.useSandbox === true,
-                    event: startPush.type
-                }
-            );
-            this.logScheduledStartEvent(activeSubscription, leg, startPush, pushResult, {
-                environment: pushToStartRecord.useSandbox === true ? 'sandbox' : 'prod',
-                token: pushToStartRecord.pushToStartToken,
-                mode: 'push_to_start'
-            });
-            console.log('[notifications] scheduled_live_activity_start_push_to_start', JSON.stringify({
-                subscription_id: activeSubscription.id,
-                device_id: activeSubscription.deviceId,
-                route_key: activeSubscription.routeKey,
-                leg: legKey,
-                use_sandbox: pushToStartRecord.useSandbox === true,
-                status: pushResult?.status,
-                reason: pushResult?.body?.reason || null
-            }));
-
-            if (pushResult?.isBadToken) {
-                await pushToStartTokenStore.delete(activeSubscription.deviceId);
-            } else if (typeof pushResult?.status === 'number' && pushResult.status >= 200 && pushResult.status < 300) {
-                usedPushToStart = true;
-            }
-        }
-
-        if (!usedPushToStart) {
-            console.warn('[notifications] scheduled_live_activity_start_skipped', JSON.stringify({
-                subscription_id: activeSubscription.id,
-                device_id: activeSubscription.deviceId,
-                route_key: activeSubscription.routeKey,
-                leg: legKey,
-                reason: pushToStartRecord?.pushToStartToken ? 'push_to_start_failed' : 'missing_push_to_start_token'
-            }));
-            return;
-        }
-
-        if (!(typeof pushResult?.status === 'number' && pushResult.status >= 200 && pushResult.status < 300)) {
-            return;
-        }
-
-        activeSubscription.lastAutoStartSentByLeg[legKey] = todayKey;
-        activeSubscription.lastAutoStartSentAtByLeg[legKey] = new Date().toISOString();
-        this._saveSubscription(activeSubscription).catch((err) => {
-            console.error('[notifications] Failed to persist scheduled live activity send markers:', err?.message || err);
-        });
-    }
-
-    async sendActivationPromptIfNeeded(subscription, leg, legKey) {
-        if (this.isMutedToday(subscription, legKey)) {
-            return;
-        }
-        const todayKey = moment().format('YYYY-MM-DD');
-        if (subscription.lastActivationPromptSentByLeg?.[legKey] === todayKey) {
-            return;
-        }
-
-        const startedAt = Date.parse(subscription.lastAutoStartSentAtByLeg?.[legKey] || '');
-        if (!Number.isFinite(startedAt) || (Date.now() - startedAt) < ACTIVATION_PROMPT_DELAY_MS) {
-            return;
-        }
-        const hasLiveSession = Array.from(this.subscriptions.values()).some((candidate) => {
-            if (candidate.deviceId !== subscription.deviceId) return false;
-            if (this.subscriptionSource(candidate) !== LIVE_SESSION_SOURCE) return false;
-            if (this.isExpiredLiveSession(candidate)) return false;
-            return Array.isArray(candidate.legs) && candidate.legs.some((candidateLeg) =>
-                `${candidateLeg.from}-${candidateLeg.to}` === legKey
-            );
-        });
-        if (hasLiveSession) {
-            subscription.lastActivationPromptSentByLeg[legKey] = todayKey;
-            this._saveSubscription(subscription).catch((err) => {
-                console.error('[notifications] Failed to persist activation prompt suppression:', err?.message || err);
-            });
-            return;
-        }
-
-        const activeSubscription = this.getActiveSubscriptionForPush(subscription.id, leg, 'activation_prompt_pre_send');
-        if (!activeSubscription) {
-            return;
-        }
-
-        const prompt = buildActivationPromptMessage(activeSubscription, leg);
-        const pushResult = await this.pushClient.sendNotification(
-            activeSubscription.pushToken,
-            prompt.payload,
-            { useSandbox: activeSubscription.useSandbox, event: prompt.type }
-        );
-        this.logSendEvent(activeSubscription, leg, prompt, pushResult);
-        console.log('[notifications] activation_prompt_push', JSON.stringify({
-            subscription_id: activeSubscription.id,
-            device_id: activeSubscription.deviceId,
-            route_key: activeSubscription.routeKey,
-            leg: legKey,
-            use_sandbox: activeSubscription.useSandbox,
-            status: pushResult?.status,
-            reason: pushResult?.body?.reason || null
-        }));
-        if (pushResult?.isBadToken) {
-            console.warn('[notifications] bad_token_delete', JSON.stringify({
-                subscription_id: activeSubscription.id,
-                device_id: activeSubscription.deviceId,
-                route_key: activeSubscription.routeKey,
-                context: 'sendActivationPromptIfNeeded'
-            }));
-            this.subscriptions.delete(activeSubscription.id);
-            await this._deleteFromRedis(activeSubscription.id);
-            return;
-        }
-        if (!(typeof pushResult?.status === 'number' && pushResult.status >= 200 && pushResult.status < 300)) {
-            return;
-        }
-
-        activeSubscription.lastActivationPromptSentByLeg[legKey] = todayKey;
-        this._saveSubscription(activeSubscription).catch((err) => {
-            console.error('[notifications] Failed to persist activation prompt markers:', err?.message || err);
-        });
     }
 
     async sendSummaryIfNeeded(subscription, leg, legKey, snapshot) {
@@ -551,7 +397,11 @@ class NotificationSubscriptionManager {
             return;
         }
         const nowMinutes = currentMinutes();
-        if (nowMinutes < startMinutes || nowMinutes > endMinutes) {
+        if (
+            nowMinutes < startMinutes
+            || nowMinutes > endMinutes
+            || nowMinutes >= (startMinutes + SUMMARY_START_GRACE_MINUTES)
+        ) {
             return;
         }
 
@@ -610,7 +460,7 @@ class NotificationSubscriptionManager {
         for (const dep of snapshot.departures) {
             const serviceID = dep.serviceID;
             const delayMinutes = calculateDelayMinutes(dep.scheduled, dep.estimated);
-            const platform = dep.platform || 'TBC';
+            const platform = normalizePlatform(dep.platform);
             const current = {
                 delayMinutes,
                 isCancelled: Boolean(dep.isCancelled),
@@ -636,7 +486,8 @@ class NotificationSubscriptionManager {
             }
 
             if (notificationTypes.includes('platform')) {
-                if (isNextDeparture && prev.platform && current.platform && prev.platform !== current.platform) {
+                const previousPlatform = normalizePlatform(prev.platform);
+                if (isNextDeparture && previousPlatform && current.platform && previousPlatform !== current.platform) {
                     await this.sendNotification(subscription, buildPlatformMessage(subscription, leg, current), leg);
                 }
             }
@@ -735,35 +586,6 @@ class NotificationSubscriptionManager {
             }
         }).catch((error) => {
             console.error('[admin] Failed to log notification send event:', error?.message || error);
-        });
-    }
-
-    logScheduledStartEvent(subscription, leg, notification, result, { environment, token, mode }) {
-        const status = result?.status ?? null;
-        const success = typeof status === 'number' && status >= 200 && status < 300;
-        recordNotificationEvent({
-            channel: 'live_activity',
-            type: notification?.type || 'scheduled_live_activity_start',
-            success,
-            status,
-            error: result?.error || result?.body?.reason || result?.reason || null,
-            apns_environment: environment,
-            subscription_id: subscription.id,
-            device_id: subscription.deviceId,
-            route_key: subscription.routeKey,
-            from_station: leg?.from || null,
-            to_station: leg?.to || null,
-            token: token || null,
-            is_bad_token: Boolean(result?.isBadToken),
-            payload: notification?.payload ?? null,
-            response: result || null,
-            metadata: {
-                mode,
-                notification_types: getEffectiveNotificationTypes(subscription),
-                days_of_week: subscription.daysOfWeek
-            }
-        }).catch((error) => {
-            console.error('[admin] Failed to log scheduled live activity start event:', error?.message || error);
         });
     }
 
@@ -1031,6 +853,32 @@ async function getDeparturesSnapshot(fromStation, toStation) {
     };
 }
 
+function applyLastKnownPlatforms(snapshot, previousStateByService = {}) {
+    if (!snapshot || !Array.isArray(snapshot.departures) || snapshot.departures.length === 0) {
+        return snapshot;
+    }
+
+    return {
+        ...snapshot,
+        departures: snapshot.departures.map((dep) => {
+            const currentPlatform = normalizePlatform(dep?.platform);
+            if (currentPlatform || !dep?.serviceID) {
+                return currentPlatform ? { ...dep, platform: currentPlatform } : dep;
+            }
+
+            const previousPlatform = normalizePlatform(previousStateByService?.[dep.serviceID]?.platform);
+            if (!previousPlatform) {
+                return dep;
+            }
+
+            return {
+                ...dep,
+                platform: previousPlatform
+            };
+        })
+    };
+}
+
 function calculateDelayMinutes(scheduled, estimated) {
     if (!scheduled || !estimated) return 0;
     const sched = moment(scheduled, 'HH:mm');
@@ -1052,70 +900,6 @@ function buildSummaryMessage(subscription, leg, snapshot) {
     const toLabel = leg.toName || leg.to;
     const body = `Next train status: ${status}\nDepartures: ${departures}.`;
     return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'summary'), 'summary');
-}
-
-function buildScheduledLiveActivityStartMessage(subscription, leg, snapshot) {
-    const summary = buildSummaryMessage(subscription, leg, snapshot);
-    const title = summary?.payload?.aps?.alert?.title || `${leg.fromName || leg.from} → ${leg.toName || leg.to}`;
-    const body = summary?.payload?.aps?.alert?.body || 'Tap to view your scheduled journey.';
-    return buildNotificationPayload(
-        title,
-        body,
-        buildLegMeta(subscription, leg, 'scheduled_live_activity_start'),
-        'scheduled_live_activity_start',
-        'JOURNEY_LEG_ALERT',
-        { includeContentAvailable: true }
-    );
-}
-
-function buildActivationPromptMessage(subscription, leg) {
-    const fromLabel = leg.fromName || leg.from;
-    const toLabel = leg.toName || leg.to;
-    return buildNotificationPayload(
-        `${fromLabel} → ${toLabel}`,
-        'Tap to activate journey updates',
-        buildLegMeta(subscription, leg, 'activation_prompt'),
-        'activation_prompt',
-        'JOURNEY_UPDATES_ACTIVATION'
-    );
-}
-
-function buildScheduledLiveActivityStartPush(
-    subscription,
-    leg,
-    snapshot,
-    todayKey,
-    { prefersSeparateSummary = false } = {}
-) {
-    const summary = buildSummaryMessage(subscription, leg, snapshot);
-    const alert = prefersSeparateSummary
-        ? {
-            title: `${leg.fromName || leg.from} → ${leg.toName || leg.to}`,
-            body: 'Live Activity started.'
-        }
-        : (summary?.payload?.aps?.alert || {
-        title: `${leg.fromName || leg.from} → ${leg.toName || leg.to}`,
-        body: 'Live Activity started.'
-    });
-    const timestamp = snapshot?.fetchedAt ? moment(snapshot.fetchedAt).unix() : moment().unix();
-    const displayName = `${leg.fromName || leg.from} → ${leg.toName || leg.to}`;
-
-    return {
-        type: 'scheduled_live_activity_start',
-        payload: {
-            aps: {
-                timestamp,
-                event: 'start',
-                'attributes-type': 'JourneyActivityAttributes',
-                attributes: {
-                    displayName
-                },
-                'content-state': buildScheduledStartContentState(subscription, leg, snapshot, todayKey),
-                alert
-            },
-            ...buildLegMeta(subscription, leg, 'scheduled_live_activity_start')
-        }
-    };
 }
 
 function buildStatusText(dep) {
@@ -1148,7 +932,10 @@ function buildCancellationMessage(subscription, leg, dep) {
 function buildPlatformMessage(subscription, leg, dep) {
     const fromLabel = leg.fromName || leg.from;
     const toLabel = leg.toName || leg.to;
-    const platform = dep.platform || 'TBC';
+    const platform = normalizePlatform(dep.platform);
+    if (!platform) {
+        return null;
+    }
     const body = `${fromLabel} → ${toLabel} platform update: The ${dep.scheduled} departure is now expected to depart at ${dep.estimated} from platform ${platform}.`;
     return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'platform'), 'platform');
 }
@@ -1218,44 +1005,6 @@ function buildMutedStatusBody(leg, snapshot) {
     return `${formatDepartureTime(primary)}, on time. Platform TBC.`;
 }
 
-function buildScheduledStartContentState(subscription, leg, snapshot, todayKey) {
-    const primary = snapshot?.departures?.[0] || {};
-    const departures = Array.isArray(snapshot?.departures) ? snapshot.departures : [];
-
-    return {
-        fromCRS: leg.from,
-        toCRS: leg.to,
-        destinationTitle: leg.toName || leg.to,
-        arrivalLabel: null,
-        scheduledDeparture: primary.scheduled || null,
-        length: null,
-        platform: primary.platform || 'TBC',
-        estimated: primary.estimated || primary.scheduled || '—',
-        isCancelled: Boolean(primary.isCancelled),
-        statusText: primary.scheduled ? buildStatusText(primary) : null,
-        delayMinutes: calculateDelayMinutes(primary.scheduled, primary.estimated),
-        upcomingDepartures: departures.slice(1, 4).map((dep) => ({
-            time: dep.estimated || dep.scheduled || '—',
-            delayMinutes: calculateDelayMinutes(dep.scheduled, dep.estimated),
-            isCancelled: Boolean(dep.isCancelled),
-            platform: dep.platform || null,
-            hasFasterLaterService: false
-        })),
-        lastUpdated: snapshot?.fetchedAt ? moment(snapshot.fetchedAt).unix() : moment().unix(),
-        activityID: null,
-        revision: 0,
-        appIsActive: false,
-        journeyUpdatesEnabled: false,
-        scheduleKey: buildScheduleKey(leg, todayKey),
-        windowStart: leg.windowStart,
-        windowEnd: leg.windowEnd
-    };
-}
-
-function buildScheduleKey(leg, todayKey = moment().format('YYYY-MM-DD')) {
-    return `${String(leg.from || '').toUpperCase()}-${String(leg.to || '').toUpperCase()}|${leg.windowStart}|${leg.windowEnd}|${todayKey}`;
-}
-
 function scheduledSubscriptionsOverlap(existingSubscription, nextDaysOfWeek, nextLegs) {
     const existingDays = new Set(Array.isArray(existingSubscription?.daysOfWeek) ? existingSubscription.daysOfWeek : []);
     const nextDays = new Set(Array.isArray(nextDaysOfWeek) ? nextDaysOfWeek : []);
@@ -1288,7 +1037,7 @@ function scheduledLegKey(leg) {
 }
 
 function hasPlatform(dep) {
-    return typeof dep?.platform === 'string' && dep.platform.trim().length > 0;
+    return normalizePlatform(dep?.platform) !== null;
 }
 
 function isUnknownDelay(dep) {
@@ -1316,6 +1065,12 @@ function formatPlatformSuffix(dep) {
 
 function formatUnknownDelayPlatformSuffix(dep) {
     return hasPlatform(dep) ? `. Due from platform ${dep.platform.trim()}` : '. Platform TBC';
+}
+
+function normalizePlatform(value) {
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
 }
 
 function formatStationGreetingName(value) {

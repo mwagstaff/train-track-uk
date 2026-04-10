@@ -40,6 +40,32 @@ struct DepartureV2: Codable, Identifiable, Hashable {
         case serviceID, delayReason, cancelReason, timestamp
     }
 
+    init(
+        departureTime: DepartureTimeV2,
+        serviceType: String,
+        platform: String?,
+        isCancelled: Bool,
+        length: Int?,
+        destination: [PlaceInfoV2],
+        origin: [PlaceInfoV2]?,
+        serviceID: String,
+        delayReason: String?,
+        cancelReason: String?,
+        timestamp: Date?
+    ) {
+        self.departureTime = departureTime
+        self.serviceType = serviceType
+        self.platform = platform
+        self.isCancelled = isCancelled
+        self.length = length
+        self.destination = destination
+        self.origin = origin
+        self.serviceID = serviceID
+        self.delayReason = delayReason
+        self.cancelReason = cancelReason
+        self.timestamp = timestamp
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.departureTime = try c.decode(DepartureTimeV2.self, forKey: .departureTime)
@@ -72,6 +98,22 @@ struct DepartureV2: Codable, Identifiable, Hashable {
         self.delayReason = try? c.decode(String.self, forKey: .delayReason)
         self.cancelReason = try? c.decode(String.self, forKey: .cancelReason)
         self.timestamp = try? c.decode(Date.self, forKey: .timestamp)
+    }
+
+    func withPlatform(_ platform: String?) -> DepartureV2 {
+        DepartureV2(
+            departureTime: departureTime,
+            serviceType: serviceType,
+            platform: platform,
+            isCancelled: isCancelled,
+            length: length,
+            destination: destination,
+            origin: origin,
+            serviceID: serviceID,
+            delayReason: delayReason,
+            cancelReason: cancelReason,
+            timestamp: timestamp
+        )
     }
 }
 

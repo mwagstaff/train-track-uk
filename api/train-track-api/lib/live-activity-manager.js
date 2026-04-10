@@ -189,10 +189,13 @@ class LiveActivityManager {
         }
         subscription.isPollInProgress = true;
         try {
-            const snapshot = await this.getDeparturesSnapshot(
-                subscription.fromStation,
-                subscription.toStation,
-                subscription.preferredServiceId
+            const snapshot = this.applyLastKnownPlatforms(
+                await this.getDeparturesSnapshot(
+                    subscription.fromStation,
+                    subscription.toStation,
+                    subscription.preferredServiceId
+                ),
+                subscription.lastSnapshot
             );
             const appIsActive = this.shouldShowAppActive(subscription);
             const appIsActiveChanged = Boolean(subscription.appIsActive) !== appIsActive;
@@ -460,10 +463,12 @@ class LiveActivityManager {
         }
 
         // Platform change (only alert when both sides have a known platform)
-        if (prev.platform && next.platform && prev.platform !== next.platform) {
+        const previousPlatform = this.normalizePlatform(prev.platform);
+        const nextPlatform = this.normalizePlatform(next.platform);
+        if (previousPlatform && nextPlatform && previousPlatform !== nextPlatform) {
             return {
                 title: 'Platform Change',
-                body: `Platform changed from ${prev.platform} to ${next.platform}.`
+                body: `Platform changed from ${previousPlatform} to ${nextPlatform}.`
             };
         }
 
@@ -824,6 +829,44 @@ class LiveActivityManager {
         if (typeof value === 'string' && value.length > 0) return value;
         if (typeof value === 'number') return String(value);
         return fallback;
+    }
+
+    normalizePlatform(value) {
+        if (typeof value !== 'string') return null;
+        const trimmed = value.trim();
+        return trimmed.length > 0 ? trimmed : null;
+    }
+
+    applyLastKnownPlatforms(snapshot, previousSnapshot) {
+        if (!snapshot || !Array.isArray(snapshot.departures) || snapshot.departures.length === 0) {
+            return snapshot;
+        }
+
+        const previousPlatforms = new Map(
+            (Array.isArray(previousSnapshot?.departures) ? previousSnapshot.departures : [])
+                .map((dep) => [dep?.serviceID, this.normalizePlatform(dep?.platform)])
+                .filter(([serviceID, platform]) => serviceID && platform)
+        );
+
+        return {
+            ...snapshot,
+            departures: snapshot.departures.map((dep) => {
+                const currentPlatform = this.normalizePlatform(dep?.platform);
+                if (currentPlatform || !dep?.serviceID) {
+                    return currentPlatform ? { ...dep, platform: currentPlatform } : dep;
+                }
+
+                const previousPlatform = previousPlatforms.get(dep.serviceID);
+                if (!previousPlatform) {
+                    return dep;
+                }
+
+                return {
+                    ...dep,
+                    platform: previousPlatform
+                };
+            })
+        };
     }
 
     getSubscription(deviceId, activityId, { fallbackDeviceIds = [] } = {}) {

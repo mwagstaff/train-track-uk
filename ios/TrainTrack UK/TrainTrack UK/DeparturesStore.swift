@@ -158,7 +158,10 @@ final class DeparturesStore: ObservableObject {
             let map = try await NetworkServicePhone.shared.fetchDeparturesAggregated(pairs: pairs)
             // Merge the fresh data into our store
             for (key, value) in map {
-                self.departuresByPair[key] = value
+                self.departuresByPair[key] = departuresRetainingLastKnownPlatforms(
+                    value,
+                    existing: departuresByPair[key] ?? []
+                )
             }
             await runPinnedCleanupNow()
         } catch {
@@ -237,10 +240,11 @@ final class DeparturesStore: ObservableObject {
                 pairs: pairs,
                 delayBeforeEachBatch: delayBeforeEachBatch
             )
+            let mergedMap = mergeDeparturesRetainingLastKnownPlatforms(map)
             if replacingExistingDepartures {
-                departuresByPair = map
+                departuresByPair = mergedMap
             } else {
-                for (key, value) in map {
+                for (key, value) in mergedMap {
                     departuresByPair[key] = value
                 }
             }
@@ -261,6 +265,47 @@ final class DeparturesStore: ObservableObject {
                 WidgetCenter.shared.reloadTimelines(ofKind: "ClosestFavouriteWidget")
             }
         }
+    }
+
+    private func mergeDeparturesRetainingLastKnownPlatforms(_ fetched: [String: [DepartureV2]]) -> [String: [DepartureV2]] {
+        var merged: [String: [DepartureV2]] = [:]
+        for (key, departures) in fetched {
+            merged[key] = departuresRetainingLastKnownPlatforms(
+                departures,
+                existing: departuresByPair[key] ?? []
+            )
+        }
+        return merged
+    }
+
+    private func departuresRetainingLastKnownPlatforms(
+        _ departures: [DepartureV2],
+        existing: [DepartureV2]
+    ) -> [DepartureV2] {
+        let previousPlatformsByServiceID: [String: String] = Dictionary(
+            uniqueKeysWithValues: existing.compactMap { departure in
+                guard let platform = normalizedPlatform(departure.platform) else {
+                    return nil
+                }
+                return (departure.serviceID, platform)
+            }
+        )
+
+        return departures.map { departure in
+            guard normalizedPlatform(departure.platform) == nil,
+                  let platform = previousPlatformsByServiceID[departure.serviceID] else {
+                return departure
+            }
+            return departure.withPlatform(platform)
+        }
+    }
+
+    private func normalizedPlatform(_ platform: String?) -> String? {
+        guard let trimmed = platform?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 
     func ensureServiceDetails(for ids: [String], force: Bool = false) async {
