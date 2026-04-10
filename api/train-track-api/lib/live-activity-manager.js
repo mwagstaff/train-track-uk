@@ -390,6 +390,7 @@ class LiveActivityManager {
 
             return {
                 ...dep,
+                arrivalTime: dep.isCancelled ? null : this.arrivalTimeForDestination(details, toStation),
                 statusText: richStatus // Include rich status for comparison
             };
         });
@@ -534,6 +535,7 @@ class LiveActivityManager {
         const destinationTitle = this.ensureString(primary.destination?.locationName);
         const upcomingDepartures = snapshot.departures.slice(1).map((dep) => ({
             time: this.getTimeString(dep.estimated, dep.scheduled),
+            arrivalTime: dep.isCancelled ? null : this.ensureOptionalString(dep.arrivalTime),
             delayMinutes: this.calculateDelay(dep.scheduled, dep.estimated),
             isCancelled: Boolean(dep.isCancelled),
             platform: this.ensureString(dep.platform),
@@ -544,7 +546,7 @@ class LiveActivityManager {
             fromCRS: this.ensureString(subscription.fromStation),
             toCRS: this.ensureString(subscription.toStation),
             destinationTitle,
-            arrivalLabel: null,
+            arrivalLabel: primary.isCancelled || !primary.arrivalTime ? null : `Arr ${primary.arrivalTime}`,
             scheduledDeparture: this.ensureOptionalString(primary.scheduled),
             length: Number.isFinite(primary.length) && primary.length > 0 ? primary.length : null,
             platform,
@@ -760,6 +762,39 @@ class LiveActivityManager {
         }
 
         return stations;
+    }
+
+    arrivalTimeForDestination(serviceDetails, toStation) {
+        if (!serviceDetails || !toStation) return null;
+
+        const targetCRS = String(toStation).trim().toUpperCase();
+        const allStations = this.getAllStations(serviceDetails);
+        const match = allStations.find((station) => String(station.crs || '').trim().toUpperCase() === targetCRS);
+        if (match) {
+            return this.stationDisplayTime(match);
+        }
+
+        if (String(serviceDetails.crs || '').trim().toUpperCase() === targetCRS) {
+            const currentStationDisplay = this.stationDisplayTime({
+                st: serviceDetails.sta || serviceDetails.std,
+                et: serviceDetails.eta || serviceDetails.etd,
+                at: serviceDetails.ata || serviceDetails.atd
+            });
+            return currentStationDisplay;
+        }
+
+        return null;
+    }
+
+    stationDisplayTime(station) {
+        if (!station) return null;
+        if (station.at && station.at !== 'Cancelled') {
+            return station.at === 'On time' ? station.st : station.at;
+        }
+        if (station.et && station.et !== 'Cancelled') {
+            return station.et === 'On time' ? station.st : station.et;
+        }
+        return station.st || null;
     }
 
     calculateStationDelay(station) {

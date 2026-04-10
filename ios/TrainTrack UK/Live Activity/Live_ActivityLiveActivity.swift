@@ -177,7 +177,7 @@ struct LiveActivityLockScreenView: View {
                         .font(.subheadline)
                         .fontWeight(.semibold)
                         .lineLimit(1)
-                    if !showsActivationBanner, let arrivalLabel = state.arrivalLabel {
+                    if let arrivalLabel = state.arrivalLabel {
                         Text(arrivalLabel)
                             .font(.caption)
                             .foregroundColor(.secondary)
@@ -189,7 +189,7 @@ struct LiveActivityLockScreenView: View {
                             .foregroundStyle(.red)
                     } else if let length = state.length, length > 0 {
                         Text("\(length) cars")
-                            .font(.caption)
+                            .font(.caption2)
                             .foregroundColor(.secondary)
                     }
                 }
@@ -229,8 +229,8 @@ struct LiveActivityLockScreenView: View {
             if !showsActivationBanner && !state.upcomingDepartures.isEmpty {
                 HStack(spacing: 4) {
                     ForEach(Array(state.upcomingDepartures.prefix(3).enumerated()), id: \.offset) { _, departure in
-                        HStack(spacing: 10) {
-                            HStack(spacing: 2) {
+                        HStack(spacing: 6) {
+                            HStack(spacing: 3) {
                                 if departure.hasFasterLaterService {
                                     Image(systemName: "exclamationmark.triangle.fill")
                                         .font(.system(size: 8))
@@ -242,6 +242,15 @@ struct LiveActivityLockScreenView: View {
                                     .monospacedDigit()
                                     .foregroundColor(departure.isCancelled ? .red : estimatedTimeColor(departure.delayMinutes))
                                     .strikethrough(departure.isCancelled, color: .red)
+                            }
+
+                            if let arrivalTime = departure.arrivalTime, !departure.isCancelled {
+                                Text("-> \(arrivalTime)")
+                                    .font(.caption2)
+                                    .fontWeight(.regular)
+                                    .monospacedDigit()
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
                             }
 
                             // Show platform badge if available, otherwise show TBC
@@ -476,9 +485,9 @@ extension JourneyActivityAttributes.ContentState {
             statusText: "Currently on time, between Clapham Junction and Battersea Park",
             delayMinutes: 0,
             upcomingDepartures: [
-                JourneyActivityAttributes.UpcomingDeparture(time: "09:50", delayMinutes: 0, isCancelled: false, platform: "2", hasFasterLaterService: false),
-                JourneyActivityAttributes.UpcomingDeparture(time: "10:05", delayMinutes: 3, isCancelled: false, platform: "3", hasFasterLaterService: true),
-                JourneyActivityAttributes.UpcomingDeparture(time: "10:20", delayMinutes: 0, isCancelled: false, platform: "2", hasFasterLaterService: false)
+                JourneyActivityAttributes.UpcomingDeparture(time: "09:50", arrivalTime: "10:02", delayMinutes: 0, isCancelled: false, platform: "2", hasFasterLaterService: false),
+                JourneyActivityAttributes.UpcomingDeparture(time: "10:05", arrivalTime: "10:14", delayMinutes: 3, isCancelled: false, platform: "3", hasFasterLaterService: true),
+                JourneyActivityAttributes.UpcomingDeparture(time: "10:20", arrivalTime: "10:35", delayMinutes: 0, isCancelled: false, platform: "2", hasFasterLaterService: false)
             ]
         )
     }
@@ -497,9 +506,9 @@ extension JourneyActivityAttributes.ContentState {
             statusText: "Currently 7 minutes late, approaching London Victoria",
             delayMinutes: 7,
             upcomingDepartures: [
-                JourneyActivityAttributes.UpcomingDeparture(time: "10:03", delayMinutes: 0, isCancelled: false, platform: "15", hasFasterLaterService: false),
-                JourneyActivityAttributes.UpcomingDeparture(time: "10:18", delayMinutes: 0, isCancelled: true, platform: "14", hasFasterLaterService: false),
-                JourneyActivityAttributes.UpcomingDeparture(time: "10:33", delayMinutes: 8, isCancelled: false, platform: "15", hasFasterLaterService: false)
+                JourneyActivityAttributes.UpcomingDeparture(time: "10:03", arrivalTime: "10:24", delayMinutes: 0, isCancelled: false, platform: "15", hasFasterLaterService: false),
+                JourneyActivityAttributes.UpcomingDeparture(time: "10:18", arrivalTime: nil, delayMinutes: 0, isCancelled: true, platform: "14", hasFasterLaterService: false),
+                JourneyActivityAttributes.UpcomingDeparture(time: "10:33", arrivalTime: "10:58", delayMinutes: 8, isCancelled: false, platform: "15", hasFasterLaterService: false)
             ]
         )
     }

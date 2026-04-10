@@ -873,16 +873,19 @@ final class LiveActivityManager: ObservableObject {
             }
             return "\(journey.toStation.name)"
         }()
-        var arrival: String? = nil
+        let primaryArrivalTime: String?
+        if let next, !next.isCancelled {
+            primaryArrivalTime = await finalArrivalTime(for: next, startingJourney: journey, depStore: depStore)
+        } else {
+            primaryArrivalTime = nil
+        }
         var statusText: String? = nil
         var delayMins: Int = 0
         if let n = next {
             if n.isCancelled {
                 statusText = nil
-            } else if let details = depStore.serviceDetailsById[n.serviceID] {
-                if let cp = details.allStations.first(where: { $0.crs == journey.toStation.crs }) {
-                    if let et = cp.et, !et.isEmpty, et.lowercased() != "on time" { arrival = "Arr \(et)" } else { arrival = "Arr \(cp.st)" }
-                }
+            }
+            if !n.isCancelled, let details = depStore.serviceDetailsById[n.serviceID] {
                 if let live = computeLiveStatus(from: details, within: journey.fromStation.crs, toCRS: journey.toStation.crs) {
                     statusText = live.text
                     delayMins = live.delayMinutes
@@ -911,6 +914,7 @@ final class LiveActivityManager: ObservableObject {
             let hasFaster = checkForFasterLaterService(dep: dep, allDeps: laterDeps, fromCRS: journey.fromStation.crs, toCRS: journey.toStation.crs, depStore: depStore)
             upcoming.append(JourneyActivityAttributes.UpcomingDeparture(
                 time: dep.departureTime.estimated ?? dep.departureTime.scheduled,
+                arrivalTime: dep.isCancelled ? nil : await finalArrivalTime(for: dep, startingJourney: journey, depStore: depStore),
                 delayMinutes: depDelayMins,
                 isCancelled: dep.isCancelled,
                 platform: dep.platform,
@@ -922,7 +926,7 @@ final class LiveActivityManager: ObservableObject {
             fromCRS: journey.fromStation.crs,
             toCRS: journey.toStation.crs,
             destinationTitle: title,
-            arrivalLabel: arrival,
+            arrivalLabel: primaryArrivalTime.map { "Arr \($0)" },
             scheduledDeparture: scheduledDeparture,
             length: length,
             platform: platform,
@@ -938,6 +942,119 @@ final class LiveActivityManager: ObservableObject {
             windowEnd: windowEnd
         )
         return state
+    }
+
+    private func relevantJourneyLegs(for journey: Journey) -> [Journey] {
+        guard let group = JourneyStore.shared.journeyGroups().first(where: { $0.id == journey.groupId }) else {
+            return [journey]
+        }
+        if let index = group.legs.firstIndex(where: { $0.id == journey.id }) {
+            return Array(group.legs.dropFirst(index))
+        }
+        if let index = group.legs.firstIndex(where: { $0.legIndex == journey.legIndex }) {
+            return Array(group.legs.dropFirst(index))
+        }
+        return group.legs.filter { $0.legIndex >= journey.legIndex }
+    }
+
+    private func selectDeparture(for leg: Journey, earliest: Date?, depStore: DeparturesStore) -> DepartureV2? {
+        let departures = depStore.departures(for: leg)
+        if let earliest,
+           let match = departures.first(where: { departure in
+               guard !departure.isCancelled,
+                     let departureDate = departureDate(for: departure) else {
+                   return false
+               }
+               return departureDate >= earliest
+           }) {
+            return match
+        }
+        return departures.first(where: { !$0.isCancelled }) ?? departures.first
+    }
+
+    private func departureDate(for departure: DepartureV2) -> Date? {
+        parseHHmmToDate(displayDepartureTime(for: departure))
+    }
+
+    private func arrivalTime(for departure: DepartureV2, toCRS: String, depStore: DeparturesStore) -> String? {
+        guard let details = depStore.serviceDetailsById[departure.serviceID] else { return nil }
+        let targetCRS = toCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if let callingPoint = details.allStations.first(where: {
+            $0.crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == targetCRS
+        }) {
+            return callingPointDisplayTime(callingPoint)
+        }
+        if details.crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == targetCRS {
+            if let ata = details.ata, ata != "Cancelled" {
+                if ata == "On time", let sta = details.sta { return sta }
+                return ata
+            }
+            if let sta = details.sta {
+                return sta
+            }
+        }
+        if let targetName = StationsService.shared.stations.first(where: { $0.crs.caseInsensitiveCompare(toCRS) == .orderedSame })?.name {
+            let normalizedTarget = normalizeStationName(targetName)
+            if let callingPoint = details.allStations.first(where: {
+                normalizeStationName($0.locationName) == normalizedTarget
+            }) {
+                return callingPointDisplayTime(callingPoint)
+            }
+        }
+        return nil
+    }
+
+    private func callingPointDisplayTime(_ callingPoint: CallingPoint) -> String {
+        if let at = callingPoint.at, at != "Cancelled" {
+            return at == "On time" ? callingPoint.st : at
+        }
+        if let et = callingPoint.et, et != "Cancelled" {
+            return et == "On time" ? callingPoint.st : et
+        }
+        return callingPoint.st
+    }
+
+    private func normalizeStationName(_ name: String) -> String {
+        name.lowercased().replacingOccurrences(of: "[^a-z0-9]", with: "", options: .regularExpression)
+    }
+
+    private func finalArrivalTime(
+        for firstDeparture: DepartureV2,
+        startingJourney: Journey,
+        depStore: DeparturesStore
+    ) async -> String? {
+        let legs = relevantJourneyLegs(for: startingJourney)
+        guard !legs.isEmpty else { return nil }
+
+        var previousArrivalDate: Date? = nil
+        var previousDepartureDate: Date? = nil
+        var latestArrivalTime: String? = nil
+
+        for (index, leg) in legs.enumerated() {
+            let departure: DepartureV2
+            if index == 0 {
+                departure = firstDeparture
+            } else {
+                let earliest = previousArrivalDate ?? previousDepartureDate
+                guard let nextDeparture = selectDeparture(for: leg, earliest: earliest, depStore: depStore) else {
+                    return latestArrivalTime
+                }
+                departure = nextDeparture
+            }
+
+            await depStore.ensureServiceDetails(for: [departure.serviceID])
+
+            let departureDate = departureDate(for: departure)
+            guard let arrivalTime = arrivalTime(for: departure, toCRS: leg.toStation.crs, depStore: depStore) else {
+                return latestArrivalTime
+            }
+
+            latestArrivalTime = arrivalTime
+            previousArrivalDate = parseHHmmToDate(arrivalTime)
+            previousDepartureDate = departureDate
+        }
+
+        return latestArrivalTime
     }
 
     private func selectPrimaryDeparture(preferredServiceID: String?, allDepartures: [DepartureV2], filteredDepartures: [DepartureV2]) -> DepartureV2? {
@@ -1024,12 +1141,17 @@ final class LiveActivityManager: ObservableObject {
     private func parseHHmmToDate(_ time: String) -> Date? {
         let parts = time.split(separator: ":")
         guard parts.count == 2, let h = Int(parts[0]), let m = Int(parts[1]) else { return nil }
+        let now = Date()
         let calendar = Calendar.current
-        var components = calendar.dateComponents([.year, .month, .day], from: Date())
+        var components = calendar.dateComponents([.year, .month, .day], from: now)
         components.hour = h
         components.minute = m
         components.second = 0
-        return calendar.date(from: components)
+        guard var candidate = calendar.date(from: components) else { return nil }
+        if candidate < now && now.timeIntervalSince(candidate) > 6 * 3600 {
+            candidate = calendar.date(byAdding: .day, value: 1, to: candidate) ?? candidate
+        }
+        return candidate
     }
 
     private func displayDepartureTime(for departure: DepartureV2?) -> String {

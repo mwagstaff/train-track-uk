@@ -8,13 +8,15 @@ import ActivityKit
 public struct JourneyActivityAttributes: Codable, Hashable {
     public struct UpcomingDeparture: Codable, Hashable {
         public var time: String
+        public var arrivalTime: String?
         public var delayMinutes: Int
         public var isCancelled: Bool
         public var platform: String?
         public var hasFasterLaterService: Bool
 
-        public init(time: String, delayMinutes: Int, isCancelled: Bool, platform: String? = nil, hasFasterLaterService: Bool = false) {
+        public init(time: String, arrivalTime: String? = nil, delayMinutes: Int, isCancelled: Bool, platform: String? = nil, hasFasterLaterService: Bool = false) {
             self.time = time
+            self.arrivalTime = arrivalTime
             self.delayMinutes = delayMinutes
             self.isCancelled = isCancelled
             self.platform = platform
@@ -22,12 +24,13 @@ public struct JourneyActivityAttributes: Codable, Hashable {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case time, delayMinutes, isCancelled, platform, hasFasterLaterService
+            case time, arrivalTime, delayMinutes, isCancelled, platform, hasFasterLaterService
         }
 
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             time = try container.decode(String.self, forKey: .time)
+            arrivalTime = try container.decodeIfPresent(String.self, forKey: .arrivalTime)
             delayMinutes = try container.decode(Int.self, forKey: .delayMinutes)
             isCancelled = try container.decode(Bool.self, forKey: .isCancelled)
             platform = try container.decodeIfPresent(String.self, forKey: .platform)
