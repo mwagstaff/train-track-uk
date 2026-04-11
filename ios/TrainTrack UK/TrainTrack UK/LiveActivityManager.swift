@@ -14,6 +14,12 @@ typealias JourneyActivityAttributes = JourneyActivityShared.JourneyActivityAttri
 final class LiveActivityManager: ObservableObject {
     static let shared = LiveActivityManager()
 
+    private struct RoutePresentation {
+        let title: String
+        let deepLinkFromCRS: String
+        let deepLinkToCRS: String
+    }
+
     // Journey details can now run up to 3 sessions in parallel, each with up to 3 legs.
     private let maxConcurrentActivities = 9
 
@@ -122,7 +128,7 @@ final class LiveActivityManager: ObservableObject {
     /// Get the count of currently active Live Activities
     var activeCount: Int {
         return Set(
-            Activity<JourneyActivityAttributes>.activities.map { $0.id }
+            currentSystemActivities().map { $0.id }
                 + trackedActivities.keys
         ).count
     }
@@ -202,6 +208,7 @@ final class LiveActivityManager: ObservableObject {
         // Check if already tracking this journey. If a preferred service was provided,
         // update the tracked preference and refresh immediately.
         if let existingActivityID = activityID(for: journey) {
+            let route = routePresentation(for: journey)
             if let preferredServiceID,
                var tracked = trackedActivities[existingActivityID],
                tracked.preferredServiceID != preferredServiceID {
@@ -215,6 +222,9 @@ final class LiveActivityManager: ObservableObject {
                         tokenString: tokenString,
                         fromCRS: journey.fromStation.crs,
                         toCRS: journey.toStation.crs,
+                        routeTitle: route.title,
+                        deepLinkFromCRS: route.deepLinkFromCRS,
+                        deepLinkToCRS: route.deepLinkToCRS,
                         preferredServiceID: preferredServiceID,
                         journeyUpdatesEnabled: tracked.journeyUpdatesEnabled,
                         scheduleKey: tracked.scheduleKey,
@@ -272,8 +282,8 @@ final class LiveActivityManager: ObservableObject {
                initial.fromCRS, initial.toCRS, initial.destinationTitle, initial.platform, initial.estimated)
 
         do {
-            // Use station names in the activity heading
-            let attr = JourneyActivityAttributes(displayName: "\(journey.fromStation.name) → \(journey.toStation.name)")
+            let route = routePresentation(for: journey)
+            let attr = JourneyActivityAttributes(displayName: route.title)
             print("🚂 [LiveActivity] Attributes displayName=\(attr.displayName)")
             os_log("[LiveActivity] Attributes displayName=%{public}@", attr.displayName)
 
@@ -306,6 +316,9 @@ final class LiveActivityManager: ObservableObject {
                     tokenString: tokenString,
                     fromCRS: journey.fromStation.crs,
                     toCRS: journey.toStation.crs,
+                    routeTitle: route.title,
+                    deepLinkFromCRS: route.deepLinkFromCRS,
+                    deepLinkToCRS: route.deepLinkToCRS,
                     preferredServiceID: preferredServiceID,
                     journeyUpdatesEnabled: journeyUpdatesEnabled,
                     scheduleKey: scheduleKey,
@@ -340,7 +353,7 @@ final class LiveActivityManager: ObservableObject {
             updatePublishedState()
 
             // Check all active activities
-            let allActivities = Activity<JourneyActivityAttributes>.activities
+            let allActivities = currentSystemActivities()
             print("✅ [LiveActivity] Total active activities: \(allActivities.count)")
             os_log("[LiveActivity] Total active activities: %{public}d", allActivities.count)
             for (index, activity) in allActivities.enumerated() {
@@ -580,11 +593,15 @@ final class LiveActivityManager: ObservableObject {
             trackedActivities[activityID] = tracked
 
             if let tokenData = tracked.activity.pushToken {
+                let route = routePresentation(for: journey)
                 _ = await sendLiveActivityRegistration(
                     activityID: activityID,
                     tokenString: encodePushToken(tokenData),
                     fromCRS: tracked.fromCRS,
                     toCRS: tracked.toCRS,
+                    routeTitle: route.title,
+                    deepLinkFromCRS: route.deepLinkFromCRS,
+                    deepLinkToCRS: route.deepLinkToCRS,
                     preferredServiceID: tracked.preferredServiceID,
                     journeyUpdatesEnabled: enabled,
                     scheduleKey: tracked.scheduleKey,
@@ -600,7 +617,7 @@ final class LiveActivityManager: ObservableObject {
     /// Update the published state based on tracked activities
     private func updatePublishedState() {
         let trackedPairs = trackedActivities.values.map { ($0.fromCRS.uppercased(), $0.toCRS.uppercased()) }
-        let systemPairs = Activity<JourneyActivityAttributes>.activities.map {
+        let systemPairs = currentSystemActivities().map {
             ($0.contentState.fromCRS.uppercased(), $0.contentState.toCRS.uppercased())
         }
         let allPairs = trackedPairs + systemPairs
@@ -617,7 +634,7 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func updateGlobalActivityMonitor() {
-        let hasAnyActivities = !trackedActivities.isEmpty || !Activity<JourneyActivityAttributes>.activities.isEmpty
+        let hasAnyActivities = !trackedActivities.isEmpty || !currentSystemActivities().isEmpty
 
         if hasAnyActivities {
             guard monitorTimer == nil else { return }
@@ -634,8 +651,23 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func systemActivities(forFromCRS fromCRS: String, toCRS: String) -> [Activity<JourneyActivityAttributes>] {
-        Activity<JourneyActivityAttributes>.activities.filter {
+        currentSystemActivities().filter {
             $0.contentState.fromCRS.uppercased() == fromCRS && $0.contentState.toCRS.uppercased() == toCRS
+        }
+    }
+
+    private func currentSystemActivities() -> [Activity<JourneyActivityAttributes>] {
+        Activity<JourneyActivityAttributes>.activities.filter(isUsableSystemActivity)
+    }
+
+    private func isUsableSystemActivity(_ activity: Activity<JourneyActivityAttributes>) -> Bool {
+        switch activity.activityState {
+        case .active, .stale:
+            return true
+        case .ended, .dismissed:
+            return false
+        @unknown default:
+            return false
         }
     }
 
@@ -691,7 +723,7 @@ final class LiveActivityManager: ObservableObject {
         monitorTimer?.invalidate()
         monitorTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
             guard let self else { return }
-            let list = Activity<JourneyActivityAttributes>.activities
+            let list = self.currentSystemActivities()
             let states = list.map { "\($0.id): \($0.activityState)" }.joined(separator: "; ")
             print("🛰️ [LiveActivity] Monitor tick - activities: \(states)")
 
@@ -771,11 +803,15 @@ final class LiveActivityManager: ObservableObject {
 
             if let tokenData = tracked.activity.pushToken {
                 let tokenString = encodePushToken(tokenData)
+                let route = routePresentation(for: journey)
                 _ = await sendLiveActivityRegistration(
                     activityID: activityID,
                     tokenString: tokenString,
                     fromCRS: journey.fromStation.crs,
                     toCRS: journey.toStation.crs,
+                    routeTitle: route.title,
+                    deepLinkFromCRS: route.deepLinkFromCRS,
+                    deepLinkToCRS: route.deepLinkToCRS,
                     preferredServiceID: effectivePreferredServiceID,
                     journeyUpdatesEnabled: tracked.journeyUpdatesEnabled,
                     scheduleKey: tracked.scheduleKey,
@@ -863,6 +899,7 @@ final class LiveActivityManager: ObservableObject {
         windowStart: String? = nil,
         windowEnd: String? = nil
     ) async -> JourneyActivityAttributes.ContentState {
+        let route = routePresentation(for: journey)
         let allDeps = depStore.departures(for: journey)
         let deps = relevantDepartures(from: allDeps)
         let next = selectPrimaryDeparture(preferredServiceID: preferredServiceID, allDepartures: allDeps, filteredDepartures: deps)
@@ -925,6 +962,9 @@ final class LiveActivityManager: ObservableObject {
         let state = JourneyActivityAttributes.ContentState(
             fromCRS: journey.fromStation.crs,
             toCRS: journey.toStation.crs,
+            routeTitle: route.title,
+            deepLinkFromCRS: route.deepLinkFromCRS,
+            deepLinkToCRS: route.deepLinkToCRS,
             destinationTitle: title,
             arrivalLabel: primaryArrivalTime.map { "Arr \($0)" },
             scheduledDeparture: scheduledDeparture,
@@ -942,6 +982,34 @@ final class LiveActivityManager: ObservableObject {
             windowEnd: windowEnd
         )
         return state
+    }
+
+    private func routePresentation(for journey: Journey) -> RoutePresentation {
+        let legs = relevantJourneyLegs(for: journey)
+        guard let firstLeg = legs.first, let lastLeg = legs.last else {
+            return RoutePresentation(
+                title: "\(journey.fromStation.name) → \(journey.toStation.name)",
+                deepLinkFromCRS: journey.fromStation.crs.uppercased(),
+                deepLinkToCRS: journey.toStation.crs.uppercased()
+            )
+        }
+
+        let viaCodes = legs
+            .dropLast()
+            .map { $0.toStation.crs.uppercased() }
+            .filter { !$0.isEmpty }
+        let title: String
+        if viaCodes.isEmpty {
+            title = "\(firstLeg.fromStation.name) → \(lastLeg.toStation.name)"
+        } else {
+            title = "\(firstLeg.fromStation.name) → \(lastLeg.toStation.name) via \(viaCodes.joined(separator: ", "))"
+        }
+
+        return RoutePresentation(
+            title: title,
+            deepLinkFromCRS: firstLeg.fromStation.crs.uppercased(),
+            deepLinkToCRS: lastLeg.toStation.crs.uppercased()
+        )
     }
 
     private func relevantJourneyLegs(for journey: Journey) -> [Journey] {
@@ -1226,6 +1294,9 @@ final class LiveActivityManager: ObservableObject {
                     tokenString: tokenString,
                     fromCRS: fromCRS,
                     toCRS: toCRS,
+                    routeTitle: activity.contentState.routeTitle,
+                    deepLinkFromCRS: activity.contentState.deepLinkFromCRS,
+                    deepLinkToCRS: activity.contentState.deepLinkToCRS,
                     journeyUpdatesEnabled: tracked.journeyUpdatesEnabled,
                     scheduleKey: activity.contentState.scheduleKey,
                     windowStart: activity.contentState.windowStart,
@@ -1254,7 +1325,7 @@ final class LiveActivityManager: ObservableObject {
             await stopActivity(activityID: activityID)
         }
 
-        let untrackedDuplicates = Activity<JourneyActivityAttributes>.activities.filter {
+        let untrackedDuplicates = currentSystemActivities().filter {
             $0.id != activity.id
                 && $0.contentState.scheduleKey == scheduleKey
                 && trackedActivities[$0.id] == nil
@@ -1434,6 +1505,9 @@ final class LiveActivityManager: ObservableObject {
                             tokenString: tokenString,
                             fromCRS: fromCRS,
                             toCRS: toCRS,
+                            routeTitle: activity.contentState.routeTitle,
+                            deepLinkFromCRS: activity.contentState.deepLinkFromCRS,
+                            deepLinkToCRS: activity.contentState.deepLinkToCRS,
                             preferredServiceID: preferredServiceID,
                             journeyUpdatesEnabled: self.trackedActivities[activity.id]?.journeyUpdatesEnabled ?? activity.contentState.journeyUpdatesEnabled,
                             scheduleKey: activity.contentState.scheduleKey,
@@ -1470,6 +1544,9 @@ final class LiveActivityManager: ObservableObject {
         tokenString: String,
         fromCRS: String,
         toCRS: String,
+        routeTitle: String? = nil,
+        deepLinkFromCRS: String? = nil,
+        deepLinkToCRS: String? = nil,
         preferredServiceID: String? = nil,
         journeyUpdatesEnabled: Bool = true,
         scheduleKey: String? = nil,
@@ -1509,6 +1586,15 @@ final class LiveActivityManager: ObservableObject {
             "auto_end_on_departure": autoEndLiveActivity,
             "journey_updates_enabled": journeyUpdatesEnabled
         ]
+        if let routeTitle, !routeTitle.isEmpty {
+            payload["display_name"] = routeTitle
+        }
+        if let deepLinkFromCRS, !deepLinkFromCRS.isEmpty {
+            payload["deep_link_from"] = deepLinkFromCRS
+        }
+        if let deepLinkToCRS, !deepLinkToCRS.isEmpty {
+            payload["deep_link_to"] = deepLinkToCRS
+        }
         if let preferredServiceID, !preferredServiceID.isEmpty {
             payload["preferred_service_id"] = preferredServiceID
         }
@@ -1688,7 +1774,7 @@ final class LiveActivityManager: ObservableObject {
     }
 
     func sendImmediateBackendCheckIn(force: Bool = false) async {
-        let hasAnyActivities = !trackedActivities.isEmpty || !Activity<JourneyActivityAttributes>.activities.isEmpty
+        let hasAnyActivities = !trackedActivities.isEmpty || !currentSystemActivities().isEmpty
         if !force, !hasAnyActivities {
             logger.info("[LiveActivity] Skipping check-in because no activities are active")
             return

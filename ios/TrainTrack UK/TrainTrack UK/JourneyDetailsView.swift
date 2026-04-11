@@ -37,6 +37,11 @@ struct JourneyDetailsView: View {
     private var journeyTitle: String {
         "\(currentGroup.startStation.name) → \(currentGroup.endStation.name)"
     }
+
+    private var primaryLiveActivityLeg: Journey? {
+        currentGroup.legs.first
+    }
+
     private var legsForActivity: [Journey] {
         Array(currentGroup.legs.prefix(3))
     }
@@ -697,20 +702,23 @@ struct JourneyDetailsView: View {
     }
 
     private func startLiveActivitiesForCurrentGroup() async -> Bool {
-        var newlyStarted: [Journey] = []
-        for leg in legsForActivity {
-            if activityMgr.isActive(for: leg) { continue }
-            await activityMgr.start(for: leg, depStore: depStore, triggeredByUser: true, bypassSuppression: true)
-            if activityMgr.isActive(for: leg) {
-                newlyStarted.append(leg)
-            }
+        guard let primaryLeg = primaryLiveActivityLeg else { return false }
+
+        let staleLegs = Array(legsForActivity.dropFirst()).filter { activityMgr.isActive(for: $0) }
+        if !staleLegs.isEmpty {
+            await stopLiveActivities(for: staleLegs)
         }
 
-        let allActive = legsForActivity.allSatisfy { activityMgr.isActive(for: $0) }
-        if !allActive {
-            await stopLiveActivities(for: newlyStarted)
+        let wasAlreadyActive = activityMgr.isActive(for: primaryLeg)
+        if !wasAlreadyActive {
+            await activityMgr.start(for: primaryLeg, depStore: depStore, triggeredByUser: true, bypassSuppression: true)
         }
-        return allActive
+
+        let isActive = activityMgr.isActive(for: primaryLeg)
+        if !isActive && !wasAlreadyActive {
+            await stopLiveActivities(for: [primaryLeg])
+        }
+        return isActive
     }
 
     private func stopLiveActivities(for session: NotificationSubscription) async {

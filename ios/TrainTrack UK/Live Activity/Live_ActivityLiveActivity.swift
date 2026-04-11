@@ -17,8 +17,8 @@ struct Live_ActivityLiveActivity: Widget {
         components.scheme = "traintrack"
         components.host = "journey"
         var queryItems = [
-            URLQueryItem(name: "from", value: context.state.fromCRS),
-            URLQueryItem(name: "to", value: context.state.toCRS)
+            URLQueryItem(name: "from", value: context.state.deepLinkFromCRS ?? context.state.fromCRS),
+            URLQueryItem(name: "to", value: context.state.deepLinkToCRS ?? context.state.toCRS)
         ]
         if !context.state.journeyUpdatesEnabled {
             queryItems.append(URLQueryItem(name: "activate_updates", value: "1"))
@@ -130,8 +130,8 @@ struct LiveActivityLockScreenView: View {
         components.scheme = "traintrack"
         components.host = "journey"
         var queryItems = [
-            URLQueryItem(name: "from", value: state.fromCRS),
-            URLQueryItem(name: "to", value: state.toCRS)
+            URLQueryItem(name: "from", value: state.deepLinkFromCRS ?? state.fromCRS),
+            URLQueryItem(name: "to", value: state.deepLinkToCRS ?? state.toCRS)
         ]
         if !state.journeyUpdatesEnabled {
             queryItems.append(URLQueryItem(name: "activate_updates", value: "1"))
@@ -140,13 +140,17 @@ struct LiveActivityLockScreenView: View {
         return components.url
     }
 
+    private var routeTitle: String {
+        state.routeTitle ?? attributes.displayName
+    }
+
     var body: some View {
         VStack(spacing: showsActivationBanner ? 8 : 12) {
             // Header with journey name
             HStack {
                 Image(systemName: "train.side.front.car")
                     .font(showsActivationBanner ? .subheadline : .headline)
-                Text(attributes.displayName)
+                Text(routeTitle)
                     .font(showsActivationBanner ? .subheadline : .headline)
                     .fontWeight(.semibold)
                     .lineLimit(1)
@@ -245,7 +249,7 @@ struct LiveActivityLockScreenView: View {
                             }
 
                             if let arrivalTime = departure.arrivalTime, !departure.isCancelled {
-                                Text("-> \(arrivalTime)")
+                                Text("→ \(arrivalTime)")
                                     .font(.caption2)
                                     .fontWeight(.regular)
                                     .monospacedDigit()

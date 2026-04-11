@@ -35,6 +35,9 @@ class LiveActivityManager {
         pushToken,
         fromStation,
         toStation,
+        displayName,
+        deepLinkFromStation,
+        deepLinkToStation,
         preferredServiceId,
         useSandbox,
         muteOnArrival,
@@ -69,6 +72,15 @@ class LiveActivityManager {
             pushToken,
             fromStation,
             toStation,
+            displayName: (typeof displayName === 'string' && displayName.length > 0)
+                ? displayName
+                : (existing?.displayName || null),
+            deepLinkFromStation: (typeof deepLinkFromStation === 'string' && deepLinkFromStation.length > 0)
+                ? deepLinkFromStation
+                : (existing?.deepLinkFromStation || null),
+            deepLinkToStation: (typeof deepLinkToStation === 'string' && deepLinkToStation.length > 0)
+                ? deepLinkToStation
+                : (existing?.deepLinkToStation || null),
             preferredServiceId: (typeof preferredServiceId === 'string' && preferredServiceId.length > 0)
                 ? preferredServiceId
                 : (existing?.preferredServiceId || null),
@@ -117,6 +129,9 @@ class LiveActivityManager {
             to_station: toStation || null,
             token: pushToken || null,
             metadata: {
+                display_name: subscription.displayName || null,
+                deep_link_from: subscription.deepLinkFromStation || null,
+                deep_link_to: subscription.deepLinkToStation || null,
                 preferred_service_id: subscription.preferredServiceId || null,
                 mute_on_arrival: subscription.muteOnArrival,
                 auto_end_on_arrival: subscription.autoEndOnArrival,
@@ -533,6 +548,9 @@ class LiveActivityManager {
 
         const platform = this.ensureString(primary.platform);
         const destinationTitle = this.ensureString(primary.destination?.locationName);
+        const routeTitle = this.ensureOptionalString(subscription.displayName);
+        const deepLinkFromCRS = this.ensureOptionalString(subscription.deepLinkFromStation) || this.ensureString(subscription.fromStation);
+        const deepLinkToCRS = this.ensureOptionalString(subscription.deepLinkToStation) || this.ensureString(subscription.toStation);
         const upcomingDepartures = snapshot.departures.slice(1).map((dep) => ({
             time: this.getTimeString(dep.estimated, dep.scheduled),
             arrivalTime: dep.isCancelled ? null : this.ensureOptionalString(dep.arrivalTime),
@@ -545,6 +563,9 @@ class LiveActivityManager {
         return {
             fromCRS: this.ensureString(subscription.fromStation),
             toCRS: this.ensureString(subscription.toStation),
+            routeTitle,
+            deepLinkFromCRS,
+            deepLinkToCRS,
             destinationTitle,
             arrivalLabel: primary.isCancelled || !primary.arrivalTime ? null : `Arr ${primary.arrivalTime}`,
             scheduledDeparture: this.ensureOptionalString(primary.scheduled),

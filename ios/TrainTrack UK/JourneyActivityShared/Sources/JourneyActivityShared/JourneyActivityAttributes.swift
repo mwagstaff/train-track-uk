@@ -41,6 +41,9 @@ public struct JourneyActivityAttributes: Codable, Hashable {
     public struct ContentState: Codable, Hashable {
         public var fromCRS: String
         public var toCRS: String
+        public var routeTitle: String?
+        public var deepLinkFromCRS: String?
+        public var deepLinkToCRS: String?
         public var destinationTitle: String
         public var arrivalLabel: String?
         public var scheduledDeparture: String?
@@ -67,6 +70,9 @@ public struct JourneyActivityAttributes: Codable, Hashable {
         public init(
             fromCRS: String,
             toCRS: String,
+            routeTitle: String? = nil,
+            deepLinkFromCRS: String? = nil,
+            deepLinkToCRS: String? = nil,
             destinationTitle: String,
             arrivalLabel: String?,
             scheduledDeparture: String? = nil,
@@ -88,6 +94,9 @@ public struct JourneyActivityAttributes: Codable, Hashable {
         ) {
             self.fromCRS = fromCRS
             self.toCRS = toCRS
+            self.routeTitle = routeTitle
+            self.deepLinkFromCRS = deepLinkFromCRS
+            self.deepLinkToCRS = deepLinkToCRS
             self.destinationTitle = destinationTitle
             self.arrivalLabel = arrivalLabel
             self.scheduledDeparture = scheduledDeparture
@@ -109,13 +118,16 @@ public struct JourneyActivityAttributes: Codable, Hashable {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case fromCRS, toCRS, destinationTitle, arrivalLabel, scheduledDeparture, length, platform, estimated, isCancelled, statusText, delayMinutes, upcomingDepartures, lastUpdated, activityID, revision, appIsActive, journeyUpdatesEnabled, scheduleKey, windowStart, windowEnd
+            case fromCRS, toCRS, routeTitle, deepLinkFromCRS, deepLinkToCRS, destinationTitle, arrivalLabel, scheduledDeparture, length, platform, estimated, isCancelled, statusText, delayMinutes, upcomingDepartures, lastUpdated, activityID, revision, appIsActive, journeyUpdatesEnabled, scheduleKey, windowStart, windowEnd
         }
 
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             fromCRS = try container.decode(String.self, forKey: .fromCRS)
             toCRS = try container.decode(String.self, forKey: .toCRS)
+            routeTitle = try container.decodeIfPresent(String.self, forKey: .routeTitle)
+            deepLinkFromCRS = try container.decodeIfPresent(String.self, forKey: .deepLinkFromCRS)
+            deepLinkToCRS = try container.decodeIfPresent(String.self, forKey: .deepLinkToCRS)
             destinationTitle = try container.decode(String.self, forKey: .destinationTitle)
             arrivalLabel = try container.decodeIfPresent(String.self, forKey: .arrivalLabel)
             scheduledDeparture = try container.decodeIfPresent(String.self, forKey: .scheduledDeparture)
