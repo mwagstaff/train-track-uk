@@ -6,6 +6,7 @@ struct MyJourneysView: View {
     @EnvironmentObject var depStore: DeparturesStore
     @EnvironmentObject var activityMgr: LiveActivityManager
     @EnvironmentObject var router: TabRouter
+    @Environment(\.scenePhase) private var scenePhase
     @State private var journeyPendingDelete: JourneyGroup? = nil
     @State private var showDeleteDialog = false
     @State private var journeyPendingFav: JourneyGroup? = nil
@@ -65,10 +66,10 @@ struct MyJourneysView: View {
     }
 
     private func sortedByDistance(_ journeys: [JourneyGroup]) -> [JourneyGroup] {
-        if let _ = location.coordinate {
+        if let currentLocation = location.lastKnownCoordinate {
             return journeys.sorted { a, b in
-                let da = distanceMiles(from: location.coordinate, to: a.startStation) ?? .greatestFiniteMagnitude
-                let db = distanceMiles(from: location.coordinate, to: b.startStation) ?? .greatestFiniteMagnitude
+                let da = distanceMiles(from: currentLocation, to: a.startStation) ?? .greatestFiniteMagnitude
+                let db = distanceMiles(from: currentLocation, to: b.startStation) ?? .greatestFiniteMagnitude
                 if da != db { return da < db }
                 let endCompare = a.endStation.name.localizedCaseInsensitiveCompare(b.endStation.name)
                 if endCompare != .orderedSame { return endCompare == .orderedAscending }
@@ -80,12 +81,20 @@ struct MyJourneysView: View {
     }
 
     private func grouped() -> [Group] {
+        guard location.lastKnownCoordinate != nil else {
+            return [
+                Group(
+                    title: "My Journeys",
+                    items: filteredJourneys.sorted { $0.startStation.name < $1.startStation.name }
+                )
+            ]
+        }
         let sorted = sortedByDistance(filteredJourneys)
         var veryClose: [JourneyGroup] = []
         var moderately: [JourneyGroup] = []
         var far: [JourneyGroup] = []
         for j in sorted {
-            let miles = distanceMiles(from: location.coordinate, to: j.startStation) ?? .infinity
+            let miles = distanceMiles(from: location.lastKnownCoordinate, to: j.startStation) ?? .infinity
             if miles < veryCloseMiles { veryClose.append(j) }
             else if miles <= moderatelyCloseMiles { moderately.append(j) }
             else { far.append(j) }
@@ -107,6 +116,7 @@ struct MyJourneysView: View {
         return AnyView(
             VStack(spacing: 0) {
                 List { listContent(snapshot) }
+                    .refreshable { await manualRefresh() }
                 if shouldShowSearchBar {
                     searchBar
                 }
@@ -128,6 +138,7 @@ struct MyJourneysView: View {
         navigationView
             .onAppear {
                 refreshManualOrder()
+                location.request(forceFresh: true)
             }
             .onDisappear {
                 searchFocused = false
@@ -137,6 +148,11 @@ struct MyJourneysView: View {
             }
             .onChange(of: store.journeys) { _ in
                 refreshManualOrder()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active {
+                    location.request(forceFresh: true)
+                }
             }
             .onChange(of: searchText) { value in
                 debounceTask?.cancel()
@@ -412,6 +428,7 @@ private extension MyJourneysView {
 
     func applyClosestLegFilter(_ groups: [JourneyGroup]) -> [JourneyGroup] {
         guard showClosestJourneyLegOnly else { return groups }
+        guard location.lastKnownCoordinate != nil else { return groups }
         var selection: [JourneyPairKey: JourneyGroup] = [:]
         for group in groups {
             let key = pairKey(for: group)
@@ -436,13 +453,19 @@ private extension MyJourneysView {
     }
 
     func isCloser(_ candidate: JourneyGroup, than existing: JourneyGroup) -> Bool {
-        let candidateDistance = distanceMiles(from: location.coordinate, to: candidate.startStation)
-        let existingDistance = distanceMiles(from: location.coordinate, to: existing.startStation)
+        let candidateDistance = distanceMiles(from: location.lastKnownCoordinate, to: candidate.startStation)
+        let existingDistance = distanceMiles(from: location.lastKnownCoordinate, to: existing.startStation)
         switch (candidateDistance, existingDistance) {
         case let (c?, e?): return c < e
         case (_?, nil): return true
         default: return false
         }
+    }
+
+    func manualRefresh() async {
+        refreshManualOrder()
+        location.request(forceFresh: true)
+        depStore.refreshNow(journeyStore: store)
     }
 
     var searchBar: some View {

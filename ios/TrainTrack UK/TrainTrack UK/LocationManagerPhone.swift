@@ -6,13 +6,15 @@ import UIKit
 @MainActor
 final class LocationManagerPhone: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var coordinate: CLLocationCoordinate2D? = nil
+    @Published private(set) var coordinateTimestamp: Date? = nil
 
     private let manager = CLLocationManager()
     private var isRequestingLocation = false
     private var timeoutTask: Task<Void, Never>?
     private var backgroundObserver: AnyCancellable?
     private let sharedDefaults = UserDefaults(suiteName: "group.dev.skynolimit.traintrack")
-    private let locationCacheMaxAge: TimeInterval = 6 * 60 * 60
+    private let bootstrapLocationCacheMaxAge: TimeInterval = 6 * 60 * 60
+    private let freshLocationMaxAge: TimeInterval = 2 * 60
 
     override init() {
         super.init()
@@ -30,8 +32,8 @@ final class LocationManagerPhone: NSObject, ObservableObject, CLLocationManagerD
             }
     }
 
-    func request() {
-        if hasFreshCachedLocation {
+    func request(forceFresh: Bool = false) {
+        if !forceFresh, hasFreshCachedLocation(maxAge: freshLocationMaxAge) {
             print("📍 [LocationManagerPhone] request skipped; using cached location")
             return
         }
@@ -73,11 +75,12 @@ final class LocationManagerPhone: NSObject, ObservableObject, CLLocationManagerD
             print("📍 [LocationManagerPhone] didUpdateLocations lat=\(loc.coordinate.latitude) lng=\(loc.coordinate.longitude)")
             cancel()
             coordinate = loc.coordinate
+            coordinateTimestamp = loc.timestamp
             // Persist last known location for the widget to consume via App Group
             if let ud = sharedDefaults {
                 ud.set(loc.coordinate.latitude, forKey: "widget_last_lat")
                 ud.set(loc.coordinate.longitude, forKey: "widget_last_lng")
-                ud.set(Date().timeIntervalSince1970, forKey: "widget_last_loc_ts")
+                ud.set(loc.timestamp.timeIntervalSince1970, forKey: "widget_last_loc_ts")
                 ud.synchronize()
             }
         }
@@ -104,22 +107,38 @@ final class LocationManagerPhone: NSObject, ObservableObject, CLLocationManagerD
         }
     }
 
-    private var hasFreshCachedLocation: Bool {
-        loadCachedLocationIfAvailable()
-        return coordinate != nil
+    var freshCoordinate: CLLocationCoordinate2D? {
+        guard let coordinate, let coordinateTimestamp else { return nil }
+        guard Date().timeIntervalSince(coordinateTimestamp) <= freshLocationMaxAge else { return nil }
+        return coordinate
     }
 
-    private func loadCachedLocationIfAvailable() {
+    var lastKnownCoordinate: CLLocationCoordinate2D? {
+        guard let coordinate else { return nil }
+        guard let coordinateTimestamp else { return coordinate }
+        guard Date().timeIntervalSince(coordinateTimestamp) <= bootstrapLocationCacheMaxAge else { return nil }
+        return coordinate
+    }
+
+    private func hasFreshCachedLocation(maxAge: TimeInterval) -> Bool {
+        loadCachedLocationIfAvailable(maxAge: maxAge)
+        return freshCoordinate != nil
+    }
+
+    private func loadCachedLocationIfAvailable(maxAge: TimeInterval? = nil) {
         guard let ud = sharedDefaults else { return }
         guard let lat = ud.object(forKey: "widget_last_lat") as? Double,
               let lng = ud.object(forKey: "widget_last_lng") as? Double else {
             return
         }
         let timestamp = ud.double(forKey: "widget_last_loc_ts")
-        if timestamp > 0, Date().timeIntervalSince(Date(timeIntervalSince1970: timestamp)) > locationCacheMaxAge {
+        let cachedAt = timestamp > 0 ? Date(timeIntervalSince1970: timestamp) : nil
+        let allowedAge = maxAge ?? bootstrapLocationCacheMaxAge
+        if let cachedAt, Date().timeIntervalSince(cachedAt) > allowedAge {
             return
         }
         coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lng)
+        coordinateTimestamp = cachedAt
     }
 
     deinit {

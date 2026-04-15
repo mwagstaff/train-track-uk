@@ -13,6 +13,7 @@ const MAX_LIVE_SESSION_DURATION_MS = 2 * 60 * 60 * 1000;
 const SCHEDULED_SOURCE = 'scheduled';
 const LIVE_SESSION_SOURCE = 'live_session';
 const SUMMARY_START_GRACE_MINUTES = Math.max(1, Math.ceil(DEFAULT_POLL_INTERVAL_SECONDS / 60));
+const SCHEDULE_TIME_ZONE = process.env.NOTIFICATION_SCHEDULE_TIME_ZONE || 'Europe/London';
 
 const VALID_TYPES = new Set(['summary', 'delays', 'platform']);
 const DAY_MAP = {
@@ -384,7 +385,7 @@ class NotificationSubscriptionManager {
         if (this.isMutedToday(subscription, legKey)) {
             return;
         }
-        const todayKey = moment().format('YYYY-MM-DD');
+        const todayKey = currentScheduleDateKey();
         if (subscription.lastSummarySentByLeg[legKey] === todayKey) {
             return;
         }
@@ -623,7 +624,7 @@ class NotificationSubscriptionManager {
         const legKey = `${from}-${to}`;
         const leg = subscription.legs.find((l) => l.from === from && l.to === to);
         if (!leg) return null;
-        const todayKey = moment().format('YYYY-MM-DD');
+        const todayKey = currentScheduleDateKey();
         const dateKey = typeof date === 'string' && date ? date : todayKey;
         const mutedAt = new Date().toISOString();
         subscription.mutedByLegDay[legKey] = dateKey;
@@ -695,7 +696,7 @@ class NotificationSubscriptionManager {
     isMutedToday(subscription, legKey) {
         const mutedDate = subscription.mutedByLegDay?.[legKey];
         if (!mutedDate) return false;
-        const todayKey = moment().format('YYYY-MM-DD');
+        const todayKey = currentScheduleDateKey();
         return mutedDate === todayKey;
     }
 
@@ -789,8 +790,8 @@ function parseTimeToMinutes(value) {
 }
 
 function currentMinutes() {
-    const now = new Date();
-    return now.getHours() * 60 + now.getMinutes();
+    const { hour, minute } = getScheduleTimeParts();
+    return hour * 60 + minute;
 }
 
 function shouldPollNow(subscription, leg) {
@@ -798,8 +799,7 @@ function shouldPollNow(subscription, leg) {
         const activeUntil = Date.parse(subscription?.activeUntil || '');
         return !Number.isFinite(activeUntil) || activeUntil > Date.now();
     }
-    const dayKey = moment().format('ddd').toLowerCase();
-    const today = dayKey.slice(0, 3);
+    const today = currentScheduleWeekdayKey();
     if (!subscription.daysOfWeek.includes(today)) {
         return false;
     }
@@ -812,6 +812,43 @@ function shouldPollNow(subscription, leg) {
     }
     const nowMinutes = currentMinutes();
     return nowMinutes >= startMinutes && nowMinutes <= endMinutes;
+}
+
+function getScheduleTimeParts(date = new Date()) {
+    const formatter = new Intl.DateTimeFormat('en-GB', {
+        timeZone: SCHEDULE_TIME_ZONE,
+        weekday: 'short',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23'
+    });
+    const parts = Object.fromEntries(
+        formatter
+            .formatToParts(date)
+            .filter((part) => part.type !== 'literal')
+            .map((part) => [part.type, part.value])
+    );
+
+    return {
+        weekday: String(parts.weekday || '').toLowerCase().slice(0, 3),
+        year: String(parts.year || ''),
+        month: String(parts.month || '').padStart(2, '0'),
+        day: String(parts.day || '').padStart(2, '0'),
+        hour: Number(parts.hour || '0'),
+        minute: Number(parts.minute || '0')
+    };
+}
+
+function currentScheduleWeekdayKey(date = new Date()) {
+    return getScheduleTimeParts(date).weekday;
+}
+
+function currentScheduleDateKey(date = new Date()) {
+    const { year, month, day } = getScheduleTimeParts(date);
+    return `${year}-${month}-${day}`;
 }
 
 function normalizeIsoDate(value) {

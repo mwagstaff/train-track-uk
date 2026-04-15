@@ -558,6 +558,7 @@ struct JourneyDetailsView: View {
             if reverseGroup == nil {
                 showingReverse = false
             }
+            location.request(forceFresh: true)
             deepLink.setVisibleJourney(currentGroup)
             handlePendingJourneyActivationIfNeeded()
         }
@@ -583,6 +584,7 @@ struct JourneyDetailsView: View {
             if newPhase == .active {
                 // Force UI refresh when app becomes active
                 tick = Date()
+                location.request(forceFresh: true)
                 handlePendingJourneyActivationIfNeeded()
             }
         }
@@ -1116,6 +1118,7 @@ struct JourneyDetailsView: View {
 
     private func manualRefresh() async {
         refreshing = true
+        location.request(forceFresh: true)
         let ids = currentGroup.legs.flatMap { departures(for: $0).prefix(5).map { $0.serviceID } }
         await depStore.ensureServiceDetails(for: Array(Set(ids)), force: true)
         refreshing = false
