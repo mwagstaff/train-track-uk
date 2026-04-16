@@ -88,8 +88,8 @@ struct Live_ActivityLiveActivity: Widget {
                             }
                         }
 
-                        if !context.state.journeyUpdatesEnabled {
-                            ActivationPromptBanner()
+                        if !context.state.upcomingDepartures.isEmpty {
+                            UpcomingDeparturesStrip(departures: context.state.upcomingDepartures)
                         }
                     }
                     .padding(.horizontal, 8)
@@ -121,10 +121,6 @@ struct LiveActivityLockScreenView: View {
     let state: JourneyActivityAttributes.ContentState
     let attributes: JourneyActivityAttributes
 
-    private var showsActivationBanner: Bool {
-        !state.journeyUpdatesEnabled
-    }
-
     private var deepLinkURL: URL? {
         var components = URLComponents()
         components.scheme = "traintrack"
@@ -145,13 +141,13 @@ struct LiveActivityLockScreenView: View {
     }
 
     var body: some View {
-        VStack(spacing: showsActivationBanner ? 8 : 12) {
+        VStack(spacing: 12) {
             // Header with journey name
             HStack {
                 Image(systemName: "train.side.front.car")
-                    .font(showsActivationBanner ? .subheadline : .headline)
+                    .font(.headline)
                 Text(routeTitle)
-                    .font(showsActivationBanner ? .subheadline : .headline)
+                    .font(.headline)
                     .fontWeight(.semibold)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
@@ -168,7 +164,7 @@ struct LiveActivityLockScreenView: View {
                         .foregroundColor(.secondary)
                     PrimaryDepartureTimeText(
                         state: state,
-                        font: showsActivationBanner ? .title2 : .title,
+                        font: .title,
                         weight: .bold
                     )
                 }
@@ -207,9 +203,9 @@ struct LiveActivityLockScreenView: View {
                         .foregroundColor(.secondary)
                     PlatformPill(
                         platform: state.platform,
-                        font: showsActivationBanner ? .title2 : .title,
-                        horizontalPadding: showsActivationBanner ? 8 : 10,
-                        verticalPadding: showsActivationBanner ? 2 : 3
+                        font: .title,
+                        horizontalPadding: 10,
+                        verticalPadding: 3
                     )
                 }
             }
@@ -230,51 +226,11 @@ struct LiveActivityLockScreenView: View {
             }
 
             // Upcoming departures
-            if !showsActivationBanner && !state.upcomingDepartures.isEmpty {
-                HStack(spacing: 4) {
-                    ForEach(Array(state.upcomingDepartures.prefix(3).enumerated()), id: \.offset) { _, departure in
-                        HStack(spacing: 6) {
-                            HStack(spacing: 3) {
-                                if departure.hasFasterLaterService {
-                                    Image(systemName: "exclamationmark.triangle.fill")
-                                        .font(.system(size: 8))
-                                        .foregroundStyle(.yellow)
-                                }
-                                Text(departure.time)
-                                    .font(.caption)
-                                    .fontWeight(.medium)
-                                    .monospacedDigit()
-                                    .foregroundColor(departure.isCancelled ? .red : estimatedTimeColor(departure.delayMinutes))
-                                    .strikethrough(departure.isCancelled, color: .red)
-                            }
-
-                            if let arrivalTime = departure.arrivalTime, !departure.isCancelled {
-                                Text("→ \(arrivalTime)")
-                                    .font(.caption2)
-                                    .fontWeight(.regular)
-                                    .monospacedDigit()
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(1)
-                            }
-
-                            // Show platform badge if available, otherwise show TBC
-                            PlatformPill(
-                                platform: (departure.platform?.isEmpty ?? true) ? "TBC" : departure.platform!,
-                                font: .system(size:10),
-                                horizontalPadding: 2,
-                                verticalPadding: 0.5
-                            )
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                }
-            }
-
-            if !state.journeyUpdatesEnabled {
-                ActivationPromptBanner()
+            if !state.upcomingDepartures.isEmpty {
+                UpcomingDeparturesStrip(departures: state.upcomingDepartures)
             }
         }
-        .padding(showsActivationBanner ? 12 : 16)
+        .padding(16)
         .widgetURL(deepLinkURL)
     }
 }
@@ -394,18 +350,46 @@ private struct PrimaryDepartureTimeText: View {
     }
 }
 
-private struct ActivationPromptBanner: View {
+private struct UpcomingDeparturesStrip: View {
+    let departures: [JourneyActivityAttributes.UpcomingDeparture]
+
     var body: some View {
-        Text("Tap to activate journey updates")
-            .font(.caption2)
-            .fontWeight(.semibold)
-            .foregroundStyle(.black)
-            .frame(maxWidth: .infinity)
-            .lineLimit(1)
-            .minimumScaleFactor(0.85)
-            .padding(.vertical, 6)
-            .padding(.horizontal, 10)
-            .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        HStack(spacing: 4) {
+            ForEach(Array(departures.prefix(3).enumerated()), id: \.offset) { _, departure in
+                HStack(spacing: 6) {
+                    HStack(spacing: 3) {
+                        if departure.hasFasterLaterService {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 8))
+                                .foregroundStyle(.yellow)
+                        }
+                        Text(departure.time)
+                            .font(.caption)
+                            .fontWeight(.medium)
+                            .monospacedDigit()
+                            .foregroundColor(departure.isCancelled ? .red : estimatedTimeColor(departure.delayMinutes))
+                            .strikethrough(departure.isCancelled, color: .red)
+                    }
+
+                    if let arrivalTime = departure.arrivalTime, !departure.isCancelled {
+                        Text("→ \(arrivalTime)")
+                            .font(.caption2)
+                            .fontWeight(.regular)
+                            .monospacedDigit()
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    PlatformPill(
+                        platform: (departure.platform?.isEmpty ?? true) ? "TBC" : departure.platform!,
+                        font: .system(size: 10),
+                        horizontalPadding: 2,
+                        verticalPadding: 0.5
+                    )
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
     }
 }
 

@@ -35,6 +35,11 @@ class NotificationService: UNNotificationServiceExtension {
     }
 
     private func shouldMuteNotification(content: UNNotificationContent) -> Bool {
+        if let alertType = content.userInfo["alert_type"] as? String,
+           shouldAlwaysDeliver(alertType: alertType) {
+            return false
+        }
+
         if let fromStation = content.userInfo["from"] as? String,
            let toStation = content.userInfo["to"] as? String {
             return isLegMutedToday(from: fromStation, to: toStation)
@@ -136,6 +141,15 @@ class NotificationService: UNNotificationServiceExtension {
         }
 
         return false
+    }
+
+    private func shouldAlwaysDeliver(alertType: String) -> Bool {
+        switch alertType {
+        case "muted_greeting", "muted_status":
+            return true
+        default:
+            return false
+        }
     }
 
     private func currentDateKey() -> String {

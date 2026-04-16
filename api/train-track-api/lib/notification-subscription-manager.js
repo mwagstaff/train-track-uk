@@ -2,6 +2,8 @@ import moment from 'moment';
 import crypto from 'crypto';
 import { getTrainTimes } from './realtime-trains-api.js';
 import { NotificationPushClient } from './notification-push-client.js';
+import { LiveActivityPushClient } from './live-activity-push-client.js';
+import { pushToStartTokenStore } from './push-to-start-token-store.js';
 import redis from './redis-client.js';
 import { recordNotificationEvent } from './admin-data-store.js';
 import { sleep } from './retry-utils.js';
@@ -14,6 +16,7 @@ const SCHEDULED_SOURCE = 'scheduled';
 const LIVE_SESSION_SOURCE = 'live_session';
 const SUMMARY_START_GRACE_MINUTES = Math.max(1, Math.ceil(DEFAULT_POLL_INTERVAL_SECONDS / 60));
 const SCHEDULE_TIME_ZONE = process.env.NOTIFICATION_SCHEDULE_TIME_ZONE || 'Europe/London';
+const LIVE_ACTIVITY_ATTRIBUTES_TYPE = process.env.APNS_LIVE_ACTIVITY_ATTRIBUTES_TYPE || 'JourneyActivityAttributes';
 
 const VALID_TYPES = new Set(['summary', 'delays', 'platform']);
 const DAY_MAP = {
@@ -28,6 +31,7 @@ class NotificationSubscriptionManager {
     constructor() {
         this.subscriptions = new Map();
         this.pushClient = new NotificationPushClient();
+        this.liveActivityPushClient = new LiveActivityPushClient();
         this.pollIntervalMs = DEFAULT_POLL_INTERVAL_SECONDS * 1000;
         this.isPolling = false;
         // Polling loop is started by init() after Redis hydration.
@@ -371,7 +375,10 @@ class NotificationSubscriptionManager {
 
             const notificationTypes = getEffectiveNotificationTypes(subscription);
 
-            if (this.subscriptionSource(subscription) === SCHEDULED_SOURCE || notificationTypes.includes('summary')) {
+            if (this.subscriptionSource(subscription) === SCHEDULED_SOURCE) {
+                await this.sendScheduledLiveActivityStartIfNeeded(subscription, leg, legKey, snapshot);
+                await this.sendSummaryIfNeeded(subscription, leg, legKey, snapshot);
+            } else if (notificationTypes.includes('summary')) {
                 await this.sendSummaryIfNeeded(subscription, leg, legKey, snapshot);
             }
 
@@ -448,6 +455,76 @@ class NotificationSubscriptionManager {
         this._saveSubscription(activeSubscription).catch((err) => {
             console.error('[notifications] Failed to persist lastSummarySentByLeg:', err?.message || err);
         });
+    }
+
+    async sendScheduledLiveActivityStartIfNeeded(subscription, leg, legKey, snapshot) {
+        if (this.isMutedToday(subscription, legKey)) {
+            return false;
+        }
+
+        const todayKey = currentScheduleDateKey();
+        if (subscription.lastAutoStartSentByLeg?.[legKey] === todayKey) {
+            return true;
+        }
+
+        if (!isWithinSummaryGraceWindow(leg)) {
+            return false;
+        }
+
+        const activeSubscription = this.getActiveSubscriptionForPush(subscription.id, leg, 'scheduled_live_activity_start_pre_send');
+        if (!activeSubscription) {
+            return false;
+        }
+
+        const pushToStartRecord = await pushToStartTokenStore.get(activeSubscription.deviceId);
+        if (!pushToStartRecord?.pushToStartToken) {
+            return false;
+        }
+
+        const payload = buildScheduledLiveActivityStartPayload(activeSubscription, leg, snapshot);
+        const pushResult = await this.liveActivityPushClient.sendLiveActivityUpdate(
+            pushToStartRecord.pushToStartToken,
+            payload,
+            {
+                useSandbox: pushToStartRecord.useSandbox === true,
+                event: 'live_activity_start'
+            }
+        );
+
+        this.logLiveActivityStartEvent(activeSubscription, leg, payload, pushResult);
+        console.log('[notifications] auto_start_push', JSON.stringify({
+            subscription_id: activeSubscription.id,
+            device_id: activeSubscription.deviceId,
+            route_key: activeSubscription.routeKey,
+            leg: legKey,
+            attributes_type: LIVE_ACTIVITY_ATTRIBUTES_TYPE,
+            use_sandbox: pushToStartRecord.useSandbox === true,
+            status: pushResult?.status,
+            reason: pushResult?.body?.reason || pushResult?.reason || null
+        }));
+
+        if (pushResult?.isBadToken) {
+            console.warn('[notifications] bad_push_to_start_token_delete', JSON.stringify({
+                device_id: activeSubscription.deviceId,
+                route_key: activeSubscription.routeKey,
+                leg: legKey,
+                context: 'sendScheduledLiveActivityStartIfNeeded'
+            }));
+            await pushToStartTokenStore.delete(activeSubscription.deviceId);
+            return false;
+        }
+
+        if (!(typeof pushResult?.status === 'number' && pushResult.status >= 200 && pushResult.status < 300)) {
+            return false;
+        }
+
+        const sentAt = snapshot?.fetchedAt || new Date().toISOString();
+        activeSubscription.lastAutoStartSentByLeg[legKey] = todayKey;
+        activeSubscription.lastAutoStartSentAtByLeg[legKey] = sentAt;
+        this._saveSubscription(activeSubscription).catch((err) => {
+            console.error('[notifications] Failed to persist scheduled live activity start state:', err?.message || err);
+        });
+        return true;
     }
 
     async sendUpdateNotifications(subscription, leg, legKey, snapshot, notificationTypes = getEffectiveNotificationTypes(subscription)) {
@@ -587,6 +664,34 @@ class NotificationSubscriptionManager {
             }
         }).catch((error) => {
             console.error('[admin] Failed to log notification send event:', error?.message || error);
+        });
+    }
+
+    logLiveActivityStartEvent(subscription, leg, payload, result) {
+        const status = result?.status ?? null;
+        const success = typeof status === 'number' && status >= 200 && status < 300;
+        recordNotificationEvent({
+            channel: 'live_activity',
+            type: 'live_activity_start',
+            success,
+            status,
+            error: result?.error || result?.body?.reason || result?.reason || null,
+            apns_environment: subscription.useSandbox ? 'sandbox' : 'prod',
+            device_id: subscription.deviceId,
+            route_key: subscription.routeKey,
+            from_station: leg?.from || null,
+            to_station: leg?.to || null,
+            is_bad_token: Boolean(result?.isBadToken),
+            payload,
+            response: result || null,
+            metadata: {
+                source: this.subscriptionSource(subscription),
+                schedule_key: buildScheduleKeyForLeg(leg),
+                notification_types: getEffectiveNotificationTypes(subscription),
+                days_of_week: subscription.daysOfWeek
+            }
+        }).catch((error) => {
+            console.error('[admin] Failed to log live activity start event:', error?.message || error);
         });
     }
 
@@ -794,6 +899,22 @@ function currentMinutes() {
     return hour * 60 + minute;
 }
 
+function isWithinSummaryGraceWindow(leg) {
+    let startMinutes;
+    let endMinutes;
+    try {
+        ({ startMinutes, endMinutes } = parseWindow(leg.windowStart, leg.windowEnd));
+    } catch {
+        return false;
+    }
+    const nowMinutes = currentMinutes();
+    return !(
+        nowMinutes < startMinutes
+        || nowMinutes > endMinutes
+        || nowMinutes >= (startMinutes + SUMMARY_START_GRACE_MINUTES)
+    );
+}
+
 function shouldPollNow(subscription, leg) {
     if (normalizeSource(subscription?.source) === LIVE_SESSION_SOURCE) {
         const activeUntil = Date.parse(subscription?.activeUntil || '');
@@ -881,7 +1002,9 @@ async function getDeparturesSnapshot(fromStation, toStation) {
         scheduled: dep.departure_time?.scheduled,
         estimated: dep.departure_time?.estimated || dep.departure_time?.scheduled,
         platform: dep.platform,
-        isCancelled: dep.isCancelled
+        isCancelled: dep.isCancelled,
+        length: dep.length,
+        destination: dep.destination
     }));
     return {
         departures: normalized,
@@ -939,6 +1062,74 @@ function buildSummaryMessage(subscription, leg, snapshot) {
     return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'summary'), 'summary');
 }
 
+function buildScheduledLiveActivityStartPayload(subscription, leg, snapshot) {
+    const routeTitle = legRouteTitle(leg);
+    const contentState = buildScheduledLiveActivityContentState(subscription, leg, snapshot, routeTitle);
+    const summary = buildSummaryMessage(subscription, leg, snapshot);
+    const alert = summary?.payload?.aps?.alert || {
+        title: routeTitle,
+        body: 'Journey updates started.'
+    };
+
+    return {
+        aps: {
+            timestamp: moment(snapshot?.fetchedAt || new Date().toISOString()).unix(),
+            event: 'start',
+            'relevance-score': 1.0,
+            'stale-date': moment(snapshot?.fetchedAt || new Date().toISOString()).add(5, 'minutes').unix(),
+            'content-state': contentState,
+            'attributes-type': LIVE_ACTIVITY_ATTRIBUTES_TYPE,
+            attributes: {
+                displayName: routeTitle
+            },
+            'input-push-token': 1,
+            alert
+        }
+    };
+}
+
+function buildScheduledLiveActivityContentState(subscription, leg, snapshot, routeTitle) {
+    const departures = Array.isArray(snapshot?.departures) ? snapshot.departures : [];
+    const primary = departures[0] || {};
+    const updatedAt = snapshot?.fetchedAt || new Date().toISOString();
+    const estimated = getValidDepartureTime(primary.estimated) || getValidDepartureTime(primary.scheduled) || '--:--';
+    const delayMinutes = calculateDelayMinutes(primary.scheduled, primary.estimated);
+    const primaryPlatform = normalizePlatform(primary.platform) || '';
+
+    return {
+        fromCRS: String(leg?.from || '').toUpperCase(),
+        toCRS: String(leg?.to || '').toUpperCase(),
+        routeTitle,
+        deepLinkFromCRS: String(leg?.from || '').toUpperCase(),
+        deepLinkToCRS: String(leg?.to || '').toUpperCase(),
+        destinationTitle: ensureNonEmptyString(primary.destination?.locationName) || leg.toName || leg.to,
+        arrivalLabel: null,
+        scheduledDeparture: getValidDepartureTime(primary.scheduled),
+        length: Number.isFinite(primary.length) && primary.length > 0 ? primary.length : null,
+        platform: primaryPlatform,
+        estimated,
+        isCancelled: Boolean(primary.isCancelled),
+        statusText: buildStatusText(primary),
+        delayMinutes,
+        upcomingDepartures: departures.slice(1).map((dep) => ({
+            time: getValidDepartureTime(dep.estimated) || getValidDepartureTime(dep.scheduled) || '--:--',
+            arrivalTime: null,
+            delayMinutes: calculateDelayMinutes(dep.scheduled, dep.estimated),
+            isCancelled: Boolean(dep.isCancelled),
+            platform: normalizePlatform(dep.platform),
+            hasFasterLaterService: false
+        })),
+        lastUpdated: moment(updatedAt).unix(),
+        activityID: null,
+        revision: 0,
+        appIsActive: false,
+        journeyUpdatesEnabled: false,
+        scheduleKey: buildScheduleKeyForLeg(leg),
+        windowStart: leg.windowStart || null,
+        windowEnd: leg.windowEnd || null
+    };
+}
+
 function buildStatusText(dep) {
     if (dep.isCancelled) {
         return '❌ Cancelled';
@@ -985,7 +1176,8 @@ function buildMutedMessages(subscription, leg, snapshot = null) {
             `${fromLabel} → ${toLabel}`,
             buildMutedGreetingBody(leg),
             buildLegMeta(subscription, leg, 'muted_greeting'),
-            'muted_greeting'
+            'muted_greeting',
+            'STATION_ARRIVAL'
         ),
         buildNotificationPayload(
             `${fromLabel} → ${toLabel}`,
@@ -1094,6 +1286,21 @@ function getValidDepartureTime(value) {
     const trimmed = value.trim();
     if (!trimmed) return null;
     return moment(trimmed, 'HH:mm', true).isValid() ? trimmed : null;
+}
+
+function legRouteTitle(leg) {
+    return `${leg.fromName || leg.from} → ${leg.toName || leg.to}`;
+}
+
+function buildScheduleKeyForLeg(leg) {
+    return [
+        String(leg?.from || '').toUpperCase(),
+        String(leg?.to || '').toUpperCase()
+    ].join('-') + `|${leg?.windowStart || ''}|${leg?.windowEnd || ''}|${currentScheduleDateKey()}`;
+}
+
+function ensureNonEmptyString(value) {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
 }
 
 function formatPlatformSuffix(dep) {
