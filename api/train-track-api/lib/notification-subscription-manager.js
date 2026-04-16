@@ -376,8 +376,10 @@ class NotificationSubscriptionManager {
             const notificationTypes = getEffectiveNotificationTypes(subscription);
 
             if (this.subscriptionSource(subscription) === SCHEDULED_SOURCE) {
-                await this.sendScheduledLiveActivityStartIfNeeded(subscription, leg, legKey, snapshot);
-                await this.sendSummaryIfNeeded(subscription, leg, legKey, snapshot);
+                const autoStartSent = await this.sendScheduledLiveActivityStartIfNeeded(subscription, leg, legKey, snapshot);
+                if (!autoStartSent) {
+                    await this.sendSummaryIfNeeded(subscription, leg, legKey, snapshot);
+                }
             } else if (notificationTypes.includes('summary')) {
                 await this.sendSummaryIfNeeded(subscription, leg, legKey, snapshot);
             }
@@ -465,10 +467,6 @@ class NotificationSubscriptionManager {
         const todayKey = currentScheduleDateKey();
         if (subscription.lastAutoStartSentByLeg?.[legKey] === todayKey) {
             return true;
-        }
-
-        if (!isWithinSummaryGraceWindow(leg)) {
-            return false;
         }
 
         const activeSubscription = this.getActiveSubscriptionForPush(subscription.id, leg, 'scheduled_live_activity_start_pre_send');
@@ -899,21 +897,6 @@ function currentMinutes() {
     return hour * 60 + minute;
 }
 
-function isWithinSummaryGraceWindow(leg) {
-    let startMinutes;
-    let endMinutes;
-    try {
-        ({ startMinutes, endMinutes } = parseWindow(leg.windowStart, leg.windowEnd));
-    } catch {
-        return false;
-    }
-    const nowMinutes = currentMinutes();
-    return !(
-        nowMinutes < startMinutes
-        || nowMinutes > endMinutes
-        || nowMinutes >= (startMinutes + SUMMARY_START_GRACE_MINUTES)
-    );
-}
 
 function shouldPollNow(subscription, leg) {
     if (normalizeSource(subscription?.source) === LIVE_SESSION_SOURCE) {
