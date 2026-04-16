@@ -979,7 +979,16 @@ function getEffectiveNotificationTypes(subscription) {
 
 async function getDeparturesSnapshot(fromStation, toStation) {
     const result = await getTrainTimes(fromStation, toStation);
-    const departures = Array.isArray(result?.departures) ? result.departures.slice(0, 3) : [];
+    const gracePeriodMs = 60 * 1000; // 1 minute grace, matching live-activity-manager sortDepartures
+    const now = moment();
+    const allDepartures = Array.isArray(result?.departures) ? result.departures : [];
+    const upcomingDepartures = allDepartures.filter((dep) => {
+        const timeStr = dep.departure_time?.estimated || dep.departure_time?.scheduled;
+        if (!timeStr) return false;
+        const parsed = moment(timeStr, 'HH:mm');
+        return parsed.isValid() && parsed.valueOf() > (now.valueOf() - gracePeriodMs);
+    });
+    const departures = upcomingDepartures.slice(0, 3);
     const normalized = departures.map((dep) => ({
         serviceID: dep.serviceID,
         scheduled: dep.departure_time?.scheduled,

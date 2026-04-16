@@ -10,7 +10,7 @@ const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.LIVE_ACTIVITY_POLL_INTE
 const DEFAULT_END_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_END_AFTER_SECONDS || '7200'); // default 2 hours
 const DEFAULT_STALE_DATE_REFRESH_SECONDS = Number(process.env.LIVE_ACTIVITY_STALE_DATE_REFRESH_SECONDS || '240'); // refresh stale-date every 4 minutes
 const APP_CHECKIN_WARNING_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_APP_CHECKIN_WARNING_AFTER_SECONDS || '120');
-const DEFAULT_MAX_ACTIVE_PER_DEVICE = Number(process.env.LIVE_ACTIVITY_MAX_ACTIVE_PER_DEVICE || '1');
+const DEFAULT_MAX_ACTIVE_PER_DEVICE = Number(process.env.LIVE_ACTIVITY_MAX_ACTIVE_PER_DEVICE || '5');
 
 class LiveActivityManager {
     constructor() {
