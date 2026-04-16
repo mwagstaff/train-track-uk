@@ -126,8 +126,8 @@ struct FavouritesView: View {
             }, set: { _ in activityMgr.lastMessage = nil })) { m in
                 Alert(title: Text(m.text))
             }
-            .confirmationDialog(
-                "Delete this journey?",
+            .alert(
+                "Delete journey?",
                 isPresented: $showDeleteDialog,
                 presenting: journeyPendingDelete
             ) { j in
@@ -136,7 +136,7 @@ struct FavouritesView: View {
                 }
                 Button("Cancel", role: .cancel) { }
             } message: { _ in
-                Text("Delete this journey?")
+                Text("This journey will be permanently deleted.")
             }
             .confirmationDialog(
                 multiDeleteTitle,
