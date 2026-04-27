@@ -6,8 +6,7 @@ enum Tab: Hashable {
     case favourites
     case myJourneys
     case addJourney
-    case preferences
-    case about
+    case profile
 }
 
 final class TabRouter: ObservableObject {

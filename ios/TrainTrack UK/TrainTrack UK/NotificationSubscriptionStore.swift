@@ -117,10 +117,16 @@ final class NotificationSubscriptionStore: ObservableObject {
     @Published private(set) var subscriptions: [NotificationSubscription] = []
     @Published private(set) var liveSessions: [NotificationSubscription] = []
     @Published private(set) var isLoading = false
+    @Published private(set) var hasLoadedOnce = false
     @Published var lastError: String? = nil
     private var hasLoadedRemoteState = false
 
     private let service = NotificationSubscriptionService.shared
+
+    // Forward ServerConfigStore changes through this store so that computed
+    // properties like canCreateNew (which read from ServerConfigStore) cause
+    // SwiftUI views to re-render when the server config is updated.
+    private var configCancellable: AnyCancellable?
 
     // MARK: - Local subscription ID registry
     // Tracks the IDs of subscriptions this device has intentionally created.
@@ -141,6 +147,18 @@ final class NotificationSubscriptionStore: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: Self.knownIDsBootstrappedKey) }
     }
 
+    // MARK: - Init
+
+    private init() {
+        // When the server config updates (e.g. limit changes), forward the
+        // change through this store so that computed properties like
+        // canCreateNew cause SwiftUI views to re-render automatically.
+        configCancellable = ServerConfigStore.shared.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+    }
+
     // MARK: - Refresh
 
     func refresh() async {
@@ -155,6 +173,7 @@ final class NotificationSubscriptionStore: ObservableObject {
             subscriptions = await reconcileSubscriptions(fetched)
             liveSessions = fetchedLive
             hasLoadedRemoteState = true
+            hasLoadedOnce = true
             lastError = nil
             await syncGeofences()
         } catch {
@@ -309,8 +328,8 @@ final class NotificationSubscriptionStore: ObservableObject {
         subscriptions + liveSessions
     }
 
-    var canCreateNew: Bool { subscriptions.count < 3 }
-    var canCreateNewLiveSession: Bool { liveSessions.count < 3 }
+    var canCreateNew: Bool { subscriptions.count < ServerConfigStore.shared.maxSubscriptionsPerDevice }
+    var canCreateNewLiveSession: Bool { liveSessions.count < ServerConfigStore.shared.maxLiveSessionsPerDevice }
 
     func syncGeofencesNow() async {
         guard hasLoadedRemoteState else { return }

@@ -12,12 +12,14 @@ struct NotificationScheduleView: View {
     @State private var legs: [NotificationLeg]
     @State private var selectedDays: Set<DayOfWeek>
     @State private var errorMessage: String?
+    @State private var showErrorAlert = false
     @State private var isSaving = false
     @State private var isDeleting = false
     @State private var showDeleteDialog = false
     @State private var showUnsavedChangesDialog = false
     @State private var didApplyExisting = false
     @State private var initialDraftState: ScheduleDraftState?
+    @State private var showWindowHint: Set<Int> = []
 
     private let maxWindowMinutes = 120
 
@@ -95,30 +97,20 @@ struct NotificationScheduleView: View {
 
                 ForEach(legs.indices, id: \.self) { index in
                     let leg = legs[index]
-                    Section("Time Window: \(legLabel(leg))") {
+                    Section("\(legLabel(leg))") {
                         Toggle("Enabled", isOn: bindingForLegEnabled(index))
                         DatePicker("Start", selection: bindingForStartTime(index), displayedComponents: .hourAndMinute)
                             .disabled(!leg.enabled)
                         DatePicker("End", selection: bindingForEndTime(index), displayedComponents: .hourAndMinute)
                             .disabled(!leg.enabled)
-                        HStack(spacing: 8) {
-                            Button("Next 30m") { applyQuickWindow(index, minutes: 30) }
-                            Button("Next 1h") { applyQuickWindow(index, minutes: 60) }
-                            Button("Next 2h") { applyQuickWindow(index, minutes: 120) }
-                        }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .disabled(!leg.enabled)
-                        Text("Choose a window up to 2 hours.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                if let errorMessage {
-                    Section {
-                        Text(errorMessage)
-                            .foregroundStyle(.red)
+                        if showWindowHint.contains(index) {
+                            Text("Choose a window up to 2 hours.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
 
@@ -143,7 +135,16 @@ struct NotificationScheduleView: View {
                     .disabled(isSaving || isDeleting)
                 }
 
-                ToolbarItem(placement: .confirmationAction) {
+                ToolbarItemGroup(placement: .confirmationAction) {
+                    Button {
+                        reverseLegs()
+                    } label: {
+                        Image(systemName: "arrow.left.arrow.right")
+                    }
+                    .accessibilityLabel("Reverse legs")
+                    .accessibilityHint("Switch the scheduled journey direction")
+                    .disabled(isSaving || isDeleting || legs.isEmpty)
+
                     if hasUnsavedChanges {
                         Button {
                             save()
@@ -155,22 +156,15 @@ struct NotificationScheduleView: View {
                     }
                 }
             }
-            .confirmationDialog(
-                "Delete schedule?",
-                isPresented: $showDeleteDialog
-            ) {
-                Button("Delete schedule", role: .destructive) {
+            .alert("Delete schedule?", isPresented: $showDeleteDialog) {
+                Button("Delete", role: .destructive) {
                     deleteSchedule()
                 }
                 Button("Cancel", role: .cancel) { }
             } message: {
                 Text("This will remove scheduled notifications for this journey.")
             }
-            .confirmationDialog(
-                "Save changes before closing?",
-                isPresented: $showUnsavedChangesDialog,
-                titleVisibility: .visible
-            ) {
+            .alert("Save changes before closing?", isPresented: $showUnsavedChangesDialog) {
                 if canSave {
                     Button(existing == nil ? "Schedule journey updates" : "Save changes") {
                         save()
@@ -182,6 +176,11 @@ struct NotificationScheduleView: View {
                 Button("Keep editing", role: .cancel) { }
             } message: {
                 Text("You have unsaved notification changes for this journey.")
+            }
+            .alert("Could not save", isPresented: $showErrorAlert, presenting: errorMessage) { _ in
+                Button("OK", role: .cancel) { }
+            } message: { message in
+                Text(message)
             }
             .task {
                 await NotificationAuthorizationManager.registerIfAuthorized()
@@ -195,6 +194,21 @@ struct NotificationScheduleView: View {
                 }
             )
         }
+    }
+
+    private func reverseLegs() {
+        legs = legs.reversed().map { leg in
+            NotificationLeg(
+                from: leg.to.uppercased(),
+                to: leg.from.uppercased(),
+                fromName: leg.toName,
+                toName: leg.fromName,
+                enabled: leg.enabled,
+                windowStart: leg.windowStart,
+                windowEnd: leg.windowEnd
+            )
+        }
+        showWindowHint.removeAll()
     }
 
     private func applyExistingIfNeeded() {
@@ -279,7 +293,9 @@ struct NotificationScheduleView: View {
             },
             set: { newValue in
                 legs[index].windowStart = timeString(from: newValue)
-                clampLegWindow(index)
+                let twoHoursLater = Calendar.current.date(byAdding: .hour, value: 2, to: newValue) ?? newValue
+                legs[index].windowEnd = timeString(from: twoHoursLater)
+                showWindowHint.remove(index)
             }
         )
     }
@@ -291,19 +307,18 @@ struct NotificationScheduleView: View {
                     ?? defaultWindowDate(for: index, isStart: false)
             },
             set: { newValue in
+                if let startDate = timeFromString(legs[index].windowStart) {
+                    let maxEnd = Calendar.current.date(byAdding: .minute, value: maxWindowMinutes, to: startDate) ?? startDate
+                    if newValue > maxEnd {
+                        showWindowHint.insert(index)
+                    } else {
+                        showWindowHint.remove(index)
+                    }
+                }
                 legs[index].windowEnd = timeString(from: newValue)
                 clampLegWindow(index)
             }
         )
-    }
-
-    private func applyQuickWindow(_ index: Int, minutes: Int) {
-        guard legs.indices.contains(index) else { return }
-        let start = Date()
-        let end = Calendar.current.date(byAdding: .minute, value: minutes, to: start) ?? start
-        legs[index].windowStart = timeString(from: start)
-        legs[index].windowEnd = timeString(from: end)
-        clampLegWindow(index)
     }
 
     private func timeFromString(_ value: String) -> Date? {
@@ -334,6 +349,11 @@ struct NotificationScheduleView: View {
         }
     }
 
+    private func showError(_ message: String) {
+        errorMessage = message
+        showErrorAlert = true
+    }
+
     private func save() {
         guard canSave else { return }
         Task {
@@ -341,7 +361,7 @@ struct NotificationScheduleView: View {
             errorMessage = nil
             let allowed = await NotificationAuthorizationManager.ensureAuthorized()
             guard allowed else {
-                errorMessage = "Notifications are disabled. Enable them in Settings."
+                showError("Notifications are disabled. Enable them in Settings.")
                 isSaving = false
                 return
             }
@@ -353,13 +373,13 @@ struct NotificationScheduleView: View {
 
             let pushToStartReady = await activityMgr.ensurePushToStartTokenRegistered()
             guard pushToStartReady else {
-                errorMessage = "Live Activity server start isn't ready yet. Please try again in a moment."
+                showError("Live Activity server start isn't ready yet. Please try again in a moment.")
                 isSaving = false
                 return
             }
 
             guard let pushToken = await NotificationPushTokenStore.waitForToken(timeoutSeconds: 6.0) else {
-                errorMessage = "Waiting for a push token. Try again in a moment."
+                showError("Waiting for a push token. Try again in a moment.")
                 isSaving = false
                 return
             }
@@ -393,7 +413,7 @@ struct NotificationScheduleView: View {
                 _ = try await notificationStore.upsert(request)
                 dismiss()
             } catch {
-                errorMessage = error.localizedDescription
+                showError(error.localizedDescription)
             }
             isSaving = false
         }
@@ -408,7 +428,7 @@ struct NotificationScheduleView: View {
                 try await notificationStore.delete(id: existing.id)
                 dismiss()
             } catch {
-                errorMessage = error.localizedDescription
+                showError(error.localizedDescription)
             }
             isDeleting = false
         }

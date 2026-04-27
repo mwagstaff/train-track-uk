@@ -19,8 +19,7 @@ struct ContentView: View {
     @State private var favouritesPath = NavigationPath()
     @State private var myJourneysPath = NavigationPath()
     @State private var addJourneyPath = NavigationPath()
-    @State private var preferencesPath = NavigationPath()
-    @State private var aboutPath = NavigationPath()
+    @State private var profilePath = NavigationPath()
 
     var body: some View {
         TabView(selection: $router.selected) {
@@ -46,15 +45,10 @@ struct ContentView: View {
                 .tabItem { Label("Add Journey", systemImage: "plus.circle") }
                 .tag(Tab.addJourney)
 
-            NavigationStack(path: $preferencesPath) { PreferencesView() }
+            NavigationStack(path: $profilePath) { ProfileView() }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
-                .tabItem { Label("Preferences", systemImage: "gear") }
-                .tag(Tab.preferences)
-
-            NavigationStack(path: $aboutPath) { AboutView() }
-                .modifier(JourneyUpdatesChrome(includeToast: true))
-                .tabItem { Label("About", systemImage: "info.circle") }
-                .tag(Tab.about)
+                .tabItem { Label("Profile", systemImage: "person.circle") }
+                .tag(Tab.profile)
         }
         .animation(.easeOut(duration: 0.25), value: toastStore.toast)
         .onAppear {
@@ -80,8 +74,7 @@ struct ContentView: View {
             favouritesPath = NavigationPath()
             myJourneysPath = NavigationPath()
             addJourneyPath = NavigationPath()
-            preferencesPath = NavigationPath()
-            aboutPath = NavigationPath()
+            profilePath = NavigationPath()
         }
     }
 }

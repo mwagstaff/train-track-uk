@@ -516,6 +516,30 @@ class NotificationSubscriptionManager {
             return false;
         }
 
+        // Wake the app in background so it can detect the new live activity and
+        // register its per-activity push token with the server. Without this, a
+        // killed app never runs Activity.activityUpdates and the server has no
+        // token to send update pushes — leaving the widget frozen at launch state.
+        if (activeSubscription.pushToken) {
+            const wakePayload = buildNotificationPayload(null, null, { context: 'live_activity_wake' }, 'live_activity_wake');
+            this.pushClient.sendNotification(
+                activeSubscription.pushToken,
+                wakePayload.payload,
+                { useSandbox: activeSubscription.useSandbox === true, event: 'live_activity_wake' }
+            ).then((wakeResult) => {
+                console.log('[notifications] live_activity_wake_push', JSON.stringify({
+                    subscription_id: activeSubscription.id,
+                    device_id: activeSubscription.deviceId,
+                    route_key: activeSubscription.routeKey,
+                    leg: legKey,
+                    status: wakeResult?.status,
+                    reason: wakeResult?.body?.reason || wakeResult?.reason || null
+                }));
+            }).catch((err) => {
+                console.warn('[notifications] live_activity_wake_push_failed', err?.message || err);
+            });
+        }
+
         const sentAt = snapshot?.fetchedAt || new Date().toISOString();
         activeSubscription.lastAutoStartSentByLeg[legKey] = todayKey;
         activeSubscription.lastAutoStartSentAtByLeg[legKey] = sentAt;
@@ -1074,7 +1098,6 @@ function buildScheduledLiveActivityStartPayload(subscription, leg, snapshot) {
             attributes: {
                 displayName: routeTitle
             },
-            'input-push-token': 1,
             alert
         }
     };

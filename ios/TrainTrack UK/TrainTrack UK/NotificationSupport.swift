@@ -104,6 +104,15 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
     ) {
         Task { @MainActor in
             let started = await ScheduledLiveActivityAutoStartManager.shared.handleRemoteNotification(userInfo: userInfo)
+
+            // For push-to-start notifications (content-available: 1 is included in the
+            // payload), iOS wakes the app in background. Give the system a moment to make
+            // the newly-created live activity available via Activity.activities, then
+            // register any untracked activities with the server so it can start pushing
+            // updates immediately — without requiring the user to foreground the app.
+            try? await Task.sleep(nanoseconds: 750_000_000) // 750ms
+            await LiveActivityManager.shared.registerAnyUnregisteredActivities()
+
             completionHandler(started ? .newData : .noData)
         }
     }

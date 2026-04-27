@@ -152,7 +152,18 @@ class LiveActivityManager {
 
     scheduleEnd(subscription) {
         this.clearEndTimer(subscription);
-        const endAfterMs = this.getEndAfterMs();
+        let endAfterMs = this.getEndAfterMs();
+
+        // If the subscription has a windowEnd, end the live activity shortly after
+        // the window closes rather than using a fixed duration from registration time.
+        if (subscription.windowEnd) {
+            const windowEndMs = this.computeWindowEndMs(subscription.windowEnd);
+            if (windowEndMs !== null) {
+                const bufferMs = 5 * 60 * 1000; // 5-minute grace after window end
+                endAfterMs = Math.max((windowEndMs - Date.now()) + bufferMs, 0);
+            }
+        }
+
         subscription.endAt = new Date(Date.now() + endAfterMs).toISOString();
         subscription.endTimer = setTimeout(() => {
             this.sendEndUpdate(subscription).catch((error) => {
@@ -161,6 +172,40 @@ class LiveActivityManager {
             });
         }, endAfterMs);
         subscription.endTimer.unref?.();
+    }
+
+    /**
+     * Computes the Unix timestamp (ms) for a given HH:mm window-end time today,
+     * expressed in the Europe/London schedule timezone.
+     * Returns null if the input is invalid.
+     */
+    computeWindowEndMs(windowEnd) {
+        if (!windowEnd || typeof windowEnd !== 'string') return null;
+        const parts = windowEnd.split(':');
+        if (parts.length !== 2) return null;
+        const endHour = Number(parts[0]);
+        const endMinute = Number(parts[1]);
+        if (!Number.isFinite(endHour) || !Number.isFinite(endMinute)) return null;
+        if (endHour < 0 || endHour > 23 || endMinute < 0 || endMinute > 59) return null;
+
+        // Get current time in the schedule timezone to find current local h/m
+        const SCHEDULE_TIME_ZONE = process.env.NOTIFICATION_SCHEDULE_TIME_ZONE || 'Europe/London';
+        const formatter = new Intl.DateTimeFormat('en-GB', {
+            timeZone: SCHEDULE_TIME_ZONE,
+            hour: '2-digit',
+            minute: '2-digit',
+            hourCycle: 'h23'
+        });
+        const now = new Date();
+        const timeParts = Object.fromEntries(
+            formatter.formatToParts(now)
+                .filter((p) => p.type !== 'literal')
+                .map((p) => [p.type, p.value])
+        );
+        const localNowMinutes = Number(timeParts.hour) * 60 + Number(timeParts.minute);
+        const endWindowMinutes = endHour * 60 + endMinute;
+        const diffMinutes = endWindowMinutes - localNowMinutes;
+        return Date.now() + diffMinutes * 60 * 1000;
     }
 
     clearEndTimer(subscription) {
@@ -501,19 +546,59 @@ class LiveActivityManager {
         return null;
     }
 
+    // Returns the current time in Europe/London as minutes since midnight.
+    // Used for departure filtering so results are correct regardless of the
+    // server's own timezone (e.g. a UTC-based Hetzner host).
+    currentLondonMinutes() {
+        const parts = Object.fromEntries(
+            new Intl.DateTimeFormat('en-GB', {
+                timeZone: 'Europe/London',
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: false
+            }).formatToParts(new Date())
+                .filter((p) => p.type !== 'literal')
+                .map((p) => [p.type, p.value])
+        );
+        return Number(parts.hour) * 60 + Number(parts.minute);
+    }
+
+    // Converts an HH:mm string to minutes since midnight. Returns null if invalid.
+    timeStringToMinutes(timeString) {
+        if (!timeString) return null;
+        const colonIdx = timeString.indexOf(':');
+        if (colonIdx === -1) return null;
+        const h = Number(timeString.slice(0, colonIdx));
+        const m = Number(timeString.slice(colonIdx + 1));
+        if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+        return h * 60 + m;
+    }
+
     sortDepartures(departures) {
-        const now = moment();
+        // Rail API departure times are always in Europe/London local time.
+        // Compare against London minutes-since-midnight to avoid the server's
+        // UTC offset causing departed trains to appear upcoming (e.g. BST = UTC+1
+        // means a 14:12 BST departure looks like it's at 14:12 UTC = 15:12 BST,
+        // i.e. still 1 hour away, so it never gets filtered out).
+        const nowMinutes = this.currentLondonMinutes();
+        const gracePeriodMinutes = 1;
+
         return departures
             .filter((dep) => dep.scheduled || dep.estimated)
             .filter((dep) => {
-                // Filter out trains that have already departed (give 1 minute grace period)
-                const depTime = this.parseTime(this.getTimeString(dep.estimated, dep.scheduled, dep.scheduled || ''));
-                const gracePeriodMs = 60 * 1000; // 1 minute
-                return depTime > (now.valueOf() - gracePeriodMs);
+                const timeStr = this.getTimeString(dep.estimated, dep.scheduled, dep.scheduled || '');
+                const depMinutes = this.timeStringToMinutes(timeStr);
+                if (depMinutes === null) return false;
+                // Handle post-midnight wrap: if the departure appears >720 min
+                // behind the current time, it is almost certainly a next-day
+                // service — keep it rather than filtering it out.
+                const diff = depMinutes - nowMinutes;
+                if (diff < -720) return true;
+                return depMinutes > (nowMinutes - gracePeriodMinutes);
             })
             .sort((a, b) => {
-                const timeA = this.parseTime(this.getTimeString(a.estimated, a.scheduled, a.scheduled || ''));
-                const timeB = this.parseTime(this.getTimeString(b.estimated, b.scheduled, b.scheduled || ''));
+                const timeA = this.timeStringToMinutes(this.getTimeString(a.estimated, a.scheduled, a.scheduled || '')) ?? Infinity;
+                const timeB = this.timeStringToMinutes(this.getTimeString(b.estimated, b.scheduled, b.scheduled || '')) ?? Infinity;
                 return timeA - timeB;
             });
     }
@@ -526,7 +611,10 @@ class LiveActivityManager {
             return sortedUpcoming.slice(0, 3);
         }
 
-        const preferred = allDepartures.find((dep) => dep.serviceID === normalizedPreferred);
+        // Only pin the preferred service if it has not yet passed the grace period.
+        // Searching sortedUpcoming (already filtered) rather than allDepartures
+        // ensures a departed preferred train is dropped cleanly at the grace boundary.
+        const preferred = sortedUpcoming.find((dep) => dep.serviceID === normalizedPreferred);
         if (!preferred) {
             return sortedUpcoming.slice(0, 3);
         }

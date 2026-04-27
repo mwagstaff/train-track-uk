@@ -1047,6 +1047,16 @@ app.get('/api/v2/stations', async (req, res) => {
     res.sendFile(path.join(__dirname, 'resources', 'stations.json'));
 });
 
+// V2 API - Client configuration endpoint
+// Returns server-side limits so clients can stay in sync without app updates.
+app.get('/api/v2/config', (req, res) => {
+    const maxPerDevice = Number(process.env.NOTIFICATION_MAX_SUBSCRIPTIONS || '5');
+    res.json({
+        max_subscriptions_per_device: maxPerDevice,
+        max_live_sessions_per_device: maxPerDevice,
+    });
+});
+
 app.get('/api/v1/xbar/from/:fromStation/to/:toStation/max_departures/:maxDepartures/return_after/:returnAfter?', async (req, res) => {
     res.send(await getXbarOutput(req.params.fromStation, req.params.toStation, req.params.maxDepartures, req.params.returnAfter));
 });

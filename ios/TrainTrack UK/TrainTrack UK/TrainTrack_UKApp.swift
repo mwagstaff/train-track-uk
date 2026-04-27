@@ -45,6 +45,7 @@ struct TrainTrackUKApp: App {
             if newPhase == .active {
                 print("🔄 [App] App became active - triggering Live Activity refresh")
                 Task {
+                    await LiveActivityManager.shared.registerAnyUnregisteredActivities()
                     await LiveActivityManager.shared.sendImmediateBackendCheckIn()
                     await LiveActivityManager.shared.refreshIfActive(
                         journeyStore: JourneyStore.shared,
@@ -52,6 +53,12 @@ struct TrainTrackUKApp: App {
                     )
                 }
                 DeparturesStore.shared.runPinnedCleanupImmediately()
+
+                // Refresh server-side config (subscription limits etc.) so the client
+                // stays in sync without requiring an app update.
+                Task {
+                    await ServerConfigStore.shared.refresh()
+                }
 
                 // Re-sync subscriptions and geofences each time the app comes to the
                 // foreground. This ensures geofences are registered after the app was

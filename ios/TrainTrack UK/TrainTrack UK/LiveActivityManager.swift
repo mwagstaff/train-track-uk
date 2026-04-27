@@ -134,6 +134,10 @@ final class LiveActivityManager: ObservableObject {
     }
 
     func refreshIfActive(journeyStore: JourneyStore, depStore: DeparturesStore) async {
+        if trackedActivities.isEmpty {
+            await registerAnyUnregisteredActivities()
+        }
+
         guard !trackedActivities.isEmpty else {
             print("⚠️ [LiveActivity] No active activities, skipping refresh")
             return
@@ -1285,26 +1289,25 @@ final class LiveActivityManager: ObservableObject {
         )
         tracked.fallbackEndTimer = scheduleFallbackEnd(for: activity.id)
         trackedActivities[activity.id] = tracked
+        // watchPushToken delivers the current token immediately via pushTokenUpdates when
+        // the token is already available, so no separate direct-registration Task is needed
+        // here — that was causing duplicate (and triplicate) server registrations for
+        // push-to-start activities.
         watchPushToken(for: activity, fromCRS: fromCRS, toCRS: toCRS)
-        if let tokenData = activity.pushToken {
-            let tokenString = encodePushToken(tokenData)
-            Task { @MainActor in
-                _ = await self.sendLiveActivityRegistration(
-                    activityID: activity.id,
-                    tokenString: tokenString,
-                    fromCRS: fromCRS,
-                    toCRS: toCRS,
-                    routeTitle: activity.contentState.routeTitle,
-                    deepLinkFromCRS: activity.contentState.deepLinkFromCRS,
-                    deepLinkToCRS: activity.contentState.deepLinkToCRS,
-                    journeyUpdatesEnabled: tracked.journeyUpdatesEnabled,
-                    scheduleKey: activity.contentState.scheduleKey,
-                    windowStart: activity.contentState.windowStart,
-                    windowEnd: activity.contentState.windowEnd
-                )
-            }
-        }
         updatePublishedState()
+    }
+
+    /// Scans all active system activities and registers any that aren't yet tracked.
+    /// Called from the background notification handler so push-to-start activities
+    /// get their update tokens registered with the server without requiring the user
+    /// to foreground the app.
+    func registerAnyUnregisteredActivities() async {
+        let unregistered = currentSystemActivities().filter { trackedActivities[$0.id] == nil }
+        guard !unregistered.isEmpty else { return }
+        print("📡 [LiveActivity] registerAnyUnregisteredActivities: found \(unregistered.count) unregistered activity/activities")
+        for activity in unregistered {
+            await registerRemoteStartedActivityIfNeeded(activity)
+        }
     }
 
     private func replaceScheduledActivityIfNeeded(with activity: Activity<JourneyActivityAttributes>) async {

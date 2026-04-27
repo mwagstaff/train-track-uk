@@ -66,7 +66,19 @@ struct JourneyDetailsView: View {
     }
 
     private var canScheduleNotifications: Bool {
-        notificationSubscription != nil || notificationStore.subscriptions.count < 3
+        // If editing an existing subscription, always allow opening the sheet.
+        if notificationSubscription != nil { return true }
+        // Remain disabled until the server subscription count has been loaded
+        // at least once — before that, subscriptions.count is 0 regardless of
+        // how many the user actually has, which would incorrectly enable the button.
+        guard notificationStore.hasLoadedOnce else { return false }
+        return notificationStore.canCreateNew
+    }
+
+    private var isAtScheduleLimit: Bool {
+        notificationSubscription == nil
+            && notificationStore.hasLoadedOnce
+            && !notificationStore.canCreateNew
     }
 
     private var liveUpdatesSubtitle: (text: String, color: Color) {
@@ -95,6 +107,10 @@ struct JourneyDetailsView: View {
         if let subscription = notificationSubscription,
            let nextSchedule = nextScheduledStartDescription(for: subscription, matching: currentGroup.legs) {
             return ("Journey updates scheduled to start \(nextSchedule)", .secondary)
+        }
+
+        if isAtScheduleLimit {
+            return ("Scheduled updates limit reached. Tap to view.", .secondary)
         }
 
         return ("Start or schedule live updates for this journey", .secondary)
@@ -302,7 +318,10 @@ struct JourneyDetailsView: View {
                     },
                     onOpenSchedule: {
                         showingNotificationSheet = true
-                    }
+                    },
+                    onSubtitleTap: isAtScheduleLimit ? {
+                        TabRouter.shared.selected = .profile
+                    } : nil
                 )
             }
 
@@ -540,8 +559,7 @@ struct JourneyDetailsView: View {
             #endif
         }
         .sheet(isPresented: $showingNotificationSheet) {
-            let otherGroup = showingReverse ? group : reverseGroup
-            NotificationScheduleView(group: currentGroup, reverseGroup: otherGroup)
+            NotificationScheduleView(group: group, reverseGroup: reverseGroup)
                 .environmentObject(notificationStore)
         }
         .navigationTitle("")
@@ -648,7 +666,7 @@ struct JourneyDetailsView: View {
 
         var replacement: NotificationSubscription?
         if liveSession == nil,
-           notificationStore.liveSessions.count >= 3 {
+           notificationStore.liveSessions.count >= 5 {
             replacement = notificationStore.liveSessions
                 .filter { $0.routeKey != liveSessionRouteKey }
                 .sorted(by: { ($0.createdAt ?? .distantFuture) < ($1.createdAt ?? .distantFuture) })
@@ -1744,15 +1762,17 @@ private struct JourneyUpdatesRow: View {
     let subtitleColor: Color
     var onToggleLive: () -> Void
     var onOpenSchedule: () -> Void
+    var onSubtitleTap: (() -> Void)? = nil
 
     private var scheduleIcon: String {
         isScheduled ? "clock.fill" : "clock"
     }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
+        HStack(alignment: .top, spacing: 12) {
             Image(systemName: "dot.radiowaves.left.and.right")
                 .foregroundStyle(isLiveActive ? .blue : .secondary)
+                .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Journey updates")
@@ -1760,8 +1780,9 @@ private struct JourneyUpdatesRow: View {
                     .fontWeight(.semibold)
                 Text(subtitle)
                     .font(.caption)
-                    .foregroundStyle(subtitleColor)
-                    .lineLimit(2)
+                    .foregroundStyle(onSubtitleTap != nil ? Color.accentColor : subtitleColor)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onTapGesture { onSubtitleTap?() }
             }
 
             Spacer(minLength: 8)
