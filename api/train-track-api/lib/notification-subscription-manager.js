@@ -69,6 +69,10 @@ class NotificationSubscriptionManager {
                     }
                 }
                 console.log(`[notifications] Loaded ${loaded} subscription(s) from Redis`);
+                const pruned = await this.pruneDuplicateScheduledSubscriptions();
+                if (pruned > 0) {
+                    console.log(`[notifications] Pruned ${pruned} duplicate scheduled subscription(s) from Redis`);
+                }
             } else {
                 console.log('[notifications] No subscriptions found in Redis');
             }
@@ -215,7 +219,10 @@ class NotificationSubscriptionManager {
                 sub.deviceId === deviceId
                 && sub.id !== existing?.id
                 && this.subscriptionSource(sub) === SCHEDULED_SOURCE
-                && scheduledSubscriptionsOverlap(sub, daysOfWeek, normalizedLegs)
+                && (
+                    sub.routeKey === routeKey
+                    || scheduledSubscriptionsOverlap(sub, daysOfWeek, normalizedLegs)
+                )
             )
             : [];
         const deviceCount = this.countSubscriptionsForDevice(deviceId, { source });
@@ -891,6 +898,37 @@ class NotificationSubscriptionManager {
         if (expiredIds.length === 0) return;
         await Promise.all(expiredIds.map((id) => this.deleteSubscription({ subscriptionId: id })));
     }
+
+    async pruneDuplicateScheduledSubscriptions() {
+        const groups = new Map();
+        for (const sub of this.subscriptions.values()) {
+            if (this.subscriptionSource(sub) !== SCHEDULED_SOURCE) continue;
+            const key = [
+                String(sub.deviceId || '').trim(),
+                String(sub.routeKey || '').trim()
+            ].join('|');
+            if (!key || key === '|') continue;
+            const current = groups.get(key) || [];
+            current.push(sub);
+            groups.set(key, current);
+        }
+
+        const staleIds = [];
+        for (const group of groups.values()) {
+            if (group.length <= 1) continue;
+            const sorted = [...group].sort((left, right) =>
+                subscriptionTimestamp(right) - subscriptionTimestamp(left)
+            );
+            staleIds.push(...sorted.slice(1).map((sub) => sub.id).filter(Boolean));
+        }
+
+        if (staleIds.length === 0) return 0;
+        await Promise.all(staleIds.map(async (id) => {
+            this.subscriptions.delete(id);
+            await this._deleteFromRedis(id);
+        }));
+        return staleIds.length;
+    }
 }
 
 function normalizeDays(daysInput) {
@@ -1310,6 +1348,13 @@ function scheduledLegKey(leg) {
         leg?.windowStart || '',
         leg?.windowEnd || ''
     ].join('|');
+}
+
+function subscriptionTimestamp(subscription) {
+    const updated = Date.parse(subscription?.updatedAt || '');
+    if (Number.isFinite(updated)) return updated;
+    const created = Date.parse(subscription?.createdAt || '');
+    return Number.isFinite(created) ? created : 0;
 }
 
 function hasPlatform(dep) {
