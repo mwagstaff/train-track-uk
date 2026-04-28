@@ -94,6 +94,7 @@ struct ProfileView: View {
     private func journeyUpdateCard(for sub: NotificationSubscription) -> some View {
         let scheduled = isScheduled(sub)
         let active = isActive(sub)
+        let legs = chronologicalLegs(from: sub.legs)
         HStack(alignment: .center, spacing: 0) {
             Button {
                 if scheduled, let route = resolvedScheduledRoute(for: sub) {
@@ -103,7 +104,7 @@ struct ProfileView: View {
                 }
             } label: {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(sub.legs.enumerated()), id: \.offset) { index, leg in
+                    ForEach(Array(legs.enumerated()), id: \.offset) { index, leg in
                         if index > 0 {
                             Divider()
                                 .padding(.leading, 14)
@@ -185,31 +186,63 @@ struct ProfileView: View {
     }
 
     private func resolvedScheduledRoute(for subscription: NotificationSubscription) -> ProfileResolvedScheduledRoute? {
-        guard !subscription.legs.isEmpty else { return nil }
-        if let splitIndex = returnSplitIndex(for: subscription) {
-            let outbound = Array(subscription.legs.prefix(splitIndex))
-            let inbound = Array(subscription.legs.dropFirst(splitIndex))
+        let legs = chronologicalLegs(from: subscription.legs)
+        guard !legs.isEmpty else { return nil }
+        if let splitIndex = returnSplitIndex(for: legs) {
+            let outbound = Array(legs.prefix(splitIndex))
+            let inbound = Array(legs.dropFirst(splitIndex))
             return ProfileResolvedScheduledRoute(
                 group: makeJourneyGroup(from: outbound),
                 reverseGroup: makeJourneyGroup(from: inbound)
             )
         }
         return ProfileResolvedScheduledRoute(
-            group: makeJourneyGroup(from: subscription.legs),
+            group: makeJourneyGroup(from: legs),
             reverseGroup: nil
         )
     }
 
-    private func returnSplitIndex(for subscription: NotificationSubscription) -> Int? {
-        guard subscription.legs.count >= 2 else { return nil }
-        for splitIndex in 1..<subscription.legs.count {
-            let outbound = Array(subscription.legs.prefix(splitIndex))
-            let inbound = Array(subscription.legs.dropFirst(splitIndex))
+    private func returnSplitIndex(for legs: [NotificationLeg]) -> Int? {
+        guard legs.count >= 2 else { return nil }
+        for splitIndex in 1..<legs.count {
+            let outbound = Array(legs.prefix(splitIndex))
+            let inbound = Array(legs.dropFirst(splitIndex))
             if stationSequence(for: inbound) == stationSequence(for: outbound).reversed() {
                 return splitIndex
             }
         }
         return nil
+    }
+
+    private func chronologicalLegs(from legs: [NotificationLeg]) -> [NotificationLeg] {
+        legs.enumerated()
+            .sorted { lhs, rhs in
+                let lhsMinutes = minutesSinceMidnight(lhs.element.windowStart)
+                let rhsMinutes = minutesSinceMidnight(rhs.element.windowStart)
+                switch (lhsMinutes, rhsMinutes) {
+                case let (lhsMinutes?, rhsMinutes?) where lhsMinutes != rhsMinutes:
+                    return lhsMinutes < rhsMinutes
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                default:
+                    return lhs.offset < rhs.offset
+                }
+            }
+            .map(\.element)
+    }
+
+    private func minutesSinceMidnight(_ time: String) -> Int? {
+        let parts = time.split(separator: ":", maxSplits: 1)
+        guard parts.count == 2,
+              let hour = Int(parts[0]),
+              let minute = Int(parts[1]),
+              (0...23).contains(hour),
+              (0...59).contains(minute) else {
+            return nil
+        }
+        return hour * 60 + minute
     }
 
     private func stationSequence(for legs: [NotificationLeg]) -> [String] {
