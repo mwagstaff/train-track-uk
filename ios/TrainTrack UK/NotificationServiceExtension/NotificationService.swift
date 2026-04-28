@@ -14,6 +14,10 @@ class NotificationService: UNNotificationServiceExtension {
         if let bestAttemptContent = bestAttemptContent {
             ensureCategoriesRegistered()
             enhanceNotificationIfNeeded(content: bestAttemptContent)
+            if shouldSuppressScheduledSummaryOutsideWindow(content: bestAttemptContent) {
+                contentHandler(UNNotificationContent())
+                return
+            }
             // Check if this notification should be muted based on local arrival tracking
             if shouldMuteNotification(content: bestAttemptContent) {
                 // Don't deliver the notification
@@ -32,6 +36,20 @@ class NotificationService: UNNotificationServiceExtension {
         if let contentHandler = contentHandler, let bestAttemptContent = bestAttemptContent {
             contentHandler(bestAttemptContent)
         }
+    }
+
+    private func shouldSuppressScheduledSummaryOutsideWindow(content: UNNotificationContent, now: Date = Date()) -> Bool {
+        guard stringValue(for: "alert_type", in: content.userInfo) == "summary",
+              let windowStart = stringValue(for: "window_start", in: content.userInfo),
+              let windowEnd = stringValue(for: "window_end", in: content.userInfo),
+              let startMinutes = minutes(from: windowStart),
+              let endMinutes = minutes(from: windowEnd) else {
+            return false
+        }
+
+        let components = Calendar.current.dateComponents([.hour, .minute], from: now)
+        let nowMinutes = ((components.hour ?? 0) * 60) + (components.minute ?? 0)
+        return nowMinutes < startMinutes || nowMinutes > endMinutes
     }
 
     private func shouldMuteNotification(content: UNNotificationContent) -> Bool {
@@ -141,6 +159,24 @@ class NotificationService: UNNotificationServiceExtension {
         }
 
         return false
+    }
+
+    private func stringValue(for key: String, in userInfo: [AnyHashable: Any]) -> String? {
+        if let value = userInfo[key] as? String { return value }
+        if let value = userInfo[key] as? NSString { return value as String }
+        return nil
+    }
+
+    private func minutes(from hhmm: String) -> Int? {
+        let parts = hhmm.split(separator: ":")
+        guard parts.count == 2,
+              let hour = Int(parts[0]),
+              let minute = Int(parts[1]),
+              (0...23).contains(hour),
+              (0...59).contains(minute) else {
+            return nil
+        }
+        return (hour * 60) + minute
     }
 
     private func shouldAlwaysDeliver(alertType: String) -> Bool {

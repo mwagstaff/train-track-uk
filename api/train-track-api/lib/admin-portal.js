@@ -1,6 +1,8 @@
 import {
     getNotificationEvent,
     getNotificationSubscriptionFromRedis,
+    getDevicePreferences,
+    listDevicePreferences,
     listNotificationEvents,
     listNotificationSubscriptionsFromRedis,
     listGeofenceEvents
@@ -10,6 +12,7 @@ import { getDeviceLastSeen } from './metrics.js';
 
 const DEFAULT_LIMIT = 500;
 const DEFAULT_NOTIFICATION_LIMIT = 20;
+const DEFAULT_DEVICE_PAGE_SIZE = 50;
 
 export function registerAdminRoutes(app) {
     app.get('/admin', async (req, res) => {
@@ -33,6 +36,73 @@ export function registerAdminRoutes(app) {
         } catch (error) {
             console.error('[admin] Failed to load dashboard:', error?.message || error);
             res.status(500).type('html').send(renderErrorPage('Failed to load admin dashboard.'));
+        }
+    });
+
+    app.get('/admin/devices', async (req, res) => {
+        try {
+            const query = typeof req.query?.q === 'string' ? req.query.q.trim() : '';
+            const page = clampLimit(req.query?.page, 1, 100000, 1);
+            const pageSize = clampLimit(req.query?.per_page, 1, 250, DEFAULT_DEVICE_PAGE_SIZE);
+            const [subscriptions, notifications, geofenceEvents, devicePreferences] = await Promise.all([
+                listNotificationSubscriptionsFromRedis({ limit: 5000 }),
+                listNotificationEvents({ limit: 5000 }),
+                listGeofenceEvents(),
+                listDevicePreferences()
+            ]);
+            const liveActivitySessions = liveActivityManager.listSubscriptions();
+            const summaries = buildDeviceSummaries({
+                subscriptions,
+                notifications,
+                geofenceEvents,
+                liveActivitySessions,
+                devicePreferences,
+                query
+            });
+            const total = summaries.length;
+            const totalPages = Math.max(1, Math.ceil(total / pageSize));
+            const safePage = Math.min(page, totalPages);
+            const start = (safePage - 1) * pageSize;
+            const devices = summaries.slice(start, start + pageSize);
+            res.type('html').send(renderDeviceListPage({
+                query,
+                devices,
+                page: safePage,
+                pageSize,
+                total,
+                totalPages
+            }));
+        } catch (error) {
+            console.error('[admin] Failed to load device list:', error?.message || error);
+            res.status(500).type('html').send(renderErrorPage('Failed to load admin device list.'));
+        }
+    });
+
+    app.get('/admin/devices/:deviceId', async (req, res) => {
+        try {
+            const deviceId = req.params?.deviceId;
+            const [subscriptions, notifications, geofenceEvents, devicePreferences] = await Promise.all([
+                listNotificationSubscriptionsFromRedis({ limit: 5000 }),
+                listNotificationEvents({ limit: 5000 }),
+                listGeofenceEvents(),
+                getDevicePreferences(deviceId)
+            ]);
+            const liveActivitySessions = liveActivityManager.listSubscriptions();
+            const detail = buildDeviceDetail({
+                deviceId,
+                subscriptions,
+                notifications,
+                geofenceEvents,
+                liveActivitySessions,
+                devicePreferences
+            });
+            if (!detail.hasData) {
+                return res.status(404).type('html').send(renderErrorPage(`Device not found: ${deviceId}`));
+            }
+            res.type('html').send(renderDeviceDetailPage(detail));
+        } catch (error) {
+            console.error('[admin] Failed to load device detail:', error?.message || error);
+            res.status(500).type('html').send(renderErrorPage('Failed to load admin device detail.'));
         }
     });
 
@@ -281,6 +351,7 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
             <input type="hidden" name="limit" value="${limit}" />
             <button type="submit">Search</button>
             <a href="${clearHref}">Clear</a>
+            <a href="admin/devices">Device Admin</a>
         </form>
 
         <section class="panel">
@@ -402,6 +473,373 @@ async function deleteSubscription(id) {
 </html>`;
 }
 
+function renderDeviceListPage({ query, devices, page, pageSize, total, totalPages }) {
+    const renderedAt = escapeHtml(new Date().toISOString());
+    const qValue = escapeHtml(query || '');
+    const prevHref = page > 1 ? deviceListHref({ query, page: page - 1, pageSize }) : null;
+    const nextHref = page < totalPages ? deviceListHref({ query, page: page + 1, pageSize }) : null;
+    const rows = devices.map((device) => {
+        const lastSeen = device.lastSeenAt
+            ? `<span title="${escapeHtml(device.lastSeenAt)}">${escapeHtml(relativeTime(new Date(device.lastSeenAt), new Date()))}</span>`
+            : '<span class="never">—</span>';
+        const href = `devices/${encodeURIComponent(device.deviceId)}`;
+        return `<tr>
+            <td class="device-id"><a href="${href}">${escapeHtml(device.deviceId)}</a></td>
+            <td>${escapeHtml(device.scheduledCount)}</td>
+            <td>${escapeHtml(device.notificationEventCount)}</td>
+            <td>${escapeHtml(device.liveNotificationCount)}</td>
+            <td>${escapeHtml(device.liveActivityCount)}</td>
+            <td>${escapeHtml(device.geofenceEventCount)}</td>
+            <td>${lastSeen}</td>
+            <td>${formatDate(device.latestActivityAt) || '<span class="never">—</span>'}</td>
+        </tr>`;
+    }).join('');
+
+    return renderAdminShell({
+        title: 'Train Track Device Admin',
+        body: `
+    <div class="wrap">
+        <h1>Device Admin</h1>
+        <div class="meta">Rendered at ${renderedAt} · ${total} device${total === 1 ? '' : 's'} · Page ${page} of ${totalPages}</div>
+        <form class="search" method="GET" action="">
+            <input type="text" name="q" value="${qValue}" placeholder="Search device ID, station, route, status, or error text" />
+            <input type="hidden" name="per_page" value="${pageSize}" />
+            <button type="submit">Search</button>
+            <a href="?">Clear</a>
+            <a href="../admin">Dashboard</a>
+        </form>
+        <section class="panel">
+            <h2>Devices <span class="panel-count">${devices.length} shown</span></h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Device ID</th>
+                            <th>Scheduled Updates</th>
+                            <th>Notifications</th>
+                            <th>Live Notification Sessions</th>
+                            <th>Live Activities</th>
+                            <th>Geofence Events</th>
+                            <th>Last Seen</th>
+                            <th>Latest Activity</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows || `<tr><td class="empty" colspan="8">No devices found.</td></tr>`}</tbody>
+                </table>
+            </div>
+        </section>
+        <nav class="pager">
+            ${prevHref ? `<a href="${prevHref}">Previous</a>` : '<span>Previous</span>'}
+            <span>Page ${page} of ${totalPages}</span>
+            ${nextHref ? `<a href="${nextHref}">Next</a>` : '<span>Next</span>'}
+        </nav>
+    </div>`
+    });
+}
+
+function renderDeviceDetailPage(detail) {
+    const now = new Date();
+    const title = `Device ${detail.deviceId}`;
+    const scheduledRows = detail.scheduledSubscriptions.map((subscription) => renderSubscriptionDetailRow(subscription)).join('');
+    const liveNotificationRows = detail.liveNotificationSubscriptions.map((subscription) => renderSubscriptionDetailRow(subscription)).join('');
+    const notificationRows = detail.notifications.map((event) => renderNotificationDetailRow(event)).join('');
+    const liveActivityRows = detail.liveActivitySessions.map((session) => {
+        return `<tr>
+            <td title="${escapeHtml(session.activityId || '')}">${escapeHtml(shortId(session.activityId))}</td>
+            <td>${escapeHtml(session.fromStation || '')}</td>
+            <td>${escapeHtml(session.toStation || '')}</td>
+            <td>${escapeHtml(session.windowStart || '')}</td>
+            <td>${escapeHtml(session.windowEnd || '')}</td>
+            <td>${formatDate(session.createdAt)}</td>
+            <td>${formatDate(session.lastPushAt) || '<span class="never">—</span>'}</td>
+            <td>${formatDate(session.endAt) || '<span class="never">—</span>'}</td>
+            <td>${escapeHtml(session.scheduleKey || '')}</td>
+            <td>${escapeHtml(session.preferredServiceId || '')}</td>
+            <td>${escapeHtml(session.useSandbox ? 'sandbox' : 'prod')}</td>
+        </tr>`;
+    }).join('');
+    const geofenceRows = detail.geofenceEvents.map((event) => {
+        return `<tr>
+            <td>${formatDate(event.received_at)}</td>
+            <td>${escapeHtml(event.event || '')}</td>
+            <td>${escapeHtml(event.from || '')}</td>
+            <td>${escapeHtml(event.to || '')}</td>
+            <td>${formatDate(event.client_timestamp)}</td>
+            <td>${escapeHtml(event.region_id || '')}</td>
+        </tr>`;
+    }).join('');
+    const preferenceRows = detail.preferences.map((pref) => `<tr>
+        <td>${escapeHtml(pref.name)}</td>
+        <td>${escapeHtml(formatPreferenceValue(pref.value))}</td>
+        <td>${escapeHtml(pref.source)}</td>
+        <td>${formatDate(pref.observedAt) || '<span class="never">—</span>'}</td>
+    </tr>`).join('');
+    const lastSeen = detail.lastSeenAt ? relativeTime(new Date(detail.lastSeenAt), now) : 'never';
+
+    return renderAdminShell({
+        title,
+        body: `
+    <div class="wrap">
+        <a href="../devices">Back to Devices</a>
+        <h1>Device ${escapeHtml(detail.deviceId)}</h1>
+        <div class="meta">Last seen: ${escapeHtml(lastSeen)}${detail.lastSeenAt ? ` · ${escapeHtml(detail.lastSeenAt)}` : ''}</div>
+
+        <section class="panel">
+            <h2>Scheduled Journey Updates <span class="panel-count">${detail.scheduledSubscriptions.length}</span></h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Created</th>
+                            <th>Updated</th>
+                            <th>Start Station</th>
+                            <th>End Station</th>
+                            <th>Window Start</th>
+                            <th>Window End</th>
+                            <th>Days</th>
+                            <th>Notification Types</th>
+                            <th>Env</th>
+                            <th>Raw</th>
+                        </tr>
+                    </thead>
+                    <tbody>${scheduledRows || `<tr><td class="empty" colspan="11">No scheduled journey updates for this device.</td></tr>`}</tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>Associated Notifications <span class="panel-count">${detail.notifications.length}</span></h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Sent At</th>
+                            <th>Type</th>
+                            <th>Channel</th>
+                            <th>Start Station</th>
+                            <th>End Station</th>
+                            <th>Window Start</th>
+                            <th>Window End</th>
+                            <th>Schedule Key</th>
+                            <th>Result</th>
+                            <th>Status</th>
+                            <th>Error</th>
+                            <th>Env</th>
+                            <th>Raw</th>
+                        </tr>
+                    </thead>
+                    <tbody>${notificationRows || `<tr><td class="empty" colspan="13">No notification events for this device.</td></tr>`}</tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>User Preferences <span class="panel-count">${detail.preferences.length}</span></h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Preference</th>
+                            <th>Value</th>
+                            <th>Source</th>
+                            <th>Observed At</th>
+                        </tr>
+                    </thead>
+                    <tbody>${preferenceRows || `<tr><td class="empty" colspan="4">No server-observed preferences for this device.</td></tr>`}</tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>Live Notification Sessions <span class="panel-count">${detail.liveNotificationSubscriptions.length}</span></h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Created</th>
+                            <th>Updated</th>
+                            <th>Start Station</th>
+                            <th>End Station</th>
+                            <th>Window Start</th>
+                            <th>Window End</th>
+                            <th>Days</th>
+                            <th>Notification Types</th>
+                            <th>Env</th>
+                            <th>Raw</th>
+                        </tr>
+                    </thead>
+                    <tbody>${liveNotificationRows || `<tr><td class="empty" colspan="11">No live notification sessions for this device.</td></tr>`}</tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>Live Activities <span class="panel-count">${detail.liveActivitySessions.length}</span></h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Activity ID</th>
+                            <th>Start Station</th>
+                            <th>End Station</th>
+                            <th>Window Start</th>
+                            <th>Window End</th>
+                            <th>Created</th>
+                            <th>Last Push</th>
+                            <th>Ends</th>
+                            <th>Schedule Key</th>
+                            <th>Preferred Service</th>
+                            <th>Env</th>
+                        </tr>
+                    </thead>
+                    <tbody>${liveActivityRows || `<tr><td class="empty" colspan="11">No active live activities for this device.</td></tr>`}</tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>Geofence Events <span class="panel-count">${detail.geofenceEvents.length}</span></h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Received At</th>
+                            <th>Event</th>
+                            <th>Start Station</th>
+                            <th>End Station</th>
+                            <th>Client Timestamp</th>
+                            <th>Region ID</th>
+                        </tr>
+                    </thead>
+                    <tbody>${geofenceRows || `<tr><td class="empty" colspan="6">No geofence events for this device.</td></tr>`}</tbody>
+                </table>
+            </div>
+        </section>
+    </div>`
+    });
+}
+
+function renderSubscriptionDetailRow(subscription) {
+    const legs = Array.isArray(subscription.legs) ? subscription.legs.filter((leg) => leg && leg.enabled !== false) : [];
+    const firstLeg = legs[0] || {};
+    const extraLegs = legs.length > 1 ? ` +${legs.length - 1}` : '';
+    return `<tr>
+        <td title="${escapeHtml(subscription.id || '')}">${escapeHtml(shortId(subscription.id))}</td>
+        <td>${formatDate(subscription.createdAt)}</td>
+        <td>${formatDate(subscription.updatedAt)}</td>
+        <td>${escapeHtml(formatStation(firstLeg, 'from'))}${escapeHtml(extraLegs)}</td>
+        <td>${escapeHtml(formatStation(firstLeg, 'to'))}${escapeHtml(extraLegs)}</td>
+        <td>${escapeHtml(formatLegSchedule(legs, 'windowStart'))}</td>
+        <td>${escapeHtml(formatLegSchedule(legs, 'windowEnd'))}</td>
+        <td>${escapeHtml(formatDays(subscription.daysOfWeek))}</td>
+        <td>${escapeHtml(formatList(subscription.notificationTypes))}</td>
+        <td>${escapeHtml(subscription.useSandbox ? 'sandbox' : 'prod')}</td>
+        <td><a href="../subscriptions/${encodeURIComponent(subscription.id || '')}">JSON</a></td>
+    </tr>`;
+}
+
+function renderNotificationDetailRow(event) {
+    const successCell = event.success
+        ? '<span class="badge badge-ok">ok</span>'
+        : '<span class="badge badge-err">fail</span>';
+    const payload = event.payload && typeof event.payload === 'object' ? event.payload : {};
+    return `<tr>
+        <td>${formatDate(event.sent_at)}</td>
+        <td>${escapeHtml(event.type || '')}</td>
+        <td>${escapeHtml(event.channel || '')}</td>
+        <td>${escapeHtml(event.from_station || payload.from_name || payload.from || event.metadata?.from_station || '')}</td>
+        <td>${escapeHtml(event.to_station || payload.to_name || payload.to || event.metadata?.to_station || '')}</td>
+        <td>${escapeHtml(payload.window_start || event.metadata?.window_start || '')}</td>
+        <td>${escapeHtml(payload.window_end || event.metadata?.window_end || '')}</td>
+        <td>${escapeHtml(event.metadata?.schedule_key || payload.leg_key || event.route_key || '')}</td>
+        <td>${successCell}</td>
+        <td>${escapeHtml(formatStatus(event.status))}</td>
+        <td>${escapeHtml(event.error || '')}</td>
+        <td>${escapeHtml(event.apns_environment || '')}</td>
+        <td><a href="../notifications/${encodeURIComponent(event.id || '')}">JSON</a></td>
+    </tr>`;
+}
+
+function renderAdminShell({ title, body }) {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+        :root {
+            --bg: #f3f6fa;
+            --panel: #ffffff;
+            --line: #d9e1eb;
+            --text: #172433;
+            --muted: #5e6d82;
+            --accent: #0057b8;
+        }
+        body {
+            margin: 0;
+            font-family: "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+            color: var(--text);
+            background: linear-gradient(145deg, #f3f6fa, #eaf0f7);
+        }
+        .wrap { max-width: 1500px; margin: 24px auto 48px; padding: 0 16px; }
+        h1 { margin: 8px 0 4px; font-size: 28px; }
+        a { color: var(--accent); text-decoration: none; }
+        .meta { color: var(--muted); margin-bottom: 18px; font-size: 13px; }
+        .search { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+        .search input {
+            min-width: 260px; flex: 1; max-width: 460px;
+            border: 1px solid var(--line); border-radius: 8px;
+            padding: 10px 12px; font-size: 14px; background: #fff;
+        }
+        .search button, .search a, .pager a, .pager span {
+            border-radius: 8px; padding: 10px 14px; font-size: 14px;
+            text-decoration: none; border: 1px solid var(--line);
+            background: #fff; color: var(--text); cursor: pointer;
+        }
+        .search button { background: var(--accent); color: white; border-color: var(--accent); }
+        .panel {
+            background: var(--panel); border: 1px solid var(--line);
+            border-radius: 12px; margin-bottom: 18px; overflow: hidden;
+            box-shadow: 0 6px 18px rgba(15,44,78,0.08);
+        }
+        .panel h2 {
+            margin: 0; padding: 14px 16px; border-bottom: 1px solid var(--line);
+            font-size: 17px; background: #fbfcff;
+            display: flex; align-items: center; gap: 10px;
+        }
+        .panel-count {
+            background: #e8eef8; color: #1a4a8a; border-radius: 10px;
+            padding: 2px 8px; font-size: 12px; font-weight: 600;
+        }
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; min-width: 900px; }
+        th, td {
+            text-align: left; border-bottom: 1px solid var(--line);
+            padding: 9px 11px; vertical-align: top; font-size: 12.5px;
+        }
+        th { color: #33445b; font-weight: 600; background: #fbfcff; white-space: nowrap; }
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background: #f6f9ff; }
+        .device-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
+        .empty { padding: 16px; color: var(--muted); }
+        .never { color: #999; font-style: italic; }
+        .badge {
+            display: inline-block; border-radius: 6px; padding: 2px 7px;
+            font-size: 11px; font-weight: 600; white-space: nowrap;
+        }
+        .badge-ok { background:#d4f5e2; color:#0d6632; }
+        .badge-err { background:#fde8e8; color:#b91c1c; }
+        .pager { display: flex; gap: 8px; align-items: center; justify-content: center; }
+        .pager span { color: var(--muted); cursor: default; }
+    </style>
+</head>
+<body>${body}</body>
+</html>`;
+}
+
 function renderJsonDetailPage({ title, backHref, payload }) {
     return `<!DOCTYPE html>
 <html lang="en">
@@ -481,6 +919,201 @@ function formatStationNames(legs) {
         .filter((leg) => leg && leg.enabled !== false)
         .map((leg) => `${leg.fromName || leg.from || ''} -> ${leg.toName || leg.to || ''}`)
         .join('; ');
+}
+
+function buildDeviceSummaries({ subscriptions = [], notifications = [], geofenceEvents = [], liveActivitySessions = [], devicePreferences = [], query = '' }) {
+    const devices = new Map();
+    const normalizedQuery = typeof query === 'string' ? query.trim().toLowerCase() : '';
+
+    const ensure = (deviceId) => {
+        const normalized = typeof deviceId === 'string' ? deviceId.trim() : '';
+        if (!normalized) return null;
+        if (!devices.has(normalized)) {
+            const lastSeenTs = getDeviceLastSeen(normalized);
+            devices.set(normalized, {
+                deviceId: normalized,
+                scheduledCount: 0,
+                liveNotificationCount: 0,
+                notificationEventCount: 0,
+                liveActivityCount: 0,
+                geofenceEventCount: 0,
+                lastSeenAt: Number.isFinite(lastSeenTs) ? new Date(lastSeenTs).toISOString() : null,
+                latestActivityAt: null,
+                searchable: normalized.toLowerCase()
+            });
+        }
+        return devices.get(normalized);
+    };
+
+    for (const sub of subscriptions) {
+        const entry = ensure(sub?.deviceId);
+        if (!entry) continue;
+        if (sub?.source === 'live_session') entry.liveNotificationCount += 1;
+        else entry.scheduledCount += 1;
+        entry.latestActivityAt = latestIso(entry.latestActivityAt, sub?.updatedAt, sub?.createdAt, sub?.lastActiveAt);
+        entry.searchable += ` ${JSON.stringify(sub).toLowerCase()}`;
+    }
+
+    for (const event of notifications) {
+        const entry = ensure(event?.device_id);
+        if (!entry) continue;
+        entry.notificationEventCount += 1;
+        entry.latestActivityAt = latestIso(entry.latestActivityAt, event?.sent_at);
+        entry.searchable += ` ${JSON.stringify(event).toLowerCase()}`;
+    }
+
+    for (const event of geofenceEvents) {
+        const entry = ensure(event?.device_id);
+        if (!entry) continue;
+        entry.geofenceEventCount += 1;
+        entry.latestActivityAt = latestIso(entry.latestActivityAt, event?.received_at, event?.client_timestamp);
+        entry.searchable += ` ${JSON.stringify(event).toLowerCase()}`;
+    }
+
+    for (const session of liveActivitySessions) {
+        const entry = ensure(session?.deviceId);
+        if (!entry) continue;
+        entry.liveActivityCount += 1;
+        entry.latestActivityAt = latestIso(entry.latestActivityAt, session?.lastPushAt, session?.tokenUpdatedAt, session?.createdAt);
+        entry.searchable += ` ${JSON.stringify(session).toLowerCase()}`;
+    }
+
+    for (const prefs of devicePreferences) {
+        const entry = ensure(prefs?.device_id);
+        if (!entry) continue;
+        entry.latestActivityAt = latestIso(entry.latestActivityAt, prefs?.updated_at);
+        entry.searchable += ` ${JSON.stringify(prefs).toLowerCase()}`;
+    }
+
+    return Array.from(devices.values())
+        .filter((device) => !normalizedQuery || device.searchable.includes(normalizedQuery))
+        .sort((left, right) => {
+            const leftTime = Date.parse(left.latestActivityAt || left.lastSeenAt || '') || 0;
+            const rightTime = Date.parse(right.latestActivityAt || right.lastSeenAt || '') || 0;
+            return rightTime - leftTime || left.deviceId.localeCompare(right.deviceId);
+        });
+}
+
+function buildDeviceDetail({ deviceId, subscriptions = [], notifications = [], geofenceEvents = [], liveActivitySessions = [], devicePreferences = null }) {
+    const normalizedDeviceId = typeof deviceId === 'string' ? deviceId.trim() : '';
+    const deviceSubscriptions = subscriptions.filter((sub) => sub?.deviceId === normalizedDeviceId);
+    const scheduledSubscriptions = deviceSubscriptions.filter((sub) => sub?.source !== 'live_session');
+    const liveNotificationSubscriptions = deviceSubscriptions.filter((sub) => sub?.source === 'live_session');
+    const deviceNotifications = notifications
+        .filter((event) => event?.device_id === normalizedDeviceId)
+        .sort((left, right) => (Date.parse(right?.sent_at || '') || 0) - (Date.parse(left?.sent_at || '') || 0));
+    const deviceGeofenceEvents = geofenceEvents
+        .filter((event) => event?.device_id === normalizedDeviceId)
+        .sort((left, right) => (Date.parse(right?.received_at || '') || 0) - (Date.parse(left?.received_at || '') || 0));
+    const deviceLiveActivitySessions = liveActivitySessions
+        .filter((session) => session?.deviceId === normalizedDeviceId)
+        .sort((left, right) => (Date.parse(right?.createdAt || '') || 0) - (Date.parse(left?.createdAt || '') || 0));
+    const lastSeenTs = getDeviceLastSeen(normalizedDeviceId);
+
+    return {
+        deviceId: normalizedDeviceId,
+        scheduledSubscriptions,
+        liveNotificationSubscriptions,
+        notifications: deviceNotifications,
+        geofenceEvents: deviceGeofenceEvents,
+        liveActivitySessions: deviceLiveActivitySessions,
+        preferences: collectDevicePreferences({
+            scheduledSubscriptions,
+            liveNotificationSubscriptions,
+            liveActivitySessions: deviceLiveActivitySessions,
+            devicePreferences
+        }),
+        lastSeenAt: Number.isFinite(lastSeenTs) ? new Date(lastSeenTs).toISOString() : null,
+        hasData: deviceSubscriptions.length > 0
+            || deviceNotifications.length > 0
+            || deviceGeofenceEvents.length > 0
+            || deviceLiveActivitySessions.length > 0
+            || Boolean(devicePreferences)
+    };
+}
+
+function collectDevicePreferences({ scheduledSubscriptions = [], liveNotificationSubscriptions = [], liveActivitySessions = [], devicePreferences = null }) {
+    const preferences = new Map();
+    const add = (name, value, source, observedAt) => {
+        if (value === undefined || value === null || value === '') return;
+        const existing = preferences.get(name);
+        const nextTime = Date.parse(observedAt || '') || 0;
+        const existingTime = Date.parse(existing?.observedAt || '') || 0;
+        if (!existing || nextTime >= existingTime) {
+            preferences.set(name, { name, value, source, observedAt: observedAt || null });
+        }
+    };
+
+    for (const sub of [...scheduledSubscriptions, ...liveNotificationSubscriptions]) {
+        const source = sub.source === 'live_session' ? `live notification ${shortId(sub.id)}` : `scheduled update ${shortId(sub.id)}`;
+        const observedAt = sub.updatedAt || sub.createdAt;
+        add('APNS environment', sub.useSandbox ? 'sandbox' : 'prod', source, observedAt);
+        add('Notification types', sub.notificationTypes, source, observedAt);
+        add('Mute notifications on arrival', Boolean(sub.muteOnArrival), source, observedAt);
+        add('Scheduled days', sub.daysOfWeek, source, observedAt);
+        add('Muted legs today', sub.mutedByLegDay, source, observedAt);
+        add('Muted leg timestamps', sub.mutedAtByLegDay, source, observedAt);
+    }
+
+    for (const session of liveActivitySessions) {
+        const source = `live activity ${shortId(session.activityId)}`;
+        const observedAt = session.tokenUpdatedAt || session.createdAt;
+        add('APNS environment', session.useSandbox ? 'sandbox' : 'prod', source, observedAt);
+        add('Preferred service ID', session.preferredServiceId, source, observedAt);
+        add('Mute notifications on arrival', Boolean(session.muteOnArrival), source, observedAt);
+        add('Mute delay minutes', session.muteDelayMinutes, source, observedAt);
+        add('Auto-end on arrival', Boolean(session.autoEndOnArrival), source, observedAt);
+        add('Auto-end on departure', Boolean(session.autoEndOnDeparture), source, observedAt);
+        add('Journey updates enabled', Boolean(session.journeyUpdatesEnabled), source, observedAt);
+        add('Live Activity window start', session.windowStart, source, observedAt);
+        add('Live Activity window end', session.windowEnd, source, observedAt);
+        add('App active', Boolean(session.appIsActive), source, observedAt);
+    }
+
+    if (devicePreferences?.preferences && typeof devicePreferences.preferences === 'object') {
+        for (const [key, value] of Object.entries(devicePreferences.preferences)) {
+            add(key, value, 'device preference snapshot', devicePreferences.updated_at);
+        }
+    }
+
+    return Array.from(preferences.values()).sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function latestIso(...values) {
+    let best = null;
+    let bestTime = 0;
+    for (const value of values) {
+        const time = Date.parse(value || '');
+        if (Number.isFinite(time) && time >= bestTime) {
+            best = new Date(time).toISOString();
+            bestTime = time;
+        }
+    }
+    return best;
+}
+
+function deviceListHref({ query, page, pageSize }) {
+    const params = new URLSearchParams();
+    if (query) params.set('q', query);
+    params.set('page', String(page));
+    params.set('per_page', String(pageSize));
+    return `?${params.toString()}`;
+}
+
+function formatStation(leg, key) {
+    if (!leg || typeof leg !== 'object') return '';
+    if (key === 'from') return leg.fromName || leg.from || '';
+    return leg.toName || leg.to || '';
+}
+
+function formatList(value) {
+    return Array.isArray(value) ? value.join(', ') : String(value ?? '');
+}
+
+function formatPreferenceValue(value) {
+    if (Array.isArray(value)) return value.join(', ');
+    if (value && typeof value === 'object') return JSON.stringify(value);
+    return String(value);
 }
 
 function formatLegSchedule(legs, field) {

@@ -516,6 +516,44 @@ class NotificationSubscriptionManager {
             return false;
         }
 
+        if (
+            getEffectiveNotificationTypes(activeSubscription).includes('summary')
+            && activeSubscription.lastSummarySentByLeg?.[legKey] !== todayKey
+        ) {
+            const summary = buildSummaryMessage(activeSubscription, leg, snapshot);
+            if (summary) {
+                const summaryResult = await this.pushClient.sendNotification(
+                    activeSubscription.pushToken,
+                    summary.payload,
+                    { useSandbox: activeSubscription.useSandbox, event: summary.type }
+                );
+                this.logSendEvent(activeSubscription, leg, summary, summaryResult);
+                console.log('[notifications] auto_start_summary_push', JSON.stringify({
+                    subscription_id: activeSubscription.id,
+                    device_id: activeSubscription.deviceId,
+                    route_key: activeSubscription.routeKey,
+                    leg: legKey,
+                    use_sandbox: activeSubscription.useSandbox,
+                    status: summaryResult?.status,
+                    reason: summaryResult?.body?.reason || summaryResult?.reason || null
+                }));
+                if (summaryResult?.isBadToken) {
+                    console.warn('[notifications] bad_token_delete', JSON.stringify({
+                        subscription_id: activeSubscription.id,
+                        device_id: activeSubscription.deviceId,
+                        route_key: activeSubscription.routeKey,
+                        context: 'sendScheduledLiveActivityStartIfNeeded:summary'
+                    }));
+                    this.subscriptions.delete(activeSubscription.id);
+                    await this._deleteFromRedis(activeSubscription.id);
+                    return true;
+                }
+                if (typeof summaryResult?.status === 'number' && summaryResult.status >= 200 && summaryResult.status < 300) {
+                    activeSubscription.lastSummarySentByLeg[legKey] = todayKey;
+                }
+            }
+        }
+
         // Wake the app in background so it can detect the new live activity and
         // register its per-activity push token with the server. Without this, a
         // killed app never runs Activity.activityUpdates and the server has no
@@ -1081,11 +1119,6 @@ function buildSummaryMessage(subscription, leg, snapshot) {
 function buildScheduledLiveActivityStartPayload(subscription, leg, snapshot) {
     const routeTitle = legRouteTitle(leg);
     const contentState = buildScheduledLiveActivityContentState(subscription, leg, snapshot, routeTitle);
-    const summary = buildSummaryMessage(subscription, leg, snapshot);
-    const alert = summary?.payload?.aps?.alert || {
-        title: routeTitle,
-        body: 'Journey updates started.'
-    };
 
     return {
         aps: {
@@ -1097,8 +1130,7 @@ function buildScheduledLiveActivityStartPayload(subscription, leg, snapshot) {
             'attributes-type': LIVE_ACTIVITY_ATTRIBUTES_TYPE,
             attributes: {
                 displayName: routeTitle
-            },
-            alert
+            }
         }
     };
 }

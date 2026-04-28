@@ -39,6 +39,7 @@ struct PreferencesView: View {
     @State private var showDebugLogs = false
     @State private var notificationPreferencesError: String? = nil
     @State private var notificationPreferencesSyncTask: Task<Void, Never>? = nil
+    @State private var devicePreferencesSyncTask: Task<Void, Never>? = nil
 
     private var journeySortMode: Binding<JourneySortMode> {
         Binding(
@@ -60,6 +61,48 @@ struct PreferencesView: View {
 
     private var notificationPreferencesSignature: String {
         "\(notifySummary)-\(notifyDelays)-\(notifyPlatform)"
+    }
+
+    private var devicePreferencesSignature: String {
+        [
+            minShortTrainCars,
+            veryCloseMiles,
+            moderatelyCloseMiles,
+            liveActivityDurationMinutes,
+            journeySortModeRaw,
+            apiHostRaw,
+            autoReturnMinutes,
+            autoMuteOnArrival,
+            muteDelayMinutes,
+            autoEndLiveActivity,
+            showClosestJourneyLegOnly,
+            showTransferWarnings,
+            transferWarningThresholdMinutes,
+            notifySummary,
+            notifyDelays,
+            notifyPlatform
+        ].map { "\($0)" }.joined(separator: "|")
+    }
+
+    private var devicePreferenceSnapshot: DevicePreferencesPayload {
+        DevicePreferencesPayload(
+            minShortTrainCars: minShortTrainCars,
+            distanceVeryCloseMiles: veryCloseMiles,
+            distanceModeratelyCloseMiles: moderatelyCloseMiles,
+            liveActivityDurationMinutes: liveActivityDurationMinutes,
+            journeySortMode: journeySortModeRaw,
+            apiHost: apiHostRaw,
+            autoReturnToFavouritesMinutes: autoReturnMinutes,
+            autoMuteOnArrival: autoMuteOnArrival,
+            muteDelayMinutes: muteDelayMinutes,
+            autoEndLiveActivity: autoEndLiveActivity,
+            showClosestJourneyLegOnly: showClosestJourneyLegOnly,
+            showTransferWarnings: showTransferWarnings,
+            transferWarningThresholdMinutes: transferWarningThresholdMinutes,
+            notificationSummary: notifySummary,
+            notificationDelays: notifyDelays,
+            notificationPlatform: notifyPlatform
+        )
     }
 
     var body: some View {
@@ -254,6 +297,7 @@ struct PreferencesView: View {
         .task {
             await notificationStore.refresh()
             try? await StationsService.shared.loadStations()
+            syncDevicePreferences()
         }
         .onChange(of: veryCloseMiles) { newValue in
             // Keep thresholds sensible: moderately >= veryClose
@@ -264,6 +308,9 @@ struct PreferencesView: View {
         }
         .onChange(of: notificationPreferencesSignature) { _ in
             syncNotificationPreferences()
+        }
+        .onChange(of: devicePreferencesSignature) { _ in
+            syncDevicePreferences()
         }
         .alert("Delete schedule?", isPresented: $showNotificationDeleteDialog, presenting: notificationPendingDelete) { sub in
             Button("Delete", role: .destructive) {
@@ -327,6 +374,16 @@ struct PreferencesView: View {
                 guard !Task.isCancelled else { return }
                 notificationPreferencesError = error.localizedDescription
             }
+        }
+    }
+
+    private func syncDevicePreferences() {
+        let snapshot = devicePreferenceSnapshot
+        devicePreferencesSyncTask?.cancel()
+        devicePreferencesSyncTask = Task {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            try? await NetworkServicePhone.shared.syncDevicePreferences(snapshot)
         }
     }
 

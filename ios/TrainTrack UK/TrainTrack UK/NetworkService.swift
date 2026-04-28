@@ -55,6 +55,63 @@ enum DeviceIdentity {
     }
 }
 
+struct DevicePreferencesPayload: Codable, Sendable {
+    let minShortTrainCars: Int
+    let distanceVeryCloseMiles: Double
+    let distanceModeratelyCloseMiles: Double
+    let liveActivityDurationMinutes: Int
+    let journeySortMode: String
+    let apiHost: String
+    let autoReturnToFavouritesMinutes: Int
+    let autoMuteOnArrival: Bool
+    let muteDelayMinutes: Int
+    let autoEndLiveActivity: Bool
+    let showClosestJourneyLegOnly: Bool
+    let showTransferWarnings: Bool
+    let transferWarningThresholdMinutes: Int
+    let notificationSummary: Bool
+    let notificationDelays: Bool
+    let notificationPlatform: Bool
+}
+
+private struct DevicePreferencesUpload: Encodable {
+    let deviceId: String
+    let preferences: DevicePreferencesPayload
+
+    enum CodingKeys: String, CodingKey {
+        case deviceId = "device_id"
+        case preferences
+    }
+}
+
+enum DevicePreferencesSync {
+    static func currentPayload() -> DevicePreferencesPayload {
+        let defaults = UserDefaults.standard
+        return DevicePreferencesPayload(
+            minShortTrainCars: defaults.object(forKey: "minShortTrainCars") as? Int ?? 4,
+            distanceVeryCloseMiles: defaults.object(forKey: "distanceVeryCloseMiles") as? Double ?? 3,
+            distanceModeratelyCloseMiles: defaults.object(forKey: "distanceModeratelyCloseMiles") as? Double ?? 5,
+            liveActivityDurationMinutes: defaults.object(forKey: "liveActivityDurationMinutes") as? Int ?? 60,
+            journeySortMode: defaults.string(forKey: "journeySortMode") ?? "distance",
+            apiHost: ApiHostPreference.store.string(forKey: ApiHostPreference.storageKey) ?? ApiHost.prod.rawValue,
+            autoReturnToFavouritesMinutes: defaults.object(forKey: "autoReturnToFavouritesMinutes") as? Int ?? 0,
+            autoMuteOnArrival: defaults.object(forKey: "autoMuteOnArrival") as? Bool ?? true,
+            muteDelayMinutes: defaults.object(forKey: "muteDelayMinutes") as? Int ?? 3,
+            autoEndLiveActivity: defaults.object(forKey: "autoEndLiveActivity") as? Bool ?? true,
+            showClosestJourneyLegOnly: defaults.object(forKey: "showClosestJourneyLegOnly") as? Bool ?? true,
+            showTransferWarnings: defaults.object(forKey: "showTransferWarnings") as? Bool ?? true,
+            transferWarningThresholdMinutes: defaults.object(forKey: "transferWarningThresholdMinutes") as? Int ?? 3,
+            notificationSummary: NotificationPreferences.isEnabled(.summary),
+            notificationDelays: NotificationPreferences.isEnabled(.delays),
+            notificationPlatform: NotificationPreferences.isEnabled(.platform)
+        )
+    }
+
+    static func syncCurrent() async {
+        try? await NetworkServicePhone.shared.syncDevicePreferences(currentPayload())
+    }
+}
+
 enum PhoneNetworkError: Error, LocalizedError {
     case invalidURL
     case decodingError
@@ -94,6 +151,23 @@ final class NetworkServicePhone {
 
     func setServiceDetailsMaxIdsPerRequest(_ n: Int) {
         maxIdsPerRequest = max(1, n)
+    }
+
+    func syncDevicePreferences(_ preferences: DevicePreferencesPayload) async throws {
+        guard let url = URL(string: "\(base)/device_preferences") else { throw PhoneNetworkError.invalidURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
+        request.httpBody = try JSONEncoder().encode(DevicePreferencesUpload(
+            deviceId: deviceToken,
+            preferences: preferences
+        ))
+
+        let (_, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw PhoneNetworkError.noData
+        }
     }
 
     func fetchDeparturesAggregated(

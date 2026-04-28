@@ -16,7 +16,7 @@ import {
 import { liveActivityManager } from './lib/live-activity-manager.js';
 import { notificationSubscriptionManager } from './lib/notification-subscription-manager.js';
 import { registerAdminRoutes } from './lib/admin-portal.js';
-import { recordGeofenceEvent } from './lib/admin-data-store.js';
+import { recordDevicePreferences, recordGeofenceEvent } from './lib/admin-data-store.js';
 import { pushToStartTokenStore } from './lib/push-to-start-token-store.js';
 import path from 'path';
 
@@ -232,6 +232,35 @@ app.get('/metrics', async (req, res) => {
         liveActivity: liveActivityManager.getSubscriptionCount()
     });
     res.send(await getMetrics());
+});
+
+app.post('/api/v2/device_preferences', async (req, res) => {
+    const { device_id, preferences } = req.body || {};
+    const { canonicalDeviceId, bodyDeviceId, headerDeviceId, hasMismatch } = resolveRequestDeviceIds(req, device_id);
+    if (!canonicalDeviceId) {
+        return res.status(400).json({ error: 'device_id is required' });
+    }
+    if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences)) {
+        return res.status(400).json({ error: 'preferences object is required' });
+    }
+
+    try {
+        const record = await recordDevicePreferences({
+            deviceId: canonicalDeviceId,
+            preferences
+        });
+        res.json({
+            status: 'ok',
+            device_id: record.device_id,
+            updated_at: record.updated_at,
+            body_device_id: bodyDeviceId,
+            header_device_id: headerDeviceId,
+            device_id_mismatch: hasMismatch
+        });
+    } catch (error) {
+        console.error('[preferences] Failed to persist device preferences:', error?.message || error);
+        res.status(500).json({ error: error?.message || error });
+    }
 });
 
 app.post('/api/v2/live_activities', async (req, res) => {

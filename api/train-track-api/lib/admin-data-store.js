@@ -9,6 +9,9 @@ const redisEventKey = (id) => `tt:admin:notification:event:${id}`;
 const MAX_EVENT_LOG_SIZE = Number(process.env.ADMIN_NOTIFICATION_LOG_MAX || '5000');
 const EVENT_TTL_SECONDS = Number(process.env.ADMIN_NOTIFICATION_LOG_TTL_SECONDS || String(14 * 24 * 60 * 60));
 
+const REDIS_DEVICE_PREF_IDS_KEY = 'tt:admin:device_preferences:ids';
+const redisDevicePreferencesKey = (deviceId) => `tt:admin:device_preferences:${deviceId}`;
+
 export async function listNotificationSubscriptionsFromRedis({ search = '', limit = 500 } = {}) {
     const ids = await redis.smembers(REDIS_SUB_IDS_KEY);
     if (!Array.isArray(ids) || ids.length === 0) {
@@ -134,6 +137,48 @@ export async function getNotificationEvent(id) {
     const parsed = safeParseJson(raw);
     if (!parsed || typeof parsed !== 'object') return null;
     return parsed;
+}
+
+export async function recordDevicePreferences({ deviceId, preferences = {} } = {}) {
+    const normalizedDeviceId = typeof deviceId === 'string' ? deviceId.trim() : '';
+    if (!normalizedDeviceId) {
+        throw new Error('deviceId is required');
+    }
+    const record = {
+        device_id: normalizedDeviceId,
+        preferences: preferences && typeof preferences === 'object' && !Array.isArray(preferences) ? preferences : {},
+        updated_at: new Date().toISOString()
+    };
+    await redis.multi()
+        .set(redisDevicePreferencesKey(normalizedDeviceId), JSON.stringify(record))
+        .sadd(REDIS_DEVICE_PREF_IDS_KEY, normalizedDeviceId)
+        .exec();
+    return record;
+}
+
+export async function getDevicePreferences(deviceId) {
+    const normalizedDeviceId = typeof deviceId === 'string' ? deviceId.trim() : '';
+    if (!normalizedDeviceId) return null;
+    const raw = await redis.get(redisDevicePreferencesKey(normalizedDeviceId));
+    if (!raw) return null;
+    const parsed = safeParseJson(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    return parsed;
+}
+
+export async function listDevicePreferences() {
+    const ids = await redis.smembers(REDIS_DEVICE_PREF_IDS_KEY);
+    if (!Array.isArray(ids) || ids.length === 0) {
+        return [];
+    }
+    const pipeline = redis.pipeline();
+    for (const id of ids) {
+        pipeline.get(redisDevicePreferencesKey(id));
+    }
+    const results = await pipeline.exec();
+    return results
+        .map(([error, value]) => (error || !value ? null : safeParseJson(value)))
+        .filter((record) => record && typeof record === 'object');
 }
 
 function safeParseJson(input) {

@@ -60,6 +60,10 @@ struct TrainTrackUKApp: App {
                     await ServerConfigStore.shared.refresh()
                 }
 
+                Task {
+                    await DevicePreferencesSync.syncCurrent()
+                }
+
                 // Re-sync subscriptions and geofences each time the app comes to the
                 // foreground. This ensures geofences are registered after the app was
                 // killed/re-launched and stations need to be reloaded, and keeps the
