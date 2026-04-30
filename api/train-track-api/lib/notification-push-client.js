@@ -13,6 +13,7 @@ import {
     parseRetryAfterMs,
     sleep
 } from './retry-utils.js';
+import { recordPushAuditEvent } from './admin-data-store.js';
 
 const DEFAULT_PUSH_MAX_RETRIES = Number(process.env.APNS_PUSH_MAX_RETRIES || '3');
 const DEFAULT_PUSH_RETRY_BASE_DELAY_MS = Number(process.env.APNS_PUSH_RETRY_BASE_DELAY_MS || '400');
@@ -83,6 +84,17 @@ export class NotificationPushClient {
 
         if (!this.isConfigured()) {
             console.warn('APNS credentials missing; skipping notification send');
+            recordPushAuditEvent({
+                channel: 'notification',
+                event: options.event || 'notification',
+                environment: options.useSandbox === true ? 'sandbox' : 'prod',
+                payload,
+                context: options.context,
+                response: { skipped: true, reason: 'apns_not_configured' },
+                final: true
+            }).catch((error) => {
+                console.error('[admin] Failed to log skipped notification push:', error?.message || error);
+            });
             return { skipped: true, reason: 'apns_not_configured', payload };
         }
 
@@ -117,6 +129,23 @@ export class NotificationPushClient {
             const shouldRetry = !result?.isBadToken && (
                 result?.status === 'error' || isRetryableHttpStatus(result?.status)
             );
+            recordPushAuditEvent({
+                channel: 'notification',
+                event,
+                environment,
+                host,
+                topic: this.topic,
+                push_type: result?.requestHeaders?.['apns-push-type'] || null,
+                priority: result?.requestHeaders?.['apns-priority'] || null,
+                attempt: attempt + 1,
+                final: !shouldRetry || attempt >= maxRetries,
+                token: deviceToken,
+                payload,
+                context: options.context,
+                response: result
+            }).catch((error) => {
+                console.error('[admin] Failed to log notification push audit:', error?.message || error);
+            });
 
             if (!shouldRetry) {
                 return result;
@@ -195,6 +224,7 @@ export class NotificationPushClient {
                     status,
                     body: parsedBody,
                     headers: responseHeaders,
+                    requestHeaders: sanitizedRequestHeaders(headers),
                     durationMs: Date.now() - startedAt,
                     isBadToken
                 });
@@ -206,6 +236,7 @@ export class NotificationPushClient {
                     status: 'error',
                     error: error?.message || error.toString(),
                     headers: {},
+                    requestHeaders: sanitizedRequestHeaders(headers),
                     durationMs: Date.now() - startedAt,
                     isBadToken: false
                 });
@@ -214,6 +245,13 @@ export class NotificationPushClient {
             request.end();
         });
     }
+}
+
+function sanitizedRequestHeaders(headers) {
+    const safe = { ...headers };
+    if (safe.authorization) safe.authorization = 'bearer ...';
+    if (safe[':path']) safe[':path'] = '/3/device/<token>';
+    return safe;
 }
 
 function safeParseJson(input) {

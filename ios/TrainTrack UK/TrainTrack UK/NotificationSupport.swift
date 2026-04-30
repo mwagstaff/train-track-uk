@@ -78,6 +78,9 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
         NotificationCategoryRegistrar.register()
+        ClientDiagnosticsLogger.log("app", "did_finish_launching", metadata: [
+            "launch_options": launchOptions?.keys.map { String(describing: $0) } ?? []
+        ])
         _ = LiveActivityManager.shared
         // If relaunched in background to deliver a region event, ensure the
         // geofence manager's CLLocationManager is initialised before iOS
@@ -91,10 +94,17 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
         NotificationPushTokenStore.set(token: token)
+        ClientDiagnosticsLogger.log("notifications", "registered_remote_notifications", metadata: [
+            "token_prefix": String(token.prefix(8)),
+            "token_suffix": String(token.suffix(8))
+        ])
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
         print("⚠️ [Notifications] Failed to register for remote notifications: \(error.localizedDescription)")
+        ClientDiagnosticsLogger.log("notifications", "remote_notification_registration_failed", metadata: [
+            "error": error.localizedDescription
+        ])
     }
 
     func application(
@@ -103,6 +113,15 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         Task { @MainActor in
+            ClientDiagnosticsLogger.log("notifications", "did_receive_remote_notification", metadata: [
+                "alert_type": userInfo["alert_type"] as? String,
+                "aps_event": (userInfo["aps"] as? [AnyHashable: Any])?["event"] as? String,
+                "from": userInfo["from"] as? String,
+                "to": userInfo["to"] as? String,
+                "route_key": userInfo["route_key"] as? String,
+                "schedule_key": userInfo["schedule_key"] as? String,
+                "keys": userInfo.keys.map { String(describing: $0) }.sorted()
+            ])
             let started = await ScheduledLiveActivityAutoStartManager.shared.handleRemoteNotification(userInfo: userInfo)
 
             // For push-to-start notifications (content-available: 1 is included in the
@@ -113,6 +132,10 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
             try? await Task.sleep(nanoseconds: 750_000_000) // 750ms
             await LiveActivityManager.shared.registerAnyUnregisteredActivities()
 
+            ClientDiagnosticsLogger.log("notifications", "remote_notification_handled", metadata: [
+                "started_scheduled_live_activity": started,
+                "completion": started ? "newData" : "noData"
+            ])
             completionHandler(started ? .newData : .noData)
         }
     }
@@ -167,9 +190,21 @@ final class ScheduledLiveActivityAutoStartManager {
     func handleRemoteNotification(userInfo: [AnyHashable: Any]) async -> Bool {
         guard let trigger = ScheduledLiveActivityTrigger(userInfo: userInfo),
               trigger.alertType == autoStartAlertType else {
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "remote_trigger_ignored", metadata: [
+                "alert_type": userInfo["alert_type"] as? String,
+                "keys": userInfo.keys.map { String(describing: $0) }.sorted()
+            ])
             return false
         }
-        return await startIfNeeded(for: trigger, overwriteExisting: true)
+        ClientDiagnosticsLogger.log("scheduled_live_activity", "remote_trigger_received", metadata: trigger.logMetadata)
+        let started = await startIfNeeded(for: trigger, overwriteExisting: true)
+        ClientDiagnosticsLogger.log("scheduled_live_activity", "remote_trigger_finished", metadata: [
+            "started": started,
+            "schedule_key": trigger.scheduleKey,
+            "from": trigger.from,
+            "to": trigger.to
+        ])
+        return started
     }
 
     func startEligibleScheduledLiveActivities() async {
@@ -208,8 +243,14 @@ final class ScheduledLiveActivityAutoStartManager {
 
     private func startIfNeeded(for trigger: ScheduledLiveActivityTrigger, overwriteExisting: Bool) async -> Bool {
         let scheduleKey = trigger.scheduleKey
-        guard !scheduleKey.isEmpty else { return false }
-        guard !inFlightKeys.contains(scheduleKey) else { return false }
+        guard !scheduleKey.isEmpty else {
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "start_skipped_empty_schedule_key", metadata: trigger.logMetadata)
+            return false
+        }
+        guard !inFlightKeys.contains(scheduleKey) else {
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "start_skipped_in_flight", metadata: trigger.logMetadata)
+            return false
+        }
         inFlightKeys.insert(scheduleKey)
         defer { inFlightKeys.remove(scheduleKey) }
 
@@ -217,9 +258,18 @@ final class ScheduledLiveActivityAutoStartManager {
         if let existing = records.first(where: { $0.scheduleKey == scheduleKey }) {
             if hasActiveActivity(id: existing.activityID),
                Date().timeIntervalSince(existing.startedAt) < duplicateGuardInterval || !overwriteExisting {
+                ClientDiagnosticsLogger.log("scheduled_live_activity", "start_skipped_existing_recent", metadata: [
+                    "schedule_key": scheduleKey,
+                    "activity_id": existing.activityID,
+                    "overwrite_existing": overwriteExisting
+                ])
                 return true
             }
             if hasActiveActivity(id: existing.activityID) {
+                ClientDiagnosticsLogger.log("scheduled_live_activity", "start_skipped_existing_active", metadata: [
+                    "schedule_key": scheduleKey,
+                    "activity_id": existing.activityID
+                ])
                 return true
             }
             await stopExisting(record: existing)
@@ -228,10 +278,12 @@ final class ScheduledLiveActivityAutoStartManager {
         }
 
         guard let journey = await makeJourney(from: trigger.from, to: trigger.to) else {
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "start_failed_make_journey", metadata: trigger.logMetadata)
             return false
         }
 
         if LiveActivityManager.shared.isActive(for: journey) {
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "start_skipped_journey_already_active", metadata: trigger.logMetadata)
             return true
         }
 
@@ -249,6 +301,7 @@ final class ScheduledLiveActivityAutoStartManager {
 
         guard LiveActivityManager.shared.isActive(for: journey),
               let activityID = LiveActivityManager.shared.activityID(for: journey) else {
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "start_failed_after_request", metadata: trigger.logMetadata)
             return false
         }
 
@@ -266,6 +319,14 @@ final class ScheduledLiveActivityAutoStartManager {
             startedAt: Date()
         ))
         saveRecords(updatedRecords)
+        ClientDiagnosticsLogger.log("scheduled_live_activity", "start_succeeded", metadata: [
+            "schedule_key": scheduleKey,
+            "activity_id": activityID,
+            "from": trigger.from,
+            "to": trigger.to,
+            "window_start": trigger.windowStart,
+            "window_end": trigger.windowEnd
+        ])
         return true
     }
 
@@ -375,6 +436,21 @@ private struct ScheduledLiveActivityTrigger {
 
     var scheduleKey: String {
         "\(from.uppercased())-\(to.uppercased())|\(windowStart)|\(windowEnd)|\(Self.currentDateKey())"
+    }
+
+    var logMetadata: [String: Any?] {
+        [
+            "subscription_id": subscriptionId,
+            "route_key": routeKey,
+            "from": from,
+            "to": to,
+            "from_name": fromName,
+            "to_name": toName,
+            "alert_type": alertType,
+            "window_start": windowStart,
+            "window_end": windowEnd,
+            "schedule_key": scheduleKey
+        ]
     }
 
     init?(

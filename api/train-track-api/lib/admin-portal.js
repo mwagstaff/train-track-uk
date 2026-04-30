@@ -1,18 +1,23 @@
 import {
+    getLiveActivityPayload,
     getNotificationEvent,
     getNotificationSubscriptionFromRedis,
     getDevicePreferences,
     listDevicePreferences,
+    listLiveActivityPayloads,
     listNotificationEvents,
     listNotificationSubscriptionsFromRedis,
     listGeofenceEvents
 } from './admin-data-store.js';
 import { liveActivityManager } from './live-activity-manager.js';
+import { LiveActivityPushClient } from './live-activity-push-client.js';
 import { getDeviceLastSeen } from './metrics.js';
+import { pushToStartTokenStore } from './push-to-start-token-store.js';
 
 const DEFAULT_LIMIT = 500;
 const DEFAULT_NOTIFICATION_LIMIT = 20;
 const DEFAULT_DEVICE_PAGE_SIZE = 50;
+const DEFAULT_REPLAY_DEVICE_ID = 'BF4D495F-E69A-4E7D-B47D-09930684A323';
 
 export function registerAdminRoutes(app) {
     app.get('/admin', async (req, res) => {
@@ -139,6 +144,67 @@ export function registerAdminRoutes(app) {
         } catch (error) {
             console.error('[admin] Failed to load notification detail:', error?.message || error);
             res.status(500).type('html').send(renderErrorPage('Failed to load notification detail.'));
+        }
+    });
+
+    app.get('/admin/live-activity-payloads', async (req, res) => {
+        try {
+            const query = typeof req.query?.q === 'string' ? req.query.q.trim() : '';
+            const limit = clampLimit(req.query?.limit, 1, 5000, DEFAULT_LIMIT);
+            const targetDeviceId = normalizeDeviceId(req.query?.target_device_id) || DEFAULT_REPLAY_DEVICE_ID;
+            const payloads = await listLiveActivityPayloads({ search: query, limit });
+            res.type('html').send(renderLiveActivityPayloadListPage({
+                query,
+                limit,
+                payloads,
+                targetDeviceId,
+                replayResult: null
+            }));
+        } catch (error) {
+            console.error('[admin] Failed to load live activity payloads:', error?.message || error);
+            res.status(500).type('html').send(renderErrorPage('Failed to load live activity payloads.'));
+        }
+    });
+
+    app.get('/admin/live-activity-payloads/:id', async (req, res) => {
+        try {
+            const id = req.params?.id;
+            const payload = await getLiveActivityPayload(id);
+            if (!payload) {
+                return res.status(404).type('html').send(renderErrorPage(`Live Activity payload not found: ${id}`));
+            }
+            const targetDeviceId = normalizeDeviceId(req.query?.target_device_id) || DEFAULT_REPLAY_DEVICE_ID;
+            res.type('html').send(renderLiveActivityPayloadDetailPage({ payload, targetDeviceId, replayResult: null }));
+        } catch (error) {
+            console.error('[admin] Failed to load live activity payload detail:', error?.message || error);
+            res.status(500).type('html').send(renderErrorPage('Failed to load live activity payload detail.'));
+        }
+    });
+
+    app.post('/admin/live-activity-payloads/:id/replay', async (req, res) => {
+        try {
+            const id = req.params?.id;
+            const payloadRecord = await getLiveActivityPayload(id);
+            if (!payloadRecord) {
+                return res.status(404).type('html').send(renderErrorPage(`Live Activity payload not found: ${id}`));
+            }
+
+            const targetDeviceId = normalizeDeviceId(req.body?.target_device_id) || DEFAULT_REPLAY_DEVICE_ID;
+            const targetActivityId = normalizeDeviceId(req.body?.target_activity_id);
+            const result = await replayLiveActivityPayload({
+                payloadRecord,
+                targetDeviceId,
+                targetActivityId
+            });
+            res.type('html').send(renderLiveActivityPayloadDetailPage({
+                payload: payloadRecord,
+                targetDeviceId,
+                targetActivityId,
+                replayResult: result
+            }));
+        } catch (error) {
+            console.error('[admin] Failed to replay live activity payload:', error?.message || error);
+            res.status(500).type('html').send(renderErrorPage(`Failed to replay live activity payload: ${error?.message || error}`));
         }
     });
 }
@@ -299,6 +365,11 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
             background: #fff; color: var(--text); cursor: pointer;
         }
         .search button { background: var(--accent); color: white; border-color: var(--accent); }
+        .search button, form button {
+            border-radius: 8px; padding: 8px 12px; font-size: 13px;
+            border: 1px solid var(--accent); background: var(--accent);
+            color: #fff; cursor: pointer;
+        }
         .panel {
             background: var(--panel); border: 1px solid var(--line);
             border-radius: 12px; margin-bottom: 18px; overflow: hidden;
@@ -721,6 +792,169 @@ function renderDeviceDetailPage(detail) {
     });
 }
 
+function renderLiveActivityPayloadListPage({ query, limit, payloads, targetDeviceId, replayResult }) {
+    const renderedAt = escapeHtml(new Date().toISOString());
+    const rows = payloads.map((record) => renderLiveActivityPayloadRow(record, targetDeviceId)).join('');
+    const replayBlock = replayResult ? renderReplayResult(replayResult) : '';
+    return renderAdminShell({
+        title: 'Live Activity Payload Replay',
+        body: `
+    <div class="wrap">
+        <a href="../admin">Back to Admin</a>
+        <h1>Live Activity Payload Replay</h1>
+        <div class="meta">Rendered at ${renderedAt} · Payloads retained for 7 days · Default target ${escapeHtml(DEFAULT_REPLAY_DEVICE_ID)}</div>
+        ${replayBlock}
+        <form class="search" method="GET" action="">
+            <input type="text" name="q" value="${escapeHtml(query || '')}" placeholder="Search payloads by route, device, APNs status, event, or schedule key" />
+            <input type="text" name="target_device_id" value="${escapeHtml(targetDeviceId || DEFAULT_REPLAY_DEVICE_ID)}" placeholder="Target test device ID" />
+            <input type="hidden" name="limit" value="${escapeHtml(limit)}" />
+            <button type="submit">Search</button>
+            <a href="?target_device_id=${encodeURIComponent(DEFAULT_REPLAY_DEVICE_ID)}">Reset</a>
+        </form>
+        <section class="panel">
+            <h2>Historical Live Activity Payloads <span class="panel-count">${payloads.length}</span></h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Recorded</th>
+                            <th>Event</th>
+                            <th>Route</th>
+                            <th>Schedule Key</th>
+                            <th>Reason</th>
+                            <th>Env</th>
+                            <th>Status</th>
+                            <th>Replay</th>
+                            <th>Raw</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows || `<tr><td class="empty" colspan="9">No live activity payloads found.</td></tr>`}</tbody>
+                </table>
+            </div>
+        </section>
+    </div>`
+    });
+}
+
+function renderLiveActivityPayloadDetailPage({ payload, targetDeviceId, targetActivityId = '', replayResult }) {
+    const event = payload?.event || payload?.payload?.aps?.event || '';
+    const reason = payload?.context?.end_reason || payload?.context?.reason || '';
+    return renderAdminShell({
+        title: `Live Activity Payload ${payload?.id || ''}`,
+        body: `
+    <div class="wrap">
+        <a href="../live-activity-payloads?target_device_id=${encodeURIComponent(targetDeviceId || DEFAULT_REPLAY_DEVICE_ID)}">Back to Payload Replay</a>
+        <h1>Live Activity Payload ${escapeHtml(payload?.id || '')}</h1>
+        <div class="meta">Event: ${escapeHtml(event)} · Reason: ${escapeHtml(reason || 'n/a')} · Recorded: ${formatDate(payload?.recorded_at) || '<span class="never">—</span>'}</div>
+        ${replayResult ? renderReplayResult(replayResult) : ''}
+        <section class="panel">
+            <h2>Replay</h2>
+            <form class="search" method="POST" action="./${encodeURIComponent(payload?.id || '')}/replay">
+                <input type="text" name="target_device_id" value="${escapeHtml(targetDeviceId || DEFAULT_REPLAY_DEVICE_ID)}" placeholder="Target test device ID" />
+                <input type="text" name="target_activity_id" value="${escapeHtml(targetActivityId || '')}" placeholder="Target activity ID for update/end payloads" />
+                <button type="submit">Replay Payload</button>
+            </form>
+        </section>
+        <section class="panel">
+            <h2>Raw Payload Record</h2>
+            <pre class="json">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
+        </section>
+    </div>`
+    });
+}
+
+function renderLiveActivityPayloadRow(record, targetDeviceId) {
+    const contentState = record?.payload?.aps?.['content-state'] || {};
+    const route = contentState.routeTitle || `${contentState.fromCRS || ''} → ${contentState.toCRS || ''}`;
+    const scheduleKey = contentState.scheduleKey || record?.context?.schedule_key || '';
+    const reason = record?.context?.end_reason || record?.context?.reason || '';
+    const status = record?.response?.status ?? record?.response?.reason ?? '';
+    return `<tr>
+        <td>${formatDate(record.recorded_at)}</td>
+        <td>${escapeHtml(record.event || record?.payload?.aps?.event || '')}</td>
+        <td>${escapeHtml(route)}</td>
+        <td>${escapeHtml(scheduleKey)}</td>
+        <td>${escapeHtml(reason)}</td>
+        <td>${escapeHtml(record.environment || '')}</td>
+        <td>${escapeHtml(formatStatus(status))}</td>
+        <td>
+            <form method="POST" action="live-activity-payloads/${encodeURIComponent(record.id || '')}/replay" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+                <input type="hidden" name="target_device_id" value="${escapeHtml(targetDeviceId || DEFAULT_REPLAY_DEVICE_ID)}" />
+                <button type="submit">Replay</button>
+            </form>
+        </td>
+        <td><a href="live-activity-payloads/${encodeURIComponent(record.id || '')}?target_device_id=${encodeURIComponent(targetDeviceId || DEFAULT_REPLAY_DEVICE_ID)}">JSON</a></td>
+    </tr>`;
+}
+
+function renderReplayResult(result) {
+    const ok = result?.success ? 'badge-ok' : 'badge-err';
+    return `<section class="panel">
+        <h2>Replay Result <span class="badge ${ok}">${result?.success ? 'sent' : 'failed'}</span></h2>
+        <pre class="json">${escapeHtml(JSON.stringify(result, null, 2))}</pre>
+    </section>`;
+}
+
+async function replayLiveActivityPayload({ payloadRecord, targetDeviceId, targetActivityId }) {
+    const payload = payloadRecord?.payload;
+    if (!payload?.aps?.event) {
+        throw new Error('Stored payload is missing aps.event');
+    }
+
+    const event = payload.aps.event;
+    const client = new LiveActivityPushClient();
+    let tokenRecord = null;
+    let token = null;
+    let useSandbox = payloadRecord?.environment === 'sandbox';
+
+    if (event === 'start') {
+        tokenRecord = await pushToStartTokenStore.get(targetDeviceId);
+        token = tokenRecord?.pushToStartToken || null;
+        useSandbox = tokenRecord?.useSandbox === true;
+    } else {
+        const subscription = targetActivityId
+            ? liveActivityManager.getSubscription(targetDeviceId, targetActivityId)
+            : liveActivityManager.getLatestSubscriptionForDevice(targetDeviceId);
+        token = subscription?.pushToken || null;
+        useSandbox = subscription?.useSandbox === true;
+        tokenRecord = subscription ? {
+            activityId: subscription.activityId,
+            route: `${subscription.fromStation || ''}-${subscription.toStation || ''}`
+        } : null;
+    }
+
+    if (!token) {
+        throw new Error(event === 'start'
+            ? `No push-to-start token found for device ${targetDeviceId}`
+            : `No live activity update token found for device ${targetDeviceId}`);
+    }
+
+    const response = await client.sendLiveActivityUpdate(token, payload, {
+        useSandbox,
+        event: `replay_${event}`,
+        replayedFromId: payloadRecord.id,
+        context: {
+            replay: true,
+            replayed_from_id: payloadRecord.id,
+            target_device_id: targetDeviceId,
+            target_activity_id: targetActivityId || null,
+            original_context: payloadRecord.context || null
+        }
+    });
+
+    const success = typeof response?.status === 'number' && response.status >= 200 && response.status < 300;
+    return {
+        success,
+        event,
+        target_device_id: targetDeviceId,
+        target_activity_id: targetActivityId || tokenRecord?.activityId || null,
+        use_sandbox: useSandbox,
+        token_source: event === 'start' ? 'push_to_start' : 'live_activity_session',
+        token_record: tokenRecord,
+        response
+    };
+}
+
 function renderSubscriptionDetailRow(subscription) {
     const legs = Array.isArray(subscription.legs) ? subscription.legs.filter((leg) => leg && leg.enabled !== false) : [];
     const firstLeg = legs[0] || {};
@@ -834,6 +1068,11 @@ function renderAdminShell({ title, body }) {
         .badge-err { background:#fde8e8; color:#b91c1c; }
         .pager { display: flex; gap: 8px; align-items: center; justify-content: center; }
         .pager span { color: var(--muted); cursor: default; }
+        .json {
+            margin: 0; padding: 16px; overflow: auto;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12px; line-height: 1.45; background: #fff;
+        }
     </style>
 </head>
 <body>${body}</body>
@@ -1180,6 +1419,10 @@ function relativeTime(from, to) {
 function formatStatus(status) {
     if (status === undefined || status === null) return '';
     return String(status);
+}
+
+function normalizeDeviceId(value) {
+    return typeof value === 'string' ? value.trim() : '';
 }
 
 function escapeHtml(input) {

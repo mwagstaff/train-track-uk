@@ -1271,10 +1271,28 @@ final class LiveActivityManager: ObservableObject {
 
     private func registerRemoteStartedActivityIfNeeded(_ activity: Activity<JourneyActivityAttributes>) async {
         await replaceScheduledActivityIfNeeded(with: activity)
-        guard trackedActivities[activity.id] == nil else { return }
+        guard trackedActivities[activity.id] == nil else {
+            ClientDiagnosticsLogger.log("live_activity", "remote_started_already_tracked", metadata: [
+                "activity_id": activity.id,
+                "schedule_key": activity.contentState.scheduleKey,
+                "from": activity.contentState.fromCRS,
+                "to": activity.contentState.toCRS
+            ])
+            return
+        }
 
         let fromCRS = activity.contentState.fromCRS.uppercased()
         let toCRS = activity.contentState.toCRS.uppercased()
+        ClientDiagnosticsLogger.log("live_activity", "remote_started_activity_discovered", metadata: [
+            "activity_id": activity.id,
+            "from": fromCRS,
+            "to": toCRS,
+            "route_title": activity.contentState.routeTitle,
+            "schedule_key": activity.contentState.scheduleKey,
+            "window_start": activity.contentState.windowStart,
+            "window_end": activity.contentState.windowEnd,
+            "journey_updates_enabled": activity.contentState.journeyUpdatesEnabled
+        ])
 
         var tracked = TrackedActivity(
             activity: activity,
@@ -1303,6 +1321,11 @@ final class LiveActivityManager: ObservableObject {
     /// to foreground the app.
     func registerAnyUnregisteredActivities() async {
         let unregistered = currentSystemActivities().filter { trackedActivities[$0.id] == nil }
+        ClientDiagnosticsLogger.log("live_activity", "register_any_unregistered_activities", metadata: [
+            "tracked_count": trackedActivities.count,
+            "unregistered_count": unregistered.count,
+            "system_activity_ids": currentSystemActivities().map(\.id)
+        ])
         guard !unregistered.isEmpty else { return }
         print("📡 [LiveActivity] registerAnyUnregisteredActivities: found \(unregistered.count) unregistered activity/activities")
         for activity in unregistered {
@@ -1453,11 +1476,22 @@ final class LiveActivityManager: ObservableObject {
 
     private func registerPushToStartTokenIfNeeded(_ tokenData: Data) async {
         let tokenString = encodePushToken(tokenData)
-        guard tokenString != lastRegisteredPushToStartToken else { return }
+        guard tokenString != lastRegisteredPushToStartToken else {
+            ClientDiagnosticsLogger.log("live_activity", "push_to_start_registration_skipped_same_token", metadata: [
+                "token_prefix": String(tokenString.prefix(8)),
+                "token_suffix": String(tokenString.suffix(8))
+            ])
+            return
+        }
         let success = await sendPushToStartTokenRegistration(tokenString: tokenString)
         if success {
             lastRegisteredPushToStartToken = tokenString
         }
+        ClientDiagnosticsLogger.log("live_activity", "push_to_start_registration_finished", metadata: [
+            "success": success,
+            "token_prefix": String(tokenString.prefix(8)),
+            "token_suffix": String(tokenString.suffix(8))
+        ])
     }
 
     func ensurePushToStartTokenRegistered(timeoutSeconds: Double = 8.0) async -> Bool {
@@ -1471,14 +1505,23 @@ final class LiveActivityManager: ObservableObject {
             if let current = Activity<JourneyActivityAttributes>.pushToStartToken {
                 await registerPushToStartTokenIfNeeded(current)
                 if lastRegisteredPushToStartToken == encodePushToken(current) {
+                    ClientDiagnosticsLogger.log("live_activity", "ensure_push_to_start_token_registered_success", metadata: [
+                        "source": "current_token"
+                    ])
                     return true
                 }
             } else if lastRegisteredPushToStartToken != nil {
+                ClientDiagnosticsLogger.log("live_activity", "ensure_push_to_start_token_registered_success", metadata: [
+                    "source": "cached_token"
+                ])
                 return true
             }
             try? await Task.sleep(nanoseconds: 200_000_000)
         }
 
+        ClientDiagnosticsLogger.log("live_activity", "ensure_push_to_start_token_registered_timeout", metadata: [
+            "has_last_registered_token": lastRegisteredPushToStartToken != nil
+        ])
         return lastRegisteredPushToStartToken != nil
     }
 
@@ -1694,13 +1737,23 @@ final class LiveActivityManager: ObservableObject {
             }
             if (200...299).contains(http.statusCode) {
                 logger.info("[LiveActivity] Push-to-start token registered successfully")
+                ClientDiagnosticsLogger.log("live_activity", "push_to_start_registration_http_success", metadata: [
+                    "status": http.statusCode
+                ])
                 return true
             }
             let body = String(data: data, encoding: .utf8) ?? "<no body>"
             logger.error("[LiveActivity] Push-to-start registration failed: status=\(http.statusCode) body=\(body, privacy: .public)")
+            ClientDiagnosticsLogger.log("live_activity", "push_to_start_registration_http_failed", metadata: [
+                "status": http.statusCode,
+                "body": body
+            ])
             return false
         } catch {
             logger.error("[LiveActivity] Network error registering push-to-start token: \(String(describing: error), privacy: .public)")
+            ClientDiagnosticsLogger.log("live_activity", "push_to_start_registration_network_error", metadata: [
+                "error": String(describing: error)
+            ])
             return false
         }
     }

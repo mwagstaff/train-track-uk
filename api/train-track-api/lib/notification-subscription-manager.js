@@ -435,7 +435,11 @@ class NotificationSubscriptionManager {
         const pushResult = await this.pushClient.sendNotification(
             activeSubscription.pushToken,
             summary.payload,
-            { useSandbox: activeSubscription.useSandbox, event: summary.type }
+            {
+                useSandbox: activeSubscription.useSandbox,
+                event: summary.type,
+                context: buildPushContext(activeSubscription, leg, 'scheduled_summary')
+            }
         );
         this.logSendEvent(activeSubscription, leg, summary, pushResult);
         console.log('[notifications] summary_push', JSON.stringify({
@@ -471,6 +475,10 @@ class NotificationSubscriptionManager {
             return false;
         }
 
+        if (!isWithinWindowStartGrace(leg)) {
+            return false;
+        }
+
         const todayKey = currentScheduleDateKey();
         if (subscription.lastAutoStartSentByLeg?.[legKey] === todayKey) {
             return true;
@@ -492,7 +500,16 @@ class NotificationSubscriptionManager {
             payload,
             {
                 useSandbox: pushToStartRecord.useSandbox === true,
-                event: 'live_activity_start'
+                event: 'live_activity_start',
+                context: {
+                    device_id: activeSubscription.deviceId,
+                    subscription_id: activeSubscription.id,
+                    route_key: activeSubscription.routeKey,
+                    from: leg.from,
+                    to: leg.to,
+                    schedule_key: buildScheduleKeyForLeg(leg),
+                    source: 'scheduled'
+                }
             }
         );
 
@@ -534,7 +551,19 @@ class NotificationSubscriptionManager {
             this.pushClient.sendNotification(
                 activeSubscription.pushToken,
                 wakePayload.payload,
-                { useSandbox: activeSubscription.useSandbox === true, event: 'live_activity_wake' }
+                {
+                    useSandbox: activeSubscription.useSandbox === true,
+                    event: 'live_activity_wake',
+                    context: {
+                        device_id: activeSubscription.deviceId,
+                        subscription_id: activeSubscription.id,
+                        route_key: activeSubscription.routeKey,
+                        from: leg.from,
+                        to: leg.to,
+                        schedule_key: buildScheduleKeyForLeg(leg),
+                        source: 'scheduled'
+                    }
+                }
             ).then((wakeResult) => {
                 console.log('[notifications] live_activity_wake_push', JSON.stringify({
                     subscription_id: activeSubscription.id,
@@ -618,7 +647,11 @@ class NotificationSubscriptionManager {
         const result = await this.pushClient.sendNotification(
             activeSubscription.pushToken,
             notification.payload,
-            { useSandbox: activeSubscription.useSandbox, event: notification.type }
+            {
+                useSandbox: activeSubscription.useSandbox,
+                event: notification.type,
+                context: buildPushContext(activeSubscription, leg, 'live_session_update')
+            }
         );
         this.logSendEvent(activeSubscription, leg, notification, result);
         console.log('[notifications] update_push', JSON.stringify({
@@ -789,7 +822,11 @@ class NotificationSubscriptionManager {
                 const pushResult = await this.pushClient.sendNotification(
                     subscription.pushToken,
                     mutedNotification.payload,
-                    { useSandbox: subscription.useSandbox, event: mutedNotification.type }
+                    {
+                        useSandbox: subscription.useSandbox,
+                        event: mutedNotification.type,
+                        context: buildPushContext(subscription, leg, 'mute_on_arrival')
+                    }
                 );
                 pushResults.push({
                     type: mutedNotification.type,
@@ -961,6 +998,19 @@ function currentMinutes() {
     return hour * 60 + minute;
 }
 
+function isWithinWindowStartGrace(leg) {
+    let startMinutes;
+    let endMinutes;
+    try {
+        ({ startMinutes, endMinutes } = parseWindow(leg.windowStart, leg.windowEnd));
+    } catch {
+        return false;
+    }
+    const nowMinutes = currentMinutes();
+    return nowMinutes >= startMinutes
+        && nowMinutes <= endMinutes
+        && nowMinutes < (startMinutes + SUMMARY_START_GRACE_MINUTES);
+}
 
 function shouldPollNow(subscription, leg) {
     if (normalizeSource(subscription?.source) === LIVE_SESSION_SOURCE) {
@@ -1430,6 +1480,23 @@ function buildLegMeta(subscription, leg, alertType) {
     if (leg.fromName) meta.from_name = leg.fromName;
     if (leg.toName) meta.to_name = leg.toName;
     return meta;
+}
+
+function buildPushContext(subscription, leg, reason) {
+    return {
+        reason,
+        device_id: subscription?.deviceId || null,
+        subscription_id: subscription?.id || null,
+        route_key: subscription?.routeKey || null,
+        source: subscription?.source || null,
+        from: leg?.from || null,
+        to: leg?.to || null,
+        leg_key: leg ? `${leg.from}-${leg.to}` : null,
+        window_start: leg?.windowStart || null,
+        window_end: leg?.windowEnd || null,
+        schedule_key: leg ? buildScheduleKeyForLeg(leg) : null,
+        notification_types: getEffectiveNotificationTypes(subscription)
+    };
 }
 
 export const notificationSubscriptionManager = new NotificationSubscriptionManager();

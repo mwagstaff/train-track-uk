@@ -153,6 +153,9 @@ class LiveActivityManager {
     scheduleEnd(subscription) {
         this.clearEndTimer(subscription);
         let endAfterMs = this.getEndAfterMs();
+        let endReason = 'duration_elapsed';
+        let endPolicy = 'fixed_duration';
+        let windowEndBufferMs = null;
 
         // If the subscription has a windowEnd, end the live activity shortly after
         // the window closes rather than using a fixed duration from registration time.
@@ -161,12 +164,19 @@ class LiveActivityManager {
             if (windowEndMs !== null) {
                 const bufferMs = 5 * 60 * 1000; // 5-minute grace after window end
                 endAfterMs = Math.max((windowEndMs - Date.now()) + bufferMs, 0);
+                endReason = 'window_end_grace_elapsed';
+                endPolicy = 'window_end_plus_grace';
+                windowEndBufferMs = bufferMs;
             }
         }
 
         subscription.endAt = new Date(Date.now() + endAfterMs).toISOString();
+        subscription.endReason = endReason;
+        subscription.endPolicy = endPolicy;
+        subscription.endAfterMs = endAfterMs;
+        subscription.windowEndBufferMs = windowEndBufferMs;
         subscription.endTimer = setTimeout(() => {
-            this.sendEndUpdate(subscription).catch((error) => {
+            this.sendEndUpdate(subscription, { reason: endReason, trigger: 'timer' }).catch((error) => {
                 const key = this.buildKey(subscription.deviceId, subscription.activityId);
                 console.error(`Final live activity end push failed for ${key}: ${error?.message || error}`);
             });
@@ -288,7 +298,8 @@ class LiveActivityManager {
 
             const pushResponse = await this.pushClient.sendLiveActivityUpdate(subscription.pushToken, payload, {
                 useSandbox: subscription.useSandbox,
-                event: 'live_activity_update'
+                event: 'live_activity_update',
+                context: this.buildPushContext(subscription, 'poll_update')
             });
             this.logPushEvent(subscription, payload, pushResponse, 'live_activity_update');
 
@@ -336,8 +347,16 @@ class LiveActivityManager {
         }
     }
 
-    async sendEndUpdate(subscription) {
+    async sendEndUpdate(subscription, { reason = subscription.endReason || 'unknown', trigger = 'unknown' } = {}) {
         const key = this.buildKey(subscription.deviceId, subscription.activityId);
+        const endContext = {
+            end_reason: reason,
+            end_trigger: trigger,
+            end_policy: subscription.endPolicy || null,
+            end_scheduled_at: subscription.endAt || null,
+            end_after_ms: Number.isFinite(subscription.endAfterMs) ? subscription.endAfterMs : null,
+            window_end_buffer_ms: Number.isFinite(subscription.windowEndBufferMs) ? subscription.windowEndBufferMs : null
+        };
         const snapshot = subscription.lastSnapshot || (
             await this.getDeparturesSnapshot(
                 subscription.fromStation,
@@ -351,9 +370,10 @@ class LiveActivityManager {
         });
         const pushResponse = await this.pushClient.sendLiveActivityUpdate(subscription.pushToken, payload, {
             useSandbox: subscription.useSandbox,
-            event: 'live_activity_end'
+            event: 'live_activity_end',
+            context: this.buildPushContext(subscription, 'end', endContext)
         });
-        this.logPushEvent(subscription, payload, pushResponse, 'live_activity_end');
+        this.logPushEvent(subscription, payload, pushResponse, 'live_activity_end', endContext);
 
         // Clean up subscription regardless of push result
         this.clearEndTimer(subscription);
@@ -375,13 +395,16 @@ class LiveActivityManager {
                 status: pushResponse?.status,
                 departures: snapshot.departures.length,
                 fetchedAt: snapshot.fetchedAt,
-                endAt: subscription.endAt
+                endAt: subscription.endAt,
+                endReason: reason,
+                endTrigger: trigger,
+                endPolicy: subscription.endPolicy || null
             }
         );
         return { snapshot, payload, pushResponse };
     }
 
-    logPushEvent(subscription, payload, pushResponse, type) {
+    logPushEvent(subscription, payload, pushResponse, type, extraMetadata = {}) {
         const status = pushResponse?.status ?? null;
         const success = typeof status === 'number' && status >= 200 && status < 300;
         recordNotificationEvent({
@@ -403,11 +426,29 @@ class LiveActivityManager {
             metadata: {
                 preferred_service_id: subscription.preferredServiceId || null,
                 journey_updates_enabled: Boolean(subscription.journeyUpdatesEnabled),
-                created_at: subscription.createdAt || null
+                created_at: subscription.createdAt || null,
+                ...extraMetadata
             }
         }).catch((error) => {
             console.error('[admin] Failed to log live activity event:', error?.message || error);
         });
+    }
+
+    buildPushContext(subscription, reason, extra = {}) {
+        return {
+            reason,
+            device_id: subscription.deviceId,
+            activity_id: subscription.activityId,
+            route_key: `${subscription.fromStation || ''}-${subscription.toStation || ''}`,
+            from: subscription.fromStation || null,
+            to: subscription.toStation || null,
+            preferred_service_id: subscription.preferredServiceId || null,
+            schedule_key: subscription.scheduleKey || null,
+            window_start: subscription.windowStart || null,
+            window_end: subscription.windowEnd || null,
+            journey_updates_enabled: Boolean(subscription.journeyUpdatesEnabled),
+            ...extra
+        };
     }
 
     async getDeparturesSnapshot(fromStation, toStation, preferredServiceId = null) {
@@ -1024,6 +1065,19 @@ class LiveActivityManager {
         return null;
     }
 
+    getLatestSubscriptionForDevice(deviceId) {
+        const normalizedDeviceId = typeof deviceId === 'string' ? deviceId.trim() : '';
+        if (!normalizedDeviceId) return null;
+        const matches = Array.from(this.subscriptions.values())
+            .filter((subscription) => subscription?.deviceId === normalizedDeviceId)
+            .sort((left, right) => {
+                const leftTime = Date.parse(left?.tokenUpdatedAt || left?.createdAt || '') || 0;
+                const rightTime = Date.parse(right?.tokenUpdatedAt || right?.createdAt || '') || 0;
+                return rightTime - leftTime;
+            });
+        return matches[0] || null;
+    }
+
     async deleteMatchingLiveSessions(subscription, { fallbackDeviceIds = [] } = {}) {
         if (!subscription?.deviceId || !subscription?.fromStation || !subscription?.toStation) {
             return 0;
@@ -1210,7 +1264,7 @@ class LiveActivityManager {
         this.log(`[live-activity] cleanup_start ${key} reason=${reason}`);
 
         try {
-            await this.sendEndUpdate(subscription);
+            await this.sendEndUpdate(subscription, { reason, trigger: 'cleanup' });
             return;
         } catch (error) {
             console.error(`[live-activity] cleanup end push failed for ${key}: ${error?.message || error}`);
@@ -1223,7 +1277,7 @@ class LiveActivityManager {
 
     async sendEndPushForEvictedSubscription(subscription, reason = 'evicted') {
         try {
-            await this.sendEndUpdate(subscription);
+            await this.sendEndUpdate(subscription, { reason, trigger: 'eviction' });
         } catch (error) {
             const key = this.buildKey(subscription.deviceId, subscription.activityId);
             console.error(`[live-activity] end push failed for evicted ${key} (${reason}): ${error?.message || error}`);
@@ -1285,7 +1339,7 @@ class LiveActivityManager {
 
         const results = await Promise.all(subs.map(async (sub) => {
             try {
-                await this.sendEndUpdate(sub);
+                await this.sendEndUpdate(sub, { reason: 'arrival_geofence', trigger: 'arrival' });
                 this.log(`[live-activity] ended_on_arrival ${sub.deviceId}/${sub.activityId}`);
                 return 1;
             } catch (error) {
@@ -1320,7 +1374,7 @@ class LiveActivityManager {
 
         const results = await Promise.all(subs.map(async (sub) => {
             try {
-                await this.sendEndUpdate(sub);
+                await this.sendEndUpdate(sub, { reason: 'departure_geofence', trigger: 'departure' });
                 this.log(`[live-activity] ended_on_departure ${sub.deviceId}/${sub.activityId}`);
                 return 1;
             } catch (error) {

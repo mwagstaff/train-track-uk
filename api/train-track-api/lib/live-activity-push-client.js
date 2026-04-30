@@ -13,6 +13,10 @@ import {
     parseRetryAfterMs,
     sleep
 } from './retry-utils.js';
+import {
+    recordLiveActivityPayload,
+    recordPushAuditEvent
+} from './admin-data-store.js';
 
 const DEFAULT_PUSH_MAX_RETRIES = Number(process.env.APNS_PUSH_MAX_RETRIES || '3');
 const DEFAULT_PUSH_RETRY_BASE_DELAY_MS = Number(process.env.APNS_PUSH_RETRY_BASE_DELAY_MS || '400');
@@ -103,6 +107,27 @@ export class LiveActivityPushClient {
 
         if (!this.isConfigured()) {
             console.warn('APNS credentials missing; skipping live activity push send');
+            recordPushAuditEvent({
+                channel: 'live_activity',
+                event: options.event || 'live_activity_update',
+                environment: options.useSandbox === true ? 'sandbox' : 'prod',
+                payload,
+                context: options.context,
+                response: { skipped: true, reason: 'apns_not_configured' },
+                final: true
+            }).catch((error) => {
+                console.error('[admin] Failed to log skipped live activity push:', error?.message || error);
+            });
+            recordLiveActivityPayload({
+                event: options.event || payload?.aps?.event || 'live_activity_update',
+                environment: options.useSandbox === true ? 'sandbox' : 'prod',
+                payload,
+                context: options.context,
+                response: { skipped: true, reason: 'apns_not_configured' },
+                replayed_from_id: options.replayedFromId || null
+            }).catch((error) => {
+                console.error('[admin] Failed to log skipped live activity payload:', error?.message || error);
+            });
             return { skipped: true, reason: 'apns_not_configured', payload };
         }
 
@@ -139,6 +164,36 @@ export class LiveActivityPushClient {
             const shouldRetry = !result?.isBadToken && (
                 result?.status === 'error' || isRetryableHttpStatus(result?.status)
             );
+            recordPushAuditEvent({
+                channel: 'live_activity',
+                event,
+                environment,
+                host,
+                topic: this.topic,
+                push_type: result?.requestHeaders?.['apns-push-type'] || null,
+                priority: result?.requestHeaders?.['apns-priority'] || null,
+                attempt: attempt + 1,
+                final: !shouldRetry || attempt >= maxRetries,
+                token: deviceToken,
+                payload,
+                context: options.context,
+                response: result,
+                replayed_from_id: options.replayedFromId || null
+            }).catch((error) => {
+                console.error('[admin] Failed to log live activity push audit:', error?.message || error);
+            });
+            recordLiveActivityPayload({
+                event,
+                environment,
+                host,
+                topic: this.topic,
+                token: deviceToken,
+                payload,
+                context: options.context,
+                response: result
+            }).catch((error) => {
+                console.error('[admin] Failed to log live activity payload:', error?.message || error);
+            });
 
             if (!shouldRetry) {
                 return result;
@@ -269,6 +324,7 @@ export class LiveActivityPushClient {
                     status,
                     body: parsedBody,
                     headers: responseHeaders,
+                    requestHeaders: this.sanitizedRequestHeaders(headers),
                     bytesSent: body.length,
                     isError,
                     isBadToken,
@@ -283,6 +339,7 @@ export class LiveActivityPushClient {
                     status: 'error',
                     error: error?.message || error.toString(),
                     headers: {},
+                    requestHeaders: this.sanitizedRequestHeaders(headers),
                     isBadToken: false,
                     durationMs: Date.now() - startedAt
                 });
@@ -300,5 +357,12 @@ export class LiveActivityPushClient {
         } catch (error) {
             return { raw: input, parseError: error?.message || 'Failed to parse APNS response JSON' };
         }
+    }
+
+    sanitizedRequestHeaders(headers) {
+        const safe = { ...headers };
+        if (safe.authorization) safe.authorization = 'bearer ...';
+        if (safe[':path']) safe[':path'] = '/3/device/<token>';
+        return safe;
     }
 }
