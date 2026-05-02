@@ -151,13 +151,23 @@ export function registerAdminRoutes(app) {
         try {
             const query = typeof req.query?.q === 'string' ? req.query.q.trim() : '';
             const limit = clampLimit(req.query?.limit, 1, 5000, DEFAULT_LIMIT);
+            const devicePage = clampLimit(req.query?.device_page, 1, 100000, 1);
+            const devicePageSize = clampLimit(req.query?.device_per_page, 1, 100, 20);
             const targetDeviceId = normalizeDeviceId(req.query?.target_device_id) || DEFAULT_REPLAY_DEVICE_ID;
-            const payloads = await listLiveActivityPayloads({ search: query, limit });
+            const [payloads, devicePayloads, pushToStartTokens] = await Promise.all([
+                listLiveActivityPayloads({ search: query, limit }),
+                listLiveActivityPayloads({ limit: 5000 }),
+                pushToStartTokenStore.list({ limit: 500 })
+            ]);
+            const recentDevices = buildRecentLiveActivityDevices(devicePayloads, pushToStartTokens);
+            const devicePagination = paginateItems(recentDevices, devicePage, devicePageSize);
             res.type('html').send(renderLiveActivityPayloadListPage({
                 query,
                 limit,
                 payloads,
                 targetDeviceId,
+                recentDevices,
+                devicePagination,
                 replayResult: null
             }));
         } catch (error) {
@@ -191,12 +201,24 @@ export function registerAdminRoutes(app) {
 
             const targetDeviceId = normalizeDeviceId(req.body?.target_device_id) || DEFAULT_REPLAY_DEVICE_ID;
             const targetActivityId = normalizeDeviceId(req.body?.target_activity_id);
-            const result = await replayLiveActivityPayload({
-                payloadRecord,
-                targetDeviceId,
-                targetActivityId
-            });
-            res.type('html').send(renderLiveActivityPayloadDetailPage({
+            let result;
+            let statusCode = 200;
+            try {
+                result = await replayLiveActivityPayload({
+                    payloadRecord,
+                    targetDeviceId,
+                    targetActivityId
+                });
+            } catch (error) {
+                statusCode = 400;
+                result = await buildReplayFailureResult({
+                    payloadRecord,
+                    targetDeviceId,
+                    targetActivityId,
+                    error
+                });
+            }
+            res.status(statusCode).type('html').send(renderLiveActivityPayloadDetailPage({
                 payload: payloadRecord,
                 targetDeviceId,
                 targetActivityId,
@@ -792,9 +814,13 @@ function renderDeviceDetailPage(detail) {
     });
 }
 
-function renderLiveActivityPayloadListPage({ query, limit, payloads, targetDeviceId, replayResult }) {
+function renderLiveActivityPayloadListPage({ query, limit, payloads, targetDeviceId, recentDevices = [], devicePagination, replayResult }) {
     const renderedAt = escapeHtml(new Date().toISOString());
     const rows = payloads.map((record) => renderLiveActivityPayloadRow(record, targetDeviceId)).join('');
+    const deviceRows = (devicePagination?.items || [])
+        .map((device) => renderRecentLiveActivityDeviceRow(device, query, limit))
+        .join('');
+    const devicePager = renderDevicePager({ pagination: devicePagination, query, limit, targetDeviceId });
     const replayBlock = replayResult ? renderReplayResult(replayResult) : '';
     return renderAdminShell({
         title: 'Live Activity Payload Replay',
@@ -811,6 +837,25 @@ function renderLiveActivityPayloadListPage({ query, limit, payloads, targetDevic
             <button type="submit">Search</button>
             <a href="?target_device_id=${encodeURIComponent(DEFAULT_REPLAY_DEVICE_ID)}">Reset</a>
         </form>
+        <section class="panel">
+            <h2>Recent Device IDs <span class="panel-count">${recentDevices.length}</span></h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Device ID</th>
+                            <th>Last Seen</th>
+                            <th>Source</th>
+                            <th>Payloads</th>
+                            <th>Last Event</th>
+                            <th>Push-to-start</th>
+                        </tr>
+                    </thead>
+                    <tbody>${deviceRows || `<tr><td class="empty" colspan="6">No recent live activity devices found.</td></tr>`}</tbody>
+                </table>
+            </div>
+            ${devicePager}
+        </section>
         <section class="panel">
             <h2>Historical Live Activity Payloads <span class="panel-count">${payloads.length}</span></h2>
             <div class="table-wrap">
@@ -839,21 +884,31 @@ function renderLiveActivityPayloadListPage({ query, limit, payloads, targetDevic
 function renderLiveActivityPayloadDetailPage({ payload, targetDeviceId, targetActivityId = '', replayResult }) {
     const event = payload?.event || payload?.payload?.aps?.event || '';
     const reason = payload?.context?.end_reason || payload?.context?.reason || '';
+    const isStartPayload = payload?.payload?.aps?.event === 'start';
+    const activityInputDisabled = isStartPayload ? ' disabled' : '';
+    const activityInputValue = isStartPayload ? '' : targetActivityId;
+    const activityInputPlaceholder = isStartPayload
+        ? 'Not used for start payloads'
+        : 'Target activity ID for update/end payloads';
+    const replayHelp = isStartPayload
+        ? 'Start replay uses the target device push-to-start token. Leave Target activity ID blank.'
+        : 'Update/end replay uses an active Live Activity update token. Leave Target activity ID blank to use the latest active activity for that device.';
     return renderAdminShell({
         title: `Live Activity Payload ${payload?.id || ''}`,
         body: `
     <div class="wrap">
-        <a href="../live-activity-payloads?target_device_id=${encodeURIComponent(targetDeviceId || DEFAULT_REPLAY_DEVICE_ID)}">Back to Payload Replay</a>
+        <a href="?target_device_id=${encodeURIComponent(targetDeviceId || DEFAULT_REPLAY_DEVICE_ID)}" onclick="this.href = window.location.pathname.replace(/\\/replay\\/?$/, '').replace(/\\/[^/]+\\/?$/, '') + '?target_device_id=${encodeURIComponent(targetDeviceId || DEFAULT_REPLAY_DEVICE_ID)}'">Back to Payload Replay</a>
         <h1>Live Activity Payload ${escapeHtml(payload?.id || '')}</h1>
         <div class="meta">Event: ${escapeHtml(event)} · Reason: ${escapeHtml(reason || 'n/a')} · Recorded: ${formatDate(payload?.recorded_at) || '<span class="never">—</span>'}</div>
         ${replayResult ? renderReplayResult(replayResult) : ''}
         <section class="panel">
             <h2>Replay</h2>
-            <form class="search" method="POST" action="./${encodeURIComponent(payload?.id || '')}/replay">
+            <form class="search" method="POST" action="replay" onsubmit="this.action = window.location.pathname.replace(/\\/replay\\/?$/, '').replace(/\\/$/, '') + '/replay'">
                 <input type="text" name="target_device_id" value="${escapeHtml(targetDeviceId || DEFAULT_REPLAY_DEVICE_ID)}" placeholder="Target test device ID" />
-                <input type="text" name="target_activity_id" value="${escapeHtml(targetActivityId || '')}" placeholder="Target activity ID for update/end payloads" />
+                <input type="text" name="target_activity_id" value="${escapeHtml(activityInputValue || '')}" placeholder="${escapeHtml(activityInputPlaceholder)}"${activityInputDisabled} />
                 <button type="submit">Replay Payload</button>
             </form>
+            <div class="meta" style="padding:0 16px 14px;margin:0">${escapeHtml(replayHelp)}</div>
         </section>
         <section class="panel">
             <h2>Raw Payload Record</h2>
@@ -861,6 +916,53 @@ function renderLiveActivityPayloadDetailPage({ payload, targetDeviceId, targetAc
         </section>
     </div>`
     });
+}
+
+function renderRecentLiveActivityDeviceRow(device, query, limit) {
+    const deviceId = device.deviceId || '';
+    const params = new URLSearchParams({
+        target_device_id: deviceId,
+        q: deviceId,
+        limit: String(limit || DEFAULT_LIMIT)
+    });
+    const source = Array.from(device.sources || []).sort().join(', ');
+    const pushToken = device.pushToStartTokenUpdatedAt
+        ? `${device.pushToStartUseSandbox ? 'sandbox' : 'prod'} · ${formatDate(device.pushToStartTokenUpdatedAt)}`
+        : '';
+    return `<tr>
+        <td class="device-id"><a href="?${escapeHtml(params.toString())}">${escapeHtml(deviceId)}</a></td>
+        <td>${formatDate(device.lastSeenAt)}</td>
+        <td>${escapeHtml(source)}</td>
+        <td>${escapeHtml(device.payloadCount || 0)}</td>
+        <td>${escapeHtml(device.lastEvent || '')}</td>
+        <td>${escapeHtml(pushToken)}</td>
+    </tr>`;
+}
+
+function renderDevicePager({ pagination, query, limit, targetDeviceId }) {
+    if (!pagination || pagination.totalPages <= 1) {
+        return '';
+    }
+    const makeHref = (page) => {
+        const params = new URLSearchParams();
+        if (query) params.set('q', query);
+        params.set('target_device_id', targetDeviceId || DEFAULT_REPLAY_DEVICE_ID);
+        params.set('limit', String(limit || DEFAULT_LIMIT));
+        params.set('device_page', String(page));
+        params.set('device_per_page', String(pagination.pageSize));
+        return `?${params.toString()}`;
+    };
+    const prev = pagination.page > 1
+        ? `<a href="${escapeHtml(makeHref(pagination.page - 1))}">Previous devices</a>`
+        : '<span>Previous devices</span>';
+    const next = pagination.page < pagination.totalPages
+        ? `<a href="${escapeHtml(makeHref(pagination.page + 1))}">Next devices</a>`
+        : '<span>Next devices</span>';
+    return `<div class="pager" style="padding:12px 16px;border-top:1px solid var(--line)">
+        ${prev}
+        <span>Page ${pagination.page} of ${pagination.totalPages}</span>
+        ${next}
+    </div>`;
 }
 
 function renderLiveActivityPayloadRow(record, targetDeviceId) {
@@ -953,6 +1055,26 @@ async function replayLiveActivityPayload({ payloadRecord, targetDeviceId, target
         token_record: tokenRecord,
         response
     };
+}
+
+async function buildReplayFailureResult({ payloadRecord, targetDeviceId, targetActivityId, error }) {
+    const event = payloadRecord?.payload?.aps?.event || null;
+    const result = {
+        success: false,
+        event,
+        target_device_id: targetDeviceId,
+        target_activity_id: targetActivityId || null,
+        error: error?.message || String(error)
+    };
+    if (event === 'start') {
+        result.token_source = 'push_to_start';
+        result.available_push_to_start_tokens = await pushToStartTokenStore.list({ limit: 20 });
+        result.hint = 'Start payload replay needs a current push-to-start token for the target device. Open the app on that device with Live Activities enabled, or replay against one of the listed devices.';
+    } else if (event) {
+        result.token_source = 'live_activity_session';
+        result.hint = 'Update/end payload replay needs an active Live Activity update token for the target device. Start a Live Activity first, then replay update/end payloads against that activity.';
+    }
+    return result;
 }
 
 function renderSubscriptionDetailRow(subscription) {
@@ -1423,6 +1545,81 @@ function formatStatus(status) {
 
 function normalizeDeviceId(value) {
     return typeof value === 'string' ? value.trim() : '';
+}
+
+function buildRecentLiveActivityDevices(payloads = [], pushToStartTokens = []) {
+    const devices = new Map();
+    const ensureDevice = (deviceId) => {
+        const normalized = normalizeDeviceId(deviceId);
+        if (!normalized) return null;
+        if (!devices.has(normalized)) {
+            devices.set(normalized, {
+                deviceId: normalized,
+                lastSeenAt: null,
+                sources: new Set(),
+                payloadCount: 0,
+                lastEvent: null,
+                pushToStartTokenUpdatedAt: null,
+                pushToStartUseSandbox: null
+            });
+        }
+        return devices.get(normalized);
+    };
+
+    for (const payload of Array.isArray(payloads) ? payloads : []) {
+        const device = ensureDevice(
+            payload?.context?.device_id
+            || payload?.context?.target_device_id
+            || payload?.device_id
+        );
+        if (!device) continue;
+        device.sources.add('payload');
+        device.payloadCount += 1;
+        const recordedAt = payload?.recorded_at || payload?.sent_at || null;
+        if (isAfter(recordedAt, device.lastSeenAt)) {
+            device.lastSeenAt = recordedAt;
+            device.lastEvent = payload?.event || payload?.payload?.aps?.event || null;
+        }
+    }
+
+    for (const token of Array.isArray(pushToStartTokens) ? pushToStartTokens : []) {
+        const device = ensureDevice(token?.deviceId);
+        if (!device) continue;
+        device.sources.add('push-to-start');
+        device.pushToStartTokenUpdatedAt = token?.updatedAt || null;
+        device.pushToStartUseSandbox = Boolean(token?.useSandbox);
+        if (isAfter(token?.updatedAt, device.lastSeenAt)) {
+            device.lastSeenAt = token.updatedAt;
+            device.lastEvent = device.lastEvent || 'push_to_start_token';
+        }
+    }
+
+    return Array.from(devices.values()).sort((left, right) => {
+        const leftTime = Date.parse(left.lastSeenAt || '') || 0;
+        const rightTime = Date.parse(right.lastSeenAt || '') || 0;
+        return rightTime - leftTime;
+    });
+}
+
+function paginateItems(items, page, pageSize) {
+    const list = Array.isArray(items) ? items : [];
+    const safePageSize = Math.max(1, Math.floor(Number(pageSize) || 20));
+    const totalPages = Math.max(1, Math.ceil(list.length / safePageSize));
+    const safePage = Math.min(totalPages, Math.max(1, Math.floor(Number(page) || 1)));
+    const start = (safePage - 1) * safePageSize;
+    return {
+        items: list.slice(start, start + safePageSize),
+        page: safePage,
+        pageSize: safePageSize,
+        totalItems: list.length,
+        totalPages
+    };
+}
+
+function isAfter(candidate, current) {
+    const candidateTime = Date.parse(candidate || '') || 0;
+    const currentTime = Date.parse(current || '') || 0;
+    return candidateTime > currentTime;
 }
 
 function escapeHtml(input) {

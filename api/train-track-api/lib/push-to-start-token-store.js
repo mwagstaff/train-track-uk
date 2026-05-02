@@ -61,5 +61,44 @@ export const pushToStartTokenStore = {
             console.error('[live-activity] Failed to delete push-to-start token from Redis:', error?.message || error);
             return false;
         }
+    },
+
+    async list({ limit = 50 } = {}) {
+        try {
+            const keys = await redis.keys(`${REDIS_KEY_PREFIX}*`);
+            const records = [];
+            const boundedKeys = keys.slice(0, Math.max(1, Math.min(Number(limit) || 50, 500)));
+            for (const key of boundedKeys) {
+                const raw = await redis.get(key);
+                if (!raw) continue;
+                try {
+                    const parsed = JSON.parse(raw);
+                    if (!parsed?.pushToStartToken) continue;
+                    records.push({
+                        deviceId: parsed.deviceId || key.slice(REDIS_KEY_PREFIX.length),
+                        token: maskToken(parsed.pushToStartToken),
+                        useSandbox: Boolean(parsed.useSandbox),
+                        updatedAt: parsed.updatedAt || null
+                    });
+                } catch {
+                    // Ignore malformed diagnostic rows; the get/upsert path will replace them.
+                }
+            }
+            records.sort((left, right) => {
+                const leftTime = Date.parse(left.updatedAt || '') || 0;
+                const rightTime = Date.parse(right.updatedAt || '') || 0;
+                return rightTime - leftTime;
+            });
+            return records;
+        } catch (error) {
+            console.error('[live-activity] Failed to list push-to-start tokens from Redis:', error?.message || error);
+            return [];
+        }
     }
 };
+
+function maskToken(token) {
+    const text = typeof token === 'string' ? token : '';
+    if (text.length <= 12) return text ? '<redacted>' : '';
+    return `${text.slice(0, 8)}...${text.slice(-6)}`;
+}

@@ -15,6 +15,10 @@ const MAX_LIVE_SESSION_DURATION_MS = 2 * 60 * 60 * 1000;
 const SCHEDULED_SOURCE = 'scheduled';
 const LIVE_SESSION_SOURCE = 'live_session';
 const SUMMARY_START_GRACE_MINUTES = Math.max(1, Math.ceil(DEFAULT_POLL_INTERVAL_SECONDS / 60));
+const SCHEDULED_LIVE_ACTIVITY_MIN_REMAINING_MINUTES = Math.max(
+    1,
+    Number(process.env.SCHEDULED_LIVE_ACTIVITY_MIN_REMAINING_MINUTES || '30')
+);
 const SCHEDULE_TIME_ZONE = process.env.NOTIFICATION_SCHEDULE_TIME_ZONE || 'Europe/London';
 const LIVE_ACTIVITY_ATTRIBUTES_TYPE = process.env.APNS_LIVE_ACTIVITY_ATTRIBUTES_TYPE || 'JourneyActivityAttributes';
 
@@ -475,22 +479,56 @@ class NotificationSubscriptionManager {
             return false;
         }
 
-        if (!isWithinWindowStartGrace(leg)) {
+        const startWindow = getLiveActivityStartWindowState(leg);
+        if (!startWindow.allowed) {
+            console.log('[notifications] auto_start_skip', JSON.stringify({
+                subscription_id: subscription.id,
+                device_id: subscription.deviceId,
+                route_key: subscription.routeKey,
+                leg: legKey,
+                reason: startWindow.reason,
+                now_minutes: startWindow.nowMinutes,
+                start_minutes: startWindow.startMinutes,
+                end_minutes: startWindow.endMinutes,
+                min_remaining_minutes: SCHEDULED_LIVE_ACTIVITY_MIN_REMAINING_MINUTES
+            }));
             return false;
         }
 
         const todayKey = currentScheduleDateKey();
         if (subscription.lastAutoStartSentByLeg?.[legKey] === todayKey) {
+            console.log('[notifications] auto_start_skip', JSON.stringify({
+                subscription_id: subscription.id,
+                device_id: subscription.deviceId,
+                route_key: subscription.routeKey,
+                leg: legKey,
+                reason: 'already_sent_today',
+                date: todayKey
+            }));
             return true;
         }
 
         const activeSubscription = this.getActiveSubscriptionForPush(subscription.id, leg, 'scheduled_live_activity_start_pre_send');
         if (!activeSubscription) {
+            console.log('[notifications] auto_start_skip', JSON.stringify({
+                subscription_id: subscription.id,
+                device_id: subscription.deviceId,
+                route_key: subscription.routeKey,
+                leg: legKey,
+                reason: 'missing_active_subscription'
+            }));
             return false;
         }
 
         const pushToStartRecord = await pushToStartTokenStore.get(activeSubscription.deviceId);
         if (!pushToStartRecord?.pushToStartToken) {
+            console.log('[notifications] auto_start_skip', JSON.stringify({
+                subscription_id: activeSubscription.id,
+                device_id: activeSubscription.deviceId,
+                route_key: activeSubscription.routeKey,
+                leg: legKey,
+                reason: 'missing_push_to_start_token'
+            }));
             return false;
         }
 
@@ -998,18 +1036,31 @@ function currentMinutes() {
     return hour * 60 + minute;
 }
 
-function isWithinWindowStartGrace(leg) {
+function getLiveActivityStartWindowState(leg) {
     let startMinutes;
     let endMinutes;
     try {
         ({ startMinutes, endMinutes } = parseWindow(leg.windowStart, leg.windowEnd));
     } catch {
-        return false;
+        return {
+            allowed: false,
+            reason: 'invalid_window',
+            nowMinutes: currentMinutes(),
+            startMinutes: null,
+            endMinutes: null
+        };
     }
     const nowMinutes = currentMinutes();
-    return nowMinutes >= startMinutes
-        && nowMinutes <= endMinutes
-        && nowMinutes < (startMinutes + SUMMARY_START_GRACE_MINUTES);
+    if (nowMinutes < startMinutes) {
+        return { allowed: false, reason: 'before_window', nowMinutes, startMinutes, endMinutes };
+    }
+    if (nowMinutes > endMinutes) {
+        return { allowed: false, reason: 'after_window', nowMinutes, startMinutes, endMinutes };
+    }
+    if ((endMinutes - nowMinutes) < SCHEDULED_LIVE_ACTIVITY_MIN_REMAINING_MINUTES) {
+        return { allowed: false, reason: 'too_late_in_window', nowMinutes, startMinutes, endMinutes };
+    }
+    return { allowed: true, reason: 'within_window', nowMinutes, startMinutes, endMinutes };
 }
 
 function shouldPollNow(subscription, leg) {
