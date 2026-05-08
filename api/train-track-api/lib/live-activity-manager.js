@@ -5,6 +5,7 @@ import { getServiceDetails } from './service-details.js';
 import { recordNotificationEvent } from './admin-data-store.js';
 import { getDeviceLastSeen } from './metrics.js';
 import { notificationSubscriptionManager } from './notification-subscription-manager.js';
+import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.LIVE_ACTIVITY_POLL_INTERVAL_SECONDS || '20');
 const DEFAULT_END_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_END_AFTER_SECONDS || '7200'); // default 2 hours
@@ -18,15 +19,46 @@ class LiveActivityManager {
         this.pushClient = new LiveActivityPushClient();
         this.pollIntervalMs = DEFAULT_POLL_INTERVAL_SECONDS * 1000;
         this.isPolling = false;
+        this.pollTimer = null;
         this.startPollingLoop();
     }
 
+    async init() {
+        await this.loadSubscriptionsFromMongo();
+    }
+
     startPollingLoop() {
-        setInterval(() => {
+        if (this.pollTimer) {
+            return;
+        }
+        this.pollTimer = setInterval(() => {
             this.pollAll().catch((error) => {
                 console.error(`Live activity poll failed: ${error?.message || error}`);
             });
         }, this.pollIntervalMs).unref?.();
+    }
+
+    async loadSubscriptionsFromMongo() {
+        const collection = await getMongoCollection(COLLECTIONS.liveActivitySessions);
+        const documents = await collection.find({}).toArray();
+        let loaded = 0;
+        const now = Date.now();
+        for (const document of documents) {
+            const subscription = stripMongoId(document);
+            if (!subscription?.deviceId || !subscription?.activityId || !subscription?.pushToken) {
+                continue;
+            }
+            const endAtMs = Date.parse(subscription.endAt || '');
+            if (Number.isFinite(endAtMs) && endAtMs <= now) {
+                await this.deleteSubscriptionFromMongo(subscription);
+                continue;
+            }
+            const key = this.buildKey(subscription.deviceId, subscription.activityId);
+            this.subscriptions.set(key, subscription);
+            this.scheduleEnd(subscription);
+            loaded += 1;
+        }
+        console.log(`[live-activity] Loaded ${loaded} active session(s) from Mongo`);
     }
 
     registerSubscription({
@@ -107,6 +139,9 @@ class LiveActivityManager {
 
         this.subscriptions.set(key, subscription);
         this.scheduleEnd(subscription);
+        this.saveSubscriptionToMongo(subscription).catch((error) => {
+            console.error(`[live-activity] Failed to persist registered session ${key}: ${error?.message || error}`);
+        });
         const evicted = this.evictDuplicateSessionsForDevice(deviceId, activityId);
         for (const stale of evicted) {
             this.sendEndPushForEvictedSubscription(stale, 'register_duplicate_evict').catch((error) => {
@@ -157,9 +192,17 @@ class LiveActivityManager {
         let endPolicy = 'fixed_duration';
         let windowEndBufferMs = null;
 
+        const persistedEndAtMs = Date.parse(subscription.endAt || '');
+        if (Number.isFinite(persistedEndAtMs) && persistedEndAtMs > Date.now()) {
+            endAfterMs = Math.max(persistedEndAtMs - Date.now(), 0);
+            endReason = subscription.endReason || endReason;
+            endPolicy = subscription.endPolicy || endPolicy;
+            windowEndBufferMs = subscription.windowEndBufferMs ?? null;
+        }
+
         // If the subscription has a windowEnd, end the live activity shortly after
         // the window closes rather than using a fixed duration from registration time.
-        if (subscription.windowEnd) {
+        if (!Number.isFinite(persistedEndAtMs) && subscription.windowEnd) {
             const windowEndMs = this.computeWindowEndMs(subscription.windowEnd);
             if (windowEndMs !== null) {
                 const bufferMs = 5 * 60 * 1000; // 5-minute grace after window end
@@ -309,6 +352,7 @@ class LiveActivityManager {
                 console.log(`🗑️ [live-activity] Removing subscription ${key} due to bad/expired token`);
                 this.clearEndTimer(subscription);
                 this.subscriptions.delete(key);
+                await this.deleteSubscriptionFromMongo(subscription);
                 this.deleteMatchingLiveSessions(subscription).catch((error) => {
                     console.error(`[live-activity] Failed to delete matching live sessions for ${key}: ${error?.message || error}`);
                 });
@@ -319,6 +363,10 @@ class LiveActivityManager {
             subscription.lastPushAt = snapshot.fetchedAt;
             subscription.revision = (subscription.revision || 0) + 1;
             subscription.appIsActive = appIsActive;
+            this.saveSubscriptionToMongo(subscription).catch((error) => {
+                const key = this.buildKey(subscription.deviceId, subscription.activityId);
+                console.error(`[live-activity] Failed to persist poll state for ${key}: ${error?.message || error}`);
+            });
 
             this.log(
                 `[live-activity] push_payload ${subscription.deviceId}/${subscription.activityId}`,
@@ -378,6 +426,7 @@ class LiveActivityManager {
         // Clean up subscription regardless of push result
         this.clearEndTimer(subscription);
         this.subscriptions.delete(key);
+        await this.deleteSubscriptionFromMongo(subscription);
         await this.deleteMatchingLiveSessions(subscription);
 
         // Log if token was bad/expired (expected when activity was already dismissed)
@@ -1102,6 +1151,9 @@ class LiveActivityManager {
         const key = this.buildKey(subscription.deviceId, subscription.activityId);
         this.clearEndTimer(subscription);
         this.subscriptions.delete(key);
+        this.deleteSubscriptionFromMongo(subscription).catch((error) => {
+            console.error(`[live-activity] Failed to delete unregistered session ${key}: ${error?.message || error}`);
+        });
         this.log(`[live-activity] unregistered ${deviceId}/${activityId}`);
         if (preserveNotificationLiveSession) {
             this.log(`[live-activity] preserved_notification_live_session ${deviceId}/${activityId}`);
@@ -1154,6 +1206,10 @@ class LiveActivityManager {
         const nowIso = new Date().toISOString();
         for (const sub of subs) {
             sub.tokenUpdatedAt = nowIso;
+            this.saveSubscriptionToMongo(sub).catch((error) => {
+                const key = this.buildKey(sub.deviceId, sub.activityId);
+                console.error(`[live-activity] Failed to persist checkin state for ${key}: ${error?.message || error}`);
+            });
         }
 
         let refreshed = 0;
@@ -1239,6 +1295,10 @@ class LiveActivityManager {
         for (const sub of remove) {
             this.clearEndTimer(sub);
             this.subscriptions.delete(this.buildKey(sub.deviceId, sub.activityId));
+            this.deleteSubscriptionFromMongo(sub).catch((error) => {
+                const key = this.buildKey(sub.deviceId, sub.activityId);
+                console.error(`[live-activity] Failed to delete evicted session ${key}: ${error?.message || error}`);
+            });
             this.log(`[live-activity] duplicate_evict ${sub.deviceId}/${sub.activityId} keep=${keep.activityId}`);
         }
         return remove;
@@ -1272,6 +1332,7 @@ class LiveActivityManager {
 
         this.clearEndTimer(subscription);
         this.subscriptions.delete(key);
+        await this.deleteSubscriptionFromMongo(subscription);
         this.log(`[live-activity] cleanup_removed ${key} reason=${reason}`);
     }
 
@@ -1397,6 +1458,43 @@ class LiveActivityManager {
         return `${deviceId}::${activityId}`;
     }
 
+    async saveSubscriptionToMongo(subscription) {
+        if (!subscription?.deviceId || !subscription?.activityId) return;
+        const collection = await getMongoCollection(COLLECTIONS.liveActivitySessions);
+        const key = this.buildKey(subscription.deviceId, subscription.activityId);
+        const record = this.serializeSubscription(subscription);
+        await collection.updateOne(
+            { _id: key },
+            { $set: { _id: key, ...record } },
+            { upsert: true }
+        );
+    }
+
+    async deleteSubscriptionFromMongo(subscription) {
+        if (!subscription?.deviceId || !subscription?.activityId) return;
+        const collection = await getMongoCollection(COLLECTIONS.liveActivitySessions);
+        await collection.deleteOne({
+            _id: this.buildKey(subscription.deviceId, subscription.activityId)
+        });
+    }
+
+    serializeSubscription(subscription) {
+        const {
+            endTimer,
+            isPollInProgress,
+            pendingForcedPoll,
+            expiresAt,
+            ...record
+        } = subscription;
+        const endAtMs = Date.parse(record.endAt || '');
+        return {
+            ...record,
+            expiresAt: Number.isFinite(endAtMs)
+                ? new Date(endAtMs)
+                : new Date(Date.now() + this.getEndAfterMs())
+        };
+    }
+
     uniqueDeviceIds(deviceIds = []) {
         return Array.from(new Set(
             deviceIds
@@ -1431,6 +1529,12 @@ class LiveActivityManager {
         this.subscriptions.delete(currentKey);
         subscription.deviceId = normalizedNextDeviceId;
         this.subscriptions.set(nextKey, subscription);
+        this.deleteSubscriptionFromMongo({ deviceId: currentKey.split('::')[0], activityId: subscription.activityId }).catch((error) => {
+            console.error(`[live-activity] Failed to delete migrated session ${currentKey}: ${error?.message || error}`);
+        });
+        this.saveSubscriptionToMongo(subscription).catch((error) => {
+            console.error(`[live-activity] Failed to persist migrated session ${nextKey}: ${error?.message || error}`);
+        });
         this.log(`[live-activity] device_id_migrated ${currentKey} -> ${nextKey}`);
         return true;
     }
@@ -1495,3 +1599,9 @@ class LiveActivityManager {
 }
 
 export const liveActivityManager = new LiveActivityManager();
+
+function stripMongoId(value) {
+    if (!value || typeof value !== 'object') return value;
+    const { _id, ...rest } = value;
+    return rest;
+}

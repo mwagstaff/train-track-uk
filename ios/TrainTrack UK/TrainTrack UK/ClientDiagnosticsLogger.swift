@@ -31,6 +31,33 @@ enum ClientDiagnosticsLogger {
         logFileURL(named: "diagnostics-app.jsonl")
     }
 
+    static func notificationServiceLogURL() -> URL? {
+        logFileURL(named: "diagnostics-notification-service.jsonl")
+    }
+
+    static func exportStoredLogs() -> String {
+        [
+            ("Client Diagnostics", appLogURL()),
+            ("Notification Service Extension Diagnostics", notificationServiceLogURL())
+        ].map { title, url in
+            let body: String
+            if let url, let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8), !text.isEmpty {
+                body = text
+            } else {
+                body = "(no entries)"
+            }
+            return "## \(title)\n\(body)"
+        }
+        .joined(separator: "\n\n")
+    }
+
+    static func clearStoredLogs() {
+        [appLogURL(), notificationServiceLogURL()].forEach { url in
+            guard let url else { return }
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     private static func logFileURL(named name: String) -> URL? {
         let fileManager = FileManager.default
         let directory = fileManager.containerURL(forSecurityApplicationGroupIdentifier: suiteName)

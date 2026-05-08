@@ -162,6 +162,9 @@ struct PreferencesView: View {
             Section("Scheduled Notifications") {
                 if notificationStore.isLoading {
                     ProgressView("Loading…")
+                } else if !notificationStore.hasAuthoritativeRemoteState {
+                    Text("Unable to refresh scheduled notifications.")
+                        .foregroundStyle(.secondary)
                 } else if notificationStore.subscriptions.isEmpty {
                     Text("No scheduled notifications yet.")
                         .foregroundStyle(.secondary)
@@ -286,12 +289,17 @@ struct PreferencesView: View {
                 Text("Switch between production (\(ApiHost.prod.hostDescription)) and dev (\(ApiHost.dev.hostDescription)) for API calls. Intended for local testing.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            }
+            #endif
 
+            Section("Diagnostics") {
                 Button("View Debug Logs") {
                     showDebugLogs = true
                 }
+                Text("Includes app and notification service extension diagnostics stored locally on this device.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
-            #endif
         }
         .navigationTitle("Preferences")
         .task {

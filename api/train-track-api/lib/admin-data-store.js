@@ -1,84 +1,104 @@
 import crypto from 'crypto';
-import redis from './redis-client.js';
+import fs from 'fs/promises';
+import path from 'path';
+import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
 
-const REDIS_SUB_IDS_KEY = 'tt:notification:sub_ids';
-const redisSubKey = (id) => `tt:notification:sub:${id}`;
-
-const REDIS_EVENT_IDS_KEY = 'tt:admin:notification:event_ids';
-const redisEventKey = (id) => `tt:admin:notification:event:${id}`;
 const MAX_EVENT_LOG_SIZE = Number(process.env.ADMIN_NOTIFICATION_LOG_MAX || '5000');
-const EVENT_TTL_SECONDS = Number(process.env.ADMIN_NOTIFICATION_LOG_TTL_SECONDS || String(14 * 24 * 60 * 60));
-
-const REDIS_PUSH_AUDIT_IDS_KEY = 'tt:admin:push_audit:event_ids';
-const redisPushAuditKey = (id) => `tt:admin:push_audit:event:${id}`;
 const MAX_PUSH_AUDIT_LOG_SIZE = Number(process.env.ADMIN_PUSH_AUDIT_LOG_MAX || '10000');
-const PUSH_AUDIT_TTL_SECONDS = Number(process.env.ADMIN_PUSH_AUDIT_LOG_TTL_SECONDS || String(7 * 24 * 60 * 60));
-
-const REDIS_LIVE_ACTIVITY_PAYLOAD_IDS_KEY = 'tt:admin:live_activity_payload:event_ids';
-const redisLiveActivityPayloadKey = (id) => `tt:admin:live_activity_payload:event:${id}`;
 const MAX_LIVE_ACTIVITY_PAYLOAD_LOG_SIZE = Number(process.env.ADMIN_LIVE_ACTIVITY_PAYLOAD_LOG_MAX || '5000');
-const LIVE_ACTIVITY_PAYLOAD_TTL_SECONDS = Number(process.env.ADMIN_LIVE_ACTIVITY_PAYLOAD_TTL_SECONDS || String(7 * 24 * 60 * 60));
+const MAX_SUBSCRIPTION_AUDIT_LOG_SIZE = Number(process.env.ADMIN_SUBSCRIPTION_AUDIT_LOG_MAX || '10000');
+const SUBSCRIPTION_AUDIT_LOG_PATH = process.env.SUBSCRIPTION_AUDIT_LOG_PATH || path.resolve(process.cwd(), 'subscription-audit.log');
+const MAX_GEOFENCE_EVENT_LOG_SIZE = 100;
 
-const REDIS_DEVICE_PREF_IDS_KEY = 'tt:admin:device_preferences:ids';
-const redisDevicePreferencesKey = (deviceId) => `tt:admin:device_preferences:${deviceId}`;
-
-export async function listNotificationSubscriptionsFromRedis({ search = '', limit = 500 } = {}) {
-    const ids = await redis.smembers(REDIS_SUB_IDS_KEY);
-    if (!Array.isArray(ids) || ids.length === 0) {
-        return [];
-    }
-
-    const pipeline = redis.pipeline();
-    for (const id of ids) {
-        pipeline.get(redisSubKey(id));
-    }
-    const results = await pipeline.exec();
-
+export async function listNotificationSubscriptions({ search = '', limit = 500 } = {}) {
+    const collection = await getMongoCollection(COLLECTIONS.notificationSubscriptions);
+    const safeLimit = clampLimit(limit, 1, 5000);
+    const scanLimit = Math.max(safeLimit, Math.min(5000, safeLimit * 5));
+    const subscriptions = await collection
+        .find({})
+        .sort({ createdAt: -1, updatedAt: -1 })
+        .limit(scanLimit)
+        .toArray();
     const query = normalizeQuery(search);
-    const subscriptions = [];
-    for (let i = 0; i < results.length; i++) {
-        const [error, value] = results[i];
-        if (error || !value) continue;
-        const parsed = safeParseJson(value);
-        if (!parsed || typeof parsed !== 'object') continue;
-        const normalized = {
-            id: parsed.id || ids[i],
-            ...parsed
-        };
-        if (query && !matchesQuery(normalized, query)) {
-            continue;
-        }
-        subscriptions.push(normalized);
-    }
-
-    subscriptions.sort((left, right) => {
-        const leftTime = Date.parse(left.createdAt || '') || 0;
-        const rightTime = Date.parse(right.createdAt || '') || 0;
-        return rightTime - leftTime;
-    });
-
-    return subscriptions.slice(0, clampLimit(limit, 1, 5000));
+    return subscriptions
+        .map(stripMongoId)
+        .filter((subscription) => !query || matchesQuery(subscription, query))
+        .slice(0, safeLimit);
 }
 
-export async function getNotificationSubscriptionFromRedis(id) {
+export async function getNotificationSubscription(id) {
     if (!id) return null;
-    const raw = await redis.get(redisSubKey(id));
-    if (!raw) return null;
-    const parsed = safeParseJson(raw);
+    const collection = await getMongoCollection(COLLECTIONS.notificationSubscriptions);
+    const parsed = await collection.findOne({ _id: id });
     if (!parsed || typeof parsed !== 'object') return null;
-    return {
-        id: parsed.id || id,
-        ...parsed
+    return stripMongoId({ id: parsed.id || id, ...parsed });
+}
+
+export async function recordSubscriptionAuditEvent(event = {}) {
+    const normalized = {
+        id: event.id || crypto.randomUUID(),
+        recorded_at: event.recorded_at ? new Date(event.recorded_at) : new Date(),
+        action: event.action || 'unknown',
+        reason: event.reason || null,
+        source: event.source || null,
+        request: event.request ?? null,
+        subscription_id: event.subscription_id || event.subscription?.id || null,
+        device_id: event.device_id || event.subscription?.deviceId || null,
+        route_key: event.route_key || event.subscription?.routeKey || null,
+        from_station: event.from_station || null,
+        to_station: event.to_station || null,
+        mongo: event.mongo ?? null,
+        before: event.before ? scrubSubscriptionForAudit(event.before) : null,
+        after: event.after ? scrubSubscriptionForAudit(event.after) : null,
+        subscription: event.subscription ? scrubSubscriptionForAudit(event.subscription) : null,
+        metadata: event.metadata ?? null
     };
+
+    try {
+        const collection = await getMongoCollection(COLLECTIONS.subscriptionAuditEvents);
+        await collection.updateOne(
+            { _id: normalized.id },
+            { $set: { _id: normalized.id, ...normalized } },
+            { upsert: true }
+        );
+    } catch (error) {
+        console.error('[admin] Failed to persist subscription audit event to Mongo:', error?.message || error);
+    }
+
+    try {
+        await fs.appendFile(SUBSCRIPTION_AUDIT_LOG_PATH, `${JSON.stringify(normalized)}\n`, 'utf8');
+    } catch (error) {
+        console.error('[admin] Failed to append subscription audit event:', error?.message || error);
+    }
+
+    console.log('[notifications] subscription_audit', JSON.stringify({
+        action: normalized.action,
+        reason: normalized.reason,
+        subscription_id: normalized.subscription_id,
+        device_id: normalized.device_id,
+        route_key: normalized.route_key
+    }));
+
+    return stripMongoId(normalized);
+}
+
+export async function listSubscriptionAuditEvents({ search = '', limit = 500 } = {}) {
+    return listEvents({
+        collectionName: COLLECTIONS.subscriptionAuditEvents,
+        sortField: 'recorded_at',
+        search,
+        limit,
+        maxLogSize: MAX_SUBSCRIPTION_AUDIT_LOG_SIZE
+    });
 }
 
 export async function recordNotificationEvent(event = {}) {
-    const now = new Date().toISOString();
+    const now = new Date();
     const status = event.status ?? null;
     const success = event.success ?? isSuccessStatus(status);
     const normalized = {
         id: event.id || crypto.randomUUID(),
-        sent_at: event.sent_at || now,
+        sent_at: event.sent_at ? new Date(event.sent_at) : now,
         channel: event.channel || 'notification',
         type: event.type || 'unknown',
         success: Boolean(success),
@@ -99,60 +119,37 @@ export async function recordNotificationEvent(event = {}) {
     };
 
     try {
-        const tx = redis.multi();
-        tx.set(redisEventKey(normalized.id), JSON.stringify(normalized), 'EX', EVENT_TTL_SECONDS);
-        tx.lpush(REDIS_EVENT_IDS_KEY, normalized.id);
-        tx.ltrim(REDIS_EVENT_IDS_KEY, 0, Math.max(0, MAX_EVENT_LOG_SIZE - 1));
-        await tx.exec();
+        const collection = await getMongoCollection(COLLECTIONS.notificationEvents);
+        await collection.updateOne(
+            { _id: normalized.id },
+            { $set: { _id: normalized.id, ...normalized } },
+            { upsert: true }
+        );
     } catch (error) {
         console.error('[admin] Failed to persist notification event:', error?.message || error);
     }
 
-    return normalized;
+    return stripMongoId(normalized);
 }
 
 export async function listNotificationEvents({ search = '', limit = 500 } = {}) {
-    const safeLimit = clampLimit(limit, 1, 5000);
-    const scanLimit = Math.min(MAX_EVENT_LOG_SIZE, Math.max(safeLimit, safeLimit * 5));
-    const ids = await redis.lrange(REDIS_EVENT_IDS_KEY, 0, scanLimit - 1);
-    if (!Array.isArray(ids) || ids.length === 0) {
-        return [];
-    }
-
-    const query = normalizeQuery(search);
-    const pipeline = redis.pipeline();
-    for (const id of ids) {
-        pipeline.get(redisEventKey(id));
-    }
-    const results = await pipeline.exec();
-
-    const events = [];
-    for (let i = 0; i < results.length; i++) {
-        const [error, value] = results[i];
-        if (error || !value) continue;
-        const event = safeParseJson(value);
-        if (!event || typeof event !== 'object') continue;
-        if (query && !matchesQuery(event, query)) continue;
-        events.push(event);
-        if (events.length >= safeLimit) break;
-    }
-
-    return events;
+    return listEvents({
+        collectionName: COLLECTIONS.notificationEvents,
+        sortField: 'sent_at',
+        search,
+        limit,
+        maxLogSize: MAX_EVENT_LOG_SIZE
+    });
 }
 
 export async function getNotificationEvent(id) {
-    if (!id) return null;
-    const raw = await redis.get(redisEventKey(id));
-    if (!raw) return null;
-    const parsed = safeParseJson(raw);
-    if (!parsed || typeof parsed !== 'object') return null;
-    return parsed;
+    return getEventById(COLLECTIONS.notificationEvents, id);
 }
 
 export async function recordPushAuditEvent(event = {}) {
     const normalized = {
         id: event.id || crypto.randomUUID(),
-        recorded_at: event.recorded_at || new Date().toISOString(),
+        recorded_at: event.recorded_at ? new Date(event.recorded_at) : new Date(),
         channel: event.channel || 'notification',
         event: event.event || 'unknown',
         environment: event.environment || null,
@@ -170,22 +167,23 @@ export async function recordPushAuditEvent(event = {}) {
     };
 
     try {
-        const tx = redis.multi();
-        tx.set(redisPushAuditKey(normalized.id), JSON.stringify(normalized), 'EX', PUSH_AUDIT_TTL_SECONDS);
-        tx.lpush(REDIS_PUSH_AUDIT_IDS_KEY, normalized.id);
-        tx.ltrim(REDIS_PUSH_AUDIT_IDS_KEY, 0, Math.max(0, MAX_PUSH_AUDIT_LOG_SIZE - 1));
-        await tx.exec();
+        const collection = await getMongoCollection(COLLECTIONS.pushAuditEvents);
+        await collection.updateOne(
+            { _id: normalized.id },
+            { $set: { _id: normalized.id, ...normalized } },
+            { upsert: true }
+        );
     } catch (error) {
         console.error('[admin] Failed to persist push audit event:', error?.message || error);
     }
 
-    return normalized;
+    return stripMongoId(normalized);
 }
 
 export async function listPushAuditEvents({ search = '', limit = 500 } = {}) {
-    return listJsonLog({
-        idsKey: REDIS_PUSH_AUDIT_IDS_KEY,
-        keyForId: redisPushAuditKey,
+    return listEvents({
+        collectionName: COLLECTIONS.pushAuditEvents,
+        sortField: 'recorded_at',
         search,
         limit,
         maxLogSize: MAX_PUSH_AUDIT_LOG_SIZE
@@ -195,7 +193,7 @@ export async function listPushAuditEvents({ search = '', limit = 500 } = {}) {
 export async function recordLiveActivityPayload(event = {}) {
     const normalized = {
         id: event.id || crypto.randomUUID(),
-        recorded_at: event.recorded_at || new Date().toISOString(),
+        recorded_at: event.recorded_at ? new Date(event.recorded_at) : new Date(),
         channel: 'live_activity',
         event: event.event || event.payload?.aps?.event || 'unknown',
         environment: event.environment || null,
@@ -209,22 +207,23 @@ export async function recordLiveActivityPayload(event = {}) {
     };
 
     try {
-        const tx = redis.multi();
-        tx.set(redisLiveActivityPayloadKey(normalized.id), JSON.stringify(normalized), 'EX', LIVE_ACTIVITY_PAYLOAD_TTL_SECONDS);
-        tx.lpush(REDIS_LIVE_ACTIVITY_PAYLOAD_IDS_KEY, normalized.id);
-        tx.ltrim(REDIS_LIVE_ACTIVITY_PAYLOAD_IDS_KEY, 0, Math.max(0, MAX_LIVE_ACTIVITY_PAYLOAD_LOG_SIZE - 1));
-        await tx.exec();
+        const collection = await getMongoCollection(COLLECTIONS.liveActivityPayloads);
+        await collection.updateOne(
+            { _id: normalized.id },
+            { $set: { _id: normalized.id, ...normalized } },
+            { upsert: true }
+        );
     } catch (error) {
         console.error('[admin] Failed to persist live activity payload:', error?.message || error);
     }
 
-    return normalized;
+    return stripMongoId(normalized);
 }
 
 export async function listLiveActivityPayloads({ search = '', limit = 500 } = {}) {
-    return listJsonLog({
-        idsKey: REDIS_LIVE_ACTIVITY_PAYLOAD_IDS_KEY,
-        keyForId: redisLiveActivityPayloadKey,
+    return listEvents({
+        collectionName: COLLECTIONS.liveActivityPayloads,
+        sortField: 'recorded_at',
         search,
         limit,
         maxLogSize: MAX_LIVE_ACTIVITY_PAYLOAD_LOG_SIZE
@@ -232,12 +231,7 @@ export async function listLiveActivityPayloads({ search = '', limit = 500 } = {}
 }
 
 export async function getLiveActivityPayload(id) {
-    if (!id) return null;
-    const raw = await redis.get(redisLiveActivityPayloadKey(id));
-    if (!raw) return null;
-    const parsed = safeParseJson(raw);
-    if (!parsed || typeof parsed !== 'object') return null;
-    return parsed;
+    return getEventById(COLLECTIONS.liveActivityPayloads, id);
 }
 
 export async function recordDevicePreferences({ deviceId, preferences = {} } = {}) {
@@ -248,46 +242,88 @@ export async function recordDevicePreferences({ deviceId, preferences = {} } = {
     const record = {
         device_id: normalizedDeviceId,
         preferences: preferences && typeof preferences === 'object' && !Array.isArray(preferences) ? preferences : {},
-        updated_at: new Date().toISOString()
+        updated_at: new Date()
     };
-    await redis.multi()
-        .set(redisDevicePreferencesKey(normalizedDeviceId), JSON.stringify(record))
-        .sadd(REDIS_DEVICE_PREF_IDS_KEY, normalizedDeviceId)
-        .exec();
-    return record;
+    const collection = await getMongoCollection(COLLECTIONS.devicePreferences);
+    await collection.updateOne(
+        { _id: normalizedDeviceId },
+        { $set: { _id: normalizedDeviceId, ...record } },
+        { upsert: true }
+    );
+    return stripMongoId(record);
 }
 
 export async function getDevicePreferences(deviceId) {
     const normalizedDeviceId = typeof deviceId === 'string' ? deviceId.trim() : '';
     if (!normalizedDeviceId) return null;
-    const raw = await redis.get(redisDevicePreferencesKey(normalizedDeviceId));
-    if (!raw) return null;
-    const parsed = safeParseJson(raw);
+    const collection = await getMongoCollection(COLLECTIONS.devicePreferences);
+    const parsed = await collection.findOne({ _id: normalizedDeviceId });
     if (!parsed || typeof parsed !== 'object') return null;
-    return parsed;
+    return stripMongoId(parsed);
 }
 
 export async function listDevicePreferences() {
-    const ids = await redis.smembers(REDIS_DEVICE_PREF_IDS_KEY);
-    if (!Array.isArray(ids) || ids.length === 0) {
-        return [];
-    }
-    const pipeline = redis.pipeline();
-    for (const id of ids) {
-        pipeline.get(redisDevicePreferencesKey(id));
-    }
-    const results = await pipeline.exec();
-    return results
-        .map(([error, value]) => (error || !value ? null : safeParseJson(value)))
-        .filter((record) => record && typeof record === 'object');
+    const collection = await getMongoCollection(COLLECTIONS.devicePreferences);
+    const records = await collection.find({}).sort({ updated_at: -1 }).limit(5000).toArray();
+    return records.map(stripMongoId);
 }
 
-function safeParseJson(input) {
+export async function recordGeofenceEvent({ deviceId, clientTimestamp, event, regionId, from, to, ip } = {}) {
+    const entry = {
+        id: crypto.randomUUID(),
+        received_at: new Date(),
+        device_id: deviceId || null,
+        client_timestamp: clientTimestamp || null,
+        event: event || null,
+        region_id: regionId || null,
+        from: from || null,
+        to: to || null,
+        ip: ip || null
+    };
     try {
-        return JSON.parse(input);
-    } catch {
-        return null;
+        const collection = await getMongoCollection(COLLECTIONS.geofenceEvents);
+        await collection.insertOne({ _id: entry.id, ...entry });
+    } catch (error) {
+        console.error('[admin] Failed to persist geofence event:', error?.message || error);
     }
+}
+
+export async function listGeofenceEvents() {
+    const collection = await getMongoCollection(COLLECTIONS.geofenceEvents);
+    const records = await collection
+        .find({})
+        .sort({ received_at: -1 })
+        .limit(MAX_GEOFENCE_EVENT_LOG_SIZE)
+        .toArray();
+    return records.map(stripMongoId);
+}
+
+async function listEvents({ collectionName, sortField, search = '', limit = 500, maxLogSize = 5000 }) {
+    const safeLimit = clampLimit(limit, 1, maxLogSize);
+    const scanLimit = Math.min(maxLogSize, Math.max(safeLimit, safeLimit * 5));
+    const collection = await getMongoCollection(collectionName);
+    const query = normalizeQuery(search);
+    const records = await collection
+        .find({})
+        .sort({ [sortField]: -1 })
+        .limit(scanLimit)
+        .toArray();
+    const events = [];
+    for (const record of records) {
+        const event = stripMongoId(record);
+        if (query && !matchesQuery(event, query)) continue;
+        events.push(event);
+        if (events.length >= safeLimit) break;
+    }
+    return events;
+}
+
+async function getEventById(collectionName, id) {
+    if (!id) return null;
+    const collection = await getMongoCollection(collectionName);
+    const parsed = await collection.findOne({ _id: id });
+    if (!parsed || typeof parsed !== 'object') return null;
+    return stripMongoId(parsed);
 }
 
 function matchesQuery(payload, query) {
@@ -305,34 +341,6 @@ function clampLimit(value, min, max) {
     return Math.min(max, Math.max(min, Math.floor(number)));
 }
 
-async function listJsonLog({ idsKey, keyForId, search = '', limit = 500, maxLogSize = 5000 }) {
-    const safeLimit = clampLimit(limit, 1, maxLogSize);
-    const scanLimit = Math.min(maxLogSize, Math.max(safeLimit, safeLimit * 5));
-    const ids = await redis.lrange(idsKey, 0, scanLimit - 1);
-    if (!Array.isArray(ids) || ids.length === 0) {
-        return [];
-    }
-
-    const query = normalizeQuery(search);
-    const pipeline = redis.pipeline();
-    for (const id of ids) {
-        pipeline.get(keyForId(id));
-    }
-    const results = await pipeline.exec();
-
-    const events = [];
-    for (const [error, value] of results) {
-        if (error || !value) continue;
-        const event = safeParseJson(value);
-        if (!event || typeof event !== 'object') continue;
-        if (query && !matchesQuery(event, query)) continue;
-        events.push(event);
-        if (events.length >= safeLimit) break;
-    }
-
-    return events;
-}
-
 function maskToken(token) {
     if (typeof token !== 'string' || token.length === 0) return null;
     if (token.length <= 10) return `${token.slice(0, 3)}***`;
@@ -343,34 +351,16 @@ function isSuccessStatus(status) {
     return typeof status === 'number' && status >= 200 && status < 300;
 }
 
-// ── Geofence event log ─────────────────────────────────────────────────────
-
-const REDIS_GEOFENCE_EVENT_LOG_KEY = 'tt:notification:geofence_event_log';
-const MAX_GEOFENCE_EVENT_LOG_SIZE = 100;
-
-export async function recordGeofenceEvent({ deviceId, clientTimestamp, event, regionId, from, to, ip } = {}) {
-    const entry = JSON.stringify({
-        received_at: new Date().toISOString(),
-        device_id: deviceId || null,
-        client_timestamp: clientTimestamp || null,
-        event: event || null,
-        region_id: regionId || null,
-        from: from || null,
-        to: to || null,
-        ip: ip || null
-    });
-    try {
-        const tx = redis.multi();
-        tx.lpush(REDIS_GEOFENCE_EVENT_LOG_KEY, entry);
-        tx.ltrim(REDIS_GEOFENCE_EVENT_LOG_KEY, 0, MAX_GEOFENCE_EVENT_LOG_SIZE - 1);
-        await tx.exec();
-    } catch (error) {
-        console.error('[admin] Failed to persist geofence event:', error?.message || error);
-    }
+function scrubSubscriptionForAudit(subscription) {
+    if (!subscription || typeof subscription !== 'object') return null;
+    return {
+        ...stripMongoId(subscription),
+        pushToken: maskToken(subscription.pushToken)
+    };
 }
 
-export async function listGeofenceEvents() {
-    const raw = await redis.lrange(REDIS_GEOFENCE_EVENT_LOG_KEY, 0, MAX_GEOFENCE_EVENT_LOG_SIZE - 1);
-    if (!Array.isArray(raw)) return [];
-    return raw.map((entry) => safeParseJson(entry)).filter(Boolean);
+function stripMongoId(value) {
+    if (!value || typeof value !== 'object') return value;
+    const { _id, ...rest } = value;
+    return rest;
 }

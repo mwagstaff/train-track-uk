@@ -32,7 +32,13 @@ struct ProfileView: View {
             }
 
             Section("Journey Updates") {
-                if notificationStore.combinedSubscriptions.isEmpty {
+                if notificationStore.isLoading && !notificationStore.hasLoadedOnce {
+                    ProgressView("Loading…")
+                } else if !notificationStore.hasAuthoritativeRemoteState {
+                    Text("Unable to refresh journey updates.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else if notificationStore.combinedSubscriptions.isEmpty {
                     Text("No active journey updates.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)

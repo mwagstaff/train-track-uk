@@ -41,15 +41,21 @@ final class DebugLogStore: ObservableObject {
     func clear() {
         logs.removeAll()
         UserDefaults.standard.removeObject(forKey: "debug_logs")
+        ClientDiagnosticsLogger.clearStoredLogs()
     }
 
     func exportLogs() -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
 
-        return logs.reversed().map { entry in
+        let debugLogs = logs.reversed().map { entry in
             "[\(formatter.string(from: entry.timestamp))] [\(entry.category)] \(entry.message)"
         }.joined(separator: "\n")
+
+        return [
+            "## Debug Logs\n\(debugLogs.isEmpty ? "(no entries)" : debugLogs)",
+            ClientDiagnosticsLogger.exportStoredLogs()
+        ].joined(separator: "\n\n")
     }
 }
 

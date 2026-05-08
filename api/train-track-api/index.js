@@ -16,8 +16,9 @@ import {
 import { liveActivityManager } from './lib/live-activity-manager.js';
 import { notificationSubscriptionManager } from './lib/notification-subscription-manager.js';
 import { registerAdminRoutes } from './lib/admin-portal.js';
-import { recordDevicePreferences, recordGeofenceEvent } from './lib/admin-data-store.js';
+import { listSubscriptionAuditEvents, recordDevicePreferences, recordGeofenceEvent } from './lib/admin-data-store.js';
 import { pushToStartTokenStore } from './lib/push-to-start-token-store.js';
+import { ensureMongoIndexes } from './lib/mongo-client.js';
 import path from 'path';
 
 function isLiveActivityLoggingEnabled() {
@@ -69,6 +70,17 @@ function logNotificationRequest(event, req, extra = {}) {
             ...extra
         })
     );
+}
+
+function buildRequestAuditContext(req) {
+    if (!req) return null;
+    return {
+        instance_id: getFlyInstanceId(),
+        path: req.path,
+        method: req.method,
+        clientIp: req.headers?.['x-forwarded-for'] || req.ip || 'unknown',
+        user_agent: req.headers?.['user-agent'] || null
+    };
 }
 
 function logLiveActivityRequest(event, req, extra = {}) {
@@ -620,7 +632,8 @@ app.post('/api/v2/notifications/subscriptions', async (req, res) => {
             subscriptionId: subscription_id,
             useSandbox: Boolean(use_sandbox),
             muteOnArrival: Boolean(mute_on_arrival),
-            source: 'scheduled'
+            source: 'scheduled',
+            auditContext: buildRequestAuditContext(req)
         });
         recordPushTokenRegistration({
             channel: 'notification',
@@ -659,7 +672,9 @@ app.delete('/api/v2/notifications/subscriptions', async (req, res) => {
     }
     const removed = await notificationSubscriptionManager.deleteSubscription({
         deviceId: device_id,
-        subscriptionId: subscription_id
+        subscriptionId: subscription_id,
+        reason: 'api_delete_scheduled_subscription',
+        metadata: { request: buildRequestAuditContext(req) }
     });
     res.json({ status: removed ? 'deleted' : 'not_found' });
 });
@@ -702,7 +717,8 @@ app.post('/api/v2/notifications/live_sessions', async (req, res) => {
             useSandbox: Boolean(use_sandbox),
             muteOnArrival: Boolean(mute_on_arrival),
             source: 'live_session',
-            activeUntil: active_until
+            activeUntil: active_until,
+            auditContext: buildRequestAuditContext(req)
         });
         recordPushTokenRegistration({
             channel: 'notification',
@@ -741,7 +757,9 @@ app.delete('/api/v2/notifications/live_sessions', async (req, res) => {
     }
     const removed = await notificationSubscriptionManager.deleteSubscription({
         deviceId: device_id,
-        subscriptionId: subscription_id
+        subscriptionId: subscription_id,
+        reason: 'api_delete_live_session',
+        metadata: { request: buildRequestAuditContext(req) }
     });
     res.json({ status: removed ? 'deleted' : 'not_found' });
 });
@@ -787,13 +805,24 @@ app.get('/api/v2/notifications/debug/subscriptions', (req, res) => {
     res.json({ subscriptions: notificationSubscriptionManager.listAllSubscriptions() });
 });
 
+app.get('/api/v2/notifications/debug/subscription-audit', async (req, res) => {
+    const { q, limit } = req.query || {};
+    logNotificationRequest('debug_subscription_audit', req, { q, limit });
+    const events = await listSubscriptionAuditEvents({ search: q || '', limit: limit || 500 });
+    res.json({ events });
+});
+
 app.delete('/api/v2/notifications/debug/subscriptions', async (req, res) => {
     const { subscription_id } = req.body || {};
     logNotificationRequest('debug_delete', req, { subscription_id });
     if (!subscription_id) {
         return res.status(400).json({ error: 'subscription_id is required' });
     }
-    const removed = await notificationSubscriptionManager.deleteSubscription({ subscriptionId: subscription_id });
+    const removed = await notificationSubscriptionManager.deleteSubscription({
+        subscriptionId: subscription_id,
+        reason: 'api_debug_delete_subscription',
+        metadata: { request: buildRequestAuditContext(req) }
+    });
     res.json({ status: removed ? 'deleted' : 'not_found' });
 });
 
@@ -1091,7 +1120,9 @@ app.get('/api/v1/xbar/from/:fromStation/to/:toStation/max_departures/:maxDepartu
     res.send(await getXbarOutput(req.params.fromStation, req.params.toStation, req.params.maxDepartures, req.params.returnAfter));
 });
 
-// Hydrate subscription state from Redis before accepting requests.
+// Hydrate persistent push state from Mongo before accepting requests.
+await ensureMongoIndexes();
+await liveActivityManager.init();
 await notificationSubscriptionManager.init();
 
 const port = process.env.PORT || 3012;

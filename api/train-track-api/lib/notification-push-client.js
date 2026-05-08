@@ -14,6 +14,10 @@ import {
     sleep
 } from './retry-utils.js';
 import { recordPushAuditEvent } from './admin-data-store.js';
+import {
+    addDiagnosticMarkerToContext,
+    markPushPayload
+} from './notification-diagnostic-marker.js';
 
 const DEFAULT_PUSH_MAX_RETRIES = Number(process.env.APNS_PUSH_MAX_RETRIES || '3');
 const DEFAULT_PUSH_RETRY_BASE_DELAY_MS = Number(process.env.APNS_PUSH_RETRY_BASE_DELAY_MS || '400');
@@ -82,28 +86,31 @@ export class NotificationPushClient {
             throw new Error('Missing device token for notification');
         }
 
+        const event = typeof options.event === 'string' && options.event.length > 0
+            ? options.event
+            : 'notification';
+        const markedPayload = markPushPayload(payload, { channel: 'notification', event });
+        const markedContext = addDiagnosticMarkerToContext(options.context, { channel: 'notification', event });
+
         if (!this.isConfigured()) {
             console.warn('APNS credentials missing; skipping notification send');
             recordPushAuditEvent({
                 channel: 'notification',
-                event: options.event || 'notification',
+                event,
                 environment: options.useSandbox === true ? 'sandbox' : 'prod',
-                payload,
-                context: options.context,
+                payload: markedPayload,
+                context: markedContext,
                 response: { skipped: true, reason: 'apns_not_configured' },
                 final: true
             }).catch((error) => {
                 console.error('[admin] Failed to log skipped notification push:', error?.message || error);
             });
-            return { skipped: true, reason: 'apns_not_configured', payload };
+            return { skipped: true, reason: 'apns_not_configured', payload: markedPayload };
         }
 
         const useSandbox = options.useSandbox === true ? true : this.useSandbox;
         const environment = useSandbox ? 'sandbox' : 'prod';
         const host = useSandbox ? 'api.sandbox.push.apple.com' : 'api.push.apple.com';
-        const event = typeof options.event === 'string' && options.event.length > 0
-            ? options.event
-            : 'notification';
 
         const maxRetries = Number.isFinite(DEFAULT_PUSH_MAX_RETRIES) && DEFAULT_PUSH_MAX_RETRIES >= 0
             ? Math.trunc(DEFAULT_PUSH_MAX_RETRIES)
@@ -114,7 +121,7 @@ export class NotificationPushClient {
             const result = await this.sendSingleRequest({
                 host,
                 deviceToken,
-                payload,
+                payload: markedPayload,
                 jwt: this.buildJwt()
             });
 
@@ -140,15 +147,15 @@ export class NotificationPushClient {
                 attempt: attempt + 1,
                 final: !shouldRetry || attempt >= maxRetries,
                 token: deviceToken,
-                payload,
-                context: options.context,
+                payload: markedPayload,
+                context: markedContext,
                 response: result
             }).catch((error) => {
                 console.error('[admin] Failed to log notification push audit:', error?.message || error);
             });
 
             if (!shouldRetry) {
-                return result;
+                return { ...result, payload: markedPayload };
             }
 
             if (attempt >= maxRetries) {
@@ -159,7 +166,7 @@ export class NotificationPushClient {
                     reason: retryReason(result?.status),
                     status: result?.status
                 });
-                return result;
+                return { ...result, payload: markedPayload };
             }
 
             const retryAfterMs = parseRetryAfterMs(result?.headers?.['retry-after']);

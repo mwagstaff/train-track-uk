@@ -328,6 +328,10 @@ final class NotificationSubscriptionStore: ObservableObject {
         subscriptions + liveSessions
     }
 
+    var hasAuthoritativeRemoteState: Bool {
+        hasLoadedOnce && lastError == nil
+    }
+
     var canCreateNew: Bool { subscriptions.count < ServerConfigStore.shared.maxSubscriptionsPerDevice }
     var canCreateNewLiveSession: Bool { liveSessions.count < ServerConfigStore.shared.maxLiveSessionsPerDevice }
 

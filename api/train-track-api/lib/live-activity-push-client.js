@@ -17,6 +17,10 @@ import {
     recordLiveActivityPayload,
     recordPushAuditEvent
 } from './admin-data-store.js';
+import {
+    addDiagnosticMarkerToContext,
+    markPushPayload
+} from './notification-diagnostic-marker.js';
 
 const DEFAULT_PUSH_MAX_RETRIES = Number(process.env.APNS_PUSH_MAX_RETRIES || '3');
 const DEFAULT_PUSH_RETRY_BASE_DELAY_MS = Number(process.env.APNS_PUSH_RETRY_BASE_DELAY_MS || '400');
@@ -105,39 +109,42 @@ export class LiveActivityPushClient {
             throw new Error('Missing device token for live activity update');
         }
 
+        const event = typeof options.event === 'string' && options.event.length > 0
+            ? options.event
+            : 'live_activity_update';
+        const markedPayload = markPushPayload(payload, { channel: 'live_activity', event });
+        const markedContext = addDiagnosticMarkerToContext(options.context, { channel: 'live_activity', event });
+
         if (!this.isConfigured()) {
             console.warn('APNS credentials missing; skipping live activity push send');
             recordPushAuditEvent({
                 channel: 'live_activity',
-                event: options.event || 'live_activity_update',
+                event,
                 environment: options.useSandbox === true ? 'sandbox' : 'prod',
-                payload,
-                context: options.context,
+                payload: markedPayload,
+                context: markedContext,
                 response: { skipped: true, reason: 'apns_not_configured' },
                 final: true
             }).catch((error) => {
                 console.error('[admin] Failed to log skipped live activity push:', error?.message || error);
             });
             recordLiveActivityPayload({
-                event: options.event || payload?.aps?.event || 'live_activity_update',
+                event,
                 environment: options.useSandbox === true ? 'sandbox' : 'prod',
-                payload,
-                context: options.context,
+                payload: markedPayload,
+                context: markedContext,
                 response: { skipped: true, reason: 'apns_not_configured' },
                 replayed_from_id: options.replayedFromId || null
             }).catch((error) => {
                 console.error('[admin] Failed to log skipped live activity payload:', error?.message || error);
             });
-            return { skipped: true, reason: 'apns_not_configured', payload };
+            return { skipped: true, reason: 'apns_not_configured', payload: markedPayload };
         }
 
         // Use per-request useSandbox if provided, otherwise default to production.
         const useSandbox = options.useSandbox === true;
         const environment = useSandbox ? 'sandbox' : 'prod';
         const host = useSandbox ? 'api.sandbox.push.apple.com' : 'api.push.apple.com';
-        const event = typeof options.event === 'string' && options.event.length > 0
-            ? options.event
-            : 'live_activity_update';
 
         const maxRetries = Number.isFinite(DEFAULT_PUSH_MAX_RETRIES) && DEFAULT_PUSH_MAX_RETRIES >= 0
             ? Math.trunc(DEFAULT_PUSH_MAX_RETRIES)
@@ -148,7 +155,7 @@ export class LiveActivityPushClient {
             const result = await this.sendSingleRequest({
                 host,
                 deviceToken,
-                payload,
+                payload: markedPayload,
                 jwt: this.buildJwt(),
                 logEnabled: this.isLoggingEnabled()
             });
@@ -175,8 +182,8 @@ export class LiveActivityPushClient {
                 attempt: attempt + 1,
                 final: !shouldRetry || attempt >= maxRetries,
                 token: deviceToken,
-                payload,
-                context: options.context,
+                payload: markedPayload,
+                context: markedContext,
                 response: result,
                 replayed_from_id: options.replayedFromId || null
             }).catch((error) => {
@@ -188,15 +195,15 @@ export class LiveActivityPushClient {
                 host,
                 topic: this.topic,
                 token: deviceToken,
-                payload,
-                context: options.context,
+                payload: markedPayload,
+                context: markedContext,
                 response: result
             }).catch((error) => {
                 console.error('[admin] Failed to log live activity payload:', error?.message || error);
             });
 
             if (!shouldRetry) {
-                return result;
+                return { ...result, payload: markedPayload };
             }
 
             if (attempt >= maxRetries) {
@@ -207,7 +214,7 @@ export class LiveActivityPushClient {
                     reason: retryReason(result?.status),
                     status: result?.status
                 });
-                return result;
+                return { ...result, payload: markedPayload };
             }
 
             const retryAfterMs = parseRetryAfterMs(result?.headers?.['retry-after']);

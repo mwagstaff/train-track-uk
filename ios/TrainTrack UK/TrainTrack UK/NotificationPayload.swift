@@ -11,6 +11,9 @@ enum NotificationPayloadKeys {
     static let alertType = "alert_type"
     static let windowStart = "window_start"
     static let windowEnd = "window_end"
+    static let diagnosticMarker = "diagnostic_marker"
+    static let diagnosticChannel = "diagnostic_channel"
+    static let diagnosticEvent = "diagnostic_event"
 }
 
 enum NotificationCategoryId {

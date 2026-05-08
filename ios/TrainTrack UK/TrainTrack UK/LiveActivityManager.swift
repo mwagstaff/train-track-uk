@@ -1465,18 +1465,18 @@ final class LiveActivityManager: ObservableObject {
             guard let self else { return }
 
             if let current = Activity<JourneyActivityAttributes>.pushToStartToken {
-                await self.registerPushToStartTokenIfNeeded(current)
+                await self.registerPushToStartTokenIfNeeded(current, force: true)
             }
 
             for await tokenData in Activity<JourneyActivityAttributes>.pushToStartTokenUpdates {
-                await self.registerPushToStartTokenIfNeeded(tokenData)
+                await self.registerPushToStartTokenIfNeeded(tokenData, force: true)
             }
         }
     }
 
-    private func registerPushToStartTokenIfNeeded(_ tokenData: Data) async {
+    private func registerPushToStartTokenIfNeeded(_ tokenData: Data, force: Bool = false) async {
         let tokenString = encodePushToken(tokenData)
-        guard tokenString != lastRegisteredPushToStartToken else {
+        guard force || tokenString != lastRegisteredPushToStartToken else {
             ClientDiagnosticsLogger.log("live_activity", "push_to_start_registration_skipped_same_token", metadata: [
                 "token_prefix": String(tokenString.prefix(8)),
                 "token_suffix": String(tokenString.suffix(8))
@@ -1503,18 +1503,26 @@ final class LiveActivityManager: ObservableObject {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         while Date() < deadline {
             if let current = Activity<JourneyActivityAttributes>.pushToStartToken {
-                await registerPushToStartTokenIfNeeded(current)
+                await registerPushToStartTokenIfNeeded(current, force: true)
                 if lastRegisteredPushToStartToken == encodePushToken(current) {
                     ClientDiagnosticsLogger.log("live_activity", "ensure_push_to_start_token_registered_success", metadata: [
                         "source": "current_token"
                     ])
                     return true
                 }
-            } else if lastRegisteredPushToStartToken != nil {
-                ClientDiagnosticsLogger.log("live_activity", "ensure_push_to_start_token_registered_success", metadata: [
-                    "source": "cached_token"
+            } else if let cachedToken = lastRegisteredPushToStartToken {
+                let success = await sendPushToStartTokenRegistration(tokenString: cachedToken)
+                ClientDiagnosticsLogger.log("live_activity", "ensure_push_to_start_cached_token_registration", metadata: [
+                    "success": success,
+                    "token_prefix": String(cachedToken.prefix(8)),
+                    "token_suffix": String(cachedToken.suffix(8))
                 ])
-                return true
+                if success {
+                    ClientDiagnosticsLogger.log("live_activity", "ensure_push_to_start_token_registered_success", metadata: [
+                        "source": "cached_token_reposted"
+                    ])
+                    return true
+                }
             }
             try? await Task.sleep(nanoseconds: 200_000_000)
         }

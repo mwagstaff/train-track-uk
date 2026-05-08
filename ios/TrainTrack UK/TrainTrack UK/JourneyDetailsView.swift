@@ -58,11 +58,13 @@ struct JourneyDetailsView: View {
     }
 
     private var notificationSubscription: NotificationSubscription? {
-        notificationStore.subscription(for: notificationRouteKey)
+        guard notificationStore.hasAuthoritativeRemoteState else { return nil }
+        return notificationStore.subscription(for: notificationRouteKey)
     }
 
     private var liveSession: NotificationSubscription? {
-        notificationStore.liveSession(for: liveSessionRouteKey)
+        guard notificationStore.hasAuthoritativeRemoteState else { return nil }
+        return notificationStore.liveSession(for: liveSessionRouteKey)
     }
 
     private var canScheduleNotifications: Bool {

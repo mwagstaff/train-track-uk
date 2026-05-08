@@ -10,56 +10,26 @@ class NotificationService: UNNotificationServiceExtension {
     override func didReceive(_ request: UNNotificationRequest, withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
         self.contentHandler = contentHandler
         bestAttemptContent = (request.content.mutableCopy() as? UNMutableNotificationContent)
-        NotificationServiceDiagnosticsLogger.log("did_receive", metadata: [
-            "identifier": request.identifier,
-            "title": request.content.title,
-            "subtitle": request.content.subtitle,
-            "body": request.content.body,
-            "alert_type": stringValue(for: "alert_type", in: request.content.userInfo),
-            "from": stringValue(for: "from", in: request.content.userInfo),
-            "to": stringValue(for: "to", in: request.content.userInfo),
-            "route_key": stringValue(for: "route_key", in: request.content.userInfo),
-            "leg_key": stringValue(for: "leg_key", in: request.content.userInfo),
-            "window_start": stringValue(for: "window_start", in: request.content.userInfo),
-            "window_end": stringValue(for: "window_end", in: request.content.userInfo),
-            "keys": request.content.userInfo.keys.map { String(describing: $0) }.sorted()
-        ])
+        NotificationServiceDiagnosticsLogger.log("did_receive", metadata: diagnosticMetadata(for: request.content, identifier: request.identifier))
 
         if let bestAttemptContent = bestAttemptContent {
             ensureCategoriesRegistered()
             enhanceNotificationIfNeeded(content: bestAttemptContent)
             if shouldSuppressScheduledSummaryOutsideWindow(content: bestAttemptContent) {
-                NotificationServiceDiagnosticsLogger.log("suppressed_outside_window", metadata: [
-                    "title": bestAttemptContent.title,
-                    "alert_type": stringValue(for: "alert_type", in: bestAttemptContent.userInfo),
-                    "from": stringValue(for: "from", in: bestAttemptContent.userInfo),
-                    "to": stringValue(for: "to", in: bestAttemptContent.userInfo),
-                    "window_start": stringValue(for: "window_start", in: bestAttemptContent.userInfo),
-                    "window_end": stringValue(for: "window_end", in: bestAttemptContent.userInfo)
-                ])
+                NotificationServiceDiagnosticsLogger.log("suppressed_outside_window", metadata: diagnosticMetadata(for: bestAttemptContent, identifier: request.identifier))
                 contentHandler(UNNotificationContent())
                 return
             }
             // Check if this notification should be muted based on local arrival tracking
             if shouldMuteNotification(content: bestAttemptContent) {
                 // Don't deliver the notification
-                NotificationServiceDiagnosticsLogger.log("suppressed_muted_leg", metadata: [
-                    "title": bestAttemptContent.title,
-                    "alert_type": stringValue(for: "alert_type", in: bestAttemptContent.userInfo),
-                    "from": stringValue(for: "from", in: bestAttemptContent.userInfo),
-                    "to": stringValue(for: "to", in: bestAttemptContent.userInfo)
-                ])
+                NotificationServiceDiagnosticsLogger.log("suppressed_muted_leg", metadata: diagnosticMetadata(for: bestAttemptContent, identifier: request.identifier))
                 contentHandler(UNNotificationContent())
                 return
             }
 
             // Deliver the notification as-is
-            NotificationServiceDiagnosticsLogger.log("delivered", metadata: [
-                "title": bestAttemptContent.title,
-                "alert_type": stringValue(for: "alert_type", in: bestAttemptContent.userInfo),
-                "from": stringValue(for: "from", in: bestAttemptContent.userInfo),
-                "to": stringValue(for: "to", in: bestAttemptContent.userInfo)
-            ])
+            NotificationServiceDiagnosticsLogger.log("delivered", metadata: diagnosticMetadata(for: bestAttemptContent, identifier: request.identifier))
             contentHandler(bestAttemptContent)
         }
     }
@@ -68,12 +38,7 @@ class NotificationService: UNNotificationServiceExtension {
         // Called just before the extension will be terminated by the system.
         // Use this as an opportunity to deliver your "best attempt" at modified content, otherwise the original push payload will be used.
         if let contentHandler = contentHandler, let bestAttemptContent = bestAttemptContent {
-            NotificationServiceDiagnosticsLogger.log("time_will_expire", metadata: [
-                "title": bestAttemptContent.title,
-                "alert_type": stringValue(for: "alert_type", in: bestAttemptContent.userInfo),
-                "from": stringValue(for: "from", in: bestAttemptContent.userInfo),
-                "to": stringValue(for: "to", in: bestAttemptContent.userInfo)
-            ])
+            NotificationServiceDiagnosticsLogger.log("time_will_expire", metadata: diagnosticMetadata(for: bestAttemptContent, identifier: nil))
             contentHandler(bestAttemptContent)
         }
     }
@@ -204,6 +169,38 @@ class NotificationService: UNNotificationServiceExtension {
     private func stringValue(for key: String, in userInfo: [AnyHashable: Any]) -> String? {
         if let value = userInfo[key] as? String { return value }
         if let value = userInfo[key] as? NSString { return value as String }
+        return nil
+    }
+
+    private func diagnosticMetadata(for content: UNNotificationContent, identifier: String?) -> [String: Any?] {
+        [
+            "identifier": identifier,
+            "title": content.title,
+            "subtitle": content.subtitle,
+            "body": content.body,
+            "diagnostic_marker": stringValue(for: "diagnostic_marker", in: content.userInfo),
+            "diagnostic_channel": stringValue(for: "diagnostic_channel", in: content.userInfo),
+            "diagnostic_event": stringValue(for: "diagnostic_event", in: content.userInfo),
+            "alert_type": stringValue(for: "alert_type", in: content.userInfo),
+            "aps_event": apsStringValue(for: "event", in: content.userInfo),
+            "from": stringValue(for: "from", in: content.userInfo),
+            "to": stringValue(for: "to", in: content.userInfo),
+            "from_name": stringValue(for: "from_name", in: content.userInfo),
+            "to_name": stringValue(for: "to_name", in: content.userInfo),
+            "route_key": stringValue(for: "route_key", in: content.userInfo),
+            "leg_key": stringValue(for: "leg_key", in: content.userInfo),
+            "schedule_key": stringValue(for: "schedule_key", in: content.userInfo),
+            "window_start": stringValue(for: "window_start", in: content.userInfo),
+            "window_end": stringValue(for: "window_end", in: content.userInfo),
+            "category": content.categoryIdentifier,
+            "keys": content.userInfo.keys.map { String(describing: $0) }.sorted()
+        ]
+    }
+
+    private func apsStringValue(for key: String, in userInfo: [AnyHashable: Any]) -> String? {
+        guard let aps = userInfo["aps"] as? [AnyHashable: Any] else { return nil }
+        if let value = aps[key] as? String { return value }
+        if let value = aps[key] as? NSString { return value as String }
         return nil
     }
 

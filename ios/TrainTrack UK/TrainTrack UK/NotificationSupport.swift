@@ -116,6 +116,11 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
             ClientDiagnosticsLogger.log("notifications", "did_receive_remote_notification", metadata: [
                 "alert_type": userInfo["alert_type"] as? String,
                 "aps_event": (userInfo["aps"] as? [AnyHashable: Any])?["event"] as? String,
+                "aps_alert_title": apsAlertValue("title", in: userInfo),
+                "aps_alert_body": apsAlertValue("body", in: userInfo),
+                "diagnostic_marker": userInfo[NotificationPayloadKeys.diagnosticMarker] as? String,
+                "diagnostic_channel": userInfo[NotificationPayloadKeys.diagnosticChannel] as? String,
+                "diagnostic_event": userInfo[NotificationPayloadKeys.diagnosticEvent] as? String,
                 "from": userInfo["from"] as? String,
                 "to": userInfo["to"] as? String,
                 "route_key": userInfo["route_key"] as? String,
@@ -158,6 +163,7 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
+        ClientDiagnosticsLogger.log("notifications", "will_present_notification", metadata: notificationDiagnosticMetadata(notification.request))
         completionHandler([.banner, .sound, .list])
     }
 
@@ -166,11 +172,51 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        ClientDiagnosticsLogger.log("notifications", "did_receive_notification_response", metadata: notificationDiagnosticMetadata(response.notification.request).merging([
+            "action_identifier": response.actionIdentifier
+        ]) { _, new in new })
         Task { @MainActor in
             NotificationAlertHandler.shared.handle(response: response)
         }
         completionHandler()
     }
+}
+
+private func notificationDiagnosticMetadata(_ request: UNNotificationRequest) -> [String: Any?] {
+    let content = request.content
+    return [
+        "identifier": request.identifier,
+        "title": content.title,
+        "subtitle": content.subtitle,
+        "body": content.body,
+        "category": content.categoryIdentifier,
+        "alert_type": content.userInfo[NotificationPayloadKeys.alertType] as? String,
+        "aps_event": (content.userInfo["aps"] as? [AnyHashable: Any])?["event"] as? String,
+        "diagnostic_marker": content.userInfo[NotificationPayloadKeys.diagnosticMarker] as? String,
+        "diagnostic_channel": content.userInfo[NotificationPayloadKeys.diagnosticChannel] as? String,
+        "diagnostic_event": content.userInfo[NotificationPayloadKeys.diagnosticEvent] as? String,
+        "from": content.userInfo[NotificationPayloadKeys.from] as? String,
+        "to": content.userInfo[NotificationPayloadKeys.to] as? String,
+        "from_name": content.userInfo[NotificationPayloadKeys.fromName] as? String,
+        "to_name": content.userInfo[NotificationPayloadKeys.toName] as? String,
+        "route_key": content.userInfo[NotificationPayloadKeys.routeKey] as? String,
+        "leg_key": content.userInfo[NotificationPayloadKeys.legKey] as? String,
+        "schedule_key": content.userInfo["schedule_key"] as? String,
+        "window_start": content.userInfo[NotificationPayloadKeys.windowStart] as? String,
+        "window_end": content.userInfo[NotificationPayloadKeys.windowEnd] as? String,
+        "keys": content.userInfo.keys.map { String(describing: $0) }.sorted()
+    ]
+}
+
+private func apsAlertValue(_ key: String, in userInfo: [AnyHashable: Any]) -> String? {
+    guard let aps = userInfo["aps"] as? [AnyHashable: Any] else { return nil }
+    if let alert = aps["alert"] as? [AnyHashable: Any] {
+        return alert[key] as? String
+    }
+    if key == "body", let alert = aps["alert"] as? String {
+        return alert
+    }
+    return nil
 }
 
 typealias ScheduledJourneyActivityAttributes = JourneyActivityShared.JourneyActivityAttributes

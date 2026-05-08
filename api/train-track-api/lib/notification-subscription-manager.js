@@ -4,8 +4,8 @@ import { getTrainTimes } from './realtime-trains-api.js';
 import { NotificationPushClient } from './notification-push-client.js';
 import { LiveActivityPushClient } from './live-activity-push-client.js';
 import { pushToStartTokenStore } from './push-to-start-token-store.js';
-import redis from './redis-client.js';
-import { recordNotificationEvent } from './admin-data-store.js';
+import { recordNotificationEvent, recordSubscriptionAuditEvent } from './admin-data-store.js';
+import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
 import { sleep } from './retry-utils.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.NOTIFICATION_POLL_INTERVAL_SECONDS || '30');
@@ -19,17 +19,17 @@ const SCHEDULED_LIVE_ACTIVITY_MIN_REMAINING_MINUTES = Math.max(
     1,
     Number(process.env.SCHEDULED_LIVE_ACTIVITY_MIN_REMAINING_MINUTES || '30')
 );
+const MONGO_HYDRATION_RETRY_DELAY_MS = Math.max(
+    1000,
+    Number(process.env.NOTIFICATION_MONGO_HYDRATION_RETRY_DELAY_MS || process.env.NOTIFICATION_REDIS_HYDRATION_RETRY_DELAY_MS || '5000')
+);
 const SCHEDULE_TIME_ZONE = process.env.NOTIFICATION_SCHEDULE_TIME_ZONE || 'Europe/London';
-const LIVE_ACTIVITY_ATTRIBUTES_TYPE = process.env.APNS_LIVE_ACTIVITY_ATTRIBUTES_TYPE || 'JourneyActivityAttributes';
+const LIVE_ACTIVITY_ATTRIBUTES_TYPE = process.env.APNS_LIVE_ACTIVITY_ATTRIBUTES_TYPE || 'JourneyActivityShared.JourneyActivityAttributes';
 
 const VALID_TYPES = new Set(['summary', 'delays', 'platform']);
 const DAY_MAP = {
     sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6
 };
-
-// Redis key helpers
-const REDIS_SUB_IDS_KEY = 'tt:notification:sub_ids';
-const redisSubKey = (id) => `tt:notification:sub:${id}`;
 
 class NotificationSubscriptionManager {
     constructor() {
@@ -38,84 +38,121 @@ class NotificationSubscriptionManager {
         this.liveActivityPushClient = new LiveActivityPushClient();
         this.pollIntervalMs = DEFAULT_POLL_INTERVAL_SECONDS * 1000;
         this.isPolling = false;
-        // Polling loop is started by init() after Redis hydration.
+        this.hasHydratedFromMongo = false;
+        this.pollTimer = null;
+        // Polling loop is started by init() after Mongo hydration.
     }
 
-    // Load all persisted subscriptions from Redis, then start the polling loop.
+    // Load all persisted subscriptions from Mongo, then start the polling loop.
     // Must be called once at server startup before handling requests.
     async init() {
-        try {
-            const ids = await redis.smembers(REDIS_SUB_IDS_KEY);
-            if (ids.length > 0) {
-                const pipeline = redis.pipeline();
-                for (const id of ids) {
-                    pipeline.get(redisSubKey(id));
-                }
-                const results = await pipeline.exec();
-                let loaded = 0;
-                for (const [err, val] of results) {
-                    if (err || !val) continue;
-                    try {
-                        const sub = JSON.parse(val);
-                        // Migrate: fill in fields added after initial schema to avoid
-                        // "Cannot set properties of undefined" on old Redis records.
-                        sub.lastAutoStartSentByLeg = sub.lastAutoStartSentByLeg || {};
-                        sub.lastAutoStartSentAtByLeg = sub.lastAutoStartSentAtByLeg || {};
-                        sub.lastActivationPromptSentByLeg = sub.lastActivationPromptSentByLeg || {};
-                        sub.lastSummarySentByLeg   = sub.lastSummarySentByLeg   || {};
-                        sub.lastStateByLeg         = sub.lastStateByLeg         || {};
-                        sub.mutedByLegDay          = sub.mutedByLegDay          || {};
-                        sub.mutedAtByLegDay        = sub.mutedAtByLegDay        || {};
-                        this.subscriptions.set(sub.id, sub);
-                        loaded++;
-                    } catch (e) {
-                        console.error('[notifications] Failed to parse subscription from Redis:', e?.message);
-                    }
-                }
-                console.log(`[notifications] Loaded ${loaded} subscription(s) from Redis`);
-                const pruned = await this.pruneDuplicateScheduledSubscriptions();
-                if (pruned > 0) {
-                    console.log(`[notifications] Pruned ${pruned} duplicate scheduled subscription(s) from Redis`);
-                }
-            } else {
-                console.log('[notifications] No subscriptions found in Redis');
-            }
-        } catch (err) {
-            console.error('[notifications] Failed to load subscriptions from Redis:', err?.message || err);
-        }
+        await this.hydrateFromMongoWithRetry();
+        await this.pruneExpiredLiveSessions();
         this.startPollingLoop();
     }
 
     startPollingLoop() {
-        setInterval(() => {
+        if (this.pollTimer) {
+            return;
+        }
+        this.pollTimer = setInterval(() => {
             this.pollAll().catch((error) => {
                 console.error(`Notification poll failed: ${error?.message || error}`);
             });
         }, this.pollIntervalMs).unref?.();
     }
 
-    // --- Redis persistence helpers ---
-
-    async _saveSubscription(sub) {
-        try {
-            await redis.multi()
-                .set(redisSubKey(sub.id), JSON.stringify(sub))
-                .sadd(REDIS_SUB_IDS_KEY, sub.id)
-                .exec();
-        } catch (err) {
-            console.error('[notifications] Failed to save subscription to Redis:', err?.message || err);
+    async hydrateFromMongoWithRetry() {
+        let attempt = 0;
+        while (!this.hasHydratedFromMongo) {
+            attempt += 1;
+            try {
+                await this.loadSubscriptionsFromMongo();
+                this.hasHydratedFromMongo = true;
+            } catch (err) {
+                console.error('[notifications] Failed to load subscriptions from Mongo:', err?.message || err);
+                console.error('[notifications] Retrying Mongo hydration before starting notification polling', JSON.stringify({
+                    attempt,
+                    retry_delay_ms: MONGO_HYDRATION_RETRY_DELAY_MS
+                }));
+                await sleep(MONGO_HYDRATION_RETRY_DELAY_MS);
+            }
         }
     }
 
-    async _deleteFromRedis(id) {
-        try {
-            await redis.multi()
-                .del(redisSubKey(id))
-                .srem(REDIS_SUB_IDS_KEY, id)
-                .exec();
-        } catch (err) {
-            console.error('[notifications] Failed to delete subscription from Redis:', err?.message || err);
+    async loadSubscriptionsFromMongo() {
+        const collection = await getMongoCollection(COLLECTIONS.notificationSubscriptions);
+        const documents = await collection.find({}).toArray();
+        this.subscriptions.clear();
+        if (documents.length === 0) {
+            console.log('[notifications] No subscriptions found in Mongo');
+            await this.recordSubscriptionAudit({
+                action: 'hydrate',
+                reason: 'empty_sub_ids',
+                mongo: await this.buildMongoSubscriptionDiagnostics()
+            });
+            return;
         }
+
+        let loaded = 0;
+        for (const document of documents) {
+            try {
+                const sub = stripMongoId(document);
+                // Migrate: fill in fields added after initial schema to avoid
+                // "Cannot set properties of undefined" on old records.
+                sub.lastAutoStartSentByLeg = sub.lastAutoStartSentByLeg || {};
+                sub.lastAutoStartSentAtByLeg = sub.lastAutoStartSentAtByLeg || {};
+                sub.lastActivationPromptSentByLeg = sub.lastActivationPromptSentByLeg || {};
+                sub.lastPushToStartMissingLoggedByLeg = sub.lastPushToStartMissingLoggedByLeg || {};
+                sub.lastSummarySentByLeg = sub.lastSummarySentByLeg || {};
+                sub.lastStateByLeg = sub.lastStateByLeg || {};
+                sub.mutedByLegDay = sub.mutedByLegDay || {};
+                sub.mutedAtByLegDay = sub.mutedAtByLegDay || {};
+                sub.pushTokenInvalidAt = sub.pushTokenInvalidAt || null;
+                sub.lastBadTokenReason = sub.lastBadTokenReason || null;
+                this.subscriptions.set(sub.id, sub);
+                loaded++;
+            } catch (e) {
+                console.error('[notifications] Failed to parse subscription from Mongo:', e?.message);
+            }
+        }
+        console.log(`[notifications] Loaded ${loaded} subscription(s) from Mongo`);
+        await this.recordSubscriptionAudit({
+            action: 'hydrate',
+            reason: 'startup',
+            mongo: await this.buildMongoSubscriptionDiagnostics(),
+            metadata: {
+                documents_count: documents.length,
+                loaded
+            }
+        });
+        const pruned = await this.pruneDuplicateScheduledSubscriptions();
+        if (pruned > 0) {
+            console.log(`[notifications] Pruned ${pruned} duplicate scheduled subscription(s) from Mongo`);
+        }
+    }
+
+    // --- Mongo persistence helpers ---
+
+    async _saveSubscription(sub) {
+        const collection = await getMongoCollection(COLLECTIONS.notificationSubscriptions);
+        await collection.updateOne(
+            { _id: sub.id },
+            { $set: { _id: sub.id, ...sub } },
+            { upsert: true }
+        );
+    }
+
+    async _deleteFromMongo(id) {
+        const collection = await getMongoCollection(COLLECTIONS.notificationSubscriptions);
+        await collection.deleteOne({ _id: id });
+    }
+
+    async _getSubscriptionFromMongo(id) {
+        if (!id) return null;
+        const collection = await getMongoCollection(COLLECTIONS.notificationSubscriptions);
+        const document = await collection.findOne({ _id: id });
+        return document ? stripMongoId(document) : null;
     }
 
     // --- Public API ---
@@ -126,7 +163,11 @@ class NotificationSubscriptionManager {
                 if (sub.deviceId !== deviceId) return false;
                 if (source && this.subscriptionSource(sub) !== source) return false;
                 if (this.isExpiredLiveSession(sub)) {
-                    this.deleteSubscription({ deviceId: sub.deviceId, subscriptionId: sub.id }).catch((error) => {
+                    this.deleteSubscription({
+                        deviceId: sub.deviceId,
+                        subscriptionId: sub.id,
+                        reason: 'expired_live_session_list'
+                    }).catch((error) => {
                         console.error('[notifications] Failed to delete expired live session:', error?.message || error);
                     });
                     return false;
@@ -152,7 +193,8 @@ class NotificationSubscriptionManager {
             useSandbox,
             muteOnArrival,
             source: sourceInput,
-            activeUntil
+            activeUntil,
+            auditContext = null
         } = payload || {};
 
         if (!deviceId || !pushToken) {
@@ -265,27 +307,74 @@ class NotificationSubscriptionManager {
             lastAutoStartSentByLeg: resetScheduledDeliveryState ? {} : (existing?.lastAutoStartSentByLeg || {}),
             lastAutoStartSentAtByLeg: resetScheduledDeliveryState ? {} : (existing?.lastAutoStartSentAtByLeg || {}),
             lastActivationPromptSentByLeg: resetScheduledDeliveryState ? {} : (existing?.lastActivationPromptSentByLeg || {}),
+            lastPushToStartMissingLoggedByLeg: resetScheduledDeliveryState ? {} : (existing?.lastPushToStartMissingLoggedByLeg || {}),
             lastStateByLeg: resetScheduledDeliveryState ? {} : (existing?.lastStateByLeg || {}),
             mutedByLegDay: resetScheduledDeliveryState ? {} : (existing?.mutedByLegDay || {}),
             mutedAtByLegDay: resetScheduledDeliveryState ? {} : (existing?.mutedAtByLegDay || {}),
+            pushTokenInvalidAt: null,
+            lastBadTokenReason: null,
             lastActiveAt: existing?.lastActiveAt || null
         };
 
         this.subscriptions.set(subscription.id, subscription);
-        await this._saveSubscription(subscription);
+        try {
+            await this._saveSubscription(subscription);
+        } catch (error) {
+            if (!existing) {
+                this.subscriptions.delete(subscription.id);
+            } else {
+                this.subscriptions.set(existing.id, existing);
+            }
+            throw error;
+        }
+        await this.recordSubscriptionAudit({
+            action: existing ? 'update' : 'create',
+            reason: existing ? 'upsert_existing' : 'upsert_new',
+            source,
+            before: existing || null,
+            after: subscription,
+            metadata: {
+                request: auditContext,
+                overlapping_scheduled_subscription_ids: overlappingScheduledSubscriptions.map((sub) => sub.id)
+            }
+        });
+        if (source === SCHEDULED_SOURCE) {
+            await this.auditScheduledPushToStartReadiness(subscription);
+        }
         await Promise.all(overlappingScheduledSubscriptions.map(async (staleSubscription) => {
             this.subscriptions.delete(staleSubscription.id);
-            await this._deleteFromRedis(staleSubscription.id);
+            await this._deleteFromMongo(staleSubscription.id);
+            await this.recordSubscriptionAudit({
+                action: 'delete',
+                reason: 'overlapping_schedule_replaced',
+                source: this.subscriptionSource(staleSubscription),
+                before: staleSubscription,
+                metadata: {
+                    replacement_subscription_id: subscription.id
+                }
+            });
         }));
         return this.publicSubscription(subscription);
     }
 
-    async deleteSubscription({ deviceId, subscriptionId }) {
-        const sub = this.subscriptions.get(subscriptionId);
+    async deleteSubscription({ deviceId, subscriptionId, reason = 'explicit_delete', metadata = null } = {}) {
+        const sub = this.subscriptions.get(subscriptionId) || await this._getSubscriptionFromMongo(subscriptionId);
         if (!sub) return false;
         if (deviceId && sub.deviceId !== deviceId) return false;
         this.subscriptions.delete(subscriptionId);
-        await this._deleteFromRedis(subscriptionId);
+        try {
+            await this._deleteFromMongo(subscriptionId);
+        } catch (error) {
+            this.subscriptions.set(subscriptionId, sub);
+            throw error;
+        }
+        await this.recordSubscriptionAudit({
+            action: 'delete',
+            reason,
+            source: this.subscriptionSource(sub),
+            before: sub,
+            metadata
+        });
         return true;
     }
 
@@ -310,7 +399,9 @@ class NotificationSubscriptionManager {
 
         await Promise.all(matching.map((sub) => this.deleteSubscription({
             deviceId: sub.deviceId,
-            subscriptionId: sub.id
+            subscriptionId: sub.id,
+            reason: 'delete_live_session_for_leg',
+            metadata: { from: fromCode, to: toCode }
         })));
 
         return matching.length;
@@ -343,7 +434,7 @@ class NotificationSubscriptionManager {
     }
 
     async pollAll() {
-        if (this.isPolling || this.subscriptions.size === 0) {
+        if (!this.hasHydratedFromMongo || this.isPolling || this.subscriptions.size === 0) {
             return;
         }
         this.isPolling = true;
@@ -363,7 +454,11 @@ class NotificationSubscriptionManager {
 
     async pollSubscription(subscription) {
         if (this.isExpiredLiveSession(subscription)) {
-            await this.deleteSubscription({ deviceId: subscription.deviceId, subscriptionId: subscription.id });
+            await this.deleteSubscription({
+                deviceId: subscription.deviceId,
+                subscriptionId: subscription.id,
+                reason: 'expired_live_session_poll'
+            });
             return;
         }
         for (const leg of subscription.legs) {
@@ -387,15 +482,18 @@ class NotificationSubscriptionManager {
             const notificationTypes = getEffectiveNotificationTypes(subscription);
 
             if (this.subscriptionSource(subscription) === SCHEDULED_SOURCE) {
-                const autoStartSent = await this.sendScheduledLiveActivityStartIfNeeded(subscription, leg, legKey, snapshot);
-                if (!autoStartSent) {
+                if (notificationTypes.includes('summary')) {
                     await this.sendSummaryIfNeeded(subscription, leg, legKey, snapshot);
                 }
+                await this.sendScheduledLiveActivityStartIfNeeded(subscription, leg, legKey, snapshot);
             } else if (notificationTypes.includes('summary')) {
                 await this.sendSummaryIfNeeded(subscription, leg, legKey, snapshot);
             }
 
-            if (this.subscriptionSource(subscription) === LIVE_SESSION_SOURCE) {
+            if (
+                this.subscriptionSource(subscription) === LIVE_SESSION_SOURCE
+                || this.subscriptionSource(subscription) === SCHEDULED_SOURCE
+            ) {
                 await this.sendUpdateNotifications(subscription, leg, legKey, snapshot, notificationTypes);
             }
         }
@@ -456,14 +554,7 @@ class NotificationSubscriptionManager {
             reason: pushResult?.body?.reason || pushResult?.reason || null
         }));
         if (pushResult?.isBadToken) {
-            console.warn('[notifications] bad_token_delete', JSON.stringify({
-                subscription_id: activeSubscription.id,
-                device_id: activeSubscription.deviceId,
-                route_key: activeSubscription.routeKey,
-                context: 'sendSummaryIfNeeded'
-            }));
-            this.subscriptions.delete(activeSubscription.id);
-            await this._deleteFromRedis(activeSubscription.id);
+            await this.handleBadNotificationToken(activeSubscription, 'sendSummaryIfNeeded', pushResult);
             return;
         }
 
@@ -529,6 +620,26 @@ class NotificationSubscriptionManager {
                 leg: legKey,
                 reason: 'missing_push_to_start_token'
             }));
+            if (activeSubscription.lastPushToStartMissingLoggedByLeg?.[legKey] !== todayKey) {
+                activeSubscription.lastPushToStartMissingLoggedByLeg = {
+                    ...(activeSubscription.lastPushToStartMissingLoggedByLeg || {}),
+                    [legKey]: todayKey
+                };
+                await this.recordSubscriptionAudit({
+                    action: 'live_activity_start_blocked',
+                    reason: 'missing_push_to_start_token',
+                    source: this.subscriptionSource(activeSubscription),
+                    subscription: activeSubscription,
+                    metadata: {
+                        leg: legKey,
+                        date: todayKey,
+                        schedule_key: buildScheduleKeyForLeg(leg)
+                    }
+                });
+                this._saveSubscription(activeSubscription).catch((err) => {
+                    console.error('[notifications] Failed to persist lastPushToStartMissingLoggedByLeg:', err?.message || err);
+                });
+            }
             return false;
         }
 
@@ -542,7 +653,8 @@ class NotificationSubscriptionManager {
                 context: {
                     device_id: activeSubscription.deviceId,
                     subscription_id: activeSubscription.id,
-                    route_key: activeSubscription.routeKey,
+                    route_key: legRouteKey(leg),
+                    subscription_route_key: activeSubscription.routeKey,
                     from: leg.from,
                     to: leg.to,
                     schedule_key: buildScheduleKeyForLeg(leg),
@@ -556,11 +668,13 @@ class NotificationSubscriptionManager {
             subscription_id: activeSubscription.id,
             device_id: activeSubscription.deviceId,
             route_key: activeSubscription.routeKey,
+            leg_route_key: legRouteKey(leg),
             leg: legKey,
             attributes_type: LIVE_ACTIVITY_ATTRIBUTES_TYPE,
             use_sandbox: pushToStartRecord.useSandbox === true,
             status: pushResult?.status,
-            reason: pushResult?.body?.reason || pushResult?.reason || null
+            reason: pushResult?.body?.reason || pushResult?.reason || null,
+            alert_included: true
         }));
 
         if (pushResult?.isBadToken) {
@@ -570,15 +684,22 @@ class NotificationSubscriptionManager {
                 leg: legKey,
                 context: 'sendScheduledLiveActivityStartIfNeeded'
             }));
-            await pushToStartTokenStore.delete(activeSubscription.deviceId);
+            await pushToStartTokenStore.delete(activeSubscription.deviceId, {
+                reason: 'bad_push_to_start_token',
+                metadata: {
+                    subscription_id: activeSubscription.id,
+                    route_key: activeSubscription.routeKey,
+                    leg: legKey,
+                    status: pushResult?.status ?? null,
+                    apns_reason: pushResult?.body?.reason || pushResult?.reason || null
+                }
+            });
             return false;
         }
 
         if (!(typeof pushResult?.status === 'number' && pushResult.status >= 200 && pushResult.status < 300)) {
             return false;
         }
-
-        activeSubscription.lastSummarySentByLeg[legKey] = todayKey;
 
         // Wake the app in background so it can detect the new live activity and
         // register its per-activity push token with the server. Without this, a
@@ -595,7 +716,8 @@ class NotificationSubscriptionManager {
                     context: {
                         device_id: activeSubscription.deviceId,
                         subscription_id: activeSubscription.id,
-                        route_key: activeSubscription.routeKey,
+                        route_key: legRouteKey(leg),
+                        subscription_route_key: activeSubscription.routeKey,
                         from: leg.from,
                         to: leg.to,
                         schedule_key: buildScheduleKeyForLeg(leg),
@@ -607,6 +729,7 @@ class NotificationSubscriptionManager {
                     subscription_id: activeSubscription.id,
                     device_id: activeSubscription.deviceId,
                     route_key: activeSubscription.routeKey,
+                    leg_route_key: legRouteKey(leg),
                     leg: legKey,
                     status: wakeResult?.status,
                     reason: wakeResult?.body?.reason || wakeResult?.reason || null
@@ -629,6 +752,9 @@ class NotificationSubscriptionManager {
         if (this.isMutedToday(subscription, legKey)) {
             return;
         }
+        const updateReason = this.subscriptionSource(subscription) === SCHEDULED_SOURCE
+            ? 'scheduled_update'
+            : 'live_session_update';
         const previous = subscription.lastStateByLeg[legKey] || {};
         const nextState = {};
         const nextDepartureServiceID = snapshot.departures[0]?.serviceID || null;
@@ -655,16 +781,16 @@ class NotificationSubscriptionManager {
 
             if (notificationTypes.includes('delays')) {
                 if (current.isCancelled && !prev.isCancelled) {
-                    await this.sendNotification(subscription, buildCancellationMessage(subscription, leg, current), leg);
+                    await this.sendNotification(subscription, buildCancellationMessage(subscription, leg, current), leg, updateReason);
                 } else if (isNextDeparture && current.delayMinutes > 0 && current.delayMinutes !== prev.delayMinutes) {
-                    await this.sendNotification(subscription, buildDelayMessage(subscription, leg, current), leg);
+                    await this.sendNotification(subscription, buildDelayMessage(subscription, leg, current), leg, updateReason);
                 }
             }
 
             if (notificationTypes.includes('platform')) {
                 const previousPlatform = normalizePlatform(prev.platform);
                 if (isNextDeparture && previousPlatform && current.platform && previousPlatform !== current.platform) {
-                    await this.sendNotification(subscription, buildPlatformMessage(subscription, leg, current), leg);
+                    await this.sendNotification(subscription, buildPlatformMessage(subscription, leg, current), leg, updateReason);
                 }
             }
         }
@@ -676,7 +802,7 @@ class NotificationSubscriptionManager {
         });
     }
 
-    async sendNotification(subscription, notification, leg = null) {
+    async sendNotification(subscription, notification, leg = null, reason = 'update') {
         if (!notification) return;
         const activeSubscription = this.getActiveSubscriptionForPush(subscription.id, leg, 'update_pre_send');
         if (!activeSubscription) {
@@ -688,7 +814,7 @@ class NotificationSubscriptionManager {
             {
                 useSandbox: activeSubscription.useSandbox,
                 event: notification.type,
-                context: buildPushContext(activeSubscription, leg, 'live_session_update')
+                context: buildPushContext(activeSubscription, leg, reason)
             }
         );
         this.logSendEvent(activeSubscription, leg, notification, result);
@@ -701,14 +827,7 @@ class NotificationSubscriptionManager {
             reason: result?.body?.reason || result?.reason || null
         }));
         if (result?.isBadToken) {
-            console.warn('[notifications] bad_token_delete', JSON.stringify({
-                subscription_id: activeSubscription.id,
-                device_id: activeSubscription.deviceId,
-                route_key: activeSubscription.routeKey,
-                context: 'sendNotification'
-            }));
-            this.subscriptions.delete(activeSubscription.id);
-            await this._deleteFromRedis(activeSubscription.id);
+            await this.handleBadNotificationToken(activeSubscription, 'sendNotification', result);
         }
     }
 
@@ -753,14 +872,15 @@ class NotificationSubscriptionManager {
             apns_environment: subscription.useSandbox ? 'sandbox' : 'prod',
             subscription_id: subscription.id,
             device_id: subscription.deviceId,
-            route_key: subscription.routeKey,
+            route_key: leg ? legRouteKey(leg) : subscription.routeKey,
             from_station: leg?.from || null,
             to_station: leg?.to || null,
             token: subscription.pushToken || null,
             is_bad_token: Boolean(result?.isBadToken),
-            payload: notification?.payload ?? null,
+            payload: result?.payload ?? notification?.payload ?? null,
             response: result || null,
             metadata: {
+                subscription_route_key: subscription.routeKey,
                 notification_types: getEffectiveNotificationTypes(subscription),
                 days_of_week: subscription.daysOfWeek
             }
@@ -780,14 +900,15 @@ class NotificationSubscriptionManager {
             error: result?.error || result?.body?.reason || result?.reason || null,
             apns_environment: subscription.useSandbox ? 'sandbox' : 'prod',
             device_id: subscription.deviceId,
-            route_key: subscription.routeKey,
+            route_key: leg ? legRouteKey(leg) : subscription.routeKey,
             from_station: leg?.from || null,
             to_station: leg?.to || null,
             is_bad_token: Boolean(result?.isBadToken),
-            payload,
+            payload: result?.payload ?? payload,
             response: result || null,
             metadata: {
                 source: this.subscriptionSource(subscription),
+                subscription_route_key: subscription.routeKey,
                 schedule_key: buildScheduleKeyForLeg(leg),
                 notification_types: getEffectiveNotificationTypes(subscription),
                 days_of_week: subscription.daysOfWeek
@@ -808,6 +929,8 @@ class NotificationSubscriptionManager {
             mute_on_arrival: subscription.muteOnArrival,
             source: this.subscriptionSource(subscription),
             active_until: subscription.activeUntil || null,
+            push_token_invalid_at: subscription.pushTokenInvalidAt || null,
+            last_bad_token_reason: subscription.lastBadTokenReason || null,
             muted_by_leg_day: subscription.mutedByLegDay,
             muted_at_by_leg_day: subscription.mutedAtByLegDay,
             legs: subscription.legs.map((leg) => ({
@@ -874,14 +997,7 @@ class NotificationSubscriptionManager {
                 this.logSendEvent(subscription, leg, mutedNotification, pushResult);
 
                 if (pushResult?.isBadToken) {
-                    console.warn('[notifications] bad_token_delete', JSON.stringify({
-                        subscription_id: subscription.id,
-                        device_id: subscription.deviceId,
-                        route_key: subscription.routeKey,
-                        context: 'muteLegForDate'
-                    }));
-                    this.subscriptions.delete(subscription.id);
-                    await this._deleteFromRedis(subscription.id);
+                    await this.handleBadNotificationToken(subscription, 'muteLegForDate', pushResult);
                     return null;
                 }
             }
@@ -898,7 +1014,14 @@ class NotificationSubscriptionManager {
 
         if (this.subscriptionSource(subscription) === LIVE_SESSION_SOURCE) {
             this.subscriptions.delete(subscription.id);
-            await this._deleteFromRedis(subscription.id);
+            await this._deleteFromMongo(subscription.id);
+            await this.recordSubscriptionAudit({
+                action: 'delete',
+                reason: 'live_session_muted_on_arrival',
+                source: LIVE_SESSION_SOURCE,
+                before: subscription,
+                metadata: { date: dateKey }
+            });
         }
 
         return dateKey;
@@ -934,8 +1057,23 @@ class NotificationSubscriptionManager {
         const expiredIds = Array.from(this.subscriptions.values())
             .filter((sub) => this.isExpiredLiveSession(sub, now))
             .map((sub) => sub.id);
-        if (expiredIds.length === 0) return;
-        await Promise.all(expiredIds.map((id) => this.deleteSubscription({ subscriptionId: id })));
+        const collection = await getMongoCollection(COLLECTIONS.notificationSubscriptions);
+        const expiredDocuments = await collection
+            .find({
+                source: LIVE_SESSION_SOURCE,
+                activeUntil: { $lte: new Date(now).toISOString() }
+            })
+            .project({ _id: 1 })
+            .toArray();
+        const allExpiredIds = Array.from(new Set([
+            ...expiredIds,
+            ...expiredDocuments.map((doc) => doc._id).filter(Boolean)
+        ]));
+        if (allExpiredIds.length === 0) return;
+        await Promise.all(allExpiredIds.map((id) => this.deleteSubscription({
+            subscriptionId: id,
+            reason: 'expired_live_session_prune'
+        })));
     }
 
     async pruneDuplicateScheduledSubscriptions() {
@@ -963,10 +1101,113 @@ class NotificationSubscriptionManager {
 
         if (staleIds.length === 0) return 0;
         await Promise.all(staleIds.map(async (id) => {
+            const stale = this.subscriptions.get(id);
             this.subscriptions.delete(id);
-            await this._deleteFromRedis(id);
+            await this._deleteFromMongo(id);
+            await this.recordSubscriptionAudit({
+                action: 'delete',
+                reason: 'duplicate_scheduled_prune',
+                source: this.subscriptionSource(stale),
+                before: stale || { id },
+                metadata: {
+                    duplicate_group_prune: true
+                }
+            });
         }));
         return staleIds.length;
+    }
+
+    async handleBadNotificationToken(subscription, context, pushResult) {
+        const source = this.subscriptionSource(subscription);
+        const apnsReason = pushResult?.body?.reason || pushResult?.reason || null;
+        const metadata = {
+            context,
+            status: pushResult?.status ?? null,
+            apns_reason: apnsReason
+        };
+
+        if (source === SCHEDULED_SOURCE) {
+            const before = { ...subscription };
+            subscription.pushTokenInvalidAt = new Date().toISOString();
+            subscription.lastBadTokenReason = apnsReason || 'BadDeviceToken';
+            await this._saveSubscription(subscription);
+            await this.recordSubscriptionAudit({
+                action: 'mark_token_invalid',
+                reason: 'bad_token_scheduled_push',
+                source,
+                before,
+                after: subscription,
+                metadata
+            });
+            console.warn('[notifications] bad_token_mark_invalid', JSON.stringify({
+                subscription_id: subscription.id,
+                device_id: subscription.deviceId,
+                route_key: subscription.routeKey,
+                context,
+                reason: apnsReason
+            }));
+            return;
+        }
+
+        console.warn('[notifications] bad_token_delete', JSON.stringify({
+            subscription_id: subscription.id,
+            device_id: subscription.deviceId,
+            route_key: subscription.routeKey,
+            context,
+            reason: apnsReason
+        }));
+        this.subscriptions.delete(subscription.id);
+        await this._deleteFromMongo(subscription.id);
+        await this.recordSubscriptionAudit({
+            action: 'delete',
+            reason: 'bad_token_live_session_push',
+            source,
+            before: subscription,
+            metadata
+        });
+    }
+
+    async auditScheduledPushToStartReadiness(subscription) {
+        const record = await pushToStartTokenStore.get(subscription.deviceId);
+        await this.recordSubscriptionAudit({
+            action: record?.pushToStartToken ? 'schedule_push_to_start_ready' : 'schedule_push_to_start_missing',
+            reason: 'scheduled_subscription_saved',
+            source: this.subscriptionSource(subscription),
+            subscription,
+            metadata: {
+                push_to_start_updated_at: record?.updatedAt || null,
+                push_to_start_use_sandbox: record?.useSandbox ?? null
+            }
+        });
+    }
+
+    async recordSubscriptionAudit(event) {
+        try {
+            await recordSubscriptionAuditEvent(event);
+        } catch (error) {
+            console.error('[notifications] Failed to record subscription audit event:', error?.message || error);
+        }
+    }
+
+    async buildMongoSubscriptionDiagnostics() {
+        try {
+            const collection = await getMongoCollection(COLLECTIONS.notificationSubscriptions);
+            const [documentCount, scheduledCount, liveSessionCount] = await Promise.all([
+                collection.countDocuments({}),
+                collection.countDocuments({ source: SCHEDULED_SOURCE }),
+                collection.countDocuments({ source: LIVE_SESSION_SOURCE })
+            ]);
+            return {
+                collection: COLLECTIONS.notificationSubscriptions,
+                document_count: documentCount,
+                scheduled_count: scheduledCount,
+                live_session_count: liveSessionCount
+            };
+        } catch (error) {
+            return {
+                error: error?.message || String(error)
+            };
+        }
     }
 }
 
@@ -985,6 +1226,12 @@ function normalizeDays(daysInput) {
         }
     }
     return Array.from(result);
+}
+
+function stripMongoId(value) {
+    if (!value || typeof value !== 'object') return value;
+    const { _id, ...rest } = value;
+    return rest;
 }
 
 function normalizeTypes(typesInput, source = SCHEDULED_SOURCE) {
@@ -1458,6 +1705,10 @@ function legRouteTitle(leg) {
     return `${leg.fromName || leg.from} → ${leg.toName || leg.to}`;
 }
 
+function legRouteKey(leg) {
+    return `${String(leg?.from || '').toUpperCase()}-${String(leg?.to || '').toUpperCase()}`;
+}
+
 function buildScheduleKeyForLeg(leg) {
     return [
         String(leg?.from || '').toUpperCase(),
@@ -1520,10 +1771,12 @@ function buildNotificationPayload(
 function buildLegMeta(subscription, leg, alertType) {
     const meta = {
         subscription_id: subscription.id,
-        route_key: subscription.routeKey,
+        route_key: legRouteKey(leg),
+        subscription_route_key: subscription.routeKey,
         from: leg.from,
         to: leg.to,
         leg_key: `${leg.from}-${leg.to}`,
+        schedule_key: buildScheduleKeyForLeg(leg),
         alert_type: alertType,
         window_start: leg.windowStart,
         window_end: leg.windowEnd
@@ -1538,7 +1791,8 @@ function buildPushContext(subscription, leg, reason) {
         reason,
         device_id: subscription?.deviceId || null,
         subscription_id: subscription?.id || null,
-        route_key: subscription?.routeKey || null,
+        route_key: leg ? legRouteKey(leg) : (subscription?.routeKey || null),
+        subscription_route_key: subscription?.routeKey || null,
         source: subscription?.source || null,
         from: leg?.from || null,
         to: leg?.to || null,

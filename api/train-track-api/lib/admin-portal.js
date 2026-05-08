@@ -1,18 +1,18 @@
 import {
     getLiveActivityPayload,
     getNotificationEvent,
-    getNotificationSubscriptionFromRedis,
+    getNotificationSubscription,
     getDevicePreferences,
     listDevicePreferences,
     listLiveActivityPayloads,
     listNotificationEvents,
-    listNotificationSubscriptionsFromRedis,
+    listNotificationSubscriptions,
     listGeofenceEvents
 } from './admin-data-store.js';
 import { liveActivityManager } from './live-activity-manager.js';
 import { LiveActivityPushClient } from './live-activity-push-client.js';
 import { getDeviceLastSeen } from './metrics.js';
-import { pushToStartTokenStore } from './push-to-start-token-store.js';
+import { pushToStartTokenStore, pushToStartTokenTtlPolicy } from './push-to-start-token-store.js';
 
 const DEFAULT_LIMIT = 500;
 const DEFAULT_NOTIFICATION_LIMIT = 20;
@@ -25,7 +25,7 @@ export function registerAdminRoutes(app) {
             const query = typeof req.query?.q === 'string' ? req.query.q.trim() : '';
             const limit = clampLimit(req.query?.limit, 1, 5000, DEFAULT_LIMIT);
             const [subscriptions, notifications, geofenceEvents] = await Promise.all([
-                listNotificationSubscriptionsFromRedis({ search: query, limit }),
+                listNotificationSubscriptions({ search: query, limit }),
                 listNotificationEvents({ search: query, limit: DEFAULT_NOTIFICATION_LIMIT }),
                 listGeofenceEvents()
             ]);
@@ -50,7 +50,7 @@ export function registerAdminRoutes(app) {
             const page = clampLimit(req.query?.page, 1, 100000, 1);
             const pageSize = clampLimit(req.query?.per_page, 1, 250, DEFAULT_DEVICE_PAGE_SIZE);
             const [subscriptions, notifications, geofenceEvents, devicePreferences] = await Promise.all([
-                listNotificationSubscriptionsFromRedis({ limit: 5000 }),
+                listNotificationSubscriptions({ limit: 5000 }),
                 listNotificationEvents({ limit: 5000 }),
                 listGeofenceEvents(),
                 listDevicePreferences()
@@ -87,7 +87,7 @@ export function registerAdminRoutes(app) {
         try {
             const deviceId = req.params?.deviceId;
             const [subscriptions, notifications, geofenceEvents, devicePreferences] = await Promise.all([
-                listNotificationSubscriptionsFromRedis({ limit: 5000 }),
+                listNotificationSubscriptions({ limit: 5000 }),
                 listNotificationEvents({ limit: 5000 }),
                 listGeofenceEvents(),
                 getDevicePreferences(deviceId)
@@ -111,10 +111,41 @@ export function registerAdminRoutes(app) {
         }
     });
 
+    app.get('/admin/live-activities', async (req, res) => {
+        try {
+            const query = typeof req.query?.q === 'string' ? req.query.q.trim() : '';
+            const page = clampLimit(req.query?.page, 1, 100000, 1);
+            const pageSize = clampLimit(req.query?.per_page, 1, 250, 50);
+            const [subscriptions, payloads, pushToStartTokens] = await Promise.all([
+                listNotificationSubscriptions({ limit: 5000 }),
+                listLiveActivityPayloads({ limit: 5000 }),
+                pushToStartTokenStore.list({ limit: 5000 })
+            ]);
+            const liveActivitySessions = liveActivityManager.listSubscriptions();
+            const rows = buildLiveActivityAdminRows({
+                subscriptions,
+                liveActivitySessions,
+                payloads,
+                pushToStartTokens,
+                query
+            });
+            const pagination = paginateItems(rows, page, pageSize);
+            res.type('html').send(renderLiveActivityAdminPage({
+                query,
+                rows: pagination.items,
+                pagination,
+                tokenPolicy: pushToStartTokenTtlPolicy
+            }));
+        } catch (error) {
+            console.error('[admin] Failed to load live activities:', error?.message || error);
+            res.status(500).type('html').send(renderErrorPage('Failed to load live activities.'));
+        }
+    });
+
     app.get('/admin/subscriptions/:id', async (req, res) => {
         try {
             const id = req.params?.id;
-            const subscription = await getNotificationSubscriptionFromRedis(id);
+            const subscription = await getNotificationSubscription(id);
             if (!subscription) {
                 return res.status(404).type('html').send(renderErrorPage(`Subscription not found: ${id}`));
             }
@@ -445,6 +476,8 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
             <button type="submit">Search</button>
             <a href="${clearHref}">Clear</a>
             <a href="admin/devices">Device Admin</a>
+            <a href="admin/live-activities">Live Activities</a>
+            <a href="admin/live-activity-payloads">Payload Replay</a>
         </form>
 
         <section class="panel">
@@ -518,7 +551,7 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
         </section>
 
         <section class="panel">
-            <h2>🗓️ Scheduled Notification Subscriptions (Redis) <span class="panel-count">${scheduledSubscriptions.length}</span></h2>
+            <h2>🗓️ Scheduled Notification Subscriptions (Mongo) <span class="panel-count">${scheduledSubscriptions.length}</span></h2>
             <div class="table-wrap">
                 <table>
                     <thead>
@@ -544,7 +577,7 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
     </div>
 <script>
 async function deleteSubscription(id) {
-    if (!confirm('Delete subscription ' + id + '?\\n\\nThis will permanently remove it from Redis.')) return;
+    if (!confirm('Delete subscription ' + id + '?\\n\\nThis will permanently remove it from Mongo.')) return;
     try {
         const res = await fetch('/api/v2/notifications/debug/subscriptions', {
             method: 'DELETE',
@@ -812,6 +845,96 @@ function renderDeviceDetailPage(detail) {
         </section>
     </div>`
     });
+}
+
+function renderLiveActivityAdminPage({ query, rows, pagination, tokenPolicy }) {
+    const renderedAt = escapeHtml(new Date().toISOString());
+    const qValue = escapeHtml(query || '');
+    const prevHref = pagination.page > 1
+        ? liveActivityAdminHref({ query, page: pagination.page - 1, pageSize: pagination.pageSize })
+        : null;
+    const nextHref = pagination.page < pagination.totalPages
+        ? liveActivityAdminHref({ query, page: pagination.page + 1, pageSize: pagination.pageSize })
+        : null;
+    const rowHtml = rows.map((row) => renderLiveActivityAdminRow(row)).join('');
+    const ttlPolicy = tokenPolicy?.minimumTtlSeconds
+        ? formatDurationSeconds(tokenPolicy.minimumTtlSeconds)
+        : '90 days';
+    const refreshPolicy = tokenPolicy?.ttlSeconds
+        ? formatDurationSeconds(tokenPolicy.ttlSeconds)
+        : ttlPolicy;
+
+    return renderAdminShell({
+        title: 'Train Track Live Activities',
+        body: `
+    <div class="wrap">
+        <a href="../admin">Back to Admin</a>
+        <h1>Live Activities</h1>
+        <div class="meta">Rendered at ${renderedAt} · Push-to-start token policy: ${escapeHtml(refreshPolicy)} logical TTL, refreshed whenever the app reposts the token · Page ${pagination.page} of ${pagination.totalPages}</div>
+        <form class="search" method="GET" action="">
+            <input type="text" name="q" value="${qValue}" placeholder="Search device, activity, route, event, schedule key, token, or TTL status" />
+            <input type="hidden" name="per_page" value="${escapeHtml(pagination.pageSize)}" />
+            <button type="submit">Search</button>
+            <a href="?">Clear</a>
+            <a href="live-activity-payloads">Payload Replay</a>
+        </form>
+        <section class="panel">
+            <h2>User Live Activities <span class="panel-count">${pagination.totalItems}</span></h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Device</th>
+                            <th>Activity</th>
+                            <th>Source</th>
+                            <th>Event</th>
+                            <th>Route</th>
+                            <th>Schedule Key</th>
+                            <th>Recorded / Created</th>
+                            <th>Last Push</th>
+                            <th>Env</th>
+                            <th>Push-to-start Token</th>
+                            <th>Token Updated</th>
+                            <th>Token TTL</th>
+                            <th>Raw</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rowHtml || `<tr><td class="empty" colspan="13">No live activities found.</td></tr>`}</tbody>
+                </table>
+            </div>
+        </section>
+        <nav class="pager">
+            ${prevHref ? `<a href="${prevHref}">Previous</a>` : '<span>Previous</span>'}
+            <span>Page ${pagination.page} of ${pagination.totalPages}</span>
+            ${nextHref ? `<a href="${nextHref}">Next</a>` : '<span>Next</span>'}
+        </nav>
+    </div>`
+    });
+}
+
+function renderLiveActivityAdminRow(row) {
+    const token = row.pushToStartToken;
+    const tokenCell = token
+        ? `<span class="token" title="${escapeHtml(token.deviceId || '')}">${escapeHtml(token.token || '')}</span>`
+        : '<span class="badge badge-err">missing</span>';
+    const tokenEnv = token
+        ? ` <span class="badge ${token.useSandbox ? 'badge-sandbox' : 'badge-prod'}">${token.useSandbox ? 'sandbox' : 'prod'}</span>`
+        : '';
+    return `<tr>
+        <td class="device-id"><a href="devices/${encodeURIComponent(row.deviceId || '')}">${escapeHtml(row.deviceId || '')}</a></td>
+        <td title="${escapeHtml(row.activityId || '')}">${escapeHtml(shortId(row.activityId))}</td>
+        <td>${escapeHtml(row.source || '')}</td>
+        <td>${escapeHtml(row.event || '')}</td>
+        <td><strong>${escapeHtml(row.route || '')}</strong></td>
+        <td>${escapeHtml(row.scheduleKey || '')}</td>
+        <td>${formatDate(row.recordedAt) || '<span class="never">—</span>'}</td>
+        <td>${formatDate(row.lastPushAt) || '<span class="never">—</span>'}</td>
+        <td>${escapeHtml(row.environment || '')}</td>
+        <td>${tokenCell}${tokenEnv}</td>
+        <td>${formatDate(token?.updatedAt) || '<span class="never">—</span>'}</td>
+        <td>${formatPushToStartTtl(token)}</td>
+        <td>${row.rawHref ? `<a href="${escapeHtml(row.rawHref)}">JSON</a>` : '<span class="never">—</span>'}</td>
+    </tr>`;
 }
 
 function renderLiveActivityPayloadListPage({ query, limit, payloads, targetDeviceId, recentDevices = [], devicePagination, replayResult }) {
@@ -1180,6 +1303,7 @@ function renderAdminShell({ title, body }) {
         tr:last-child td { border-bottom: none; }
         tr:hover td { background: #f6f9ff; }
         .device-id { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
+        .token { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
         .empty { padding: 16px; color: var(--muted); }
         .never { color: #999; font-style: italic; }
         .badge {
@@ -1188,6 +1312,9 @@ function renderAdminShell({ title, body }) {
         }
         .badge-ok { background:#d4f5e2; color:#0d6632; }
         .badge-err { background:#fde8e8; color:#b91c1c; }
+        .badge-warn { background:#fef3c7; color:#92400e; }
+        .badge-sandbox { background:#fef3c7; color:#92400e; }
+        .badge-prod { background:#dbeafe; color:#1e40af; }
         .pager { display: flex; gap: 8px; align-items: center; justify-content: center; }
         .pager span { color: var(--muted); cursor: default; }
         .json {
@@ -1393,6 +1520,139 @@ function buildDeviceDetail({ deviceId, subscriptions = [], notifications = [], g
     };
 }
 
+function buildLiveActivityAdminRows({ subscriptions = [], liveActivitySessions = [], payloads = [], pushToStartTokens = [], query = '' }) {
+    const normalizedQuery = typeof query === 'string' ? query.trim().toLowerCase() : '';
+    const tokensByDevice = new Map();
+    for (const token of Array.isArray(pushToStartTokens) ? pushToStartTokens : []) {
+        const deviceId = normalizeDeviceId(token?.deviceId);
+        if (deviceId) tokensByDevice.set(deviceId, token);
+    }
+
+    const rows = [];
+    const devicesWithActivities = new Set();
+    for (const subscription of Array.isArray(subscriptions) ? subscriptions : []) {
+        if (subscription?.source === 'live_session') continue;
+        const deviceId = normalizeDeviceId(subscription?.deviceId);
+        if (!deviceId) continue;
+        const legs = Array.isArray(subscription?.legs) ? subscription.legs.filter((leg) => leg && leg.enabled !== false) : [];
+        for (const leg of legs) {
+            const from = leg?.fromName || leg?.from || '';
+            const to = leg?.toName || leg?.to || '';
+            const scheduleKey = `${leg?.from || ''}-${leg?.to || ''}|${leg?.windowStart || ''}|${leg?.windowEnd || ''}`;
+            const row = {
+                id: `scheduled:${subscription?.id || ''}:${scheduleKey}`,
+                source: 'scheduled update',
+                event: 'scheduled_leg',
+                deviceId,
+                activityId: '',
+                route: `${from || '?'} → ${to || '?'}`,
+                scheduleKey,
+                recordedAt: subscription?.updatedAt || subscription?.createdAt || null,
+                lastPushAt: null,
+                latestAt: subscription?.updatedAt || subscription?.createdAt || null,
+                environment: subscription?.useSandbox ? 'sandbox' : 'prod',
+                rawHref: `subscriptions/${encodeURIComponent(subscription?.id || '')}`,
+                pushToStartToken: tokensByDevice.get(deviceId) || null,
+                searchable: ''
+            };
+            row.searchable = `${JSON.stringify(row)} ${JSON.stringify(subscription)}`.toLowerCase();
+            rows.push(row);
+            devicesWithActivities.add(deviceId);
+        }
+    }
+
+    for (const session of Array.isArray(liveActivitySessions) ? liveActivitySessions : []) {
+        const deviceId = normalizeDeviceId(session?.deviceId);
+        if (!deviceId) continue;
+        devicesWithActivities.add(deviceId);
+        const row = {
+            id: `active:${deviceId}:${session?.activityId || ''}`,
+            source: 'active session',
+            event: 'live_activity_session',
+            deviceId,
+            activityId: session?.activityId || '',
+            route: `${session?.fromStation || '?'} → ${session?.toStation || '?'}`,
+            scheduleKey: session?.scheduleKey || '',
+            recordedAt: session?.createdAt || null,
+            lastPushAt: session?.lastPushAt || null,
+            latestAt: latestIso(session?.lastPushAt, session?.tokenUpdatedAt, session?.createdAt),
+            environment: session?.useSandbox ? 'sandbox' : 'prod',
+            rawHref: null,
+            pushToStartToken: tokensByDevice.get(deviceId) || null,
+            searchable: ''
+        };
+        row.searchable = JSON.stringify(row).toLowerCase();
+        rows.push(row);
+    }
+
+    for (const payload of Array.isArray(payloads) ? payloads : []) {
+        const contentState = payload?.payload?.aps?.['content-state'] || {};
+        const context = payload?.context || {};
+        const deviceId = normalizeDeviceId(
+            context.device_id
+            || context.target_device_id
+            || payload?.device_id
+            || contentState.deviceID
+            || contentState.deviceId
+        );
+        if (!deviceId) continue;
+        devicesWithActivities.add(deviceId);
+        const from = contentState.fromCRS || context.from_station || context.from || '';
+        const to = contentState.toCRS || context.to_station || context.to || '';
+        const route = contentState.routeTitle || context.route_title || (from || to ? `${from} → ${to}` : '');
+        const row = {
+            id: payload?.id || '',
+            source: 'payload log',
+            event: payload?.event || payload?.payload?.aps?.event || '',
+            deviceId,
+            activityId: context.activity_id || payload?.activity_id || contentState.activityID || contentState.activityId || '',
+            route,
+            scheduleKey: contentState.scheduleKey || context.schedule_key || '',
+            recordedAt: payload?.recorded_at || payload?.sent_at || null,
+            lastPushAt: payload?.recorded_at || payload?.sent_at || null,
+            latestAt: payload?.recorded_at || payload?.sent_at || null,
+            environment: payload?.environment || context.environment || '',
+            rawHref: `live-activity-payloads/${encodeURIComponent(payload?.id || '')}`,
+            pushToStartToken: tokensByDevice.get(deviceId) || null,
+            searchable: ''
+        };
+        row.searchable = `${JSON.stringify(row)} ${JSON.stringify(payload)}`.toLowerCase();
+        rows.push(row);
+    }
+
+    for (const [deviceId, token] of tokensByDevice.entries()) {
+        if (devicesWithActivities.has(deviceId)) continue;
+        const row = {
+            id: `push-to-start:${deviceId}`,
+            source: 'push-to-start token',
+            event: 'token_present',
+            deviceId,
+            activityId: '',
+            route: '',
+            scheduleKey: '',
+            recordedAt: token?.updatedAt || null,
+            lastPushAt: null,
+            latestAt: token?.updatedAt || null,
+            environment: token?.useSandbox ? 'sandbox' : 'prod',
+            rawHref: null,
+            pushToStartToken: token,
+            searchable: ''
+        };
+        row.searchable = JSON.stringify(row).toLowerCase();
+        rows.push(row);
+    }
+
+    return rows
+        .filter((row) => !normalizedQuery || row.searchable.includes(normalizedQuery))
+        .sort((left, right) => {
+            const leftTime = Date.parse(left.latestAt || left.recordedAt || '') || 0;
+            const rightTime = Date.parse(right.latestAt || right.recordedAt || '') || 0;
+            return rightTime - leftTime
+                || String(left.deviceId).localeCompare(String(right.deviceId))
+                || String(left.activityId).localeCompare(String(right.activityId));
+        });
+}
+
 function collectDevicePreferences({ scheduledSubscriptions = [], liveNotificationSubscriptions = [], liveActivitySessions = [], devicePreferences = null }) {
     const preferences = new Map();
     const add = (name, value, source, observedAt) => {
@@ -1461,6 +1721,14 @@ function deviceListHref({ query, page, pageSize }) {
     return `?${params.toString()}`;
 }
 
+function liveActivityAdminHref({ query, page, pageSize }) {
+    const params = new URLSearchParams();
+    if (query) params.set('q', query);
+    params.set('page', String(page));
+    params.set('per_page', String(pageSize));
+    return `?${params.toString()}`;
+}
+
 function formatStation(leg, key) {
     if (!leg || typeof leg !== 'object') return '';
     if (key === 'from') return leg.fromName || leg.from || '';
@@ -1513,6 +1781,30 @@ function formatDate(value) {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return escapeHtml(String(value));
     return escapeHtml(date.toISOString());
+}
+
+function formatPushToStartTtl(token) {
+    if (!token) return '<span class="badge badge-err">missing</span>';
+    const ttl = Number(token.ttlSeconds);
+    if (ttl === -1) return '<span class="badge badge-warn">no expiry</span>';
+    if (ttl === -2) return '<span class="badge badge-err">missing</span>';
+    if (!Number.isFinite(ttl)) return '<span class="badge badge-warn">unknown</span>';
+    const minimum = Number(token.minimumTtlSeconds || pushToStartTokenTtlPolicy.minimumTtlSeconds || 0);
+    const badge = ttl >= minimum ? 'badge-ok' : 'badge-warn';
+    const expiry = token.expiresAt ? ` · expires ${formatDate(token.expiresAt)}` : '';
+    return `<span class="badge ${badge}">${escapeHtml(formatDurationSeconds(ttl))}</span>${expiry}`;
+}
+
+function formatDurationSeconds(seconds) {
+    const value = Number(seconds);
+    if (!Number.isFinite(value)) return '';
+    const days = Math.floor(value / 86400);
+    const hours = Math.floor((value % 86400) / 3600);
+    const minutes = Math.floor((value % 3600) / 60);
+    if (days >= 1) return `${days} day${days === 1 ? '' : 's'}${hours ? ` ${hours} hr` : ''}`;
+    if (hours >= 1) return `${hours} hr${hours === 1 ? '' : 's'}${minutes ? ` ${minutes} min` : ''}`;
+    if (minutes >= 1) return `${minutes} min`;
+    return `${Math.max(0, Math.round(value))} s`;
 }
 
 /** Returns the last 8 chars of an ID to keep tables compact. Full value shown via title= attr. */
