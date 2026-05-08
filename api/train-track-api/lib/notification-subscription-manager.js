@@ -17,14 +17,18 @@ const LIVE_SESSION_SOURCE = 'live_session';
 const SUMMARY_START_GRACE_MINUTES = Math.max(1, Math.ceil(DEFAULT_POLL_INTERVAL_SECONDS / 60));
 const SCHEDULED_LIVE_ACTIVITY_MIN_REMAINING_MINUTES = Math.max(
     1,
-    Number(process.env.SCHEDULED_LIVE_ACTIVITY_MIN_REMAINING_MINUTES || '30')
+    Number(process.env.SCHEDULED_LIVE_ACTIVITY_MIN_REMAINING_MINUTES || '1')
 );
 const MONGO_HYDRATION_RETRY_DELAY_MS = Math.max(
     1000,
     Number(process.env.NOTIFICATION_MONGO_HYDRATION_RETRY_DELAY_MS || process.env.NOTIFICATION_REDIS_HYDRATION_RETRY_DELAY_MS || '5000')
 );
+const SCHEDULED_LIVE_ACTIVITY_WAKE_RETRY_DELAY_MS = Math.max(
+    0,
+    Number(process.env.SCHEDULED_LIVE_ACTIVITY_WAKE_RETRY_DELAY_MS || '8000')
+);
 const SCHEDULE_TIME_ZONE = process.env.NOTIFICATION_SCHEDULE_TIME_ZONE || 'Europe/London';
-const LIVE_ACTIVITY_ATTRIBUTES_TYPE = process.env.APNS_LIVE_ACTIVITY_ATTRIBUTES_TYPE || 'JourneyActivityShared.JourneyActivityAttributes';
+const LIVE_ACTIVITY_ATTRIBUTES_TYPE = process.env.APNS_LIVE_ACTIVITY_ATTRIBUTES_TYPE || 'JourneyActivityAttributes';
 
 const VALID_TYPES = new Set(['summary', 'delays', 'platform']);
 const DAY_MAP = {
@@ -707,36 +711,60 @@ class NotificationSubscriptionManager {
         // token to send update pushes — leaving the widget frozen at launch state.
         if (activeSubscription.pushToken) {
             const wakePayload = buildNotificationPayload(null, null, { context: 'live_activity_wake' }, 'live_activity_wake');
-            this.pushClient.sendNotification(
-                activeSubscription.pushToken,
-                wakePayload.payload,
-                {
-                    useSandbox: activeSubscription.useSandbox === true,
-                    event: 'live_activity_wake',
-                    context: {
-                        device_id: activeSubscription.deviceId,
-                        subscription_id: activeSubscription.id,
-                        route_key: legRouteKey(leg),
-                        subscription_route_key: activeSubscription.routeKey,
-                        from: leg.from,
-                        to: leg.to,
-                        schedule_key: buildScheduleKeyForLeg(leg),
-                        source: 'scheduled'
-                    }
+            const sendWakePush = (attempt, delayMs = 0) => {
+                const send = () => {
+                    this.pushClient.sendNotification(
+                        activeSubscription.pushToken,
+                        wakePayload.payload,
+                        {
+                            useSandbox: activeSubscription.useSandbox === true,
+                            event: 'live_activity_wake',
+                            context: {
+                                device_id: activeSubscription.deviceId,
+                                subscription_id: activeSubscription.id,
+                                route_key: legRouteKey(leg),
+                                subscription_route_key: activeSubscription.routeKey,
+                                from: leg.from,
+                                to: leg.to,
+                                schedule_key: buildScheduleKeyForLeg(leg),
+                                source: 'scheduled',
+                                wake_attempt: attempt,
+                                wake_delay_ms: delayMs
+                            }
+                        }
+                    ).then((wakeResult) => {
+                        console.log('[notifications] live_activity_wake_push', JSON.stringify({
+                            subscription_id: activeSubscription.id,
+                            device_id: activeSubscription.deviceId,
+                            route_key: activeSubscription.routeKey,
+                            leg_route_key: legRouteKey(leg),
+                            leg: legKey,
+                            attempt,
+                            delay_ms: delayMs,
+                            status: wakeResult?.status,
+                            reason: wakeResult?.body?.reason || wakeResult?.reason || null
+                        }));
+                    }).catch((err) => {
+                        console.warn('[notifications] live_activity_wake_push_failed', JSON.stringify({
+                            subscription_id: activeSubscription.id,
+                            device_id: activeSubscription.deviceId,
+                            leg: legKey,
+                            attempt,
+                            delay_ms: delayMs,
+                            error: err?.message || String(err)
+                        }));
+                    });
+                };
+                if (delayMs > 0) {
+                    setTimeout(send, delayMs).unref?.();
+                } else {
+                    send();
                 }
-            ).then((wakeResult) => {
-                console.log('[notifications] live_activity_wake_push', JSON.stringify({
-                    subscription_id: activeSubscription.id,
-                    device_id: activeSubscription.deviceId,
-                    route_key: activeSubscription.routeKey,
-                    leg_route_key: legRouteKey(leg),
-                    leg: legKey,
-                    status: wakeResult?.status,
-                    reason: wakeResult?.body?.reason || wakeResult?.reason || null
-                }));
-            }).catch((err) => {
-                console.warn('[notifications] live_activity_wake_push_failed', err?.message || err);
-            });
+            };
+            sendWakePush(1, 0);
+            if (SCHEDULED_LIVE_ACTIVITY_WAKE_RETRY_DELAY_MS > 0) {
+                sendWakePush(2, SCHEDULED_LIVE_ACTIVITY_WAKE_RETRY_DELAY_MS);
+            }
         }
 
         const sentAt = snapshot?.fetchedAt || new Date().toISOString();
@@ -1392,14 +1420,32 @@ function getEffectiveNotificationTypes(subscription) {
 async function getDeparturesSnapshot(fromStation, toStation) {
     const result = await getTrainTimes(fromStation, toStation);
     const gracePeriodMs = 60 * 1000; // 1 minute grace, matching live-activity-manager sortDepartures
-    const now = moment();
+    const gracePeriodMinutes = gracePeriodMs / (60 * 1000);
+    const nowMinutes = currentMinutes();
     const allDepartures = Array.isArray(result?.departures) ? result.departures : [];
-    const upcomingDepartures = allDepartures.filter((dep) => {
-        const timeStr = dep.departure_time?.estimated || dep.departure_time?.scheduled;
-        if (!timeStr) return false;
-        const parsed = moment(timeStr, 'HH:mm');
-        return parsed.isValid() && parsed.valueOf() > (now.valueOf() - gracePeriodMs);
-    });
+    const upcomingDepartures = allDepartures
+        .map((dep) => {
+            const timeStr = dep.departure_time?.estimated || dep.departure_time?.scheduled;
+            return {
+                dep,
+                relativeMinutes: relativeTimeMinutes(timeStr, nowMinutes)
+            };
+        })
+        .filter(({ relativeMinutes }) => relativeMinutes !== null && relativeMinutes >= -gracePeriodMinutes)
+        .sort((left, right) => left.relativeMinutes - right.relativeMinutes)
+        .map(({ dep }) => dep);
+    if (allDepartures.length > 0 && upcomingDepartures.length === 0) {
+        console.log('[notifications] departures_filter_empty', JSON.stringify({
+            from: fromStation,
+            to: toStation,
+            now_minutes: nowMinutes,
+            raw_departures: allDepartures.slice(0, 5).map((dep) => ({
+                scheduled: dep.departure_time?.scheduled || null,
+                estimated: dep.departure_time?.estimated || null,
+                relative_minutes: relativeTimeMinutes(dep.departure_time?.estimated || dep.departure_time?.scheduled, nowMinutes)
+            }))
+        }));
+    }
     const departures = upcomingDepartures.slice(0, 3);
     const normalized = departures.map((dep) => ({
         serviceID: dep.serviceID,
@@ -1415,6 +1461,20 @@ async function getDeparturesSnapshot(fromStation, toStation) {
         error: typeof result?.error === 'string' ? result.error : null,
         fetchedAt: new Date().toISOString()
     };
+}
+
+function relativeTimeMinutes(timeStr, referenceMinutes = currentMinutes()) {
+    const minutes = parseTimeToMinutes(timeStr);
+    if (minutes === null) {
+        return null;
+    }
+    let diff = minutes - referenceMinutes;
+    if (diff < -12 * 60) {
+        diff += 24 * 60;
+    } else if (diff > 12 * 60) {
+        diff -= 24 * 60;
+    }
+    return diff;
 }
 
 function applyLastKnownPlatforms(snapshot, previousStateByService = {}) {
@@ -1445,10 +1505,16 @@ function applyLastKnownPlatforms(snapshot, previousStateByService = {}) {
 
 function calculateDelayMinutes(scheduled, estimated) {
     if (!scheduled || !estimated) return 0;
-    const sched = moment(scheduled, 'HH:mm');
-    const est = moment(estimated, 'HH:mm');
-    if (!sched.isValid() || !est.isValid()) return 0;
-    return Math.max(0, est.diff(sched, 'minutes'));
+    const scheduledMinutes = parseTimeToMinutes(scheduled);
+    const estimatedMinutes = parseTimeToMinutes(estimated);
+    if (scheduledMinutes === null || estimatedMinutes === null) return 0;
+    let diff = estimatedMinutes - scheduledMinutes;
+    if (diff < -12 * 60) {
+        diff += 24 * 60;
+    } else if (diff > 12 * 60) {
+        diff -= 24 * 60;
+    }
+    return Math.max(0, diff);
 }
 
 function buildSummaryMessage(subscription, leg, snapshot) {
@@ -1481,6 +1547,7 @@ function buildScheduledLiveActivityStartPayload(subscription, leg, snapshot) {
             event: 'start',
             'relevance-score': 1.0,
             'stale-date': moment(snapshot?.fetchedAt || new Date().toISOString()).add(5, 'minutes').unix(),
+            'input-push-token': 1,
             'content-state': contentState,
             'attributes-type': LIVE_ACTIVITY_ATTRIBUTES_TYPE,
             attributes: {

@@ -29,5 +29,7 @@ struct Phone_WidgetBundle: WidgetBundle {
             let _ = os_log("[Phone_WidgetBundle] Registering Phone_WidgetControl")
             Phone_WidgetControl()
         }
+        let _ = os_log("[Phone_WidgetBundle] Registering Journey Live Activity")
+        Live_ActivityLiveActivity()
     }
 }

@@ -18,8 +18,7 @@ import {
     recordPushAuditEvent
 } from './admin-data-store.js';
 import {
-    addDiagnosticMarkerToContext,
-    markPushPayload
+    addDiagnosticMarkerToContext
 } from './notification-diagnostic-marker.js';
 
 const DEFAULT_PUSH_MAX_RETRIES = Number(process.env.APNS_PUSH_MAX_RETRIES || '3');
@@ -112,7 +111,7 @@ export class LiveActivityPushClient {
         const event = typeof options.event === 'string' && options.event.length > 0
             ? options.event
             : 'live_activity_update';
-        const markedPayload = markPushPayload(payload, { channel: 'live_activity', event });
+        const markedPayload = payload;
         const markedContext = addDiagnosticMarkerToContext(options.context, { channel: 'live_activity', event });
 
         if (!this.isConfigured()) {

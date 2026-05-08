@@ -1307,10 +1307,6 @@ final class LiveActivityManager: ObservableObject {
         )
         tracked.fallbackEndTimer = scheduleFallbackEnd(for: activity.id)
         trackedActivities[activity.id] = tracked
-        // watchPushToken delivers the current token immediately via pushTokenUpdates when
-        // the token is already available, so no separate direct-registration Task is needed
-        // here — that was causing duplicate (and triplicate) server registrations for
-        // push-to-start activities.
         watchPushToken(for: activity, fromCRS: fromCRS, toCRS: toCRS)
         updatePublishedState()
     }
@@ -1541,51 +1537,62 @@ final class LiveActivityManager: ObservableObject {
             self.logger.info("[LiveActivity] Listening for push token updates for activity \(activity.id, privacy: .public)")
             print("👂 [LiveActivity] Started watching push tokens for \(activity.id)")
             var tokenCount = 0
-            do {
-                for await tokenData in activity.pushTokenUpdates {
-                    tokenCount += 1
-                    let tokenString = encodePushToken(tokenData)
-                    let tokenPreview = String(tokenString.prefix(8)) + "..." + String(tokenString.suffix(8))
-                    self.logger.info("[LiveActivity] Received push token #\(tokenCount) for activity \(activity.id, privacy: .public): \(tokenPreview, privacy: .public)")
-                    print("📡 [LiveActivity] Push token #\(tokenCount) received for \(activity.id): \(tokenString)")
+            var registeredTokens = Set<String>()
+            @MainActor
+            func register(_ tokenData: Data, source: String) async {
+                let tokenString = encodePushToken(tokenData)
+                guard registeredTokens.insert(tokenString).inserted else {
+                    print("↩️ [LiveActivity] Skipping duplicate \(source) push token for \(activity.id)")
+                    return
+                }
 
-                    // Send token to backend with retry logic
-                    var retryCount = 0
-                    var success = false
-                    while !success && retryCount < 3 {
-                        let preferredServiceID = self.trackedActivities[activity.id]?.preferredServiceID
-                        success = await self.sendLiveActivityRegistration(
-                            activityID: activity.id,
-                            tokenString: tokenString,
-                            fromCRS: fromCRS,
-                            toCRS: toCRS,
-                            routeTitle: activity.contentState.routeTitle,
-                            deepLinkFromCRS: activity.contentState.deepLinkFromCRS,
-                            deepLinkToCRS: activity.contentState.deepLinkToCRS,
-                            preferredServiceID: preferredServiceID,
-                            journeyUpdatesEnabled: self.trackedActivities[activity.id]?.journeyUpdatesEnabled ?? activity.contentState.journeyUpdatesEnabled,
-                            scheduleKey: activity.contentState.scheduleKey,
-                            windowStart: activity.contentState.windowStart,
-                            windowEnd: activity.contentState.windowEnd
-                        )
-                        if !success {
-                            retryCount += 1
-                            if retryCount < 3 {
-                                print("⚠️ [LiveActivity] Token registration failed, retrying (\(retryCount)/3)...")
-                                try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 second delay
-                            }
+                tokenCount += 1
+                let tokenPreview = String(tokenString.prefix(8)) + "..." + String(tokenString.suffix(8))
+                self.logger.info("[LiveActivity] Received \(source, privacy: .public) push token #\(tokenCount) for activity \(activity.id, privacy: .public): \(tokenPreview, privacy: .public)")
+                print("📡 [LiveActivity] \(source) push token #\(tokenCount) received for \(activity.id): \(tokenString)")
+
+                var retryCount = 0
+                var success = false
+                while !success && retryCount < 3 {
+                    let preferredServiceID = self.trackedActivities[activity.id]?.preferredServiceID
+                    success = await self.sendLiveActivityRegistration(
+                        activityID: activity.id,
+                        tokenString: tokenString,
+                        fromCRS: fromCRS,
+                        toCRS: toCRS,
+                        routeTitle: activity.contentState.routeTitle,
+                        deepLinkFromCRS: activity.contentState.deepLinkFromCRS,
+                        deepLinkToCRS: activity.contentState.deepLinkToCRS,
+                        preferredServiceID: preferredServiceID,
+                        journeyUpdatesEnabled: self.trackedActivities[activity.id]?.journeyUpdatesEnabled ?? activity.contentState.journeyUpdatesEnabled,
+                        scheduleKey: activity.contentState.scheduleKey,
+                        windowStart: activity.contentState.windowStart,
+                        windowEnd: activity.contentState.windowEnd
+                    )
+                    if !success {
+                        retryCount += 1
+                        if retryCount < 3 {
+                            print("⚠️ [LiveActivity] Token registration failed, retrying (\(retryCount)/3)...")
+                            try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 second delay
                         }
                     }
-
-                    if success {
-                        print("✅ [LiveActivity] Token #\(tokenCount) successfully registered with backend")
-                    } else {
-                        print("❌ [LiveActivity] Token #\(tokenCount) failed to register after 3 attempts")
-                    }
                 }
-            } catch {
-                self.logger.error("[LiveActivity] Error while listening for push token updates: \(String(describing: error), privacy: .public)")
-                print("❌ [LiveActivity] Error listening for push tokens: \(error)")
+
+                if success {
+                    print("✅ [LiveActivity] \(source) token #\(tokenCount) successfully registered with backend")
+                } else {
+                    print("❌ [LiveActivity] \(source) token #\(tokenCount) failed to register after 3 attempts")
+                }
+            }
+
+            if let tokenData = activity.pushToken {
+                await register(tokenData, source: "current")
+            } else {
+                print("⏳ [LiveActivity] No current push token for \(activity.id); waiting for pushTokenUpdates")
+            }
+
+            for await tokenData in activity.pushTokenUpdates {
+                await register(tokenData, source: "stream")
             }
             print("👋 [LiveActivity] Stopped watching push tokens for \(activity.id) (received \(tokenCount) total)")
             self.pushTokenTasks[activity.id] = nil
