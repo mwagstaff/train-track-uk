@@ -382,6 +382,82 @@ class NotificationSubscriptionManager {
         return true;
     }
 
+    async getSubscription({ deviceId, subscriptionId, source = null } = {}) {
+        const sub = this.subscriptions.get(subscriptionId) || await this._getSubscriptionFromMongo(subscriptionId);
+        if (!sub) return null;
+        if (deviceId && sub.deviceId !== deviceId) return null;
+        if (source && this.subscriptionSource(sub) !== source) return null;
+        return sub;
+    }
+
+    async muteScheduledLegsForToday({ deviceId, legs = [], reason = 'manual_mute', metadata = null } = {}) {
+        if (!deviceId || !Array.isArray(legs) || legs.length === 0) {
+            return [];
+        }
+
+        const todayKey = currentScheduleDateKey();
+        const targetLegKeys = new Set(
+            legs
+                .map((leg) => legKeyForMute(leg))
+                .filter(Boolean)
+        );
+        if (targetLegKeys.size === 0) {
+            return [];
+        }
+
+        const muted = [];
+        const scheduledSubscriptions = Array.from(this.subscriptions.values()).filter((sub) =>
+            sub.deviceId === deviceId && this.subscriptionSource(sub) === SCHEDULED_SOURCE
+        );
+
+        for (const subscription of scheduledSubscriptions) {
+            const matchingLegs = subscription.legs.filter((leg) => targetLegKeys.has(legKeyForMute(leg)));
+            if (matchingLegs.length === 0) {
+                continue;
+            }
+
+            const before = cloneSubscription(subscription);
+            const mutedAt = new Date().toISOString();
+            subscription.mutedByLegDay = subscription.mutedByLegDay || {};
+            subscription.mutedAtByLegDay = subscription.mutedAtByLegDay || {};
+
+            for (const leg of matchingLegs) {
+                const legKey = legKeyForMute(leg);
+                subscription.mutedByLegDay[legKey] = todayKey;
+                subscription.mutedAtByLegDay[legKey] = mutedAt;
+                muted.push({
+                    subscription_id: subscription.id,
+                    leg: legKey,
+                    date: todayKey
+                });
+            }
+
+            await this._saveSubscription(subscription);
+            await this.recordSubscriptionAudit({
+                action: 'mute_scheduled_legs',
+                reason,
+                source: SCHEDULED_SOURCE,
+                before,
+                after: subscription,
+                metadata: {
+                    ...metadata,
+                    muted_legs: matchingLegs.map((leg) => legKeyForMute(leg)),
+                    date: todayKey
+                }
+            });
+        }
+
+        if (muted.length > 0) {
+            console.log('[notifications] muted_scheduled_legs', JSON.stringify({
+                device_id: deviceId,
+                reason,
+                muted
+            }));
+        }
+
+        return muted;
+    }
+
     async deleteLiveSessionsForLeg({ deviceId, from, to, fallbackDeviceIds = [] }) {
         const fromCode = typeof from === 'string' ? from.trim().toUpperCase() : '';
         const toCode = typeof to === 'string' ? to.trim().toUpperCase() : '';
@@ -1041,6 +1117,15 @@ class NotificationSubscriptionManager {
         }
 
         if (this.subscriptionSource(subscription) === LIVE_SESSION_SOURCE) {
+            await this.muteScheduledLegsForToday({
+                deviceId: subscription.deviceId,
+                legs: [leg],
+                reason: 'live_session_muted_on_arrival',
+                metadata: {
+                    live_session_id: subscription.id,
+                    date: dateKey
+                }
+            });
             this.subscriptions.delete(subscription.id);
             await this._deleteFromMongo(subscription.id);
             await this.recordSubscriptionAudit({
@@ -1260,6 +1345,16 @@ function stripMongoId(value) {
     if (!value || typeof value !== 'object') return value;
     const { _id, ...rest } = value;
     return rest;
+}
+
+function cloneSubscription(subscription) {
+    return JSON.parse(JSON.stringify(subscription));
+}
+
+function legKeyForMute(leg) {
+    const from = typeof leg?.from === 'string' ? leg.from.trim().toUpperCase() : '';
+    const to = typeof leg?.to === 'string' ? leg.to.trim().toUpperCase() : '';
+    return from && to ? `${from}-${to}` : null;
 }
 
 function normalizeTypes(typesInput, source = SCHEDULED_SOURCE) {
@@ -1520,16 +1615,9 @@ function calculateDelayMinutes(scheduled, estimated) {
 function buildSummaryMessage(subscription, leg, snapshot) {
     const primary = snapshot.departures[0];
     if (!primary) return null;
-    const status = buildStatusText(primary);
-    const departures = snapshot.departures.map((dep) => {
-        const time = dep.estimated || dep.scheduled;
-        const platform = dep.platform || 'TBC';
-        return `${time} (plat. ${platform})`;
-    }).join(', ');
-    const fromLabel = leg.fromName || leg.from;
-    const toLabel = leg.toName || leg.to;
-    const body = `Next train status: ${status}\nDepartures: ${departures}.`;
-    return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'summary'), 'summary');
+    const departures = snapshot.departures.map((dep) => compactDepartureSummary(dep)).join(', ');
+    const body = `Departures: ${departures}.`;
+    return buildNotificationPayload(legRouteTitle(leg), body, buildLegMeta(subscription, leg, 'summary'), 'summary');
 }
 
 function buildScheduledLiveActivityStartPayload(subscription, leg, snapshot) {
@@ -1575,7 +1663,7 @@ function buildScheduledLiveActivityContentState(subscription, leg, snapshot, rou
         routeTitle,
         deepLinkFromCRS: String(leg?.from || '').toUpperCase(),
         deepLinkToCRS: String(leg?.to || '').toUpperCase(),
-        destinationTitle: ensureNonEmptyString(primary.destination?.locationName) || leg.toName || leg.to,
+        destinationTitle: sanitizeDisplayLabel(primary.destination?.locationName) || legToLabel(leg),
         arrivalLabel: null,
         scheduledDeparture: getValidDepartureTime(primary.scheduled),
         length: Number.isFinite(primary.length) && primary.length > 0 ? primary.length : null,
@@ -1605,55 +1693,68 @@ function buildScheduledLiveActivityContentState(subscription, leg, snapshot, rou
 
 function buildStatusText(dep) {
     if (dep.isCancelled) {
-        return '❌ Cancelled';
+        return 'Cancelled';
     }
     const delayMinutes = calculateDelayMinutes(dep.scheduled, dep.estimated);
     if (delayMinutes > 0) {
-        return `⚠️ Running ${delayMinutes} minute${delayMinutes === 1 ? '' : 's'} late`;
+        return `${delayMinutes} minute${delayMinutes === 1 ? '' : 's'} late`;
     }
-    return '✅ On time';
+    return 'On time';
+}
+
+function compactDepartureSummary(dep) {
+    const time = formatDepartureTime(dep);
+    const platform = normalizePlatform(dep?.platform) || 'TBC';
+    return `${time} ${compactDepartureStatus(dep)} (plat. ${platform})`;
+}
+
+function compactDepartureStatus(dep) {
+    if (dep?.isCancelled) {
+        return '❌';
+    }
+    if (isUnknownDelay(dep)) {
+        return '⚠️ delayed';
+    }
+    const delayMinutes = calculateDelayMinutes(dep?.scheduled, dep?.estimated);
+    if (delayMinutes > 0) {
+        return `⚠️ ${delayMinutes}m late`;
+    }
+    return '✅';
 }
 
 function buildDelayMessage(subscription, leg, dep) {
-    const fromLabel = leg.fromName || leg.from;
-    const toLabel = leg.toName || leg.to;
-    const delay = dep.delayMinutes;
-    const platform = dep.platform ? ` from platform ${dep.platform}` : '';
-    const body = `${fromLabel} → ${toLabel} status update: The ${dep.scheduled} departure is now running ${delay} minute${delay === 1 ? '' : 's'} late, and is expected to depart at ${dep.estimated}${platform}.`;
-    return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'delay'), 'delay');
+    const platform = dep.platform ? ` (platform ${dep.platform})` : ' (platform TBC)';
+    const body = `${dep.scheduled} expected ${dep.estimated}${platform}.`;
+    return buildNotificationPayload(legRouteTitle(leg), body, buildLegMeta(subscription, leg, 'delay'), 'delay');
 }
 
 function buildCancellationMessage(subscription, leg, dep) {
-    const fromLabel = leg.fromName || leg.from;
-    const toLabel = leg.toName || leg.to;
-    const body = `${fromLabel} → ${toLabel} status update: The ${dep.scheduled} departure has been cancelled.`;
-    return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'cancellation'), 'cancellation');
+    const body = `${dep.scheduled} - cancelled.`;
+    return buildNotificationPayload(legRouteTitle(leg), body, buildLegMeta(subscription, leg, 'cancellation'), 'cancellation');
 }
 
 function buildPlatformMessage(subscription, leg, dep) {
-    const fromLabel = leg.fromName || leg.from;
-    const toLabel = leg.toName || leg.to;
     const platform = normalizePlatform(dep.platform);
     if (!platform) {
         return null;
     }
-    const body = `${fromLabel} → ${toLabel} platform update: The ${dep.scheduled} departure is now expected to depart at ${dep.estimated} from platform ${platform}.`;
-    return buildNotificationPayload(`${fromLabel} → ${toLabel}`, body, buildLegMeta(subscription, leg, 'platform'), 'platform');
+    const expected = dep.estimated && dep.estimated !== dep.scheduled ? `, expected ${dep.estimated}` : '';
+    const body = `${dep.scheduled} - platform ${platform}${expected}.`;
+    return buildNotificationPayload(legRouteTitle(leg), body, buildLegMeta(subscription, leg, 'platform'), 'platform');
 }
 
 function buildMutedMessages(subscription, leg, snapshot = null) {
-    const fromLabel = leg.fromName || leg.from;
-    const toLabel = leg.toName || leg.to;
+    const routeTitle = legRouteTitle(leg);
     return [
         buildNotificationPayload(
-            `${fromLabel} → ${toLabel}`,
+            routeTitle,
             buildMutedGreetingBody(leg),
             buildLegMeta(subscription, leg, 'muted_greeting'),
             'muted_greeting',
             'STATION_ARRIVAL'
         ),
         buildNotificationPayload(
-            `${fromLabel} → ${toLabel}`,
+            routeTitle,
             buildMutedStatusBody(leg, snapshot),
             buildLegMeta(subscription, leg, 'muted_status'),
             'muted_status'
@@ -1662,11 +1763,11 @@ function buildMutedMessages(subscription, leg, snapshot = null) {
 }
 
 function buildMutedGreetingBody(leg) {
-    return `Welcome to ${formatStationGreetingName(leg.fromName || leg.from)}`;
+    return `Welcome to ${formatStationGreetingName(legFromLabel(leg))}`;
 }
 
 function buildMutedStatusBody(leg, snapshot) {
-    const toLabel = leg.toName || leg.to;
+    const toLabel = legToLabel(leg);
     const departures = Array.isArray(snapshot?.departures) ? snapshot.departures : null;
     const primary = departures?.[0] || null;
 
@@ -1769,7 +1870,21 @@ function getValidDepartureTime(value) {
 }
 
 function legRouteTitle(leg) {
-    return `${leg.fromName || leg.from} → ${leg.toName || leg.to}`;
+    return `${legFromLabel(leg)} → ${legToLabel(leg)}`;
+}
+
+function legFromLabel(leg) {
+    return sanitizeDisplayLabel(leg?.fromName) || sanitizeDisplayLabel(leg?.from) || 'Origin';
+}
+
+function legToLabel(leg) {
+    return sanitizeDisplayLabel(leg?.toName) || sanitizeDisplayLabel(leg?.to) || 'Destination';
+}
+
+function sanitizeDisplayLabel(value) {
+    const label = ensureNonEmptyString(value);
+    if (!label) return null;
+    return label.replace(/\s*\[v\d+\]\s*$/i, '').trim();
 }
 
 function legRouteKey(leg) {
@@ -1848,8 +1963,8 @@ function buildLegMeta(subscription, leg, alertType) {
         window_start: leg.windowStart,
         window_end: leg.windowEnd
     };
-    if (leg.fromName) meta.from_name = leg.fromName;
-    if (leg.toName) meta.to_name = leg.toName;
+    if (leg.fromName) meta.from_name = sanitizeDisplayLabel(leg.fromName);
+    if (leg.toName) meta.to_name = sanitizeDisplayLabel(leg.toName);
     return meta;
 }
 

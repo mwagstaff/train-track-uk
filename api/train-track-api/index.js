@@ -755,13 +755,33 @@ app.delete('/api/v2/notifications/live_sessions', async (req, res) => {
     if (!device_id || !subscription_id) {
         return res.status(400).json({ error: 'device_id and subscription_id are required' });
     }
+    const liveSession = await notificationSubscriptionManager.getSubscription({
+        deviceId: device_id,
+        subscriptionId: subscription_id,
+        source: 'live_session'
+    });
     const removed = await notificationSubscriptionManager.deleteSubscription({
         deviceId: device_id,
         subscriptionId: subscription_id,
         reason: 'api_delete_live_session',
         metadata: { request: buildRequestAuditContext(req) }
     });
-    res.json({ status: removed ? 'deleted' : 'not_found' });
+    let mutedScheduledLegs = [];
+    if (removed && liveSession) {
+        mutedScheduledLegs = await notificationSubscriptionManager.muteScheduledLegsForToday({
+            deviceId: device_id,
+            legs: liveSession.legs,
+            reason: 'api_delete_live_session',
+            metadata: {
+                request: buildRequestAuditContext(req),
+                live_session_id: subscription_id
+            }
+        });
+    }
+    res.json({
+        status: removed ? 'deleted' : 'not_found',
+        muted_scheduled_legs: mutedScheduledLegs
+    });
 });
 
 app.post('/api/v2/notifications/terminate', async (req, res) => {

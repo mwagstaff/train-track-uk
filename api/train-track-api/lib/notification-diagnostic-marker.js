@@ -1,5 +1,3 @@
-const DEFAULT_NOTIFICATION_DIAGNOSTIC_MARKER = 'v2';
-
 export function getNotificationDiagnosticMarker() {
     const raw = process.env.NOTIFICATION_DIAGNOSTIC_MARKER;
     if (typeof raw === 'string') {
@@ -9,7 +7,7 @@ export function getNotificationDiagnosticMarker() {
         }
         return trimmed;
     }
-    return DEFAULT_NOTIFICATION_DIAGNOSTIC_MARKER;
+    return '';
 }
 
 export function markPushPayload(payload, { channel = null, event = null } = {}) {
