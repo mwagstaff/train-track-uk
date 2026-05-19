@@ -27,6 +27,10 @@ const SCHEDULED_LIVE_ACTIVITY_WAKE_RETRY_DELAY_MS = Math.max(
     0,
     Number(process.env.SCHEDULED_LIVE_ACTIVITY_WAKE_RETRY_DELAY_MS || '8000')
 );
+const SCHEDULED_LIVE_ACTIVITY_REGISTRATION_WATCHDOG_DELAY_MS = Math.max(
+    1000,
+    Number(process.env.SCHEDULED_LIVE_ACTIVITY_REGISTRATION_WATCHDOG_DELAY_MS || '30000')
+);
 const SCHEDULE_TIME_ZONE = process.env.NOTIFICATION_SCHEDULE_TIME_ZONE || 'Europe/London';
 const LIVE_ACTIVITY_ATTRIBUTES_TYPE = process.env.APNS_LIVE_ACTIVITY_ATTRIBUTES_TYPE || 'JourneyActivityAttributes';
 
@@ -843,6 +847,8 @@ class NotificationSubscriptionManager {
             }
         }
 
+        this.scheduleScheduledLiveActivityRegistrationWatchdog(activeSubscription, leg, legKey, snapshot?.fetchedAt);
+
         const sentAt = snapshot?.fetchedAt || new Date().toISOString();
         activeSubscription.lastAutoStartSentByLeg[legKey] = todayKey;
         activeSubscription.lastAutoStartSentAtByLeg[legKey] = sentAt;
@@ -850,6 +856,109 @@ class NotificationSubscriptionManager {
             console.error('[notifications] Failed to persist scheduled live activity start state:', err?.message || err);
         });
         return true;
+    }
+
+    scheduleScheduledLiveActivityRegistrationWatchdog(subscription, leg, legKey, startedAt = null) {
+        const scheduleKey = buildScheduleKeyForLeg(leg);
+        const startedAtIso = startedAt || new Date().toISOString();
+        setTimeout(() => {
+            this.checkScheduledLiveActivityRegistration({
+                subscription,
+                leg,
+                legKey,
+                scheduleKey,
+                startedAtIso
+            }).catch((error) => {
+                console.error('[notifications] live_activity_registration_watchdog_failed', JSON.stringify({
+                    subscription_id: subscription.id,
+                    device_id: subscription.deviceId,
+                    route_key: subscription.routeKey,
+                    leg: legKey,
+                    schedule_key: scheduleKey,
+                    error: error?.message || String(error)
+                }));
+            });
+        }, SCHEDULED_LIVE_ACTIVITY_REGISTRATION_WATCHDOG_DELAY_MS).unref?.();
+    }
+
+    async checkScheduledLiveActivityRegistration({ subscription, leg, legKey, scheduleKey, startedAtIso }) {
+        const collection = await getMongoCollection(COLLECTIONS.liveActivitySessions);
+        const registered = await collection.findOne({
+            deviceId: subscription.deviceId,
+            scheduleKey,
+            tokenUpdatedAt: { $gte: startedAtIso }
+        });
+        if (registered) {
+            console.log('[notifications] live_activity_registration_watchdog_ok', JSON.stringify({
+                subscription_id: subscription.id,
+                device_id: subscription.deviceId,
+                route_key: subscription.routeKey,
+                leg: legKey,
+                schedule_key: scheduleKey,
+                activity_id: registered.activityId || null
+            }));
+            return;
+        }
+
+        console.warn('[notifications] live_activity_registration_missing', JSON.stringify({
+            subscription_id: subscription.id,
+            device_id: subscription.deviceId,
+            route_key: subscription.routeKey,
+            leg_route_key: legRouteKey(leg),
+            leg: legKey,
+            schedule_key: scheduleKey,
+            watchdog_delay_ms: SCHEDULED_LIVE_ACTIVITY_REGISTRATION_WATCHDOG_DELAY_MS
+        }));
+        await this.recordSubscriptionAudit({
+            action: 'live_activity_registration_missing',
+            reason: 'scheduled_start_without_update_token',
+            source: this.subscriptionSource(subscription),
+            subscription,
+            metadata: {
+                leg: legKey,
+                schedule_key: scheduleKey,
+                started_at: startedAtIso,
+                watchdog_delay_ms: SCHEDULED_LIVE_ACTIVITY_REGISTRATION_WATCHDOG_DELAY_MS
+            }
+        });
+
+        if (subscription.pushToken) {
+            const wakePayload = buildNotificationPayload(
+                null,
+                null,
+                { context: 'live_activity_recovery_wake' },
+                'live_activity_recovery_wake'
+            );
+            const wakeResult = await this.pushClient.sendNotification(
+                subscription.pushToken,
+                wakePayload.payload,
+                {
+                    useSandbox: subscription.useSandbox === true,
+                    event: 'live_activity_recovery_wake',
+                    context: {
+                        device_id: subscription.deviceId,
+                        subscription_id: subscription.id,
+                        route_key: legRouteKey(leg),
+                        subscription_route_key: subscription.routeKey,
+                        from: leg.from,
+                        to: leg.to,
+                        schedule_key: scheduleKey,
+                        source: 'scheduled',
+                        watchdog_delay_ms: SCHEDULED_LIVE_ACTIVITY_REGISTRATION_WATCHDOG_DELAY_MS
+                    }
+                }
+            );
+            console.log('[notifications] live_activity_recovery_wake_push', JSON.stringify({
+                subscription_id: subscription.id,
+                device_id: subscription.deviceId,
+                route_key: subscription.routeKey,
+                leg_route_key: legRouteKey(leg),
+                leg: legKey,
+                schedule_key: scheduleKey,
+                status: wakeResult?.status,
+                reason: wakeResult?.body?.reason || wakeResult?.reason || null
+            }));
+        }
     }
 
     async sendUpdateNotifications(subscription, leg, legKey, snapshot, notificationTypes = getEffectiveNotificationTypes(subscription)) {

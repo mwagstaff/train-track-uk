@@ -130,12 +130,14 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
             let started = await ScheduledLiveActivityAutoStartManager.shared.handleRemoteNotification(userInfo: userInfo)
 
             // For push-to-start notifications (content-available: 1 is included in the
-            // payload), iOS wakes the app in background. Give the system a moment to make
-            // the newly-created live activity available via Activity.activities, then
-            // register any untracked activities with the server so it can start pushing
-            // updates immediately — without requiring the user to foreground the app.
-            try? await Task.sleep(nanoseconds: 750_000_000) // 750ms
-            await LiveActivityManager.shared.registerAnyUnregisteredActivities()
+            // payload), iOS wakes the app in background. The new Activity can take a
+            // moment to appear in Activity.activities, so probe a few times during the
+            // runtime iOS grants us instead of betting the whole hand on a single 750ms
+            // lookup.
+            for delay in [750_000_000, 1_500_000_000, 3_000_000_000] as [UInt64] {
+                try? await Task.sleep(nanoseconds: delay)
+                await LiveActivityManager.shared.registerAnyUnregisteredActivities()
+            }
 
             ClientDiagnosticsLogger.log("notifications", "remote_notification_handled", metadata: [
                 "started_scheduled_live_activity": started,
@@ -403,7 +405,7 @@ final class ScheduledLiveActivityAutoStartManager {
     }
 
     private func hasActiveActivity(id: String) -> Bool {
-        Activity<ScheduledJourneyActivityAttributes>.activities.contains { $0.id == id }
+        Activity<JourneyActivityAttributes>.activities.contains { $0.id == id }
     }
 
     private func isWithinWindow(now: Date, start: String, end: String) -> Bool {

@@ -20,9 +20,6 @@ struct Live_ActivityLiveActivity: Widget {
             URLQueryItem(name: "from", value: context.state.deepLinkFromCRS ?? context.state.fromCRS),
             URLQueryItem(name: "to", value: context.state.deepLinkToCRS ?? context.state.toCRS)
         ]
-        if !context.state.journeyUpdatesEnabled {
-            queryItems.append(URLQueryItem(name: "activate_updates", value: "1"))
-        }
         components.queryItems = queryItems
         return components.url
     }
@@ -129,9 +126,6 @@ struct LiveActivityLockScreenView: View {
             URLQueryItem(name: "from", value: state.deepLinkFromCRS ?? state.fromCRS),
             URLQueryItem(name: "to", value: state.deepLinkToCRS ?? state.toCRS)
         ]
-        if !state.journeyUpdatesEnabled {
-            queryItems.append(URLQueryItem(name: "activate_updates", value: "1"))
-        }
         components.queryItems = queryItems
         return components.url
     }
