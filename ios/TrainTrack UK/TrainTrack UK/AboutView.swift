@@ -53,6 +53,12 @@ struct AboutView: View {
                 Link(destination: URL(string: "https://www.nationalrail.co.uk/")!) {
                     Label("National Rail Enquiries", systemImage: "train.side.front.car")
                 }
+                Link(destination: URL(string: "https://github.com/davwheat/uk-railway-stations")!) {
+                    Label("UK Railway Stations", systemImage: "building.columns")
+                }
+                Link(destination: URL(string: "https://github.com/trainline-eu/stations")!) {
+                    Label("Stations - A Database of European Train Stations", systemImage: "globe.europe.africa")
+                }
             }
         }
         .navigationTitle("About")

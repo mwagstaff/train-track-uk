@@ -237,6 +237,9 @@ struct AddJourneyView: View {
     ) -> some View {
         Section(title) {
             TextField("Search station", text: input.query)
+                .textInputAutocapitalization(.never)
+                .disableAutocorrection(true)
+                .textContentType(.none)
                 .focused($focusedField, equals: focus)
                 .onChange(of: input.wrappedValue.query) { _ in
                     input.wrappedValue.selected = nil
