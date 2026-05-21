@@ -129,6 +129,7 @@ class LiveActivityManager {
             revision: existing?.revision || 0,
             tokenUpdatedAt: new Date().toISOString(),
             appIsActive: existing?.appIsActive ?? false,
+            cancelledDepartureAlertsSent: existing?.cancelledDepartureAlertsSent || {},
             journeyUpdatesEnabled: journeyUpdatesEnabled !== undefined
                 ? Boolean(journeyUpdatesEnabled)
                 : (existing?.journeyUpdatesEnabled ?? !(scheduleKey || existing?.scheduleKey)),
@@ -332,7 +333,10 @@ class LiveActivityManager {
                 return { sent: false, reason: 'no_departures', snapshot };
             }
 
-            const payload = this.buildPayload(subscription, snapshot, { appIsActive });
+            const payload = this.buildPayload(subscription, snapshot, {
+                appIsActive,
+                markCancellationAlerts: !dryRun
+            });
 
             if (dryRun) {
                 this.log(`[live-activity] dry_run ${subscription.deviceId}/${subscription.activityId}`);
@@ -551,7 +555,7 @@ class LiveActivityManager {
         };
     }
 
-    buildPayload(subscription, snapshot, { end = false, appIsActive = false } = {}) {
+    buildPayload(subscription, snapshot, { end = false, appIsActive = false, markCancellationAlerts = true } = {}) {
         const aps = {
             timestamp: moment(snapshot.fetchedAt).unix(),
             event: end ? 'end' : 'update',
@@ -566,7 +570,7 @@ class LiveActivityManager {
             aps['stale-date'] = moment(snapshot.fetchedAt).add(5, 'minutes').unix();
 
             // Add an alert for significant changes so iOS shows a banner notification
-            const alert = this.buildAlert(subscription.lastSnapshot, snapshot);
+            const alert = this.buildAlert(subscription, subscription.lastSnapshot, snapshot, { markCancellationAlerts });
             if (alert) {
                 aps.alert = alert;
                 aps.sound = 'default';
@@ -584,33 +588,42 @@ class LiveActivityManager {
 
     /**
      * Compares the previous and new departure snapshots and returns an APNs alert object
-     * when a significant change is detected for the primary (first) departure:
-     *  - Cancellation
-     *  - Platform change
-     *  - Delay increase of ≥ 5 minutes (and at least 3 minutes worse than before)
+     * when a significant change is detected:
+     *  - Cancellation of the primary (first) departure
+     *  - Cancellation of a subsequent departure when journey updates are enabled
+     *  - Platform change for the primary departure
+     *  - Delay increase of ≥ 5 minutes for the primary departure (and at least 3 minutes worse than before)
      *
      * Returns null if no significant change is detected or if the snapshots represent
      * different services (to avoid false alerts on service rotations).
      */
-    buildAlert(prevSnapshot, newSnapshot) {
+    buildAlert(subscription, prevSnapshot, newSnapshot, { markCancellationAlerts = true } = {}) {
         if (!prevSnapshot || !newSnapshot) return null;
         const prev = prevSnapshot.departures[0];
         const next = newSnapshot.departures[0];
-        if (!prev || !next) return null;
+        if (!prev || !next) return this.buildSubsequentCancellationAlert(subscription, prevSnapshot, newSnapshot, { markCancellationAlerts });
 
         // Only compare the same service to avoid false positives when a different
         // train becomes the primary departure between polls.
-        if (prev.serviceID && next.serviceID && prev.serviceID !== next.serviceID) {
-            return null;
-        }
+        const primaryServiceChanged = prev.serviceID && next.serviceID && prev.serviceID !== next.serviceID;
 
         // Cancellation
-        if (!prev.isCancelled && next.isCancelled) {
+        if (!primaryServiceChanged && !prev.isCancelled && next.isCancelled && !this.hasCancellationAlertBeenSent(subscription, next)) {
+            this.markCancellationAlertSent(subscription, next, markCancellationAlerts);
             const time = next.scheduled ? ` ${next.scheduled}` : '';
             return {
                 title: 'Train Cancelled',
                 body: `Your${time} service has been cancelled.`
             };
+        }
+
+        const subsequentCancellationAlert = this.buildSubsequentCancellationAlert(subscription, prevSnapshot, newSnapshot, { markCancellationAlerts });
+        if (subsequentCancellationAlert) {
+            return subsequentCancellationAlert;
+        }
+
+        if (primaryServiceChanged) {
+            return null;
         }
 
         // Platform change (only alert when both sides have a known platform)
@@ -634,6 +647,58 @@ class LiveActivityManager {
         }
 
         return null;
+    }
+
+    buildSubsequentCancellationAlert(subscription, prevSnapshot, newSnapshot, { markCancellationAlerts = true } = {}) {
+        if (!subscription?.journeyUpdatesEnabled) {
+            return null;
+        }
+
+        const previousByService = new Map(
+            (Array.isArray(prevSnapshot?.departures) ? prevSnapshot.departures : [])
+                .filter((dep) => dep?.serviceID)
+                .map((dep) => [dep.serviceID, dep])
+        );
+        const newDepartures = Array.isArray(newSnapshot?.departures) ? newSnapshot.departures : [];
+
+        for (const dep of newDepartures.slice(1)) {
+            if (!dep?.isCancelled) continue;
+            if (this.hasCancellationAlertBeenSent(subscription, dep)) continue;
+
+            const previous = dep.serviceID ? previousByService.get(dep.serviceID) : null;
+            if (!previous || previous.isCancelled) continue;
+
+            this.markCancellationAlertSent(subscription, dep, markCancellationAlerts);
+            const time = this.getTimeString(dep.estimated, dep.scheduled, dep.scheduled || '');
+            return {
+                title: 'Train Cancelled',
+                body: `${time || 'Service'} now cancelled`
+            };
+        }
+
+        return null;
+    }
+
+    cancellationAlertKey(dep) {
+        const serviceID = typeof dep?.serviceID === 'string' ? dep.serviceID.trim() : '';
+        if (serviceID) return `service:${serviceID}`;
+        const scheduled = typeof dep?.scheduled === 'string' ? dep.scheduled.trim() : '';
+        return scheduled ? `scheduled:${scheduled}` : null;
+    }
+
+    hasCancellationAlertBeenSent(subscription, dep) {
+        const key = this.cancellationAlertKey(dep);
+        return Boolean(key && subscription?.cancelledDepartureAlertsSent?.[key]);
+    }
+
+    markCancellationAlertSent(subscription, dep, shouldMark = true) {
+        if (!shouldMark) return;
+        const key = this.cancellationAlertKey(dep);
+        if (!key) return;
+        subscription.cancelledDepartureAlertsSent = {
+            ...(subscription.cancelledDepartureAlertsSent || {}),
+            [key]: new Date().toISOString()
+        };
     }
 
     // Returns the current time in Europe/London as minutes since midnight.

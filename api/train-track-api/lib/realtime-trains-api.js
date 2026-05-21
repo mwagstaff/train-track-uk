@@ -1,5 +1,6 @@
 import moment from 'moment';
 import { getWithRetry } from './upstream-api-client.js';
+import { testServiceHarness } from './test-service-harness.js';
 
 import { pastDeparturesCache } from './past-departures-cache.js';
 
@@ -34,6 +35,11 @@ if (typeof platformCacheCleanupTimer.unref === 'function') {
 export async function getTrainTimes(from, to) {
     if (!from || !to) {
         return { error: `Missing from (${from}) or to (${to}) parameter` };
+    }
+
+    const testResult = testServiceHarness.getTrainTimes(from, to);
+    if (testResult) {
+        return testResult;
     }
 
     const key = journeyRequestKey(from, to);

@@ -13,6 +13,7 @@ import { liveActivityManager } from './live-activity-manager.js';
 import { LiveActivityPushClient } from './live-activity-push-client.js';
 import { getDeviceLastSeen } from './metrics.js';
 import { pushToStartTokenStore, pushToStartTokenTtlPolicy } from './push-to-start-token-store.js';
+import { testServiceHarness } from './test-service-harness.js';
 
 const DEFAULT_LIMIT = 500;
 const DEFAULT_NOTIFICATION_LIMIT = 20;
@@ -140,6 +141,62 @@ export function registerAdminRoutes(app) {
             console.error('[admin] Failed to load live activities:', error?.message || error);
             res.status(500).type('html').send(renderErrorPage('Failed to load live activities.'));
         }
+    });
+
+    app.get('/admin/test-harness', async (req, res) => {
+        try {
+            res.type('html').send(renderTestHarnessPage({
+                state: testServiceHarness.getState(),
+                message: typeof req.query?.message === 'string' ? req.query.message : null
+            }));
+        } catch (error) {
+            console.error('[admin] Failed to load test harness:', error?.message || error);
+            res.status(500).type('html').send(renderErrorPage('Failed to load test harness.'));
+        }
+    });
+
+    app.all('/admin/test-harness/start', async (req, res) => {
+        try {
+            testServiceHarness.start({
+                intervalMinutes: req.body?.interval_minutes,
+                defaultPlatform: req.body?.default_platform,
+                defaultLength: req.body?.default_length
+            });
+            res.redirect('/admin/test-harness?message=started');
+        } catch (error) {
+            console.error('[admin] Failed to start test harness:', error?.message || error);
+            res.status(400).type('html').send(renderErrorPage(`Failed to start test harness: ${error?.message || error}`));
+        }
+    });
+
+    app.all('/admin/test-harness/stop', async (req, res) => {
+        testServiceHarness.stop();
+        res.redirect('/admin/test-harness?message=stopped');
+    });
+
+    app.all('/admin/test-harness/reset', async (req, res) => {
+        testServiceHarness.reset();
+        res.redirect('/admin/test-harness?message=reset');
+    });
+
+    app.all('/admin/test-harness/departures/:serviceId', async (req, res) => {
+        try {
+            testServiceHarness.updateDeparture(req.params.serviceId, {
+                delayMinutes: req.body?.delay_minutes,
+                isCancelled: req.body?.is_cancelled,
+                platform: req.body?.platform,
+                length: req.body?.length
+            });
+            res.redirect('/admin/test-harness?message=updated');
+        } catch (error) {
+            console.error('[admin] Failed to update test departure:', error?.message || error);
+            res.status(400).type('html').send(renderErrorPage(`Failed to update test departure: ${error?.message || error}`));
+        }
+    });
+
+    app.all('/admin/test-harness/departures/:serviceId/clear', async (req, res) => {
+        testServiceHarness.clearDeparture(req.params.serviceId);
+        res.redirect('/admin/test-harness?message=cleared');
     });
 
     app.get('/admin/subscriptions/:id', async (req, res) => {
@@ -478,6 +535,7 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
             <a href="admin/devices">Device Admin</a>
             <a href="admin/live-activities">Live Activities</a>
             <a href="admin/live-activity-payloads">Payload Replay</a>
+            <a href="admin/test-harness">Test Harness</a>
         </form>
 
         <section class="panel">
@@ -597,6 +655,113 @@ async function deleteSubscription(id) {
 </script>
 </body>
 </html>`;
+}
+
+function renderTestHarnessPage({ state, message = null }) {
+    const route = state.route || {};
+    const from = route.from || {};
+    const to = route.to || {};
+    const status = state.active
+        ? '<span class="badge badge-ok">running</span>'
+        : '<span class="badge badge-err">stopped</span>';
+    const messageHtml = message
+        ? `<div class="notice">Harness ${escapeHtml(message)}.</div>`
+        : '';
+    const departures = Array.isArray(state.departures) ? state.departures : [];
+    const rows = departures.map((departure) => {
+        const serviceID = escapeHtml(departure.serviceID || '');
+        const cancelled = departure.isCancelled ? 'checked' : '';
+        const delay = departure.isCancelled ? 0 : delayMinutesForDeparture(departure);
+        const estimated = departure.departure_time?.estimated || departure.departure_time?.scheduled || '';
+        const statusLabel = departure.isCancelled
+            ? '<span class="badge badge-err">cancelled</span>'
+            : (delay > 0 ? `<span class="badge badge-warn">${delay} min late</span>` : '<span class="badge badge-ok">on time</span>');
+        return `<tr>
+            <td><strong>${escapeHtml(departure.departure_time?.scheduled || '')}</strong></td>
+            <td>${escapeHtml(estimated)}</td>
+            <td>${statusLabel}</td>
+            <td class="token">${serviceID}</td>
+            <td>
+                <form class="row-form" method="POST" action="/admin/test-harness/departures/${encodeURIComponent(departure.serviceID || '')}">
+                    <label>Delay <input type="number" name="delay_minutes" min="0" max="240" value="${delay}" /></label>
+                    <input type="hidden" name="is_cancelled" value="false" />
+                    <label>Cancelled <input type="checkbox" name="is_cancelled" value="true" ${cancelled} /></label>
+                    <label>Platform <input type="text" name="platform" value="${escapeHtml(departure.platform || '')}" /></label>
+                    <label>Length <input type="number" name="length" min="1" max="24" value="${escapeHtml(departure.length || '')}" /></label>
+                    <button type="submit">Update</button>
+                </form>
+                <form class="inline-form" method="POST" action="/admin/test-harness/departures/${encodeURIComponent(departure.serviceID || '')}/clear">
+                    <button type="submit" class="secondary">Clear override</button>
+                </form>
+            </td>
+        </tr>`;
+    }).join('');
+
+    return renderAdminShell({
+        title: 'Train Track Test Harness',
+        body: `
+    <div class="wrap">
+        <a href="/admin">Back to Admin</a>
+        <h1>Train Track Test Harness</h1>
+        <div class="meta">Synthetic route: ${escapeHtml(from.name)} (${escapeHtml(from.crs)}) to ${escapeHtml(to.name)} (${escapeHtml(to.crs)}) · Status: ${status}</div>
+        ${messageHtml}
+
+        <section class="panel">
+            <h2>Route Controls</h2>
+            <div class="panel-body">
+                <dl class="summary-grid">
+                    <div><dt>Test start station</dt><dd>${escapeHtml(from.name)} · ${escapeHtml(from.crs)}</dd></div>
+                    <div><dt>Test end station</dt><dd>${escapeHtml(to.name)} · ${escapeHtml(to.crs)}</dd></div>
+                    <div><dt>Started at</dt><dd>${formatDate(state.startedAt) || '<span class="never">—</span>'}</dd></div>
+                    <div><dt>Updated at</dt><dd>${formatDate(state.updatedAt) || '<span class="never">—</span>'}</dd></div>
+                </dl>
+                <form class="control-form" method="POST" action="/admin/test-harness/start">
+                    <label>Interval minutes <input type="number" name="interval_minutes" min="1" max="60" value="${escapeHtml(state.intervalMinutes)}" /></label>
+                    <label>Default platform <input type="text" name="default_platform" value="${escapeHtml(state.defaultPlatform)}" /></label>
+                    <label>Default train length <input type="number" name="default_length" min="1" max="24" value="${escapeHtml(state.defaultLength)}" /></label>
+                    <button type="submit">Start</button>
+                </form>
+                <div class="button-row">
+                    <form method="POST" action="/admin/test-harness/stop"><button type="submit" class="secondary">Stop</button></form>
+                    <form method="POST" action="/admin/test-harness/reset"><button type="submit" class="danger">Reset</button></form>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel">
+            <h2>Generated Departures <span class="panel-count">${departures.length}</span></h2>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Scheduled</th>
+                            <th>Estimated</th>
+                            <th>Status</th>
+                            <th>Service ID</th>
+                            <th>Controls</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows || `<tr><td class="empty" colspan="5">Start the harness to generate test services.</td></tr>`}</tbody>
+                </table>
+            </div>
+        </section>
+    </div>`,
+        extraStyle: `
+        .notice { margin: 12px 0; padding: 10px 12px; border: 1px solid #b7d8c1; border-radius: 8px; background: #edf9f0; color: #14532d; }
+        .panel-body { padding: 16px; }
+        .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 0 0 16px; }
+        .summary-grid div { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: #fbfcff; }
+        dt { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+        dd { margin: 0; font-weight: 600; }
+        .control-form, .row-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; }
+        .control-form label, .row-form label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
+        input[type="number"], input[type="text"] { border: 1px solid var(--line); border-radius: 7px; padding: 7px 8px; min-width: 84px; }
+        .button-row, .inline-form { display: inline-flex; gap: 8px; margin-top: 10px; }
+        button.secondary { background: #fff; color: var(--text); border-color: var(--line); }
+        button.danger { background: #c0392b; border-color: #c0392b; color: #fff; }
+        .badge-warn { background: #fef3c7; color: #92400e; }
+        `
+    });
 }
 
 function renderDeviceListPage({ query, devices, page, pageSize, total, totalPages }) {
@@ -1241,7 +1406,7 @@ function renderNotificationDetailRow(event) {
     </tr>`;
 }
 
-function renderAdminShell({ title, body }) {
+function renderAdminShell({ title, body, extraStyle = '' }) {
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1317,11 +1482,17 @@ function renderAdminShell({ title, body }) {
         .badge-prod { background:#dbeafe; color:#1e40af; }
         .pager { display: flex; gap: 8px; align-items: center; justify-content: center; }
         .pager span { color: var(--muted); cursor: default; }
+        button {
+            border-radius: 8px; padding: 8px 12px; font-size: 13px;
+            border: 1px solid var(--accent); background: var(--accent);
+            color: #fff; cursor: pointer;
+        }
         .json {
             margin: 0; padding: 16px; overflow: auto;
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             font-size: 12px; line-height: 1.45; background: #fff;
         }
+        ${extraStyle}
     </style>
 </head>
 <body>${body}</body>
@@ -1833,6 +2004,26 @@ function relativeTime(from, to) {
 function formatStatus(status) {
     if (status === undefined || status === null) return '';
     return String(status);
+}
+
+function delayMinutesForDeparture(departure) {
+    const scheduled = parseHHmmToMinutes(departure?.departure_time?.scheduled);
+    const estimated = parseHHmmToMinutes(departure?.departure_time?.estimated);
+    if (scheduled === null || estimated === null) return 0;
+    let diff = estimated - scheduled;
+    if (diff < -12 * 60) diff += 24 * 60;
+    if (diff > 12 * 60) diff -= 24 * 60;
+    return Math.max(0, diff);
+}
+
+function parseHHmmToMinutes(value) {
+    if (typeof value !== 'string') return null;
+    const match = /^(\d{2}):(\d{2})$/.exec(value.trim());
+    if (!match) return null;
+    const hours = Number(match[1]);
+    const minutes = Number(match[2]);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+    return (hours * 60) + minutes;
 }
 
 function normalizeDeviceId(value) {

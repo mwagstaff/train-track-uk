@@ -18,6 +18,7 @@ import { notificationSubscriptionManager } from './lib/notification-subscription
 import { registerAdminRoutes } from './lib/admin-portal.js';
 import { listSubscriptionAuditEvents, recordDevicePreferences, recordGeofenceEvent } from './lib/admin-data-store.js';
 import { pushToStartTokenStore } from './lib/push-to-start-token-store.js';
+import { testServiceHarness } from './lib/test-service-harness.js';
 import { ensureMongoIndexes } from './lib/mongo-client.js';
 import path from 'path';
 
@@ -118,6 +119,11 @@ function normalizeDepartureTime(value) {
 
 function isValidDepartureTime(value) {
     return /^\d{2}:\d{2}$/.test(normalizeDepartureTime(value));
+}
+
+function isDebugBuildRequest(req) {
+    const value = req.get('X-Debug-Build');
+    return typeof value === 'string' && ['1', 'true', 'yes'].includes(value.trim().toLowerCase());
 }
 
 function findDepartureByTime(departures, departureTime) {
@@ -1122,6 +1128,20 @@ app.get('/api/v2/service_details/:serviceId*', async (req, res) => {
 // V2 API - Stations endpoint
 app.get('/api/v2/stations', async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
+    if (isDebugBuildRequest(req)) {
+        try {
+            const __dirname = path.resolve();
+            const stationsPath = path.join(__dirname, 'resources', 'stations.json');
+            const stations = JSON.parse(fs.readFileSync(stationsPath, 'utf8'));
+            return res.json([
+                ...stations,
+                ...testServiceHarness.getStations()
+            ]);
+        } catch (error) {
+            console.error('[stations] Failed to append test stations:', error?.message || error);
+            return res.status(500).json({ error: 'Failed to load stations' });
+        }
+    }
     const __dirname = path.resolve();
     res.sendFile(path.join(__dirname, 'resources', 'stations.json'));
 });

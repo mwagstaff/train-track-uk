@@ -1,7 +1,13 @@
 import { getWithRetry } from './upstream-api-client.js';
+import { testServiceHarness } from './test-service-harness.js';
 
 // Fetches data from the service details API
 export async function getServiceDetails(serviceId) {
+    const testDetails = testServiceHarness.getServiceDetails(serviceId);
+    if (testDetails) {
+        return testDetails;
+    }
+
     const url = `https://api1.raildata.org.uk/1010-service-details1_2/LDBWS/api/20220120/GetServiceDetails/${serviceId}`;
     try {
         const start = Date.now();

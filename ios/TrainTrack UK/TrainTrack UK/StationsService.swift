@@ -26,6 +26,9 @@ final class StationsService {
         do {
             var request = URLRequest(url: url)
             request.setValue(DeviceIdentity.deviceToken, forHTTPHeaderField: "X-Device-Token")
+            #if DEBUG
+            request.setValue("true", forHTTPHeaderField: "X-Debug-Build")
+            #endif
             let (data, _) = try await URLSession.shared.data(for: request)
             stations = try JSONDecoder().decode([Station].self, from: data)
         } catch {
