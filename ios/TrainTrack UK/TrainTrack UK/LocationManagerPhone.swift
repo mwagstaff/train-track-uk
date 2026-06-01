@@ -7,6 +7,7 @@ import UIKit
 final class LocationManagerPhone: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var coordinate: CLLocationCoordinate2D? = nil
     @Published private(set) var coordinateTimestamp: Date? = nil
+    @Published private(set) var lastLocation: CLLocation? = nil
 
     private let manager = CLLocationManager()
     private var isRequestingLocation = false
@@ -74,6 +75,7 @@ final class LocationManagerPhone: NSObject, ObservableObject, CLLocationManagerD
         if let loc = locations.last {
             print("📍 [LocationManagerPhone] didUpdateLocations lat=\(loc.coordinate.latitude) lng=\(loc.coordinate.longitude)")
             cancel()
+            lastLocation = loc
             coordinate = loc.coordinate
             coordinateTimestamp = loc.timestamp
             // Persist last known location for the widget to consume via App Group
@@ -137,8 +139,18 @@ final class LocationManagerPhone: NSObject, ObservableObject, CLLocationManagerD
         if let cachedAt, Date().timeIntervalSince(cachedAt) > allowedAge {
             return
         }
-        coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lng)
+        let cachedCoordinate = CLLocationCoordinate2D(latitude: lat, longitude: lng)
+        coordinate = cachedCoordinate
         coordinateTimestamp = cachedAt
+        if let cachedAt {
+            lastLocation = CLLocation(
+                coordinate: cachedCoordinate,
+                altitude: 0,
+                horizontalAccuracy: kCLLocationAccuracyHundredMeters,
+                verticalAccuracy: -1,
+                timestamp: cachedAt
+            )
+        }
     }
 
     deinit {

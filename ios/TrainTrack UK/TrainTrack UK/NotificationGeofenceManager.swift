@@ -40,6 +40,13 @@ private struct StationArrivalConfirmationState {
     }
 }
 
+struct NotificationGeofenceDebugSnapshot {
+    let monitoredRegionIdentifiers: [String]
+    let monitoredTargetCount: Int
+    let trackingMode: String
+    let authorizationStatus: String
+}
+
 // MARK: - Geofence Manager
 
 @MainActor
@@ -48,7 +55,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
     private enum ArrivalConfig {
         static let regionRadiusMeters: CLLocationDistance = 300
-        static let arrivalThresholdMeters: CLLocationDistance = 80
+        static let arrivalThresholdMeters: CLLocationDistance = 125
         static let activationDistanceMeters: CLLocationDistance = 450
         static let maxActivationAccuracyExpansionMeters: CLLocationDistance = 120
         static let acceptableAccuracyBufferMeters: CLLocationDistance = 50
@@ -763,6 +770,59 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             .map { $0.identifier }
     }
 
+    var debugSnapshot: NotificationGeofenceDebugSnapshot {
+        NotificationGeofenceDebugSnapshot(
+            monitoredRegionIdentifiers: monitoredRegionIdentifiers,
+            monitoredTargetCount: monitoredTargets.count,
+            trackingMode: trackingModeDescription,
+            authorizationStatus: authorizationStatusDescription(manager.authorizationStatus)
+        )
+    }
+
+    private var trackingModeDescription: String {
+        switch trackingMode {
+        case .lowSensitivity:
+            return "low"
+        case .highSensitivity:
+            return "high"
+        case nil:
+            return "off"
+        }
+    }
+
+    func evaluateForegroundArrival(
+        subscription: NotificationSubscription,
+        leg: NotificationLeg,
+        station: Station,
+        location: CLLocation,
+        source: String = "foreground-proximity"
+    ) {
+        guard subscription.muteOnArrival != false else { return }
+        if let activeUntil = subscription.activeUntil, activeUntil <= Date() {
+            return
+        }
+
+        let from = leg.from.uppercased()
+        let to = leg.to.uppercased()
+        guard from == station.crs.uppercased() else { return }
+
+        let identifier = regionIdentifier(subscriptionId: subscription.id, from: from, to: to)
+        let target = StationArrivalTarget(
+            identifier: identifier,
+            subscriptionId: subscription.id,
+            from: from,
+            to: to,
+            station: station
+        )
+
+        monitoredTargets[identifier] = target
+        if confirmationStates[identifier] == nil {
+            confirmationStates[identifier] = StationArrivalConfirmationState()
+        }
+        startHighSensitivityTracking(reason: source)
+        evaluateArrival(using: location, for: target, source: source)
+    }
+
     nonisolated func locationManager(_ manager: CLLocationManager, didStartMonitoringFor region: CLRegion) {
         guard region.identifier.hasPrefix(regionPrefix) else { return }
         let msg = "Started monitoring: \(region.identifier)"
@@ -937,7 +997,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         Task { @MainActor in
-            let msg = "Location authorization changed: status=\(manager.authorizationStatus.rawValue)"
+            let msg = "Location authorization changed: status=\(self.authorizationStatusDescription(manager.authorizationStatus))"
             DebugLogStore.shared.log(msg, category: "Geofence")
 
             if self.canMonitorWithCurrentAuthorization {
@@ -947,6 +1007,23 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 self.stopLocationUpdatesIfNeeded(reason: "authorization-changed")
                 self.updateBackgroundLocationState(hasActiveGeofences: false)
             }
+        }
+    }
+
+    private func authorizationStatusDescription(_ status: CLAuthorizationStatus) -> String {
+        switch status {
+        case .notDetermined:
+            return "notDetermined"
+        case .restricted:
+            return "restricted"
+        case .denied:
+            return "denied"
+        case .authorizedAlways:
+            return "authorizedAlways"
+        case .authorizedWhenInUse:
+            return "authorizedWhenInUse"
+        @unknown default:
+            return "unknown"
         }
     }
 }

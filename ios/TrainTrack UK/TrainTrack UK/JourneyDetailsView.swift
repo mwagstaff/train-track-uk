@@ -459,9 +459,10 @@ struct JourneyDetailsView: View {
 
                             // Actual CLLocationManager monitoring status — distinct from
                             // the GPS distance check above.
-                            if let subscription = notificationSubscription {
+                            if let subscription = liveSession ?? notificationSubscription {
                                 let expectedId = "tt_notify_mute:\(subscription.id):\(firstLeg.fromStation.crs.uppercased()):\(firstLeg.toStation.crs.uppercased())"
-                                let monitoredIds = NotificationGeofenceManager.shared.monitoredRegionIdentifiers
+                                let geofenceSnapshot = NotificationGeofenceManager.shared.debugSnapshot
+                                let monitoredIds = geofenceSnapshot.monitoredRegionIdentifiers
                                 let isRegistered = monitoredIds.contains(expectedId)
                                 HStack(spacing: 6) {
                                     Image(systemName: isRegistered ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
@@ -476,6 +477,10 @@ struct JourneyDetailsView: View {
                                         .foregroundStyle(.secondary)
                                 }
                                 .padding(.top, 2)
+
+                                Text("Tracking: \(geofenceSnapshot.trackingMode), targets: \(geofenceSnapshot.monitoredTargetCount), auth: \(geofenceSnapshot.authorizationStatus)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
                             }
 
                             Divider().padding(.vertical, 4)
@@ -581,6 +586,7 @@ struct JourneyDetailsView: View {
             location.request(forceFresh: true)
             deepLink.setVisibleJourney(currentGroup)
             handlePendingJourneyActivationIfNeeded()
+            evaluateForegroundArrivalIfNeeded()
         }
         .onDisappear {
             deepLink.clearVisibleJourney(currentGroup)
@@ -589,10 +595,12 @@ struct JourneyDetailsView: View {
             await notificationStore.refresh()
             await prefetchServiceDetailsIfNeeded()
             handlePendingJourneyActivationIfNeeded()
+            evaluateForegroundArrivalIfNeeded()
         }
         .refreshable { await manualRefresh() }
         .onReceive(Timer.publish(every: 20, on: .main, in: .common).autoconnect()) { _ in
             tick = Date()
+            evaluateForegroundArrivalIfNeeded()
             Task { await refreshServiceDetails() }
         }
         .alert(item: Binding(get: {
@@ -606,7 +614,14 @@ struct JourneyDetailsView: View {
                 tick = Date()
                 location.request(forceFresh: true)
                 handlePendingJourneyActivationIfNeeded()
+                Task {
+                    await notificationStore.syncGeofencesNow()
+                    evaluateForegroundArrivalIfNeeded()
+                }
             }
+        }
+        .onChange(of: location.coordinateTimestamp) { _, _ in
+            evaluateForegroundArrivalIfNeeded()
         }
         .onChange(of: showingReverse) { _ in
             Task {
@@ -614,6 +629,7 @@ struct JourneyDetailsView: View {
             }
             deepLink.setVisibleJourney(currentGroup)
             handlePendingJourneyActivationIfNeeded()
+            evaluateForegroundArrivalIfNeeded()
         }
     }
 
@@ -893,6 +909,34 @@ struct JourneyDetailsView: View {
         } else {
             return String(format: "%.2fkm", meters / 1000)
         }
+    }
+
+    private func evaluateForegroundArrivalIfNeeded() {
+        guard let firstLeg = currentGroup.legs.first else { return }
+        guard let currentLocation = location.lastLocation else { return }
+        guard Date().timeIntervalSince(currentLocation.timestamp) <= 120 else { return }
+        guard let subscription = liveSession else { return }
+
+        let from = firstLeg.fromStation.crs.uppercased()
+        let to = firstLeg.toStation.crs.uppercased()
+        let leg = subscription.legs.first {
+            $0.from.uppercased() == from && $0.to.uppercased() == to
+        } ?? NotificationLeg(
+            from: from,
+            to: to,
+            fromName: firstLeg.fromStation.name,
+            toName: firstLeg.toStation.name,
+            enabled: true,
+            windowStart: "00:00",
+            windowEnd: "23:59"
+        )
+
+        NotificationGeofenceManager.shared.evaluateForegroundArrival(
+            subscription: subscription,
+            leg: leg,
+            station: firstLeg.fromStation,
+            location: currentLocation
+        )
     }
 
     private func debugSimulateArrival(delaySeconds: TimeInterval = 0) {

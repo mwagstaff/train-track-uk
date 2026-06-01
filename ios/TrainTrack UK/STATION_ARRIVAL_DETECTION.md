@@ -145,13 +145,13 @@ Current setting:
 - baseline = `arrivalThreshold + 50m`
 - clamp to `60m ... 140m`
 
-With the current threshold this yields a practical acceptance cap of `130m`.
+With the current threshold this yields a practical acceptance cap of `140m`.
 
 ### Base Arrival Threshold
 
 Current setting:
 
-- base arrival threshold = `80m`
+- base arrival threshold = `125m`
 
 This is intentionally wider than the docking-app version because a station approach area is larger and the user experience is better if the app mutes slightly early rather than missing arrival.
 
@@ -164,7 +164,7 @@ Current setting:
 - add `60%` of excess uncertainty above the base threshold
 - cap expansion at `45m`
 
-So the threshold can grow from `80m` to a maximum of `125m`.
+So the threshold can grow from `125m` to a maximum of `134m` within the current accepted-accuracy cap.
 
 ### Candidate Rule
 
@@ -253,7 +253,7 @@ Arrival confirmation then triggers the existing mute flow:
 These are the active values in `NotificationGeofenceManager`:
 
 - region radius: `300m`
-- base arrival threshold: `80m`
+- base arrival threshold: `125m`
 - activation distance: `450m`
 - accepted horizontal accuracy: `60m ... 140m`
 - threshold expansion factor: `0.6`
