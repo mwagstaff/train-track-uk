@@ -57,7 +57,7 @@ Monitoring is only active while there are eligible live sessions with `muteOnArr
 
 ## Permission And Background Requirements
 
-The feature assumes:
+The feature prefers Always authorization for the most reliable cold-wake behavior, but will still monitor in a degraded `authorizedWhenInUse` state while continuing to request Always authorization. The app configuration assumes:
 
 - `NSLocationWhenInUseUsageDescription`
 - `NSLocationAlwaysAndWhenInUseUsageDescription`
@@ -78,18 +78,30 @@ This matters because Apple documents that Reduced Accuracy prevents effective re
 
 ## Tracking Mode
 
-While station-arrival monitoring is active, the app uses continuous standard location updates with:
+While station-arrival monitoring is active, the app uses the same two-stage tracking pattern as the dock-arrival flow in My Boris Bikes:
 
-- `desiredAccuracy = kCLLocationAccuracyBest`
+1. Start continuous low-sensitivity location updates for the active session.
+2. Escalate to high-sensitivity updates when a region hint arrives or a location fix is plausibly within the station activation distance.
+
+The low-sensitivity profile uses:
+
+- `desiredAccuracy = kCLLocationAccuracyNearestTenMeters`
+- `distanceFilter = 25`
+- `activityType = .fitness`
+- `pausesLocationUpdatesAutomatically = false`
+- `allowsBackgroundLocationUpdates = true`
+- `showsBackgroundLocationIndicator = true`
+
+The high-sensitivity confirmation profile uses:
+
+- `desiredAccuracy = kCLLocationAccuracyBestForNavigation`
 - `distanceFilter = kCLDistanceFilterNone`
 - `activityType = .otherNavigation`
 - `pausesLocationUpdatesAutomatically = false`
 - `allowsBackgroundLocationUpdates = true`
 - `showsBackgroundLocationIndicator = true`
 
-This is deliberately aggressive for a short-lived session. Reliability is prioritized over battery minimization.
-
-`kCLLocationAccuracyBest` is used instead of `kCLLocationAccuracyBestForNavigation` because the target area is broader than a bike dock and the app only needs a reliable station-arrival decision, not turn-by-turn navigation fidelity.
+This keeps the app alive and receiving updates in the background without running the most aggressive location profile until the user is likely close enough for arrival confirmation.
 
 ## Role Of Region Monitoring
 

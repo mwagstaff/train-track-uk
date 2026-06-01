@@ -50,6 +50,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         static let regionRadiusMeters: CLLocationDistance = 300
         static let arrivalThresholdMeters: CLLocationDistance = 80
         static let activationDistanceMeters: CLLocationDistance = 450
+        static let maxActivationAccuracyExpansionMeters: CLLocationDistance = 120
         static let acceptableAccuracyBufferMeters: CLLocationDistance = 50
         static let acceptableAccuracyMinMeters: CLLocationAccuracy = 60
         static let acceptableAccuracyMaxMeters: CLLocationAccuracy = 140
@@ -65,12 +66,17 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         static let fullAccuracyPurposeKey = "StationArrivalMonitoring"
     }
 
+    private enum TrackingMode {
+        case lowSensitivity
+        case highSensitivity
+    }
+
     private let manager = CLLocationManager()
     private nonisolated let regionPrefix = "tt_notify_mute"
     static let regionRadiusMeters: CLLocationDistance = ArrivalConfig.regionRadiusMeters
     private var monitoredTargets: [String: StationArrivalTarget] = [:]
     private var confirmationStates: [String: StationArrivalConfirmationState] = [:]
-    private var isContinuousTrackingActive = false
+    private var trackingMode: TrackingMode?
     private var hasRequestedFullAccuracyThisSession = false
 
     // iOS 18+ uses CLServiceSession to express the app's "Always" authorization need
@@ -110,9 +116,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     private override init() {
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyBest
-        manager.distanceFilter = kCLDistanceFilterNone
-        manager.activityType = .otherNavigation
+        configureLowSensitivityTrackingProfile()
         manager.pausesLocationUpdatesAutomatically = false
         manager.allowsBackgroundLocationUpdates = false
         manager.showsBackgroundLocationIndicator = false
@@ -143,7 +147,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         let trackedRegions = manager.monitoredRegions.filter { $0.identifier.hasPrefix(regionPrefix) }
         guard trackedRegions.isEmpty else { return }
         print("📍 [GeofenceManager] stopLocationActivityIfIdle: no tracked regions, clearing background location state")
-        stopContinuousTrackingIfNeeded(reason: "idle")
+        stopLocationUpdatesIfNeeded(reason: "idle")
         updateBackgroundLocationState(hasActiveGeofences: false)
     }
 
@@ -154,7 +158,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         guard !subscriptions.isEmpty else {
             stopMonitoring(Array(existing))
             clearArrivalMonitoringState()
-            stopContinuousTrackingIfNeeded(reason: "no subscriptions")
+            stopLocationUpdatesIfNeeded(reason: "no subscriptions")
             updateBackgroundLocationState(hasActiveGeofences: false)
             let syncMsg = "Geofence sync: 0 desired, +0 added, -\(existing.count) removed"
             Task { @MainActor in
@@ -169,12 +173,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         }
         requestAlwaysAuthorizationIfNeeded()
 
-        guard manager.authorizationStatus == .authorizedAlways else {
+        guard canMonitorWithCurrentAuthorization else {
             stopMonitoring(Array(existing))
             clearArrivalMonitoringState()
-            stopContinuousTrackingIfNeeded(reason: "missing always authorization")
+            stopLocationUpdatesIfNeeded(reason: "missing location authorization")
             updateBackgroundLocationState(hasActiveGeofences: false)
-            let syncMsg = "Geofence sync skipped: Always location authorization not granted"
+            let syncMsg = "Geofence sync skipped: location authorization not granted"
             Task { @MainActor in
                 DebugLogStore.shared.log(syncMsg, category: "Geofence")
             }
@@ -232,12 +236,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
         updateBackgroundLocationState(hasActiveGeofences: !desiredTargets.isEmpty)
         if !desiredTargets.isEmpty {
-            startContinuousTrackingIfNeeded(reason: "sync")
+            startLowSensitivityTrackingIfNeeded(reason: "sync")
             if let currentLocation = currentUsableLocation(maxAge: ArrivalConfig.recentLocationForRegionHintSeconds) {
                 evaluateArrival(using: currentLocation, source: "sync-current-location")
             }
         } else {
-            stopContinuousTrackingIfNeeded(reason: "sync-empty")
+            stopLocationUpdatesIfNeeded(reason: "sync-empty")
         }
 
         let syncMsg = "Geofence sync: \(desired.count) desired, +\(addedCount) added, -\(removedCount) removed, tracking=\(desiredTargets.count)"
@@ -262,7 +266,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
     private func requestTemporaryFullAccuracyIfNeeded() {
         guard #available(iOS 14.0, *) else { return }
-        guard manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse else { return }
+        guard canMonitorWithCurrentAuthorization else { return }
         guard manager.accuracyAuthorization == .reducedAccuracy else { return }
         guard UIApplication.shared.applicationState == .active else { return }
         guard !hasRequestedFullAccuracyThisSession else { return }
@@ -274,34 +278,78 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         manager.requestTemporaryFullAccuracyAuthorization(withPurposeKey: ArrivalConfig.fullAccuracyPurposeKey)
     }
 
-    private func startContinuousTrackingIfNeeded(reason: String) {
+    private var canMonitorWithCurrentAuthorization: Bool {
+        switch manager.authorizationStatus {
+        case .authorizedAlways, .authorizedWhenInUse:
+            return true
+        case .notDetermined, .denied, .restricted:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    private func configureLowSensitivityTrackingProfile() {
+        manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        manager.distanceFilter = 25
+        manager.activityType = .fitness
+        manager.pausesLocationUpdatesAutomatically = false
+    }
+
+    private func configureHighSensitivityTrackingProfile() {
+        manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
+        manager.distanceFilter = kCLDistanceFilterNone
+        manager.activityType = .otherNavigation
+        manager.pausesLocationUpdatesAutomatically = false
+    }
+
+    private func startLowSensitivityTrackingIfNeeded(reason: String) {
         guard !monitoredTargets.isEmpty else { return }
-        guard manager.authorizationStatus == .authorizedAlways else { return }
+        guard canMonitorWithCurrentAuthorization else { return }
 
         updateBackgroundLocationState(hasActiveGeofences: true)
         requestTemporaryFullAccuracyIfNeeded()
 
-        guard !isContinuousTrackingActive else { return }
-        manager.desiredAccuracy = kCLLocationAccuracyBest
-        manager.distanceFilter = kCLDistanceFilterNone
-        manager.activityType = .otherNavigation
-        manager.pausesLocationUpdatesAutomatically = false
+        guard trackingMode == nil else { return }
+        configureLowSensitivityTrackingProfile()
         manager.startUpdatingLocation()
-        isContinuousTrackingActive = true
+        manager.requestLocation()
+        trackingMode = .lowSensitivity
 
-        let msg = "Started continuous station-arrival tracking (\(reason))"
+        let msg = "Started low-sensitivity station-arrival tracking (\(reason))"
         DebugLogStore.shared.log(msg, category: "Geofence")
         print("📍 \(msg)")
     }
 
-    private func stopContinuousTrackingIfNeeded(reason: String) {
+    private func startHighSensitivityTracking(reason: String) {
+        guard !monitoredTargets.isEmpty else { return }
+        guard canMonitorWithCurrentAuthorization else { return }
+
+        updateBackgroundLocationState(hasActiveGeofences: true)
+        requestTemporaryFullAccuracyIfNeeded()
+
+        if trackingMode != .highSensitivity {
+            configureHighSensitivityTrackingProfile()
+            manager.startUpdatingLocation()
+            trackingMode = .highSensitivity
+
+            let msg = "Started high-sensitivity station-arrival tracking (\(reason))"
+            DebugLogStore.shared.log(msg, category: "Geofence")
+            print("📍 \(msg)")
+        }
+
+        manager.requestLocation()
+    }
+
+    private func stopLocationUpdatesIfNeeded(reason: String) {
         hasRequestedFullAccuracyThisSession = false
-        guard isContinuousTrackingActive else { return }
+        guard trackingMode != nil else { return }
 
         manager.stopUpdatingLocation()
-        isContinuousTrackingActive = false
+        configureLowSensitivityTrackingProfile()
+        trackingMode = nil
 
-        let msg = "Stopped continuous station-arrival tracking (\(reason))"
+        let msg = "Stopped station-arrival location updates (\(reason))"
         DebugLogStore.shared.log(msg, category: "Geofence")
         print("📍 \(msg)")
     }
@@ -426,6 +474,14 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         return ArrivalConfig.arrivalThresholdMeters + expansion
     }
 
+    private func effectiveActivationDistance(horizontalAccuracy: CLLocationAccuracy) -> CLLocationDistance {
+        guard horizontalAccuracy > 0 else { return ArrivalConfig.activationDistanceMeters }
+        return ArrivalConfig.activationDistanceMeters + min(
+            horizontalAccuracy,
+            ArrivalConfig.maxActivationAccuracyExpansionMeters
+        )
+    }
+
     private func confirmationDwell(for state: StationArrivalConfirmationState, now: Date) -> TimeInterval {
         if let regionHintAt = state.lastRegionHintAt,
            now.timeIntervalSince(regionHintAt) <= ArrivalConfig.recentRegionHintSeconds {
@@ -479,7 +535,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         state.lastRegionHintAt = Date()
         confirmationStates[identifier] = state
 
-        startContinuousTrackingIfNeeded(reason: "region-\(source)")
+        startHighSensitivityTracking(reason: "region-\(source)")
 
         let msg = "Region hint [\(source)] for \(target.from)→\(target.to) at \(target.station.name)"
         DebugLogStore.shared.log(msg, category: "Geofence")
@@ -487,7 +543,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
         if let location = currentUsableLocation(maxAge: ArrivalConfig.recentLocationForRegionHintSeconds) {
             evaluateArrival(using: location, for: target, source: "region-\(source)-cached")
-        } else if manager.authorizationStatus == .authorizedAlways {
+        } else if canMonitorWithCurrentAuthorization {
             manager.requestLocation()
         }
     }
@@ -522,7 +578,14 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         state.lastCompensatedDistance = compensatedDistance
         state.lastHorizontalAccuracy = horizontalAccuracy
 
-        if rawDistance > ArrivalConfig.activationDistanceMeters, state.confirmationStartedAt == nil {
+        let activationDistance = effectiveActivationDistance(horizontalAccuracy: horizontalAccuracy)
+        let candidateDistance = min(rawDistance, compensatedDistance)
+
+        if candidateDistance <= activationDistance {
+            startHighSensitivityTracking(reason: "within-activation-distance")
+        }
+
+        if candidateDistance > activationDistance, state.confirmationStartedAt == nil {
             confirmationStates[target.identifier] = state
             return
         }
@@ -546,7 +609,6 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         }
 
         let effectiveThreshold = effectiveArrivalThreshold(horizontalAccuracy: horizontalAccuracy)
-        let candidateDistance = min(rawDistance, compensatedDistance)
         let isCandidate = candidateDistance <= effectiveThreshold
 
         if isCandidate {
@@ -773,8 +835,8 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         let msg = "Location updates paused unexpectedly; restarting continuous arrival tracking"
         Task { @MainActor in
             DebugLogStore.shared.log(msg, category: "Geofence")
-            self.isContinuousTrackingActive = false
-            self.startContinuousTrackingIfNeeded(reason: "pause-restart")
+            self.trackingMode = nil
+            self.startLowSensitivityTrackingIfNeeded(reason: "pause-restart")
         }
         print("📍 \(msg)")
     }
@@ -878,11 +940,11 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             let msg = "Location authorization changed: status=\(manager.authorizationStatus.rawValue)"
             DebugLogStore.shared.log(msg, category: "Geofence")
 
-            if manager.authorizationStatus == .authorizedAlways {
+            if self.canMonitorWithCurrentAuthorization {
                 self.requestTemporaryFullAccuracyIfNeeded()
                 await NotificationSubscriptionStore.shared.refresh()
             } else if !self.monitoredTargets.isEmpty {
-                self.stopContinuousTrackingIfNeeded(reason: "authorization-changed")
+                self.stopLocationUpdatesIfNeeded(reason: "authorization-changed")
                 self.updateBackgroundLocationState(hasActiveGeofences: false)
             }
         }
@@ -1039,7 +1101,8 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
                 msg += "\nLeg: \(context.from)→\(context.to)"
                 msg += "\nDate: \(context.dateKey) Delay: \(context.delayMinutes)m"
             }
-            Task { @MainActor in DebugLogStore.shared.log(msg, category: "Error") }
+            let loggedMessage = msg
+            Task { @MainActor in DebugLogStore.shared.log(loggedMessage, category: "Error") }
             print("❌ \(msg)")
             Task { @MainActor in
                 MuteRequestDebugStore.shared.update(status: "error", response: error.localizedDescription)
