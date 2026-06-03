@@ -51,6 +51,7 @@ final class LiveActivityManager: ObservableObject {
     private var lastBackendCheckInAt: Date? = nil
     private let backendCheckInMinIntervalSeconds: TimeInterval = 5
     private var lastRegisteredPushToStartToken: String? = nil
+    private var notificationLiveSessionEnsuredActivityIDs: Set<String> = []
 
     // Live Activity lifetime; set to nil to disable auto-expiry and rely on manual dismissal.
     private let activityExpiryInterval: TimeInterval? = nil
@@ -197,16 +198,35 @@ final class LiveActivityManager: ObservableObject {
 
         let applicationState = UIApplication.shared.applicationState
         if allowAutomaticStart && !triggeredByUser && applicationState != .active {
-            print("🚫 [LiveActivity] Automatic start skipped because app is not foreground (state=\(applicationState.rawValue))")
-            os_log("[LiveActivity] Automatic start skipped because app is not foreground", type: .info)
-
-            for activity in systemActivities(
+            let matchingSystemActivities = systemActivities(
                 forFromCRS: journey.fromStation.crs.uppercased(),
                 toCRS: journey.toStation.crs.uppercased()
-            ) where trackedActivities[activity.id] == nil {
+            )
+            ClientDiagnosticsLogger.log("live_activity", "automatic_background_start_probe", metadata: [
+                "application_state": applicationState.rawValue,
+                "from": journey.fromStation.crs.uppercased(),
+                "to": journey.toStation.crs.uppercased(),
+                "matching_system_activity_count": matchingSystemActivities.count,
+                "tracked_count": trackedActivities.count,
+                "schedule_key": scheduleKey
+            ])
+            DebugLogStore.shared.log(
+                "Scheduled Live Activity background probe for \(journey.fromStation.crs.uppercased())→\(journey.toStation.crs.uppercased()): system activities=\(matchingSystemActivities.count), appState=\(applicationState.rawValue)",
+                category: "Scheduled"
+            )
+
+            for activity in matchingSystemActivities where trackedActivities[activity.id] == nil {
                 await registerRemoteStartedActivityIfNeeded(activity)
             }
-            return
+
+            if !matchingSystemActivities.isEmpty {
+                return
+            }
+
+            DebugLogStore.shared.log(
+                "No push-to-start Live Activity found for \(journey.fromStation.crs.uppercased())→\(journey.toStation.crs.uppercased()); attempting local Activity request fallback",
+                category: "Scheduled"
+            )
         }
 
         // Check if already tracking this journey. If a preferred service was provided,
@@ -378,6 +398,25 @@ final class LiveActivityManager: ObservableObject {
                 print("❌ [LiveActivity] Error domain: \(nsError.domain), code: \(nsError.code)")
                 print("❌ [LiveActivity] Error userInfo: \(nsError.userInfo)")
             }
+            ClientDiagnosticsLogger.log("live_activity", "start_failed", metadata: [
+                "from": journey.fromStation.crs.uppercased(),
+                "to": journey.toStation.crs.uppercased(),
+                "triggered_by_user": triggeredByUser,
+                "allow_automatic_start": allowAutomaticStart,
+                "application_state": UIApplication.shared.applicationState.rawValue,
+                "schedule_key": scheduleKey,
+                "error": error.localizedDescription,
+                "error_details": String(describing: error)
+            ])
+            DebugLogStore.shared.log(
+                """
+                Live Activity start failed
+                Route: \(journey.fromStation.crs.uppercased())→\(journey.toStation.crs.uppercased())
+                Auto start: \(allowAutomaticStart && !triggeredByUser)
+                Error: \(error.localizedDescription)
+                """,
+                category: "Error"
+            )
             let shouldSuppress = shouldSuppressStartError(
                 error,
                 triggeredByUser: triggeredByUser,
@@ -454,6 +493,7 @@ final class LiveActivityManager: ObservableObject {
 
         // Remove from tracked activities
         trackedActivities[activityID] = nil
+        notificationLiveSessionEnsuredActivityIDs.remove(activityID)
         ScheduledLiveActivityAutoStartManager.shared.removeRecord(activityID: activityID)
 
         // Arrival-triggered stops must leave the notification live-session intact until
@@ -1271,18 +1311,25 @@ final class LiveActivityManager: ObservableObject {
 
     private func registerRemoteStartedActivityIfNeeded(_ activity: Activity<JourneyActivityAttributes>) async {
         await replaceScheduledActivityIfNeeded(with: activity)
+
+        let fromCRS = activity.contentState.fromCRS.uppercased()
+        let toCRS = activity.contentState.toCRS.uppercased()
+        let scheduleKey = scheduledActivityKey(for: activity)
+        let effectiveJourneyUpdatesEnabled = remoteStartedJourneyUpdatesEnabled(for: activity)
         guard trackedActivities[activity.id] == nil else {
             ClientDiagnosticsLogger.log("live_activity", "remote_started_already_tracked", metadata: [
                 "activity_id": activity.id,
                 "schedule_key": activity.contentState.scheduleKey,
-                "from": activity.contentState.fromCRS,
-                "to": activity.contentState.toCRS
+                "from": fromCRS,
+                "to": toCRS,
+                "journey_updates_enabled": activity.contentState.journeyUpdatesEnabled,
+                "effective_journey_updates_enabled": effectiveJourneyUpdatesEnabled
             ])
+            await ensureScheduledJourneyUpdatesActiveIfNeeded(activity, fromCRS: fromCRS, toCRS: toCRS)
+            await ensureNotificationLiveSessionForRemoteStartedActivity(activity, fromCRS: fromCRS, toCRS: toCRS)
             return
         }
 
-        let fromCRS = activity.contentState.fromCRS.uppercased()
-        let toCRS = activity.contentState.toCRS.uppercased()
         ClientDiagnosticsLogger.log("live_activity", "remote_started_activity_discovered", metadata: [
             "activity_id": activity.id,
             "from": fromCRS,
@@ -1291,8 +1338,15 @@ final class LiveActivityManager: ObservableObject {
             "schedule_key": activity.contentState.scheduleKey,
             "window_start": activity.contentState.windowStart,
             "window_end": activity.contentState.windowEnd,
-            "journey_updates_enabled": activity.contentState.journeyUpdatesEnabled
+            "journey_updates_enabled": activity.contentState.journeyUpdatesEnabled,
+            "effective_journey_updates_enabled": effectiveJourneyUpdatesEnabled
         ])
+        if scheduleKey != nil && !activity.contentState.journeyUpdatesEnabled {
+            DebugLogStore.shared.log(
+                "Scheduled push-started activity promoted to live journey updates for \(fromCRS)→\(toCRS)",
+                category: "Scheduled"
+            )
+        }
 
         var tracked = TrackedActivity(
             activity: activity,
@@ -1300,8 +1354,8 @@ final class LiveActivityManager: ObservableObject {
             toCRS: toCRS,
             startedAt: Date(),
             preferredServiceID: nil,
-            journeyUpdatesEnabled: activity.contentState.journeyUpdatesEnabled,
-            scheduleKey: activity.contentState.scheduleKey,
+            journeyUpdatesEnabled: effectiveJourneyUpdatesEnabled,
+            scheduleKey: scheduleKey,
             windowStart: activity.contentState.windowStart,
             windowEnd: activity.contentState.windowEnd
         )
@@ -1309,6 +1363,162 @@ final class LiveActivityManager: ObservableObject {
         trackedActivities[activity.id] = tracked
         watchPushToken(for: activity, fromCRS: fromCRS, toCRS: toCRS)
         updatePublishedState()
+        await ensureNotificationLiveSessionForRemoteStartedActivity(activity, fromCRS: fromCRS, toCRS: toCRS)
+    }
+
+    private func scheduledActivityKey(for activity: Activity<JourneyActivityAttributes>) -> String? {
+        guard let scheduleKey = activity.contentState.scheduleKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !scheduleKey.isEmpty else {
+            return nil
+        }
+        return scheduleKey
+    }
+
+    private func remoteStartedJourneyUpdatesEnabled(for activity: Activity<JourneyActivityAttributes>) -> Bool {
+        if scheduledActivityKey(for: activity) != nil {
+            return true
+        }
+        return activity.contentState.journeyUpdatesEnabled
+    }
+
+    private func ensureScheduledJourneyUpdatesActiveIfNeeded(
+        _ activity: Activity<JourneyActivityAttributes>,
+        fromCRS: String,
+        toCRS: String
+    ) async {
+        guard let scheduleKey = scheduledActivityKey(for: activity),
+              var tracked = trackedActivities[activity.id] else {
+            return
+        }
+
+        let wasEnabled = tracked.journeyUpdatesEnabled
+        let needsMetadataRefresh = tracked.scheduleKey != scheduleKey
+            || tracked.windowStart != activity.contentState.windowStart
+            || tracked.windowEnd != activity.contentState.windowEnd
+        guard !wasEnabled || needsMetadataRefresh else { return }
+
+        tracked.journeyUpdatesEnabled = true
+        tracked.scheduleKey = scheduleKey
+        tracked.windowStart = activity.contentState.windowStart
+        tracked.windowEnd = activity.contentState.windowEnd
+        trackedActivities[activity.id] = tracked
+        updatePublishedState()
+
+        ClientDiagnosticsLogger.log("live_activity", "scheduled_remote_activity_updates_ensured", metadata: [
+            "activity_id": activity.id,
+            "schedule_key": scheduleKey,
+            "from": fromCRS,
+            "to": toCRS,
+            "previous_journey_updates_enabled": wasEnabled,
+            "has_push_token": activity.pushToken != nil
+        ])
+        DebugLogStore.shared.log(
+            "Scheduled remote activity updates ensured for \(fromCRS)→\(toCRS): wasEnabled=\(wasEnabled), schedule=\(scheduleKey)",
+            category: "Scheduled"
+        )
+
+        guard let tokenData = activity.pushToken else { return }
+        _ = await sendLiveActivityRegistration(
+            activityID: activity.id,
+            tokenString: encodePushToken(tokenData),
+            fromCRS: fromCRS,
+            toCRS: toCRS,
+            routeTitle: activity.contentState.routeTitle,
+            deepLinkFromCRS: activity.contentState.deepLinkFromCRS,
+            deepLinkToCRS: activity.contentState.deepLinkToCRS,
+            preferredServiceID: tracked.preferredServiceID,
+            journeyUpdatesEnabled: true,
+            scheduleKey: scheduleKey,
+            windowStart: activity.contentState.windowStart,
+            windowEnd: activity.contentState.windowEnd
+        )
+    }
+
+    private func ensureNotificationLiveSessionForRemoteStartedActivity(
+        _ activity: Activity<JourneyActivityAttributes>,
+        fromCRS: String,
+        toCRS: String
+    ) async {
+        guard !notificationLiveSessionEnsuredActivityIDs.contains(activity.id) else { return }
+        guard let scheduleKey = scheduledActivityKey(for: activity) else {
+            ClientDiagnosticsLogger.log("live_activity", "remote_started_live_session_skipped_missing_schedule", metadata: [
+                "activity_id": activity.id,
+                "from": fromCRS,
+                "to": toCRS,
+                "route_title": activity.contentState.routeTitle,
+                "window_start": activity.contentState.windowStart,
+                "window_end": activity.contentState.windowEnd,
+                "journey_updates_enabled": activity.contentState.journeyUpdatesEnabled
+            ])
+            DebugLogStore.shared.log(
+                "Remote-started activity skipped live session registration: missing schedule key for \(fromCRS)→\(toCRS)",
+                category: "Scheduled"
+            )
+            return
+        }
+
+        if StationsService.shared.stations.isEmpty {
+            try? await StationsService.shared.loadStations()
+        }
+        let fromName = stationName(for: fromCRS)
+        let toName = stationName(for: toCRS)
+
+        let liveSessionID = await ScheduledNotificationLiveSessionRegistrar.ensureLiveSession(
+            existingLiveSessionID: nil,
+            from: fromCRS,
+            to: toCRS,
+            fromName: fromName,
+            toName: toName,
+            scheduleKey: scheduleKey,
+            windowStart: activity.contentState.windowStart,
+            windowEnd: activity.contentState.windowEnd,
+            source: "remote_started_live_activity",
+            metadata: [
+                "activity_id": activity.id,
+                "schedule_key": scheduleKey,
+                "from": fromCRS,
+                "to": toCRS,
+                "from_name": fromName,
+                "to_name": toName,
+                "route_title": activity.contentState.routeTitle,
+                "window_start": activity.contentState.windowStart,
+                "window_end": activity.contentState.windowEnd,
+                "journey_updates_enabled": activity.contentState.journeyUpdatesEnabled
+            ]
+        )
+
+        guard let liveSessionID else {
+            ClientDiagnosticsLogger.log("live_activity", "remote_started_live_session_not_registered", metadata: [
+                "activity_id": activity.id,
+                "schedule_key": scheduleKey,
+                "from": fromCRS,
+                "to": toCRS
+            ])
+            DebugLogStore.shared.log(
+                "Remote-started activity live session not registered for \(fromCRS)→\(toCRS); will retry if ActivityKit emits another update",
+                category: "Error"
+            )
+            return
+        }
+
+        notificationLiveSessionEnsuredActivityIDs.insert(activity.id)
+        ClientDiagnosticsLogger.log("live_activity", "remote_started_live_session_ensured", metadata: [
+            "activity_id": activity.id,
+            "schedule_key": scheduleKey,
+            "from": fromCRS,
+            "to": toCRS,
+            "live_session_id": liveSessionID
+        ])
+        DebugLogStore.shared.log(
+            "Remote-started activity live session ensured: \(liveSessionID) for \(fromCRS)→\(toCRS)",
+            category: "Scheduled"
+        )
+    }
+
+    private func stationName(for crs: String) -> String? {
+        StationsService.shared.stations.first {
+            $0.crs.caseInsensitiveCompare(crs) == .orderedSame
+        }?.name
     }
 
     /// Scans all active system activities and registers any that aren't yet tracked.
@@ -1316,16 +1526,32 @@ final class LiveActivityManager: ObservableObject {
     /// get their update tokens registered with the server without requiring the user
     /// to foreground the app.
     func registerAnyUnregisteredActivities() async {
-        let unregistered = currentSystemActivities().filter { trackedActivities[$0.id] == nil }
+        let systemActivities = currentSystemActivities()
+        let unregistered = systemActivities.filter { trackedActivities[$0.id] == nil }
+        let scheduledSystemActivities = systemActivities.filter { scheduledActivityKey(for: $0) != nil }
         ClientDiagnosticsLogger.log("live_activity", "register_any_unregistered_activities", metadata: [
             "tracked_count": trackedActivities.count,
             "unregistered_count": unregistered.count,
-            "system_activity_ids": currentSystemActivities().map(\.id)
+            "scheduled_system_count": scheduledSystemActivities.count,
+            "system_activity_ids": systemActivities.map(\.id)
         ])
-        guard !unregistered.isEmpty else { return }
-        print("📡 [LiveActivity] registerAnyUnregisteredActivities: found \(unregistered.count) unregistered activity/activities")
-        for activity in unregistered {
-            await registerRemoteStartedActivityIfNeeded(activity)
+        DebugLogStore.shared.log(
+            "Live Activity scan: tracked=\(trackedActivities.count), system=\(systemActivities.count), unregistered=\(unregistered.count), scheduled=\(scheduledSystemActivities.count)",
+            category: "Scheduled"
+        )
+        if !unregistered.isEmpty {
+            print("📡 [LiveActivity] registerAnyUnregisteredActivities: found \(unregistered.count) unregistered activity/activities")
+            for activity in unregistered {
+                await registerRemoteStartedActivityIfNeeded(activity)
+            }
+        }
+
+        let refreshedSystemActivities = currentSystemActivities()
+        for activity in refreshedSystemActivities where scheduledActivityKey(for: activity) != nil {
+            let fromCRS = activity.contentState.fromCRS.uppercased()
+            let toCRS = activity.contentState.toCRS.uppercased()
+            await ensureScheduledJourneyUpdatesActiveIfNeeded(activity, fromCRS: fromCRS, toCRS: toCRS)
+            await ensureNotificationLiveSessionForRemoteStartedActivity(activity, fromCRS: fromCRS, toCRS: toCRS)
         }
     }
 
@@ -1419,6 +1645,7 @@ final class LiveActivityManager: ObservableObject {
 
         // Remove from tracked activities
         trackedActivities[activityID] = nil
+        notificationLiveSessionEnsuredActivityIDs.remove(activityID)
 
         let preserveNotificationLiveSession = NotificationMuteStorage.consumePendingLiveSessionPreserveOnArrival(
             from: tracked.fromCRS,

@@ -79,8 +79,20 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
         UNUserNotificationCenter.current().delegate = self
         NotificationCategoryRegistrar.register()
         ClientDiagnosticsLogger.log("app", "did_finish_launching", metadata: [
-            "launch_options": launchOptions?.keys.map { String(describing: $0) } ?? []
+            "launch_options": launchOptions?.keys.map { String(describing: $0) } ?? [],
+            "device_id": DeviceIdentity.deviceToken,
+            "api_base": ApiHostPreference.currentBaseURL,
+            "notification_apns_sandbox": notificationAPNsSandboxEnabled()
         ])
+        DebugLogStore.shared.log(
+            """
+            App launch
+            Device: \(DeviceIdentity.deviceToken)
+            API: \(ApiHostPreference.currentBaseURL)
+            Notification APNs sandbox: \(notificationAPNsSandboxEnabled())
+            """,
+            category: "Scheduled"
+        )
         _ = LiveActivityManager.shared
         // If relaunched in background to deliver a region event, ensure the
         // geofence manager's CLLocationManager is initialised before iOS
@@ -95,9 +107,22 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
         NotificationPushTokenStore.set(token: token)
         ClientDiagnosticsLogger.log("notifications", "registered_remote_notifications", metadata: [
+            "device_id": DeviceIdentity.deviceToken,
+            "notification_apns_sandbox": notificationAPNsSandboxEnabled(),
             "token_prefix": String(token.prefix(8)),
             "token_suffix": String(token.suffix(8))
         ])
+        Task { @MainActor in
+            DebugLogStore.shared.log(
+                """
+                Remote notification token registered
+                Device: \(DeviceIdentity.deviceToken)
+                APNs sandbox: \(notificationAPNsSandboxEnabled())
+                Token: \(String(token.prefix(8)))...\(String(token.suffix(8)))
+                """,
+                category: "Scheduled"
+            )
+        }
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
@@ -221,6 +246,230 @@ private func apsAlertValue(_ key: String, in userInfo: [AnyHashable: Any]) -> St
     return nil
 }
 
+private func notificationAPNsSandboxEnabled() -> Bool {
+    #if DEBUG
+    return true
+    #else
+    return false
+    #endif
+}
+
+@MainActor
+enum ScheduledNotificationLiveSessionRegistrar {
+    static func ensureLiveSession(
+        existingLiveSessionID: String?,
+        from: String,
+        to: String,
+        fromName: String?,
+        toName: String?,
+        scheduleKey: String?,
+        windowStart: String?,
+        windowEnd: String?,
+        source: String,
+        metadata: [String: Any?]
+    ) async -> String? {
+        await NotificationAuthorizationManager.registerIfAuthorized()
+        NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
+
+        let fromCode = from.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let toCode = to.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let routeKey = "\(fromCode)-\(toCode)"
+        let existingSession = NotificationSubscriptionStore.shared.liveSession(for: routeKey)
+        let subscriptionId = existingLiveSessionID ?? existingSession?.id
+        let logMetadata = registrationMetadata(
+            metadata,
+            routeKey: routeKey,
+            from: fromCode,
+            to: toCode,
+            fromName: fromName,
+            toName: toName,
+            scheduleKey: scheduleKey,
+            windowStart: windowStart,
+            windowEnd: windowEnd,
+            source: source,
+            existingLiveSessionID: subscriptionId
+        )
+
+        guard let pushToken = await NotificationPushTokenStore.waitForToken(timeoutSeconds: 6.0),
+              !pushToken.isEmpty else {
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "live_session_skipped_missing_push_token", metadata: logMetadata)
+            DebugLogStore.shared.log(
+                """
+                Scheduled live session skipped: missing notification push token
+                Route: \(fromCode)→\(toCode)
+                Schedule: \(scheduleKey ?? "nil")
+                Source: \(source)
+                Existing live session: \(subscriptionId ?? "nil")
+                """,
+                category: "Error"
+            )
+            return subscriptionId
+        }
+
+        let activeUntilResult = liveSessionActiveUntil(windowStart: windowStart, windowEnd: windowEnd)
+        let activeUntil = activeUntilResult.date
+        let request = NotificationSubscriptionRequest(
+            subscriptionId: subscriptionId,
+            deviceId: DeviceIdentity.deviceToken,
+            pushToken: pushToken,
+            routeKey: routeKey,
+            daysOfWeek: [currentDayOfWeek()],
+            notificationTypes: NotificationPreferences.effectiveTypes(for: .liveSession),
+            legs: [
+                NotificationLeg(
+                    from: fromCode,
+                    to: toCode,
+                    fromName: fromName,
+                    toName: toName,
+                    enabled: true,
+                    windowStart: "00:00",
+                    windowEnd: "23:59"
+                )
+            ],
+            windowStart: "00:00",
+            windowEnd: "23:59",
+            from: fromCode,
+            to: toCode,
+            fromName: fromName,
+            toName: toName,
+            useSandbox: notificationAPNsSandboxEnabled(),
+            muteOnArrival: true,
+            activeUntil: activeUntil
+        )
+
+        DebugLogStore.shared.log(
+            """
+            Registering scheduled live session
+            Route: \(fromCode)→\(toCode)
+            Schedule: \(scheduleKey ?? "nil")
+            Source: \(source)
+            Existing live session: \(subscriptionId ?? "nil")
+            Active until: \(ISO8601DateFormatter().string(from: activeUntil))
+            Active until source: \(activeUntilResult.source)
+            """,
+            category: "Scheduled"
+        )
+
+        do {
+            let subscription = try await NotificationSubscriptionStore.shared.upsertLiveSession(request)
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "live_session_registered", metadata: logMetadata.merging([
+                "subscription_id": subscription.id,
+                "active_until": subscription.activeUntil ?? activeUntil,
+                "active_until_source": activeUntilResult.source,
+                "push_token_prefix": String(pushToken.prefix(8)),
+                "push_token_suffix": String(pushToken.suffix(8))
+            ]) { _, new in new })
+            DebugLogStore.shared.log(
+                "Scheduled live session registered: \(subscription.id) for \(fromCode)→\(toCode) from \(source)",
+                category: "Scheduled"
+            )
+            return subscription.id
+        } catch {
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "live_session_registration_failed", metadata: logMetadata.merging([
+                "error": error.localizedDescription
+            ]) { _, new in new })
+            DebugLogStore.shared.log(
+                """
+                Scheduled live session failed
+                Route: \(fromCode)→\(toCode)
+                Source: \(source)
+                Error: \(error.localizedDescription)
+                """,
+                category: "Error"
+            )
+            return subscriptionId
+        }
+    }
+
+    private static func registrationMetadata(
+        _ metadata: [String: Any?],
+        routeKey: String,
+        from: String,
+        to: String,
+        fromName: String?,
+        toName: String?,
+        scheduleKey: String?,
+        windowStart: String?,
+        windowEnd: String?,
+        source: String,
+        existingLiveSessionID: String?
+    ) -> [String: Any?] {
+        metadata.merging([
+            "route_key": routeKey,
+            "from": from,
+            "to": to,
+            "from_name": fromName,
+            "to_name": toName,
+            "schedule_key": scheduleKey,
+            "window_start": windowStart,
+            "window_end": windowEnd,
+            "source": source,
+            "existing_live_session_id": existingLiveSessionID
+        ]) { _, new in new }
+    }
+
+    private static func liveSessionDurationMinutes() -> Int {
+        let storedMinutes = UserDefaults.standard.integer(forKey: "liveActivityDurationMinutes")
+        return min(120, max(1, storedMinutes == 0 ? 60 : storedMinutes))
+    }
+
+    private static func liveSessionActiveUntil(
+        windowStart: String?,
+        windowEnd: String?,
+        now: Date = Date()
+    ) -> (date: Date, source: String) {
+        if let scheduledEnd = scheduledWindowEndDate(windowStart: windowStart, windowEnd: windowEnd, now: now),
+           scheduledEnd > now {
+            return (scheduledEnd, "schedule_window_end")
+        }
+
+        let durationMinutes = liveSessionDurationMinutes()
+        return (now.addingTimeInterval(Double(durationMinutes * 60)), "duration_preference")
+    }
+
+    private static func scheduledWindowEndDate(windowStart: String?, windowEnd: String?, now: Date) -> Date? {
+        guard let endMinutes = minutesSinceMidnight(windowEnd) else { return nil }
+
+        let calendar = Calendar.current
+        var components = calendar.dateComponents([.year, .month, .day], from: now)
+        components.hour = endMinutes / 60
+        components.minute = endMinutes % 60
+        components.second = 0
+        guard var endDate = calendar.date(from: components) else { return nil }
+
+        if let startMinutes = minutesSinceMidnight(windowStart),
+           endMinutes < startMinutes {
+            endDate = calendar.date(byAdding: .day, value: 1, to: endDate) ?? endDate
+        }
+        return endDate
+    }
+
+    private static func minutesSinceMidnight(_ value: String?) -> Int? {
+        guard let value else { return nil }
+        let parts = value.split(separator: ":")
+        guard parts.count == 2,
+              let hour = Int(parts[0]),
+              let minute = Int(parts[1]),
+              (0...23).contains(hour),
+              (0...59).contains(minute) else {
+            return nil
+        }
+        return hour * 60 + minute
+    }
+
+    private static func currentDayOfWeek() -> DayOfWeek {
+        switch Calendar.current.component(.weekday, from: Date()) {
+        case 1: return .sun
+        case 2: return .mon
+        case 3: return .tue
+        case 4: return .wed
+        case 5: return .thu
+        case 6: return .fri
+        default: return .sat
+        }
+    }
+}
+
 typealias ScheduledJourneyActivityAttributes = JourneyActivityShared.JourneyActivityAttributes
 
 @MainActor
@@ -245,6 +494,15 @@ final class ScheduledLiveActivityAutoStartManager {
             return false
         }
         ClientDiagnosticsLogger.log("scheduled_live_activity", "remote_trigger_received", metadata: trigger.logMetadata)
+        DebugLogStore.shared.log(
+            """
+            Scheduled start push received
+            Route: \(trigger.from)→\(trigger.to)
+            Schedule: \(trigger.scheduleKey)
+            Window: \(trigger.windowStart)-\(trigger.windowEnd)
+            """,
+            category: "Scheduled"
+        )
         let started = await startIfNeeded(for: trigger, overwriteExisting: true)
         ClientDiagnosticsLogger.log("scheduled_live_activity", "remote_trigger_finished", metadata: [
             "started": started,
@@ -252,6 +510,10 @@ final class ScheduledLiveActivityAutoStartManager {
             "from": trigger.from,
             "to": trigger.to
         ])
+        DebugLogStore.shared.log(
+            "Scheduled start push finished for \(trigger.from)→\(trigger.to): started=\(started)",
+            category: "Scheduled"
+        )
         return started
     }
 
@@ -304,20 +566,51 @@ final class ScheduledLiveActivityAutoStartManager {
 
         var records = pruneStaleRecords(loadRecords())
         if let existing = records.first(where: { $0.scheduleKey == scheduleKey }) {
-            if hasActiveActivity(id: existing.activityID),
+            let existingIsActive = hasActiveActivity(id: existing.activityID)
+            if existingIsActive,
                Date().timeIntervalSince(existing.startedAt) < duplicateGuardInterval || !overwriteExisting {
+                let liveSessionID = await ensureLiveSessionIfNeeded(
+                    existingLiveSessionID: existing.liveSessionID,
+                    trigger: trigger,
+                    journey: nil
+                )
+                if liveSessionID != existing.liveSessionID {
+                    records.removeAll { $0.scheduleKey == scheduleKey }
+                    records.append(existing.withLiveSessionID(liveSessionID))
+                    saveRecords(records)
+                }
                 ClientDiagnosticsLogger.log("scheduled_live_activity", "start_skipped_existing_recent", metadata: [
                     "schedule_key": scheduleKey,
                     "activity_id": existing.activityID,
+                    "live_session_id": liveSessionID,
                     "overwrite_existing": overwriteExisting
                 ])
+                DebugLogStore.shared.log(
+                    "Scheduled start reused recent activity \(existing.activityID) for \(trigger.from)→\(trigger.to); live session=\(liveSessionID ?? "nil")",
+                    category: "Scheduled"
+                )
                 return true
             }
-            if hasActiveActivity(id: existing.activityID) {
+            if existingIsActive {
+                let liveSessionID = await ensureLiveSessionIfNeeded(
+                    existingLiveSessionID: existing.liveSessionID,
+                    trigger: trigger,
+                    journey: nil
+                )
+                if liveSessionID != existing.liveSessionID {
+                    records.removeAll { $0.scheduleKey == scheduleKey }
+                    records.append(existing.withLiveSessionID(liveSessionID))
+                    saveRecords(records)
+                }
                 ClientDiagnosticsLogger.log("scheduled_live_activity", "start_skipped_existing_active", metadata: [
                     "schedule_key": scheduleKey,
-                    "activity_id": existing.activityID
+                    "activity_id": existing.activityID,
+                    "live_session_id": liveSessionID
                 ])
+                DebugLogStore.shared.log(
+                    "Scheduled start reused active activity \(existing.activityID) for \(trigger.from)→\(trigger.to); live session=\(liveSessionID ?? "nil")",
+                    category: "Scheduled"
+                )
                 return true
             }
             await stopExisting(record: existing)
@@ -327,13 +620,34 @@ final class ScheduledLiveActivityAutoStartManager {
 
         guard let journey = await makeJourney(from: trigger.from, to: trigger.to) else {
             ClientDiagnosticsLogger.log("scheduled_live_activity", "start_failed_make_journey", metadata: trigger.logMetadata)
+            DebugLogStore.shared.log(
+                "Scheduled start failed: could not build journey for \(trigger.from)→\(trigger.to)",
+                category: "Scheduled"
+            )
             return false
         }
 
         if LiveActivityManager.shared.isActive(for: journey) {
-            ClientDiagnosticsLogger.log("scheduled_live_activity", "start_skipped_journey_already_active", metadata: trigger.logMetadata)
+            let liveSessionID = await ensureLiveSessionIfNeeded(
+                existingLiveSessionID: nil,
+                trigger: trigger,
+                journey: journey
+            )
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "start_skipped_journey_already_active", metadata: trigger.logMetadata.merging([
+                "live_session_id": liveSessionID
+            ]) { _, new in new })
+            DebugLogStore.shared.log(
+                "Scheduled start found existing activity for \(trigger.from)→\(trigger.to); live session=\(liveSessionID ?? "nil")",
+                category: "Scheduled"
+            )
             return true
         }
+
+        let liveSessionID = await ensureLiveSessionIfNeeded(
+            existingLiveSessionID: nil,
+            trigger: trigger,
+            journey: journey
+        )
 
         await LiveActivityManager.shared.start(
             for: journey,
@@ -341,7 +655,7 @@ final class ScheduledLiveActivityAutoStartManager {
             triggeredByUser: false,
             bypassSuppression: true,
             allowAutomaticStart: true,
-            journeyUpdatesEnabled: false,
+            journeyUpdatesEnabled: true,
             scheduleKey: trigger.scheduleKey,
             windowStart: trigger.windowStart,
             windowEnd: trigger.windowEnd
@@ -349,8 +663,14 @@ final class ScheduledLiveActivityAutoStartManager {
 
         guard LiveActivityManager.shared.isActive(for: journey),
               let activityID = LiveActivityManager.shared.activityID(for: journey) else {
-            ClientDiagnosticsLogger.log("scheduled_live_activity", "start_failed_after_request", metadata: trigger.logMetadata)
-            return false
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "start_failed_after_request", metadata: trigger.logMetadata.merging([
+                "live_session_id": liveSessionID
+            ]) { _, new in new })
+            DebugLogStore.shared.log(
+                "Scheduled Live Activity request did not create an activity for \(trigger.from)→\(trigger.to); live session=\(liveSessionID ?? "nil")",
+                category: liveSessionID == nil ? "Error" : "Scheduled"
+            )
+            return liveSessionID != nil
         }
 
         var updatedRecords = loadRecords()
@@ -363,19 +683,43 @@ final class ScheduledLiveActivityAutoStartManager {
             windowStart: trigger.windowStart,
             windowEnd: trigger.windowEnd,
             activityID: activityID,
-            liveSessionID: nil,
+            liveSessionID: liveSessionID,
             startedAt: Date()
         ))
         saveRecords(updatedRecords)
         ClientDiagnosticsLogger.log("scheduled_live_activity", "start_succeeded", metadata: [
             "schedule_key": scheduleKey,
             "activity_id": activityID,
+            "live_session_id": liveSessionID,
             "from": trigger.from,
             "to": trigger.to,
             "window_start": trigger.windowStart,
             "window_end": trigger.windowEnd
         ])
+        DebugLogStore.shared.log(
+            "Scheduled start active for \(trigger.from)→\(trigger.to): activity=\(activityID), live session=\(liveSessionID ?? "nil")",
+            category: "Scheduled"
+        )
         return true
+    }
+
+    private func ensureLiveSessionIfNeeded(
+        existingLiveSessionID: String?,
+        trigger: ScheduledLiveActivityTrigger,
+        journey: Journey?
+    ) async -> String? {
+        await ScheduledNotificationLiveSessionRegistrar.ensureLiveSession(
+            existingLiveSessionID: existingLiveSessionID,
+            from: trigger.from,
+            to: trigger.to,
+            fromName: trigger.fromName ?? journey?.fromStation.name,
+            toName: trigger.toName ?? journey?.toStation.name,
+            scheduleKey: trigger.scheduleKey,
+            windowStart: trigger.windowStart,
+            windowEnd: trigger.windowEnd,
+            source: "scheduled_auto_start",
+            metadata: trigger.logMetadata
+        )
     }
 
     private func stopExisting(record: ScheduledLiveActivityRecord) async {
@@ -570,4 +914,18 @@ private struct ScheduledLiveActivityRecord: Codable {
     let activityID: String
     let liveSessionID: String?
     let startedAt: Date
+
+    func withLiveSessionID(_ liveSessionID: String?) -> ScheduledLiveActivityRecord {
+        ScheduledLiveActivityRecord(
+            scheduleKey: scheduleKey,
+            routeKey: routeKey,
+            from: from,
+            to: to,
+            windowStart: windowStart,
+            windowEnd: windowEnd,
+            activityID: activityID,
+            liveSessionID: liveSessionID,
+            startedAt: startedAt
+        )
+    }
 }

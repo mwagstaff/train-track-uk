@@ -408,7 +408,9 @@ final class NotificationSubscriptionStore: ObservableObject {
     }
 
     private func syncGeofences() async {
-        await NotificationGeofenceManager.shared.sync(subscriptions: geofenceEligibleLiveSessions)
+        let eligible = geofenceEligibleLiveSessions
+        logGeofenceEligibility(eligible: eligible)
+        await NotificationGeofenceManager.shared.sync(subscriptions: eligible)
     }
 
     private var geofenceEligibleLiveSessions: [NotificationSubscription] {
@@ -437,6 +439,58 @@ final class NotificationSubscriptionStore: ObservableObject {
                 updatedAt: session.updatedAt
             )
         }
+    }
+
+    private func logGeofenceEligibility(eligible: [NotificationSubscription]) {
+        let now = Date()
+        let muteDisabledCount = liveSessions.filter { $0.muteOnArrival == false }.count
+        let expiredCount = liveSessions.filter { session in
+            guard let activeUntil = session.activeUntil else { return false }
+            return activeUntil <= now
+        }.count
+        let noEnabledLegsCount = liveSessions.filter { $0.legs.filter(\.enabled).isEmpty }.count
+
+        let sessionSummaries = liveSessions.prefix(6).map { session -> String in
+            let enabledLegs = session.legs.filter(\.enabled)
+            let reasons = geofenceSkipReasons(for: session, now: now, enabledLegs: enabledLegs)
+            if reasons.isEmpty {
+                let activeUntil = session.activeUntil.map { ISO8601DateFormatter().string(from: $0) } ?? "nil"
+                let legs = enabledLegs.map { "\($0.from.uppercased())→\($0.to.uppercased())" }.joined(separator: ",")
+                return "\(session.routeKey)#\(String(session.id.prefix(8))):eligible legs=\(legs.isEmpty ? "none" : legs) until=\(activeUntil)"
+            }
+            let activeUntil = session.activeUntil.map { ISO8601DateFormatter().string(from: $0) } ?? "nil"
+            let legs = enabledLegs.map { "\($0.from.uppercased())→\($0.to.uppercased())" }.joined(separator: ",")
+            return "\(session.routeKey)#\(String(session.id.prefix(8))):\(reasons.joined(separator: "+")) legs=\(legs.isEmpty ? "none" : legs) until=\(activeUntil)"
+        }.joined(separator: "\n")
+
+        DebugLogStore.shared.log(
+            """
+            Geofence eligibility
+            Live sessions: \(liveSessions.count)
+            Eligible: \(eligible.count)
+            Skipped: muteOff=\(muteDisabledCount), expired=\(expiredCount), noEnabledLegs=\(noEnabledLegsCount)
+            \(sessionSummaries.isEmpty ? "Sessions: none" : sessionSummaries)
+            """,
+            category: "Geofence"
+        )
+    }
+
+    private func geofenceSkipReasons(
+        for session: NotificationSubscription,
+        now: Date,
+        enabledLegs: [NotificationLeg]
+    ) -> [String] {
+        var reasons: [String] = []
+        if session.muteOnArrival == false {
+            reasons.append("muteOff")
+        }
+        if let activeUntil = session.activeUntil, activeUntil <= now {
+            reasons.append("expired")
+        }
+        if enabledLegs.isEmpty {
+            reasons.append("noEnabledLegs")
+        }
+        return reasons
     }
 }
 

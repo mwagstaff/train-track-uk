@@ -27,10 +27,19 @@ struct DebugLogView: View {
                     .disabled(store.logs.isEmpty)
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("Share") {
-                        showShareSheet = true
+                    HStack {
+                        Button(store.isFetchingServerLogs ? "Fetching" : "Server") {
+                            Task {
+                                await store.fetchServerAuditLogs()
+                            }
+                        }
+                        .disabled(store.isFetchingServerLogs)
+
+                        Button("Share") {
+                            showShareSheet = true
+                        }
+                        .disabled(store.logs.isEmpty)
                     }
-                    .disabled(store.logs.isEmpty)
                 }
             }
             .sheet(isPresented: $showShareSheet) {
@@ -48,6 +57,8 @@ struct LogEntryRow: View {
         case "Geofence": return .blue
         case "Mute": return .orange
         case "Network": return .green
+        case "Scheduled": return .purple
+        case "Server": return .teal
         case "Error": return .red
         default: return .gray
         }
