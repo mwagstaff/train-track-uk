@@ -97,13 +97,8 @@ final class NotificationAlertHandler {
     }
 
     private func isInsideGeofence(location: CLLocation, station: Station) -> Bool {
-        let coordinate = station.coordinate
-        if coordinate.latitude == 0 && coordinate.longitude == 0 {
-            return false
-        }
-        let stationLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-        let distance = location.distance(from: stationLocation)
-        return distance <= NotificationGeofenceManager.regionRadiusMeters
+        guard station.hasUsableCoordinate else { return false }
+        return station.distance(from: location) <= NotificationGeofenceManager.regionRadiusMeters
     }
 
     private func showToast(message: String) {

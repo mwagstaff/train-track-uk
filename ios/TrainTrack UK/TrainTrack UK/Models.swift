@@ -9,14 +9,62 @@ struct Station: Codable, Identifiable, Hashable {
 
     var id: String { crs }
 
+    var coordinates: [CLLocationCoordinate2D] {
+        let latValues = Self.coordinateValues(from: latitude)
+        let lonValues = Self.coordinateValues(from: longitude)
+        let pairedCount = min(latValues.count, lonValues.count)
+
+        let parsed = (0..<pairedCount).compactMap { index -> CLLocationCoordinate2D? in
+            guard let lat = Double(latValues[index]),
+                  let lon = Double(lonValues[index]) else {
+                return nil
+            }
+            return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+        }
+
+        if !parsed.isEmpty {
+            return parsed
+        }
+
+        return [CLLocationCoordinate2D(
+            latitude: Double(latitude) ?? 0,
+            longitude: Double(longitude) ?? 0
+        )]
+    }
+
     var coordinate: CLLocationCoordinate2D {
-        // Some stations have multiple coordinate values separated by "\n" - take the first one
-        let latValue = latitude.split(separator: "\n").first.map(String.init) ?? latitude
-        let lonValue = longitude.split(separator: "\n").first.map(String.init) ?? longitude
-        return CLLocationCoordinate2D(
-            latitude: Double(latValue) ?? 0,
-            longitude: Double(lonValue) ?? 0
-        )
+        // Some stations have multiple coordinate values; use the first as the primary point.
+        coordinates.first ?? CLLocationCoordinate2D(latitude: 0, longitude: 0)
+    }
+
+    var locations: [CLLocation] {
+        coordinates.map {
+            CLLocation(latitude: $0.latitude, longitude: $0.longitude)
+        }
+    }
+
+    var hasUsableCoordinate: Bool {
+        coordinates.contains { $0.latitude != 0 || $0.longitude != 0 }
+    }
+
+    func distance(from location: CLLocation) -> CLLocationDistance {
+        locations
+            .map { location.distance(from: $0) }
+            .min() ?? .greatestFiniteMagnitude
+    }
+
+    func closestCoordinate(to location: CLLocation) -> CLLocationCoordinate2D {
+        coordinates.min { lhs, rhs in
+            let lhsLocation = CLLocation(latitude: lhs.latitude, longitude: lhs.longitude)
+            let rhsLocation = CLLocation(latitude: rhs.latitude, longitude: rhs.longitude)
+            return location.distance(from: lhsLocation) < location.distance(from: rhsLocation)
+        } ?? coordinate
+    }
+
+    private static func coordinateValues(from raw: String) -> [String] {
+        raw.components(separatedBy: CharacterSet.newlines.union(CharacterSet(charactersIn: ",;")))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 }
 

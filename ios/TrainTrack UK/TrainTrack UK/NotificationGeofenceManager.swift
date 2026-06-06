@@ -16,9 +16,8 @@ private struct StationArrivalTarget {
     let to: String
     let station: Station
 
-    var stationLocation: CLLocation {
-        let coordinate = station.coordinate
-        return CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+    func distance(from location: CLLocation) -> CLLocationDistance {
+        station.distance(from: location)
     }
 }
 
@@ -398,8 +397,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         for subscription in subscriptions {
             for leg in subscription.legs where leg.enabled {
                 guard let station = stationsByCrs[leg.from.uppercased()] else { continue }
-                let coordinate = station.coordinate
-                if coordinate.latitude == 0 && coordinate.longitude == 0 { continue }
+                guard station.hasUsableCoordinate else { continue }
                 let identifier = regionIdentifier(subscriptionId: subscription.id, from: leg.from, to: leg.to)
                 if targets[identifier] != nil { continue }
                 targets[identifier] = StationArrivalTarget(
@@ -417,15 +415,23 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     private func desiredRegions(targets: [String: StationArrivalTarget]) -> [String: CLCircularRegion] {
         var regions: [String: CLCircularRegion] = [:]
         for (identifier, target) in targets {
-            let coordinate = target.station.coordinate
-            let region = CLCircularRegion(
-                center: coordinate,
-                radius: Self.regionRadiusMeters,
-                identifier: identifier
-            )
-            region.notifyOnEntry = true
-            region.notifyOnExit = true
-            regions[identifier] = region
+            for (index, coordinate) in target.station.coordinates.enumerated() {
+                if coordinate.latitude == 0 && coordinate.longitude == 0 { continue }
+                let regionId = index == 0 ? identifier : regionIdentifier(
+                    subscriptionId: target.subscriptionId,
+                    from: target.from,
+                    to: target.to,
+                    coordinateIndex: index
+                )
+                let region = CLCircularRegion(
+                    center: coordinate,
+                    radius: Self.regionRadiusMeters,
+                    identifier: regionId
+                )
+                region.notifyOnEntry = true
+                region.notifyOnExit = true
+                regions[regionId] = region
+            }
         }
         return regions
     }
@@ -454,13 +460,15 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         return location
     }
 
-    private func regionIdentifier(subscriptionId: String, from: String, to: String) -> String {
-        "\(regionPrefix):\(subscriptionId):\(from.uppercased()):\(to.uppercased())"
+    private func regionIdentifier(subscriptionId: String, from: String, to: String, coordinateIndex: Int? = nil) -> String {
+        let base = "\(regionPrefix):\(subscriptionId):\(from.uppercased()):\(to.uppercased())"
+        guard let coordinateIndex, coordinateIndex > 0 else { return base }
+        return "\(base):p\(coordinateIndex)"
     }
 
     private nonisolated func parseRegionIdentifier(_ identifier: String) -> (subscriptionId: String, from: String, to: String)? {
         let parts = identifier.split(separator: ":")
-        guard parts.count == 4, parts[0] == regionPrefix else { return nil }
+        guard parts.count >= 4, parts[0] == regionPrefix else { return nil }
         return (String(parts[1]), String(parts[2]), String(parts[3]))
     }
 
@@ -536,21 +544,47 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         parsed: (subscriptionId: String, from: String, to: String),
         source: String
     ) async {
-        guard let target = await ensureTargetExists(identifier: identifier, parsed: parsed) else { return }
+        let targetIdentifier = regionIdentifier(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to)
+        guard let target = await ensureTargetExists(identifier: targetIdentifier, parsed: parsed) else { return }
 
-        var state = confirmationStates[identifier] ?? StationArrivalConfirmationState()
+        var state = confirmationStates[targetIdentifier] ?? StationArrivalConfirmationState()
         state.lastRegionHintAt = Date()
-        confirmationStates[identifier] = state
+        confirmationStates[targetIdentifier] = state
 
         startHighSensitivityTracking(reason: "region-\(source)")
 
-        let msg = "Region hint [\(source)] for \(target.from)→\(target.to) at \(target.station.name)"
+        let stationCoordinate = target.station.coordinate
+        let msg = String(
+            format: "Region hint [%@] for %@→%@ at %@ (target %.5f, %.5f, points %d)",
+            source,
+            target.from,
+            target.to,
+            target.station.name,
+            stationCoordinate.latitude,
+            stationCoordinate.longitude,
+            target.station.coordinates.count
+        )
         DebugLogStore.shared.log(msg, category: "Geofence")
         print("📍 \(msg)")
 
         if let location = currentUsableLocation(maxAge: ArrivalConfig.recentLocationForRegionHintSeconds) {
+            let rawDistance = target.distance(from: location)
+            let cachedMsg = String(
+                format: "Region hint [%@] using cached location for %@→%@ (age %.0fs, raw %.0fm, accuracy %.0fm)",
+                source,
+                target.from,
+                target.to,
+                Date().timeIntervalSince(location.timestamp),
+                rawDistance,
+                location.horizontalAccuracy
+            )
+            DebugLogStore.shared.log(cachedMsg, category: "Geofence")
+            print("📍 \(cachedMsg)")
             evaluateArrival(using: location, for: target, source: "region-\(source)-cached")
         } else if canMonitorWithCurrentAuthorization {
+            let requestMsg = "Region hint [\(source)] has no recent usable location for \(target.from)→\(target.to); requesting current location"
+            DebugLogStore.shared.log(requestMsg, category: "Geofence")
+            print("📍 \(requestMsg)")
             manager.requestLocation()
         }
     }
@@ -573,7 +607,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             return
         }
 
-        let rawDistance = location.distance(from: target.stationLocation)
+        let rawDistance = target.distance(from: location)
         let horizontalAccuracy = location.horizontalAccuracy
         let now = Date()
         let acceptableAccuracy = acceptableHorizontalAccuracy()
@@ -587,17 +621,48 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
         let activationDistance = effectiveActivationDistance(horizontalAccuracy: horizontalAccuracy)
         let candidateDistance = min(rawDistance, compensatedDistance)
+        let hasRecentRegionHint = state.lastRegionHintAt.map {
+            now.timeIntervalSince($0) <= ArrivalConfig.confirmationTimeoutSeconds
+        } ?? false
 
         if candidateDistance <= activationDistance {
             startHighSensitivityTracking(reason: "within-activation-distance")
         }
 
         if candidateDistance > activationDistance, state.confirmationStartedAt == nil {
+            if hasRecentRegionHint {
+                let msg = String(
+                    format: "Arrival evaluation outside activation for %@→%@ (raw %.0fm, compensated %.0fm, accuracy %.0fm, activation %.0fm, source %@)",
+                    target.from,
+                    target.to,
+                    rawDistance,
+                    compensatedDistance,
+                    horizontalAccuracy,
+                    activationDistance,
+                    source
+                )
+                DebugLogStore.shared.log(msg, category: "Geofence")
+                print("📍 \(msg)")
+            }
             confirmationStates[target.identifier] = state
             return
         }
 
         guard horizontalAccuracy <= acceptableAccuracy else {
+            if hasRecentRegionHint || state.confirmationStartedAt != nil {
+                let msg = String(
+                    format: "Arrival evaluation waiting for better accuracy for %@→%@ (raw %.0fm, compensated %.0fm, accuracy %.0fm, acceptable %.0fm, source %@)",
+                    target.from,
+                    target.to,
+                    rawDistance,
+                    compensatedDistance,
+                    horizontalAccuracy,
+                    acceptableAccuracy,
+                    source
+                )
+                DebugLogStore.shared.log(msg, category: "Geofence")
+                print("📍 \(msg)")
+            }
             if let startedAt = state.confirmationStartedAt,
                now.timeIntervalSince(startedAt) > ArrivalConfig.confirmationTimeoutSeconds {
                 let msg = String(
@@ -666,6 +731,21 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 }
             }
             return
+        }
+
+        if hasRecentRegionHint || state.confirmationStartedAt != nil {
+            let msg = String(
+                format: "Arrival evaluation outside threshold for %@→%@ (raw %.0fm, compensated %.0fm, accuracy %.0fm, threshold %.0fm, source %@)",
+                target.from,
+                target.to,
+                rawDistance,
+                compensatedDistance,
+                horizontalAccuracy,
+                effectiveThreshold,
+                source
+            )
+            DebugLogStore.shared.log(msg, category: "Geofence")
+            print("📍 \(msg)")
         }
 
         if let startedAt = state.confirmationStartedAt {

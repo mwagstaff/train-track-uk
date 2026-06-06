@@ -898,9 +898,8 @@ struct JourneyDetailsView: View {
     }
 
     private func distanceMeters(from coord: CLLocationCoordinate2D, to station: Station) -> Double {
-        let from = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
-        let to = CLLocation(latitude: station.coordinate.latitude, longitude: station.coordinate.longitude)
-        return from.distance(from: to)
+        let currentLocation = CLLocation(latitude: coord.latitude, longitude: coord.longitude)
+        return station.distance(from: currentLocation)
     }
 
     private func formatDistanceDebug(_ meters: Double) -> String {

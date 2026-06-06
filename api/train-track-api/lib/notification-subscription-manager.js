@@ -578,9 +578,66 @@ class NotificationSubscriptionManager {
                 this.subscriptionSource(subscription) === LIVE_SESSION_SOURCE
                 || this.subscriptionSource(subscription) === SCHEDULED_SOURCE
             ) {
-                await this.sendUpdateNotifications(subscription, leg, legKey, snapshot, notificationTypes);
+                const updateNotificationTypes = this.notificationTypesAfterDuplicateSuppression(
+                    subscription,
+                    leg,
+                    legKey,
+                    notificationTypes
+                );
+                await this.sendUpdateNotifications(subscription, leg, legKey, snapshot, updateNotificationTypes);
             }
         }
+    }
+
+    notificationTypesAfterDuplicateSuppression(subscription, leg, legKey, notificationTypes) {
+        if (this.subscriptionSource(subscription) !== SCHEDULED_SOURCE) {
+            return notificationTypes;
+        }
+
+        const liveSession = this.activeLiveSessionForLeg(subscription, leg);
+        if (!liveSession) {
+            return notificationTypes;
+        }
+
+        const liveSessionTypes = new Set(getEffectiveNotificationTypes(liveSession));
+        const filtered = notificationTypes.filter((type) =>
+            !isUpdateNotificationType(type) || !liveSessionTypes.has(type)
+        );
+        const suppressedTypes = notificationTypes.filter((type) => !filtered.includes(type));
+
+        if (suppressedTypes.length > 0) {
+            console.log('[notifications] suppress_duplicate_scheduled_update', JSON.stringify({
+                subscription_id: subscription.id,
+                live_session_id: liveSession.id,
+                device_id: subscription.deviceId,
+                route_key: subscription.routeKey,
+                leg: legKey,
+                suppressed_notification_types: suppressedTypes,
+                remaining_notification_types: filtered
+            }));
+        }
+
+        return filtered;
+    }
+
+    activeLiveSessionForLeg(subscription, leg) {
+        const legKey = legKeyForMute(leg);
+        if (!subscription?.deviceId || !legKey) {
+            return null;
+        }
+
+        return Array.from(this.subscriptions.values()).find((candidate) => {
+            if (candidate.id === subscription.id) return false;
+            if (candidate.deviceId !== subscription.deviceId) return false;
+            if (this.subscriptionSource(candidate) !== LIVE_SESSION_SOURCE) return false;
+            if (this.isExpiredLiveSession(candidate)) return false;
+            if (this.isMutedToday(candidate, legKey)) return false;
+            if (!getEffectiveNotificationTypes(candidate).some(isUpdateNotificationType)) return false;
+
+            return Array.isArray(candidate.legs) && candidate.legs.some((candidateLeg) =>
+                candidateLeg?.enabled && legKeyForMute(candidateLeg) === legKey
+            );
+        }) || null;
     }
 
     async sendSummaryIfNeeded(subscription, leg, legKey, snapshot) {
@@ -1619,6 +1676,10 @@ function resolveLiveSessionActiveUntil(activeUntil, existingActiveUntil = null) 
 
 function getEffectiveNotificationTypes(subscription) {
     return normalizeTypes(subscription?.notificationTypes, normalizeSource(subscription?.source));
+}
+
+function isUpdateNotificationType(type) {
+    return type === 'delays' || type === 'platform';
 }
 
 async function getDeparturesSnapshot(fromStation, toStation) {

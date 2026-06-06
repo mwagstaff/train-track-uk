@@ -55,9 +55,9 @@ final class LiveActivityManager: ObservableObject {
 
     // Live Activity lifetime; set to nil to disable auto-expiry and rely on manual dismissal.
     private let activityExpiryInterval: TimeInterval? = nil
-    // Local fallback end if remote end push never arrives. Computed from preference.
+    // Local fallback end if remote end push never arrives. Scheduled journeys use their window end.
     private var fallbackEndInterval: TimeInterval? { durationSeconds }
-    // Force end any lingering activity after this many seconds as a last-resort safety (align with preference).
+    // Force end any lingering activity as a last-resort safety.
     private var forceEndAfterSeconds: TimeInterval { durationSeconds }
 
     // Global monitor timer for all activities
@@ -70,6 +70,101 @@ final class LiveActivityManager: ObservableObject {
         let seconds = Double(minutes * 60)
         print("🔧 [LiveActivity] Duration preference: \(minutes) minute\(minutes == 1 ? "" : "s") (\(seconds) seconds)")
         return seconds
+    }
+
+    private func scheduledWindowEndDate(
+        scheduleKey: String?,
+        windowStart: String?,
+        windowEnd: String?,
+        referenceDate: Date
+    ) -> Date? {
+        guard let endMinutes = minutesSinceMidnight(windowEnd) else { return nil }
+
+        let calendar = Calendar.current
+        var components = scheduledDateComponents(from: scheduleKey)
+            ?? calendar.dateComponents([.year, .month, .day], from: referenceDate)
+        components.hour = endMinutes / 60
+        components.minute = endMinutes % 60
+        components.second = 0
+
+        guard var endDate = calendar.date(from: components) else { return nil }
+        if let startMinutes = minutesSinceMidnight(windowStart),
+           endMinutes < startMinutes {
+            endDate = calendar.date(byAdding: .day, value: 1, to: endDate) ?? endDate
+        }
+        return endDate
+    }
+
+    private func scheduledDateComponents(from scheduleKey: String?) -> DateComponents? {
+        guard let scheduleKey else { return nil }
+        let parts = scheduleKey.split(separator: "|", omittingEmptySubsequences: false)
+        guard parts.count >= 4 else { return nil }
+
+        let dateParts = parts[3].split(separator: "-")
+        guard dateParts.count == 3,
+              let year = Int(dateParts[0]),
+              let month = Int(dateParts[1]),
+              let day = Int(dateParts[2]) else {
+            return nil
+        }
+
+        var components = DateComponents()
+        components.calendar = Calendar.current
+        components.year = year
+        components.month = month
+        components.day = day
+        return components
+    }
+
+    private func minutesSinceMidnight(_ value: String?) -> Int? {
+        guard let value else { return nil }
+        let parts = value.split(separator: ":")
+        guard parts.count == 2,
+              let hour = Int(parts[0]),
+              let minute = Int(parts[1]),
+              (0...23).contains(hour),
+              (0...59).contains(minute) else {
+            return nil
+        }
+        return hour * 60 + minute
+    }
+
+    private func fallbackEndDeadline(
+        scheduleKey: String?,
+        windowStart: String?,
+        windowEnd: String?,
+        now: Date = Date()
+    ) -> (date: Date, source: String)? {
+        if let scheduledEnd = scheduledWindowEndDate(
+            scheduleKey: scheduleKey,
+            windowStart: windowStart,
+            windowEnd: windowEnd,
+            referenceDate: now
+        ) {
+            return (scheduledEnd, "schedule_window_end")
+        }
+
+        guard let interval = fallbackEndInterval else { return nil }
+        return (now.addingTimeInterval(interval), "duration_preference")
+    }
+
+    private func forceEndDeadline(
+        for tracked: TrackedActivity,
+        now: Date
+    ) -> (date: Date, source: String) {
+        if let scheduledEnd = scheduledWindowEndDate(
+            scheduleKey: tracked.scheduleKey,
+            windowStart: tracked.windowStart,
+            windowEnd: tracked.windowEnd,
+            referenceDate: now
+        ) {
+            return (scheduledEnd, "schedule_window_end")
+        }
+
+        return (
+            tracked.startedAt.addingTimeInterval(forceEndAfterSeconds),
+            "duration_preference"
+        )
     }
 
     // Published properties for UI binding
@@ -368,7 +463,12 @@ final class LiveActivityManager: ObservableObject {
             tracked.timer = scheduleUpdates(for: journey, depStore: depStore, activityID: act.id)
 
             // Schedule fallback end timer for this activity
-            tracked.fallbackEndTimer = scheduleFallbackEnd(for: act.id)
+            tracked.fallbackEndTimer = scheduleFallbackEnd(
+                for: act.id,
+                scheduleKey: scheduleKey,
+                windowStart: windowStart,
+                windowEnd: windowEnd
+            )
 
             // Store the tracked activity
             trackedActivities[act.id] = tracked
@@ -747,19 +847,51 @@ final class LiveActivityManager: ObservableObject {
         return false
     }
 
-    private func scheduleFallbackEnd(for activityID: String) -> Timer? {
-        guard let interval = fallbackEndInterval else {
+    private func scheduleFallbackEnd(
+        for activityID: String,
+        scheduleKey: String? = nil,
+        windowStart: String? = nil,
+        windowEnd: String? = nil
+    ) -> Timer? {
+        let now = Date()
+        guard let deadline = fallbackEndDeadline(
+            scheduleKey: scheduleKey,
+            windowStart: windowStart,
+            windowEnd: windowEnd,
+            now: now
+        ) else {
             print("⚠️ [LiveActivity] Fallback end timer NOT scheduled for \(activityID) (interval is nil)")
             return nil
         }
+        let interval = max(1, deadline.date.timeIntervalSince(now))
         let minutes = Int(interval / 60)
-        print("⏰ [LiveActivity] Scheduling fallback end timer for activity \(activityID): \(minutes) minute\(minutes == 1 ? "" : "s") (\(interval) seconds)")
+        let deadlineText = ISO8601DateFormatter().string(from: deadline.date)
+        print("⏰ [LiveActivity] Scheduling fallback end timer for activity \(activityID): \(minutes) minute\(minutes == 1 ? "" : "s") (\(interval) seconds), source=\(deadline.source), deadline=\(deadlineText)")
+        DebugLogStore.shared.log(
+            "Fallback end scheduled for \(activityID): source=\(deadline.source), deadline=\(deadlineText)",
+            category: "Live Activity"
+        )
+        ClientDiagnosticsLogger.log("live_activity", "fallback_end_timer_scheduled", metadata: [
+            "activity_id": activityID,
+            "source": deadline.source,
+            "deadline": deadlineText,
+            "interval_seconds": interval,
+            "schedule_key": scheduleKey,
+            "window_start": windowStart,
+            "window_end": windowEnd
+        ])
         let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             guard let self else { return }
-            print("⏳ [LiveActivity] Fallback end fired for \(activityID) after \(interval)s (\(minutes) min); ending locally")
-            Task { await self.stopActivity(activityID: activityID) }
+            print("⏳ [LiveActivity] Fallback end fired for \(activityID) after \(interval)s (\(minutes) min), source=\(deadline.source); ending locally")
+            Task { @MainActor in
+                DebugLogStore.shared.log(
+                    "Fallback end fired for \(activityID): source=\(deadline.source), deadline=\(deadlineText)",
+                    category: "Live Activity"
+                )
+                await self.stopActivity(activityID: activityID)
+            }
         }
-        print("✅ [LiveActivity] Fallback end timer scheduled for activity \(activityID) at \(Date().addingTimeInterval(interval))")
+        print("✅ [LiveActivity] Fallback end timer scheduled for activity \(activityID) at \(deadline.date)")
         return timer
     }
 
@@ -775,9 +907,24 @@ final class LiveActivityManager: ObservableObject {
             Task { @MainActor in
                 let now = Date()
                 for (activityID, tracked) in self.trackedActivities {
-                    let elapsed = now.timeIntervalSince(tracked.startedAt)
-                    if elapsed > self.forceEndAfterSeconds {
-                        print("⏳ [LiveActivity] Force-ending activity \(activityID) after \(Int(elapsed))s")
+                    let deadline = self.forceEndDeadline(for: tracked, now: now)
+                    if now > deadline.date {
+                        let elapsed = now.timeIntervalSince(tracked.startedAt)
+                        let deadlineText = ISO8601DateFormatter().string(from: deadline.date)
+                        print("⏳ [LiveActivity] Force-ending activity \(activityID) after \(Int(elapsed))s, source=\(deadline.source), deadline=\(deadlineText)")
+                        DebugLogStore.shared.log(
+                            "Force-ending activity \(activityID): source=\(deadline.source), deadline=\(deadlineText)",
+                            category: "Live Activity"
+                        )
+                        ClientDiagnosticsLogger.log("live_activity", "force_end_deadline_reached", metadata: [
+                            "activity_id": activityID,
+                            "source": deadline.source,
+                            "deadline": deadlineText,
+                            "elapsed_seconds": elapsed,
+                            "schedule_key": tracked.scheduleKey,
+                            "window_start": tracked.windowStart,
+                            "window_end": tracked.windowEnd
+                        ])
                         await tracked.activity.end(nil, dismissalPolicy: .immediate)
                         self.cleanupAfterRemoteEnd(for: tracked.activity)
                     }
@@ -1359,7 +1506,12 @@ final class LiveActivityManager: ObservableObject {
             windowStart: activity.contentState.windowStart,
             windowEnd: activity.contentState.windowEnd
         )
-        tracked.fallbackEndTimer = scheduleFallbackEnd(for: activity.id)
+        tracked.fallbackEndTimer = scheduleFallbackEnd(
+            for: activity.id,
+            scheduleKey: scheduleKey,
+            windowStart: activity.contentState.windowStart,
+            windowEnd: activity.contentState.windowEnd
+        )
         trackedActivities[activity.id] = tracked
         watchPushToken(for: activity, fromCRS: fromCRS, toCRS: toCRS)
         updatePublishedState()
@@ -1401,6 +1553,15 @@ final class LiveActivityManager: ObservableObject {
         tracked.scheduleKey = scheduleKey
         tracked.windowStart = activity.contentState.windowStart
         tracked.windowEnd = activity.contentState.windowEnd
+        if needsMetadataRefresh {
+            tracked.fallbackEndTimer?.invalidate()
+            tracked.fallbackEndTimer = scheduleFallbackEnd(
+                for: activity.id,
+                scheduleKey: scheduleKey,
+                windowStart: tracked.windowStart,
+                windowEnd: tracked.windowEnd
+            )
+        }
         trackedActivities[activity.id] = tracked
         updatePublishedState()
 

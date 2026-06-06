@@ -200,8 +200,8 @@ struct FavouritesView: View {
     // MARK: - Grouping helpers
     private func distanceMiles(from coord: CLLocationCoordinate2D?, to station: Station) -> Double? {
         guard let loc = coord else { return nil }
-        let d = CLLocation(latitude: loc.latitude, longitude: loc.longitude)
-            .distance(from: CLLocation(latitude: station.coordinate.latitude, longitude: station.coordinate.longitude))
+        let currentLocation = CLLocation(latitude: loc.latitude, longitude: loc.longitude)
+        let d = station.distance(from: currentLocation)
         return d / 1609.344 // meters -> miles
     }
 
