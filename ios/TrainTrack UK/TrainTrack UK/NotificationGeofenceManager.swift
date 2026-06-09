@@ -44,6 +44,9 @@ struct NotificationGeofenceDebugSnapshot {
     let monitoredTargetCount: Int
     let trackingMode: String
     let authorizationStatus: String
+    let backgroundLocationEnabled: Bool
+    let backgroundActivityActive: Bool
+    let locationServiceSessionActive: Bool
 }
 
 // MARK: - Geofence Manager
@@ -99,6 +102,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     //      — this is a user-facing setting; the app cannot enable it programmatically.
     //   5. App was NOT force-quit by the user — user swipe-close prevents re-launch.
     private var locationServiceSession: Any?
+    private var locationServiceDiagnosticsTask: Task<Void, Never>?
 
     // CLBackgroundActivitySession (iOS 17+) — keeps the app process alive in background
     // while region monitoring is active. Without this, iOS suspends the app between
@@ -118,6 +122,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     //
     // Stored as Any? to avoid @available spreading everywhere.
     private var backgroundActivitySession: Any?
+    private var backgroundActivityDiagnosticsTask: Task<Void, Never>?
 
     private override init() {
         super.init()
@@ -129,8 +134,74 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         print("📍 [GeofenceManager] init auth=\(manager.authorizationStatus.rawValue) monitored=\(manager.monitoredRegions.count)")
     }
 
+    private func logGeofenceDiagnostic(_ event: String, metadata: [String: Any?] = [:]) {
+        var enriched = metadata
+        enriched["authorization"] = authorizationStatusDescription(manager.authorizationStatus)
+        enriched["accuracy_authorization"] = accuracyAuthorizationDescription
+        enriched["tracking_mode"] = trackingModeDescription
+        enriched["monitored_region_count"] = monitoredRegionIdentifiers.count
+        enriched["monitored_target_count"] = monitoredTargets.count
+        enriched["background_location_enabled"] = manager.allowsBackgroundLocationUpdates
+        enriched["background_activity_active"] = backgroundActivitySession != nil
+        enriched["location_service_session_active"] = locationServiceSession != nil
+        ClientDiagnosticsLogger.log("geofence", event, metadata: enriched)
+    }
+
+    @available(iOS 18.0, *)
+    private func startLocationServiceDiagnostics(_ session: CLServiceSession) {
+        locationServiceDiagnosticsTask?.cancel()
+        locationServiceDiagnosticsTask = Task { [diagnostics = session.diagnostics] in
+            do {
+                for try await diagnostic in diagnostics {
+                    ClientDiagnosticsLogger.log("geofence", "location_service_session_diagnostic", metadata: [
+                        "authorization_denied": diagnostic.authorizationDenied,
+                        "always_authorization_denied": diagnostic.alwaysAuthorizationDenied,
+                        "authorization_denied_globally": diagnostic.authorizationDeniedGlobally,
+                        "authorization_request_in_progress": diagnostic.authorizationRequestInProgress,
+                        "authorization_restricted": diagnostic.authorizationRestricted,
+                        "full_accuracy_denied": diagnostic.fullAccuracyDenied,
+                        "insufficiently_in_use": diagnostic.insufficientlyInUse,
+                        "service_session_required": diagnostic.serviceSessionRequired
+                    ])
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                ClientDiagnosticsLogger.log("geofence", "location_service_session_diagnostics_failed", metadata: [
+                    "error": error.localizedDescription
+                ])
+            }
+        }
+    }
+
+    @available(iOS 18.0, *)
+    private func startBackgroundActivityDiagnostics(_ session: CLBackgroundActivitySession) {
+        backgroundActivityDiagnosticsTask?.cancel()
+        backgroundActivityDiagnosticsTask = Task { [diagnostics = session.diagnostics] in
+            do {
+                for try await diagnostic in diagnostics {
+                    ClientDiagnosticsLogger.log("geofence", "background_activity_diagnostic", metadata: [
+                        "authorization_denied": diagnostic.authorizationDenied,
+                        "authorization_denied_globally": diagnostic.authorizationDeniedGlobally,
+                        "authorization_request_in_progress": diagnostic.authorizationRequestInProgress,
+                        "authorization_restricted": diagnostic.authorizationRestricted,
+                        "insufficiently_in_use": diagnostic.insufficientlyInUse,
+                        "service_session_required": diagnostic.serviceSessionRequired
+                    ])
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                ClientDiagnosticsLogger.log("geofence", "background_activity_diagnostics_failed", metadata: [
+                    "error": error.localizedDescription
+                ])
+            }
+        }
+    }
+
     func requestAlwaysAuthorizationIfNeeded() {
         print("📍 [GeofenceManager] requestAlwaysAuthorizationIfNeeded auth=\(manager.authorizationStatus.rawValue)")
+        logGeofenceDiagnostic("request_always_authorization_if_needed")
         if #available(iOS 18.0, *) {
             ensureLocationServiceSessionIfNeeded()
             return
@@ -158,8 +229,17 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     func sync(subscriptions: [NotificationSubscription]) async {
-        guard CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else { return }
+        guard CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else {
+            logGeofenceDiagnostic("sync_skipped_monitoring_unavailable", metadata: [
+                "subscription_count": subscriptions.count
+            ])
+            return
+        }
         let existing = manager.monitoredRegions.filter { $0.identifier.hasPrefix(regionPrefix) }
+        logGeofenceDiagnostic("sync_started", metadata: [
+            "subscription_count": subscriptions.count,
+            "existing_region_count": existing.count
+        ])
 
         guard !subscriptions.isEmpty else {
             stopMonitoring(Array(existing))
@@ -171,6 +251,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 DebugLogStore.shared.log(syncMsg, category: "Geofence")
             }
             print("📍 \(syncMsg)")
+            logGeofenceDiagnostic("sync_completed", metadata: [
+                "desired_region_count": 0,
+                "added_region_count": 0,
+                "removed_region_count": existing.count,
+                "reason": "no_subscriptions"
+            ])
             return
         }
 
@@ -189,6 +275,10 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 DebugLogStore.shared.log(syncMsg, category: "Geofence")
             }
             print("📍 \(syncMsg)")
+            logGeofenceDiagnostic("sync_skipped_missing_authorization", metadata: [
+                "subscription_count": subscriptions.count,
+                "removed_region_count": existing.count
+            ])
             return
         }
 
@@ -210,6 +300,10 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             Task { @MainActor in
                 DebugLogStore.shared.log("Stations not loaded — skipping geofence sync to preserve existing regions", category: "Geofence")
             }
+            logGeofenceDiagnostic("sync_skipped_stations_not_loaded", metadata: [
+                "subscription_count": subscriptions.count,
+                "existing_region_count": existing.count
+            ])
             return
         }
 
@@ -255,6 +349,15 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             DebugLogStore.shared.log(syncMsg, category: "Geofence")
         }
         print("📍 \(syncMsg)")
+        logGeofenceDiagnostic("sync_completed", metadata: [
+            "subscription_count": subscriptions.count,
+            "existing_region_count": existing.count,
+            "desired_region_count": desired.count,
+            "desired_target_count": desiredTargets.count,
+            "added_region_count": addedCount,
+            "removed_region_count": removedCount,
+            "target_routes": desiredTargets.values.map { "\($0.from)-\($0.to)" }.sorted()
+        ])
     }
 
     private func stopMonitoring(_ regions: [CLRegion]) {
@@ -266,7 +369,10 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     private func ensureLocationServiceSessionIfNeeded() {
         guard #available(iOS 18.0, *) else { return }
         guard locationServiceSession == nil else { return }
-        locationServiceSession = CLServiceSession(authorization: .always)
+        let session = CLServiceSession(authorization: .always)
+        locationServiceSession = session
+        startLocationServiceDiagnostics(session)
+        logGeofenceDiagnostic("location_service_session_started")
         print("📍 [GeofenceManager] Started CLServiceSession(.always)")
     }
 
@@ -280,6 +386,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         hasRequestedFullAccuracyThisSession = true
         let msg = "Requesting temporary full accuracy for station arrival monitoring"
         DebugLogStore.shared.log(msg, category: "Geofence")
+        logGeofenceDiagnostic("request_temporary_full_accuracy")
         print("📍 \(msg)")
         manager.requestTemporaryFullAccuracyAuthorization(withPurposeKey: ArrivalConfig.fullAccuracyPurposeKey)
     }
@@ -324,6 +431,10 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
         let msg = "Started low-sensitivity station-arrival tracking (\(reason))"
         DebugLogStore.shared.log(msg, category: "Geofence")
+        logGeofenceDiagnostic("tracking_started", metadata: [
+            "mode": "low",
+            "reason": reason
+        ])
         print("📍 \(msg)")
     }
 
@@ -341,6 +452,10 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
             let msg = "Started high-sensitivity station-arrival tracking (\(reason))"
             DebugLogStore.shared.log(msg, category: "Geofence")
+            logGeofenceDiagnostic("tracking_started", metadata: [
+                "mode": "high",
+                "reason": reason
+            ])
             print("📍 \(msg)")
         }
 
@@ -357,6 +472,9 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
         let msg = "Stopped station-arrival location updates (\(reason))"
         DebugLogStore.shared.log(msg, category: "Geofence")
+        logGeofenceDiagnostic("tracking_stopped", metadata: [
+            "reason": reason
+        ])
         print("📍 \(msg)")
     }
 
@@ -368,14 +486,24 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         if #available(iOS 17.0, *) {
             if hasActiveGeofences {
                 if backgroundActivitySession == nil {
-                    backgroundActivitySession = CLBackgroundActivitySession()
+                    let session = CLBackgroundActivitySession()
+                    backgroundActivitySession = session
+                    if #available(iOS 18.0, *) {
+                        startBackgroundActivityDiagnostics(session)
+                    }
+                    logGeofenceDiagnostic("background_activity_started")
                     print("📍 [GeofenceManager] Started CLBackgroundActivitySession")
                 }
             } else if let session = backgroundActivitySession as? CLBackgroundActivitySession {
                 session.invalidate()
+                backgroundActivityDiagnosticsTask?.cancel()
+                backgroundActivityDiagnosticsTask = nil
                 backgroundActivitySession = nil
+                logGeofenceDiagnostic("background_activity_stopped")
                 print("📍 [GeofenceManager] Stopped CLBackgroundActivitySession")
             } else {
+                backgroundActivityDiagnosticsTask?.cancel()
+                backgroundActivityDiagnosticsTask = nil
                 backgroundActivitySession = nil
             }
         }
@@ -385,8 +513,15 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 session.invalidate()
                 print("📍 [GeofenceManager] Invalidated CLServiceSession (no active geofences)")
             }
+            locationServiceDiagnosticsTask?.cancel()
+            locationServiceDiagnosticsTask = nil
             locationServiceSession = nil
+            logGeofenceDiagnostic("location_service_session_stopped")
         }
+
+        logGeofenceDiagnostic("background_location_state_updated", metadata: [
+            "has_active_geofences": hasActiveGeofences
+        ])
     }
 
     private func desiredTargets(
@@ -565,6 +700,17 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             target.station.coordinates.count
         )
         DebugLogStore.shared.log(msg, category: "Geofence")
+        logGeofenceDiagnostic("region_hint", metadata: [
+            "region_id": identifier,
+            "subscription_id": target.subscriptionId,
+            "from": target.from,
+            "to": target.to,
+            "station": target.station.name,
+            "source": source,
+            "target_latitude": stationCoordinate.latitude,
+            "target_longitude": stationCoordinate.longitude,
+            "coordinate_count": target.station.coordinates.count
+        ])
         print("📍 \(msg)")
 
         if let location = currentUsableLocation(maxAge: ArrivalConfig.recentLocationForRegionHintSeconds) {
@@ -674,6 +820,14 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 )
                 DebugLogStore.shared.log(msg, category: "Geofence")
                 print("📍 \(msg)")
+                logGeofenceDiagnostic("arrival_confirmation_timed_out", metadata: [
+                    "from": target.from,
+                    "to": target.to,
+                    "station": target.station.name,
+                    "raw_distance_m": rawDistance,
+                    "horizontal_accuracy_m": horizontalAccuracy,
+                    "reason": "poor_accuracy"
+                ])
                 state.reset()
             }
             confirmationStates[target.identifier] = state
@@ -698,6 +852,16 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                     source
                 )
                 DebugLogStore.shared.log(msg, category: "Geofence")
+                logGeofenceDiagnostic("arrival_confirmation_started", metadata: [
+                    "from": target.from,
+                    "to": target.to,
+                    "station": target.station.name,
+                    "raw_distance_m": rawDistance,
+                    "compensated_distance_m": compensatedDistance,
+                    "horizontal_accuracy_m": horizontalAccuracy,
+                    "threshold_m": effectiveThreshold,
+                    "source": source
+                ])
                 print("📍 \(msg)")
             }
 
@@ -721,6 +885,17 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                     dwell
                 )
                 DebugLogStore.shared.log(msg, category: "Mute")
+                logGeofenceDiagnostic("arrival_confirmed", metadata: [
+                    "subscription_id": target.subscriptionId,
+                    "from": target.from,
+                    "to": target.to,
+                    "station": target.station.name,
+                    "raw_distance_m": rawDistance,
+                    "compensated_distance_m": compensatedDistance,
+                    "horizontal_accuracy_m": horizontalAccuracy,
+                    "threshold_m": effectiveThreshold,
+                    "dwell_seconds": dwell
+                ])
                 print("✅ \(msg)")
                 Task { @MainActor in
                     await self.triggerMuteFlow(
@@ -765,6 +940,17 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 )
                 DebugLogStore.shared.log(msg, category: "Geofence")
                 print("📍 \(msg)")
+                logGeofenceDiagnostic("arrival_confirmation_reset", metadata: [
+                    "from": target.from,
+                    "to": target.to,
+                    "station": target.station.name,
+                    "raw_distance_m": rawDistance,
+                    "compensated_distance_m": compensatedDistance,
+                    "horizontal_accuracy_m": horizontalAccuracy,
+                    "threshold_m": effectiveThreshold,
+                    "elapsed_seconds": elapsed,
+                    "reason": elapsed > ArrivalConfig.confirmationTimeoutSeconds ? "timeout" : "moved_away"
+                ])
                 state.reset()
             }
         }
@@ -798,6 +984,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         Task { @MainActor in
             defer { muteFlowToken.end() }
             DebugLogStore.shared.log(message, category: "Geofence")
+            self.logGeofenceDiagnostic("region_entered", metadata: [
+                "region_id": circular.identifier,
+                "subscription_id": parsed.subscriptionId,
+                "from": parsed.from.uppercased(),
+                "to": parsed.to.uppercased()
+            ])
             print("📍 \(message)")
             await self.handleRegionHint(identifier: circular.identifier, parsed: parsed, source: "enter")
         }
@@ -817,6 +1009,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         let message = "Exited region: \(circular.identifier)\nFrom: \(parsed.from.uppercased()) To: \(parsed.to.uppercased())"
         Task { @MainActor in
             DebugLogStore.shared.log(message, category: "Geofence")
+            self.logGeofenceDiagnostic("region_exited", metadata: [
+                "region_id": circular.identifier,
+                "subscription_id": parsed.subscriptionId,
+                "from": parsed.from.uppercased(),
+                "to": parsed.to.uppercased()
+            ])
 
             let autoEndEnabled = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? true
             let hasPendingAutoEnd = NotificationMuteStorage.hasPendingLiveActivityAutoEndOnDeparture(from: parsed.from, to: parsed.to)
@@ -855,7 +1053,10 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             monitoredRegionIdentifiers: monitoredRegionIdentifiers,
             monitoredTargetCount: monitoredTargets.count,
             trackingMode: trackingModeDescription,
-            authorizationStatus: authorizationStatusDescription(manager.authorizationStatus)
+            authorizationStatus: authorizationStatusDescription(manager.authorizationStatus),
+            backgroundLocationEnabled: manager.allowsBackgroundLocationUpdates,
+            backgroundActivityActive: backgroundActivitySession != nil,
+            locationServiceSessionActive: locationServiceSession != nil
         )
     }
 
@@ -900,6 +1101,15 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             confirmationStates[identifier] = StationArrivalConfirmationState()
         }
         startHighSensitivityTracking(reason: source)
+        logGeofenceDiagnostic("foreground_arrival_evaluation", metadata: [
+            "subscription_id": subscription.id,
+            "from": from,
+            "to": to,
+            "station": station.name,
+            "source": source,
+            "raw_distance_m": station.distance(from: location),
+            "horizontal_accuracy_m": location.horizontalAccuracy
+        ])
         evaluateArrival(using: location, for: target, source: source)
     }
 
@@ -908,6 +1118,9 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         let msg = "Started monitoring: \(region.identifier)"
         Task { @MainActor in
             DebugLogStore.shared.log(msg, category: "Geofence")
+            self.logGeofenceDiagnostic("monitoring_started", metadata: [
+                "region_id": region.identifier
+            ])
         }
         print("📍 \(msg)")
     }
@@ -917,6 +1130,10 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         let msg = "Monitoring FAILED for \(regionId): \(error.localizedDescription)"
         Task { @MainActor in
             DebugLogStore.shared.log(msg, category: "Error")
+            self.logGeofenceDiagnostic("monitoring_failed", metadata: [
+                "region_id": regionId,
+                "error": error.localizedDescription
+            ])
         }
         print("❌ \(msg)")
     }
@@ -939,6 +1156,13 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         let msg = "Region state [\(stateStr)]: \(circular.identifier)"
         Task { @MainActor in
             DebugLogStore.shared.log(msg, category: "Geofence")
+            self.logGeofenceDiagnostic("region_state_determined", metadata: [
+                "region_id": circular.identifier,
+                "subscription_id": parsed.subscriptionId,
+                "from": parsed.from.uppercased(),
+                "to": parsed.to.uppercased(),
+                "state": stateStr
+            ])
         }
         print("📍 \(msg)")
 
@@ -967,6 +1191,9 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         let msg = "Location updates failed: \(error.localizedDescription)"
         Task { @MainActor in
             DebugLogStore.shared.log(msg, category: "Error")
+            self.logGeofenceDiagnostic("location_updates_failed", metadata: [
+                "error": error.localizedDescription
+            ])
         }
         print("❌ \(msg)")
     }
@@ -975,6 +1202,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         let msg = "Location updates paused unexpectedly; restarting continuous arrival tracking"
         Task { @MainActor in
             DebugLogStore.shared.log(msg, category: "Geofence")
+            self.logGeofenceDiagnostic("location_updates_paused")
             self.trackingMode = nil
             self.startLowSensitivityTrackingIfNeeded(reason: "pause-restart")
         }
@@ -985,6 +1213,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         let msg = "Location updates resumed"
         Task { @MainActor in
             DebugLogStore.shared.log(msg, category: "Geofence")
+            self.logGeofenceDiagnostic("location_updates_resumed")
         }
         print("📍 \(msg)")
     }
@@ -1024,6 +1253,13 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             ? "Sending mute request with \(delayMinutes)-min server-side delay for \(from)→\(to)"
             : "Sending immediate mute request for \(from)→\(to)"
         DebugLogStore.shared.log(msg, category: "Mute")
+        logGeofenceDiagnostic("mute_flow_started", metadata: [
+            "subscription_id": subscriptionId,
+            "from": from.uppercased(),
+            "to": to.uppercased(),
+            "delay_minutes": delayMinutes,
+            "simulate": simulate
+        ])
         print("⏳ \(msg)")
 
         // The terminate request is sent immediately via background URLSession (reliable
@@ -1057,6 +1293,11 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         let msg = "Simulated arrival for \(from.uppercased()) → \(to.uppercased())"
         Task { @MainActor in
             DebugLogStore.shared.log(msg, category: "Geofence")
+            self.logGeofenceDiagnostic("arrival_simulated", metadata: [
+                "subscription_id": subscriptionId,
+                "from": from.uppercased(),
+                "to": to.uppercased()
+            ])
         }
         print("🧪 \(msg)")
         Task {
@@ -1079,6 +1320,9 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         Task { @MainActor in
             let msg = "Location authorization changed: status=\(self.authorizationStatusDescription(manager.authorizationStatus))"
             DebugLogStore.shared.log(msg, category: "Geofence")
+            self.logGeofenceDiagnostic("authorization_changed", metadata: [
+                "new_status": self.authorizationStatusDescription(manager.authorizationStatus)
+            ])
 
             if self.canMonitorWithCurrentAuthorization {
                 self.requestTemporaryFullAccuracyIfNeeded()
@@ -1105,6 +1349,20 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         @unknown default:
             return "unknown"
         }
+    }
+
+    private var accuracyAuthorizationDescription: String {
+        if #available(iOS 14.0, *) {
+            switch manager.accuracyAuthorization {
+            case .fullAccuracy:
+                return "fullAccuracy"
+            case .reducedAccuracy:
+                return "reducedAccuracy"
+            @unknown default:
+                return "unknown"
+            }
+        }
+        return "fullAccuracy"
     }
 }
 
@@ -1222,6 +1480,16 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
         }
         task.resume()
 
+        ClientDiagnosticsLogger.log("mute", "terminate_request_started", metadata: [
+            "task_id": task.taskIdentifier,
+            "url": url.absoluteString,
+            "subscription_id": subscriptionId,
+            "from": from.uppercased(),
+            "to": to.uppercased(),
+            "date": currentDateKey(),
+            "delay_minutes": delayMinutes
+        ])
+
         let msg = "Mute request task started for \(from.uppercased()) → \(to.uppercased())"
         Task { @MainActor in DebugLogStore.shared.log(msg, category: "Mute") }
         print("✅ \(msg)")
@@ -1258,6 +1526,16 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
                 msg += "\nLeg: \(context.from)→\(context.to)"
                 msg += "\nDate: \(context.dateKey) Delay: \(context.delayMinutes)m"
             }
+            ClientDiagnosticsLogger.log("mute", "terminate_request_failed", metadata: [
+                "task_id": taskId,
+                "error": error.localizedDescription,
+                "url": context?.url,
+                "subscription_id": context?.subscriptionId,
+                "from": context?.from,
+                "to": context?.to,
+                "date": context?.dateKey,
+                "delay_minutes": context?.delayMinutes
+            ])
             let loggedMessage = msg
             Task { @MainActor in DebugLogStore.shared.log(loggedMessage, category: "Error") }
             print("❌ \(msg)")
@@ -1277,6 +1555,17 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             if let data = data, !data.isEmpty, let responseString = String(data: data, encoding: .utf8) {
                 msg += "\nResponse: \(responseString)"
             }
+            ClientDiagnosticsLogger.log("mute", "terminate_request_completed", metadata: [
+                "task_id": taskId,
+                "status": response.statusCode,
+                "url": context?.url,
+                "subscription_id": context?.subscriptionId,
+                "from": context?.from,
+                "to": context?.to,
+                "date": context?.dateKey,
+                "delay_minutes": context?.delayMinutes,
+                "response": data.flatMap { String(data: $0, encoding: .utf8) }
+            ])
 
             let category: String
             if response.statusCode == 404 {
@@ -1314,6 +1603,9 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             }
         } else {
             let msg = "Mute request completed (no response details)"
+            ClientDiagnosticsLogger.log("mute", "terminate_request_completed_without_response", metadata: [
+                "task_id": taskId
+            ])
             Task { @MainActor in DebugLogStore.shared.log(msg, category: "Mute") }
             print("✅ \(msg)")
             Task { @MainActor in
@@ -1424,6 +1716,12 @@ final class GeofenceEventSender: NSObject, URLSessionDelegate, URLSessionTaskDel
 
         let msg = "Sending geofence event: \(eventType) \(from)→\(to)"
         Task { @MainActor in DebugLogStore.shared.log(msg, category: "Geofence") }
+        ClientDiagnosticsLogger.log("geofence", "server_event_started", metadata: [
+            "event_type": eventType,
+            "region_id": regionId,
+            "from": from.uppercased(),
+            "to": to.uppercased()
+        ])
         print("📡 [GeofenceEvent] \(msg)")
 
         let tempDir = FileManager.default.temporaryDirectory
@@ -1453,8 +1751,16 @@ final class GeofenceEventSender: NSObject, URLSessionDelegate, URLSessionTaskDel
             self.backgroundTasks.removeValue(forKey: taskId)?.end()
         }
         if let error = error {
+            ClientDiagnosticsLogger.log("geofence", "server_event_failed", metadata: [
+                "task_id": taskId,
+                "error": error.localizedDescription
+            ])
             print("❌ [GeofenceEvent] Request failed: \(error.localizedDescription)")
         } else if let response = task.response as? HTTPURLResponse {
+            ClientDiagnosticsLogger.log("geofence", "server_event_completed", metadata: [
+                "task_id": taskId,
+                "status": response.statusCode
+            ])
             print("📡 [GeofenceEvent] Response: \(response.statusCode)")
         }
     }

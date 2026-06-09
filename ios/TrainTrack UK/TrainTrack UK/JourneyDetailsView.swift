@@ -481,6 +481,10 @@ struct JourneyDetailsView: View {
                                 Text("Tracking: \(geofenceSnapshot.trackingMode), targets: \(geofenceSnapshot.monitoredTargetCount), auth: \(geofenceSnapshot.authorizationStatus)")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
+
+                                Text("Background: \(geofenceSnapshot.backgroundLocationEnabled ? "on" : "off"), activity: \(geofenceSnapshot.backgroundActivityActive ? "active" : "off"), service: \(geofenceSnapshot.locationServiceSessionActive ? "active" : "off")")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
                             }
 
                             Divider().padding(.vertical, 4)

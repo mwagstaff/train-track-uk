@@ -473,6 +473,25 @@ final class NotificationSubscriptionStore: ObservableObject {
             """,
             category: "Geofence"
         )
+        ClientDiagnosticsLogger.log("geofence", "eligibility", metadata: [
+            "live_session_count": liveSessions.count,
+            "eligible_count": eligible.count,
+            "skipped_mute_off": muteDisabledCount,
+            "skipped_expired": expiredCount,
+            "skipped_no_enabled_legs": noEnabledLegsCount,
+            "sessions": liveSessions.prefix(6).map { session in
+                let enabledLegs = session.legs.filter(\.enabled)
+                let reasons = geofenceSkipReasons(for: session, now: now, enabledLegs: enabledLegs)
+                return [
+                    "id": session.id,
+                    "route_key": session.routeKey,
+                    "source": session.source ?? "nil",
+                    "active_until": session.activeUntil.map { ISO8601DateFormatter().string(from: $0) } ?? "nil",
+                    "enabled_legs": enabledLegs.map { "\($0.from.uppercased())-\($0.to.uppercased())" },
+                    "skip_reasons": reasons
+                ] as [String: Any]
+            }
+        ])
     }
 
     private func geofenceSkipReasons(
