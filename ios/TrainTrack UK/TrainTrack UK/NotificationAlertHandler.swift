@@ -26,6 +26,11 @@ final class NotificationAlertHandler {
             return
         }
 
+        if info.alertType == NotificationAlertType.arrivalDetectionFailed {
+            await reArmArrivalDetection()
+            return
+        }
+
         switch response.actionIdentifier {
         case NotificationActionId.muteLegForToday:
             await muteLegForToday(info: &info, requireGeofence: false)
@@ -86,6 +91,15 @@ final class NotificationAlertHandler {
 
         showToast(message: alreadyMuted ? "Already muted \(info.displayLabel) for today" : "Muted \(info.displayLabel) for today")
         await NotificationSubscriptionStore.shared.refresh()
+    }
+
+    private func reArmArrivalDetection() async {
+        DebugLogStore.shared.log("User tapped missed-arrival notification — re-arming arrival detection", category: "Geofence")
+        // Foregrounding the app already triggers a subscription + geofence re-sync (see the
+        // app's scenePhase handler); this makes the authorization/geofence refresh explicit.
+        NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
+        await NotificationSubscriptionStore.shared.refresh()
+        ToastStore.shared.show("Arrival detection re-enabled", icon: "location.fill")
     }
 
     private func openJourneyForActivation(info: inout NotificationLegInfo) async {

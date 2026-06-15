@@ -279,6 +279,36 @@ If the app starts muting too early:
 - increase dwell slightly
 - increase reset hysteresis if confirmation is too eager near busy roads or station-adjacent routes
 
+## Resilience Backstops
+
+Continuous background location updates after a region-enter wake are **not guaranteed to
+persist**. iOS grants only a short execution window for a geofence wake and can re-suspend
+the app before the homing step reaches the arrival threshold — especially once the app has
+been dormant for a day or two (reduced Background App Refresh budget). When that happens the
+user reaches the station but arrival is never confirmed, and historically this failed
+silently (no mute, no "Welcome", no indication anything went wrong).
+
+Two backstops address this:
+
+1. **Background-wake re-check** (`refreshArrivalFromBackgroundWake`) — every background push
+   wake (Live Activity / journey-update push, via `didReceiveRemoteNotification`) is used as
+   a fresh chance to re-sample location and complete an in-flight arrival confirmation. It
+   runs a short high-sensitivity sampling burst (held alive by a background-task token) so
+   the dwell-based confirmation can complete even if the post-geofence continuous tracking
+   was suspended, then downgrades back to the low-power profile.
+
+2. **Missed-arrival health notification** — when the user **enters** the origin geofence we
+   set a pending-arrival marker (`NotificationMuteStorage.markArrivalDetectionPending`),
+   cleared when arrival is confirmed (`triggerMuteFlow`). If the marker survives to the
+   region **exit** (they reached and left the station without us detecting arrival) — or to a
+   later wake more than 5 minutes after entry — we post a clear, tappable notification
+   (`ARRIVAL_DETECTION_HEALTH` category, `arrival_detection_failed` alert type). Tapping it
+   reopens the app, which re-arms monitoring via the foreground subscription/geofence sync
+   (`NotificationAlertHandler.reArmArrivalDetection`). The marker is consumed atomically so
+   the notification fires at most once per leg per day. The marker is set only on a genuine
+   boundary crossing (`didEnterRegion`), **not** on `didDetermineState(.inside)`, to avoid
+   false positives for users whose home is already inside the station geofence.
+
 ## Apple APIs Worth Reviewing
 
 - [`CLLocationManager.allowsBackgroundLocationUpdates`](https://developer.apple.com/documentation/corelocation/cllocationmanager/allowsbackgroundlocationupdates)

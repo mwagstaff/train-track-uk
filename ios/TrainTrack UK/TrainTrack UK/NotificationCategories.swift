@@ -30,6 +30,16 @@ enum NotificationCategoryRegistrar {
             options: []
         )
 
-        UNUserNotificationCenter.current().setNotificationCategories([journeyCategory, arrivalCategory, activationCategory])
+        // Health alert shown when background arrival detection silently failed. No
+        // actions — tapping it simply reopens the app, which re-arms monitoring via the
+        // foreground subscription/geofence sync.
+        let arrivalHealthCategory = UNNotificationCategory(
+            identifier: NotificationCategoryId.arrivalDetectionHealth,
+            actions: [],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        UNUserNotificationCenter.current().setNotificationCategories([journeyCategory, arrivalCategory, activationCategory, arrivalHealthCategory])
     }
 }

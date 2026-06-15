@@ -164,6 +164,11 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
                 await LiveActivityManager.shared.registerAnyUnregisteredActivities()
             }
 
+            // Use this background wake as a fresh chance to confirm station arrival and to
+            // detect silent background-location failures. Continuous updates after a geofence
+            // wake aren't guaranteed to survive, so we re-sample here independently.
+            await NotificationGeofenceManager.shared.refreshArrivalFromBackgroundWake(trigger: "remote_notification")
+
             ClientDiagnosticsLogger.log("notifications", "remote_notification_handled", metadata: [
                 "started_scheduled_live_activity": started,
                 "completion": started ? "newData" : "noData"

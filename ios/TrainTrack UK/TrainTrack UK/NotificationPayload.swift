@@ -20,8 +20,13 @@ enum NotificationCategoryId {
     static let journeyLegAlert = "JOURNEY_LEG_ALERT"
     static let stationArrival = "STATION_ARRIVAL"
     static let journeyUpdatesActivation = "JOURNEY_UPDATES_ACTIVATION"
+    static let arrivalDetectionHealth = "ARRIVAL_DETECTION_HEALTH"
 }
 
 enum NotificationActionId {
     static let muteLegForToday = "MUTE_LEG_TODAY"
+}
+
+enum NotificationAlertType {
+    static let arrivalDetectionFailed = "arrival_detection_failed"
 }

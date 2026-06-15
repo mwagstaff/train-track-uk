@@ -973,6 +973,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             eventType: "enter"
         )
 
+        // Record that the user physically reached the origin station. If arrival is never
+        // confirmed (background location suspended before the homing step finishes), this
+        // marker lets us surface a "couldn't detect your arrival" notification on exit /
+        // a later wake rather than failing silently. Cleared in triggerMuteFlow on success.
+        NotificationMuteStorage.markArrivalDetectionPending(from: parsed.from, to: parsed.to)
+
         // Claim a background task synchronously BEFORE this method returns.
         // Without this, iOS can re-suspend the app immediately after didEnterRegion
         // returns — before the @MainActor task below has had a chance to run.
@@ -1015,6 +1021,10 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 "from": parsed.from.uppercased(),
                 "to": parsed.to.uppercased()
             ])
+
+            // The user entered and left the origin station. If arrival was never confirmed,
+            // background detection failed silently — surface it so the user can re-arm it.
+            await self.checkForMissedArrival(from: parsed.from, to: parsed.to, reason: "region-exit")
 
             let autoEndEnabled = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? true
             let hasPendingAutoEnd = NotificationMuteStorage.hasPendingLiveActivityAutoEndOnDeparture(from: parsed.from, to: parsed.to)
@@ -1248,6 +1258,10 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         // from also sending a terminate request during the server-side delay window.
         markLegMutedLocally(from: from, to: to)
 
+        // Arrival was detected — clear the pending marker so no missed-arrival
+        // notification fires on the subsequent region exit.
+        NotificationMuteStorage.clearArrivalDetectionPending(from: from, to: to)
+
         let delayMinutes = simulate ? 0 : ((UserDefaults.standard.object(forKey: "muteDelayMinutes") as? Int) ?? 3)
         let msg = delayMinutes > 0
             ? "Sending mute request with \(delayMinutes)-min server-side delay for \(from)→\(to)"
@@ -1314,6 +1328,117 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             DebugLogStore.shared.log(msg, category: "Mute")
         }
         print("✅ \(msg)")
+    }
+
+    // MARK: - Background-wake arrival re-check & missed-arrival health
+
+    /// Called when the app is woken by a background push (e.g. a Live Activity / journey
+    /// update). Continuous background location after a geofence wake is not guaranteed to
+    /// survive — especially once the app has been dormant for a while — so each push wake
+    /// is used as a fresh chance to: re-sample location and complete an in-flight arrival
+    /// confirmation, and surface a missed-arrival notification if detection silently failed.
+    func refreshArrivalFromBackgroundWake(trigger: String) async {
+        guard !monitoredTargets.isEmpty else { return }
+
+        // Only run a sampling burst when an arrival is awaiting confirmation — i.e. the user
+        // entered the origin geofence but we haven't confirmed yet. This targets the exact
+        // failure case (post-enter suspension) and avoids spinning up GPS mid-journey when
+        // the user has already left the origin behind.
+        let hasPendingArrival = monitoredTargets.values.contains {
+            NotificationMuteStorage.arrivalDetectionPendingSince(from: $0.from, to: $0.to) != nil
+        }
+
+        if hasPendingArrival, canMonitorWithCurrentAuthorization {
+            logGeofenceDiagnostic("background_wake_arrival_refresh", metadata: ["trigger": trigger])
+            // Keep the process alive for the brief sampling window below.
+            let token = AppBackgroundTaskToken(name: "push-wake-arrival")
+            updateBackgroundLocationState(hasActiveGeofences: true)
+            startHighSensitivityTracking(reason: "\(trigger)-wake")
+            // Give Core Location a short window to deliver several samples so the dwell-based
+            // arrival confirmation in evaluateArrival can complete within this wake.
+            try? await Task.sleep(nanoseconds: 12_000_000_000)
+            downgradeToLowSensitivityIfNoConfirmationInProgress()
+            token.end()
+        }
+
+        await evaluateMissedArrivals(trigger: trigger)
+    }
+
+    /// After a background-wake sampling burst, drop back to the low-power profile unless an
+    /// arrival confirmation is actively in progress (so we don't leave best-for-navigation
+    /// updates running when the user isn't near a station).
+    private func downgradeToLowSensitivityIfNoConfirmationInProgress() {
+        guard trackingMode == .highSensitivity else { return }
+        let confirming = confirmationStates.values.contains { $0.confirmationStartedAt != nil || $0.isFiring }
+        guard !confirming else { return }
+        trackingMode = nil
+        startLowSensitivityTrackingIfNeeded(reason: "post-wake-downgrade")
+    }
+
+    /// Checks each monitored leg whose arrival detection has been pending past a grace
+    /// period and surfaces a missed-arrival notification. Used as a backstop in case the
+    /// region-exit wake doesn't fire promptly.
+    private func evaluateMissedArrivals(trigger: String) async {
+        let gracePeriod: TimeInterval = 300 // 5 min since entering the station geofence
+        for target in monitoredTargets.values {
+            guard let since = NotificationMuteStorage.arrivalDetectionPendingSince(from: target.from, to: target.to) else { continue }
+            guard Date().timeIntervalSince(since) >= gracePeriod else { continue }
+            await checkForMissedArrival(from: target.from, to: target.to, reason: "\(trigger)-timeout")
+        }
+    }
+
+    /// Consumes the pending-arrival marker and, if the leg was reached but never muted,
+    /// posts the missed-arrival notification (once — the marker is cleared atomically).
+    private func checkForMissedArrival(from: String, to: String, reason: String) async {
+        guard NotificationMuteStorage.consumeArrivalDetectionPending(from: from, to: to) else { return }
+        guard !NotificationMuteStorage.isMutedToday(from: from, to: to) else { return }
+        await postMissedArrivalNotification(from: from, to: to, reason: reason)
+    }
+
+    private func stationDisplayName(crs: String) -> String? {
+        if let target = monitoredTargets.values.first(where: { $0.from == crs.uppercased() }) {
+            return target.station.name
+        }
+        return StationsService.shared.stations.first(where: {
+            $0.crs.caseInsensitiveCompare(crs) == .orderedSame
+        })?.name
+    }
+
+    private func postMissedArrivalNotification(from: String, to: String, reason: String) async {
+        let fromName = stationDisplayName(crs: from) ?? from.uppercased()
+        let toName = stationDisplayName(crs: to) ?? to.uppercased()
+
+        let content = UNMutableNotificationContent()
+        content.title = "Couldn’t detect your arrival"
+        content.body = "TrainTrack didn’t see you arrive at \(fromName), so it couldn’t mute your \(fromName) → \(toName) alerts automatically. Background location monitoring may have paused — tap to reopen TrainTrack and switch arrival detection back on."
+        content.sound = .default
+        content.categoryIdentifier = NotificationCategoryId.arrivalDetectionHealth
+        content.userInfo = [
+            NotificationPayloadKeys.from: from.uppercased(),
+            NotificationPayloadKeys.to: to.uppercased(),
+            NotificationPayloadKeys.fromName: fromName,
+            NotificationPayloadKeys.toName: toName,
+            NotificationPayloadKeys.alertType: NotificationAlertType.arrivalDetectionFailed
+        ]
+
+        // Identifier keyed by leg + day so it can't stack duplicates within a single day.
+        let identifier = "arrival_detection_failed_\(NotificationMuteStorage.legKey(from: from, to: to))_\(NotificationMuteStorage.currentDateKey())"
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+        } catch {
+            DebugLogStore.shared.log("Failed to post missed-arrival notification for \(from)→\(to): \(error.localizedDescription)", category: "Error")
+        }
+
+        let msg = "Posted missed-arrival notification for \(from)→\(to) (\(reason))"
+        DebugLogStore.shared.log(msg, category: "Geofence")
+        logGeofenceDiagnostic("missed_arrival_notified", metadata: [
+            "from": from.uppercased(),
+            "to": to.uppercased(),
+            "station": fromName,
+            "reason": reason
+        ])
+        print("⚠️ \(msg)")
     }
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
