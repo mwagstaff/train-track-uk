@@ -57,6 +57,11 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
     private enum ArrivalConfig {
         static let regionRadiusMeters: CLLocationDistance = 300
+        // Tight inner geofence. Entering it is treated as arrival directly, without relying
+        // on continuous background location surviving the approach. Kept at the upper end of
+        // CLCircularRegion's reliable range (~100–150m) so the OS triggers it dependably,
+        // even when the app was suspended/terminated. See STATION_ARRIVAL_DETECTION.md.
+        static let arrivalRegionRadiusMeters: CLLocationDistance = 150
         static let arrivalThresholdMeters: CLLocationDistance = 125
         static let activationDistanceMeters: CLLocationDistance = 450
         static let maxActivationAccuracyExpansionMeters: CLLocationDistance = 120
@@ -82,7 +87,14 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
     private let manager = CLLocationManager()
     private nonisolated let regionPrefix = "tt_notify_mute"
+    private nonisolated let arrivalRegionPrefix = "tt_notify_arrival"
     static let regionRadiusMeters: CLLocationDistance = ArrivalConfig.regionRadiusMeters
+    static let arrivalRegionRadiusMeters: CLLocationDistance = ArrivalConfig.arrivalRegionRadiusMeters
+
+    private enum RegionTier {
+        case outer  // wide "approach" ring — wakes the app and starts homing
+        case inner  // tight "arrival" ring — entering it confirms arrival directly
+    }
     private var monitoredTargets: [String: StationArrivalTarget] = [:]
     private var confirmationStates: [String: StationArrivalConfirmationState] = [:]
     private var trackingMode: TrackingMode?
@@ -221,7 +233,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     func stopLocationActivityIfIdle() {
-        let trackedRegions = manager.monitoredRegions.filter { $0.identifier.hasPrefix(regionPrefix) }
+        let trackedRegions = manager.monitoredRegions.filter { self.isManagedRegion($0.identifier) }
         guard trackedRegions.isEmpty else { return }
         print("📍 [GeofenceManager] stopLocationActivityIfIdle: no tracked regions, clearing background location state")
         stopLocationUpdatesIfNeeded(reason: "idle")
@@ -235,7 +247,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             ])
             return
         }
-        let existing = manager.monitoredRegions.filter { $0.identifier.hasPrefix(regionPrefix) }
+        let existing = manager.monitoredRegions.filter { self.isManagedRegion($0.identifier) }
         logGeofenceDiagnostic("sync_started", metadata: [
             "subscription_count": subscriptions.count,
             "existing_region_count": existing.count
@@ -552,6 +564,9 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         for (identifier, target) in targets {
             for (index, coordinate) in target.station.coordinates.enumerated() {
                 if coordinate.latitude == 0 && coordinate.longitude == 0 { continue }
+
+                // Outer "approach" ring (wide). Wakes the app and starts the homing heuristic,
+                // and its exit drives departure detection.
                 let regionId = index == 0 ? identifier : regionIdentifier(
                     subscriptionId: target.subscriptionId,
                     from: target.from,
@@ -566,6 +581,25 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 region.notifyOnEntry = true
                 region.notifyOnExit = true
                 regions[regionId] = region
+
+                // Inner "arrival" ring (tight). Entering it is treated as arrival directly —
+                // a region boundary crossing reliably wakes even a suspended/terminated app,
+                // so this does not depend on continuous background updates surviving the
+                // approach (the failure mode the homing heuristic alone could not cover).
+                let arrivalRegionId = arrivalRegionIdentifier(
+                    subscriptionId: target.subscriptionId,
+                    from: target.from,
+                    to: target.to,
+                    coordinateIndex: index
+                )
+                let arrivalRegion = CLCircularRegion(
+                    center: coordinate,
+                    radius: Self.arrivalRegionRadiusMeters,
+                    identifier: arrivalRegionId
+                )
+                arrivalRegion.notifyOnEntry = true
+                arrivalRegion.notifyOnExit = false
+                regions[arrivalRegionId] = arrivalRegion
             }
         }
         return regions
@@ -601,9 +635,23 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         return "\(base):p\(coordinateIndex)"
     }
 
+    private func arrivalRegionIdentifier(subscriptionId: String, from: String, to: String, coordinateIndex: Int? = nil) -> String {
+        let base = "\(arrivalRegionPrefix):\(subscriptionId):\(from.uppercased()):\(to.uppercased())"
+        guard let coordinateIndex, coordinateIndex > 0 else { return base }
+        return "\(base):p\(coordinateIndex)"
+    }
+
+    private nonisolated func isManagedRegion(_ identifier: String) -> Bool {
+        identifier.hasPrefix(regionPrefix) || identifier.hasPrefix(arrivalRegionPrefix)
+    }
+
+    private nonisolated func regionTier(for identifier: String) -> RegionTier {
+        identifier.hasPrefix(arrivalRegionPrefix) ? .inner : .outer
+    }
+
     private nonisolated func parseRegionIdentifier(_ identifier: String) -> (subscriptionId: String, from: String, to: String)? {
         let parts = identifier.split(separator: ":")
-        guard parts.count >= 4, parts[0] == regionPrefix else { return nil }
+        guard parts.count >= 4, parts[0] == regionPrefix || parts[0] == arrivalRegionPrefix else { return nil }
         return (String(parts[1]), String(parts[2]), String(parts[3]))
     }
 
@@ -963,6 +1011,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     nonisolated func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
         guard let circular = region as? CLCircularRegion else { return }
         guard let parsed = parseRegionIdentifier(circular.identifier) else { return }
+        let tier = regionTier(for: circular.identifier)
 
         // Always log boundary crossings to the server regardless of mute window,
         // so geofence health is visible in the admin even when the app is force-closed.
@@ -970,21 +1019,41 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             regionId: circular.identifier,
             from: parsed.from,
             to: parsed.to,
-            eventType: "enter"
+            eventType: tier == .inner ? "arrival_enter" : "enter"
         )
-
-        // Record that the user physically reached the origin station. If arrival is never
-        // confirmed (background location suspended before the homing step finishes), this
-        // marker lets us surface a "couldn't detect your arrival" notification on exit /
-        // a later wake rather than failing silently. Cleared in triggerMuteFlow on success.
-        NotificationMuteStorage.markArrivalDetectionPending(from: parsed.from, to: parsed.to)
 
         // Claim a background task synchronously BEFORE this method returns.
         // Without this, iOS can re-suspend the app immediately after didEnterRegion
         // returns — before the @MainActor task below has had a chance to run.
-        // The token is released inside the task (via defer) once triggerMuteFlow
-        // has been awaited and enqueueMute has been called.
+        // The token is released inside the task (via defer) once the work has been awaited.
         let muteFlowToken = AppBackgroundTaskToken(name: "geofence-entry-mute-flow")
+
+        if tier == .inner {
+            // Entering the tight arrival ring IS the arrival. Confirm directly — no dependency
+            // on continuous background updates surviving the approach (the root cause of
+            // silent misses). triggerMuteFlow is idempotent, so this coexists safely with the
+            // homing path that the outer ring may also have started.
+            let message = "Entered ARRIVAL region: \(circular.identifier)\nSub: \(parsed.subscriptionId)\nFrom: \(parsed.from.uppercased()) To: \(parsed.to.uppercased())"
+            Task { @MainActor in
+                defer { muteFlowToken.end() }
+                DebugLogStore.shared.log(message, category: "Geofence")
+                self.logGeofenceDiagnostic("arrival_region_entered", metadata: [
+                    "region_id": circular.identifier,
+                    "subscription_id": parsed.subscriptionId,
+                    "from": parsed.from.uppercased(),
+                    "to": parsed.to.uppercased()
+                ])
+                print("📍 \(message)")
+                await self.confirmArrivalFromRegion(parsed: parsed, source: "arrival-region-enter")
+            }
+            return
+        }
+
+        // Outer "approach" ring. Record that the user physically reached the origin station.
+        // If arrival is never confirmed (e.g. background location suspended before the inner
+        // ring fires), this marker lets us surface a "couldn't detect your arrival"
+        // notification rather than failing silently. Cleared in triggerMuteFlow on success.
+        NotificationMuteStorage.markArrivalDetectionPending(from: parsed.from, to: parsed.to)
 
         let message = "Entered region: \(circular.identifier)\nSub: \(parsed.subscriptionId)\nFrom: \(parsed.from.uppercased()) To: \(parsed.to.uppercased())"
         Task { @MainActor in
@@ -999,6 +1068,30 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             print("📍 \(message)")
             await self.handleRegionHint(identifier: circular.identifier, parsed: parsed, source: "enter")
         }
+    }
+
+    /// Confirms arrival from a tight inner-ring crossing and runs the standard mute flow.
+    /// Distinct from the homing heuristic: a region crossing is itself the confirmation, so
+    /// there is no distance/dwell evaluation here.
+    private func confirmArrivalFromRegion(parsed: (subscriptionId: String, from: String, to: String), source: String) async {
+        guard !NotificationMuteStorage.isMutedToday(from: parsed.from, to: parsed.to) else { return }
+
+        // Resolve the target (best-effort) so naming/coordinates are available for the
+        // Live Activity teardown and logging downstream.
+        let targetIdentifier = regionIdentifier(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to)
+        _ = await ensureTargetExists(identifier: targetIdentifier, parsed: parsed)
+
+        let msg = "Arrival confirmed via tight geofence for \(parsed.from)→\(parsed.to)"
+        DebugLogStore.shared.log(msg, category: "Mute")
+        logGeofenceDiagnostic("arrival_confirmed_region", metadata: [
+            "subscription_id": parsed.subscriptionId,
+            "from": parsed.from.uppercased(),
+            "to": parsed.to.uppercased(),
+            "source": source
+        ])
+        print("✅ \(msg)")
+
+        await triggerMuteFlow(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to)
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
@@ -1054,7 +1147,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     // Exposed for the debug UI — shows which regions CLLocationManager is actually monitoring.
     var monitoredRegionIdentifiers: [String] {
         manager.monitoredRegions
-            .filter { $0.identifier.hasPrefix(regionPrefix) }
+            .filter { isManagedRegion($0.identifier) }
             .map { $0.identifier }
     }
 
@@ -1124,7 +1217,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didStartMonitoringFor region: CLRegion) {
-        guard region.identifier.hasPrefix(regionPrefix) else { return }
+        guard isManagedRegion(region.identifier) else { return }
         let msg = "Started monitoring: \(region.identifier)"
         Task { @MainActor in
             DebugLogStore.shared.log(msg, category: "Geofence")

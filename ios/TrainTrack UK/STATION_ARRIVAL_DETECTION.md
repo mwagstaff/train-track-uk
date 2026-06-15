@@ -22,12 +22,21 @@ Practical issues:
 - a user may already be inside the region when monitoring starts
 - train stations are larger than bike docks, but they are still small enough that GPS noise matters
 
-For TrainTrack UK the correct pattern is therefore:
+For TrainTrack UK the pattern is therefore a **two-ring geofence** plus a homing heuristic:
 
-1. Use region monitoring as a helper and wake-up source.
-2. Run continuous standard location updates for the active session.
-3. Judge arrival using both raw distance and the reported horizontal-accuracy envelope.
-4. Require a short confirmation dwell before muting.
+1. **Inner "arrival" ring (~150m, primary).** Entering it is treated as arrival directly.
+   A region boundary crossing reliably wakes even a suspended or terminated app, so this
+   path does **not** depend on continuous background updates surviving the approach — which
+   is the failure mode the homing heuristic alone cannot cover (iOS grants only a brief wake
+   after a geofence event and may re-suspend the app before it homes in, especially once the
+   app has been dormant for a day or two).
+2. **Outer "approach" ring (~300m).** Wakes the app, starts continuous standard location
+   updates, and drives departure detection on exit.
+3. **Homing heuristic (secondary).** While the outer ring is active, judge arrival using
+   both raw distance and the reported horizontal-accuracy envelope, with a short confirmation
+   dwell before muting. This still confirms arrival when continuous updates do survive, and
+   complements the inner ring. The mute flow is idempotent, so whichever path fires first
+   wins and the other is a no-op.
 
 ## TrainTrack-Specific Adaptation
 
@@ -252,8 +261,9 @@ Arrival confirmation then triggers the existing mute flow:
 
 These are the active values in `NotificationGeofenceManager`:
 
-- region radius: `300m`
-- base arrival threshold: `125m`
+- outer (approach) region radius: `300m`
+- inner (arrival) region radius: `150m`
+- base arrival threshold (homing heuristic): `125m`
 - activation distance: `450m`
 - accepted horizontal accuracy: `60m ... 140m`
 - threshold expansion factor: `0.6`
@@ -288,7 +298,10 @@ been dormant for a day or two (reduced Background App Refresh budget). When that
 user reaches the station but arrival is never confirmed, and historically this failed
 silently (no mute, no "Welcome", no indication anything went wrong).
 
-Two backstops address this:
+The **inner arrival ring** (above) is the primary fix: a tight region crossing confirms
+arrival without relying on continuous updates. The two backstops below remain as defence in
+depth for the residual cases where even the inner ring's entry event is delayed or dropped
+(iOS region events are best-effort):
 
 1. **Background-wake re-check** (`refreshArrivalFromBackgroundWake`) — every background push
    wake (Live Activity / journey-update push, via `didReceiveRemoteNotification`) is used as
@@ -323,11 +336,13 @@ Two backstops address this:
 
 For reliable station-arrival detection on iOS:
 
-- do not rely on geofencing alone
-- keep continuous background location updates running for the active session
+- use a tight inner geofence as the primary arrival trigger — a region crossing reliably
+  wakes even a suspended/terminated app, so it does not depend on continuous updates
+- do not rely on continuous background location updates surviving a geofence wake; treat the
+  homing heuristic as a secondary confirmation, not the primary path
 - request full accuracy when possible
-- account for GPS uncertainty explicitly
-- use regions as helper signals, not as the final source of truth
+- account for GPS uncertainty explicitly in the homing heuristic
 - keep confirmation short, but not instantaneous
+- surface silent failures to the user rather than failing quietly
 
 That is the strategy TrainTrack UK now uses for muting journey updates when the user reaches the starting station.
