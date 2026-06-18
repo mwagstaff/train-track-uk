@@ -2,11 +2,11 @@
 
 This document describes the background arrival-detection strategy used by TrainTrack UK to decide when a user has reached the starting station for an active "journey updates" session.
 
-The goal is to make the "Welcome to <station>" flow reliable enough to:
+The goal is to make station-arrival detection reliable enough to:
 
-- end the matching Live Activity promptly
-- send the mute-on-arrival request to the backend
-- prevent further journey-update notifications for that leg
+- confirm that the user reached the starting station
+- keep journey updates active while the user remains at the station
+- mute notifications and optionally end the matching Live Activity once the user leaves the 250m station area
 
 The implementation lives in [NotificationGeofenceManager.swift](./TrainTrack%20UK/NotificationGeofenceManager.swift).
 
@@ -30,13 +30,13 @@ For TrainTrack UK the pattern is therefore a **two-ring geofence** plus a homing
    is the failure mode the homing heuristic alone cannot cover (iOS grants only a brief wake
    after a geofence event and may re-suspend the app before it homes in, especially once the
    app has been dormant for a day or two).
-2. **Outer "approach" ring (~300m).** Wakes the app, starts continuous standard location
+2. **Outer "approach" ring (~250m).** Wakes the app, starts continuous standard location
    updates, and drives departure detection on exit.
 3. **Homing heuristic (secondary).** While the outer ring is active, judge arrival using
    both raw distance and the reported horizontal-accuracy envelope, with a short confirmation
-   dwell before muting. This still confirms arrival when continuous updates do survive, and
-   complements the inner ring. The mute flow is idempotent, so whichever path fires first
-   wins and the other is a no-op.
+   dwell before arming station-exit cleanup. This still confirms arrival when continuous
+   updates do survive, and complements the inner ring. Arrival confirmation is idempotent, so
+   whichever path fires first wins and the other is a no-op.
 
 ## TrainTrack-Specific Adaptation
 
@@ -162,7 +162,7 @@ Current setting:
 
 - base arrival threshold = `125m`
 
-This is intentionally wider than the docking-app version because a station approach area is larger and the user experience is better if the app mutes slightly early rather than missing arrival.
+This is intentionally wider than the docking-app version because a station approach area is larger and the user experience is better if the app confirms arrival early and waits for station exit rather than missing arrival.
 
 ### Threshold Expansion
 
@@ -242,26 +242,27 @@ For each new `CLLocation`:
 
 ## Session End
 
-When arrival is confirmed or all monitored live sessions disappear:
+When all monitored live sessions disappear:
 
 1. stop continuous location updates
 2. stop region monitoring for removed targets
 3. invalidate the background activity session if nothing remains
 4. clear in-memory confirmation state
 
-Arrival confirmation then triggers the existing mute flow:
+Arrival confirmation keeps monitoring active and arms station-exit cleanup:
 
-1. mark the leg muted locally
-2. send the backend terminate request with any configured delay
-3. clear pending departure auto-end state
-4. stop the matching Live Activity
-5. delete matching live-session records
+1. clear the pending-arrival health marker
+2. mark the leg as awaiting station-exit cleanup
+3. continue Live Activity and notification updates while the user remains within 250m
+4. on outer-region exit, mark the leg muted locally and send the backend terminate request
+5. optionally stop the matching Live Activity, depending on the user's auto-end setting
+6. remove matching notification live-session records locally
 
 ## Current TrainTrack UK Tunables
 
 These are the active values in `NotificationGeofenceManager`:
 
-- outer (approach) region radius: `300m`
+- outer (approach) region radius: `250m`
 - inner (arrival) region radius: `150m`
 - base arrival threshold (homing heuristic): `125m`
 - activation distance: `450m`
@@ -282,7 +283,7 @@ If the app still misses arrivals:
 - reduce dwell slightly
 - increase activation distance
 
-If the app starts muting too early:
+If the app starts confirming arrival too early:
 
 - reduce the base arrival threshold
 - reduce the maximum threshold expansion
@@ -296,7 +297,7 @@ persist**. iOS grants only a short execution window for a geofence wake and can 
 the app before the homing step reaches the arrival threshold — especially once the app has
 been dormant for a day or two (reduced Background App Refresh budget). When that happens the
 user reaches the station but arrival is never confirmed, and historically this failed
-silently (no mute, no "Welcome", no indication anything went wrong).
+silently (no station-exit cleanup, no indication anything went wrong).
 
 The **inner arrival ring** (above) is the primary fix: a tight region crossing confirms
 arrival without relying on continuous updates. The two backstops below remain as defence in
@@ -312,15 +313,17 @@ depth for the residual cases where even the inner ring's entry event is delayed 
 
 2. **Missed-arrival health notification** — when the user **enters** the origin geofence we
    set a pending-arrival marker (`NotificationMuteStorage.markArrivalDetectionPending`),
-   cleared when arrival is confirmed (`triggerMuteFlow`). If the marker survives to the
+   cleared when arrival is confirmed (`armDepartureCleanupAfterArrival`). If the marker survives to the
    region **exit** (they reached and left the station without us detecting arrival) — or to a
    later wake more than 5 minutes after entry — we post a clear, tappable notification
    (`ARRIVAL_DETECTION_HEALTH` category, `arrival_detection_failed` alert type). Tapping it
    reopens the app, which re-arms monitoring via the foreground subscription/geofence sync
    (`NotificationAlertHandler.reArmArrivalDetection`). The marker is consumed atomically so
-   the notification fires at most once per leg per day. The marker is set only on a genuine
-   boundary crossing (`didEnterRegion`), **not** on `didDetermineState(.inside)`, to avoid
-   false positives for users whose home is already inside the station geofence.
+   the notification fires at most once per leg per day. The marker is set on outer-region
+   entry and on outer-region `didDetermineState(.inside)`, because scheduled starts can
+   register monitoring after the user is already inside the station area. It is not set from
+   inner arrival-region state alone, which avoids false positives for users whose home is
+   already inside the station geofence.
 
 ## Apple APIs Worth Reviewing
 
@@ -345,4 +348,4 @@ For reliable station-arrival detection on iOS:
 - keep confirmation short, but not instantaneous
 - surface silent failures to the user rather than failing quietly
 
-That is the strategy TrainTrack UK now uses for muting journey updates when the user reaches the starting station.
+That is the strategy TrainTrack UK now uses for muting journey updates after the user reaches and then leaves the starting station.

@@ -113,22 +113,14 @@ struct PreferencesView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                Toggle("Mute notifications on arrival", isOn: $autoMuteOnArrival)
-                Text("When you arrive at a departure station, the notifications for that journey are automatically stopped. Requires 'Always' location permission.")
+                Toggle("Mute notifications after leaving station", isOn: $autoMuteOnArrival)
+                Text("When you arrive at a departure station, journey updates continue. Once you leave the 250m station area, notifications for that journey are muted. Requires 'Always' location permission.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
                 if autoMuteOnArrival {
-                    Stepper(value: $muteDelayMinutes, in: 1...10) {
-                        HStack {
-                            Text("Mute after")
-                            Spacer()
-                            Text("\(muteDelayMinutes) min\(muteDelayMinutes == 1 ? "" : "s") at station")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Toggle("End Live Activity on departure", isOn: $autoEndLiveActivity)
-                    Text("Automatically dismiss the Live Activity widget after you leave the departure station area and your journey is underway.")
+                    Toggle("End Live Activity after leaving station", isOn: $autoEndLiveActivity)
+                    Text("Automatically dismiss the Live Activity widget after you leave the departure station area.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }

@@ -96,14 +96,14 @@ struct JourneyDetailsView: View {
         if let startedAt {
             if let localMutedAt, localMutedAt >= startedAt {
                 let timeLabel = formatTime(localMutedAt)
-                return ("Live updates stopped at \(timeLabel) when you arrived at \(stationName)", .orange)
+                return ("Live updates stopped at \(timeLabel) after you left \(stationName)", .orange)
             }
             return ("Live updates started at \(formatTime(startedAt))", .secondary)
         }
 
         if NotificationMuteStorage.isMutedToday(from: fromCode, to: toCode),
            let localMutedAt {
-            return ("Live updates stopped at \(formatTime(localMutedAt)) when you arrived at \(stationName)", .orange)
+            return ("Live updates stopped at \(formatTime(localMutedAt)) after you left \(stationName)", .orange)
         }
 
         if let subscription = notificationSubscription,
@@ -797,6 +797,7 @@ struct JourneyDetailsView: View {
             let to = leg.toStation.crs.uppercased()
             NotificationMuteStorage.clearMute(from: from, to: to)
             NotificationMuteStorage.clearPendingLiveSessionPreserveOnArrival(from: from, to: to)
+            NotificationMuteStorage.clearPendingStationDepartureCleanup(from: from, to: to)
         }
     }
 
@@ -970,7 +971,7 @@ struct JourneyDetailsView: View {
                 Debug simulate arrival requested
                 Subscription: \(subscriptionId)
                 Leg: \(leg.fromStation.crs.uppercased())→\(leg.toStation.crs.uppercased())
-                Mode: \(delaySeconds == 0 ? "immediate mute flow" : "notification tap after \(Int(delaySeconds))s")
+                Mode: \(delaySeconds == 0 ? "arrival confirmation" : "notification tap after \(Int(delaySeconds))s")
                 """,
                 category: "Mute"
             )
@@ -981,7 +982,7 @@ struct JourneyDetailsView: View {
                 sendNotification: delaySeconds == 0
             )
             await notificationStore.refresh()
-            ToastStore.shared.show("Simulated arrival for \(leg.fromStation.name) → \(leg.toStation.name)", icon: "checkmark.circle.fill")
+            ToastStore.shared.show("Simulated arrival; updates stop after station exit", icon: "checkmark.circle.fill")
         }
     }
 
@@ -1057,6 +1058,7 @@ struct JourneyDetailsView: View {
     private func debugClearLocalMute() {
         guard let leg = currentGroup.legs.first else { return }
         NotificationMuteStorage.clearMute(from: leg.fromStation.crs, to: leg.toStation.crs)
+        NotificationMuteStorage.clearPendingStationDepartureCleanup(from: leg.fromStation.crs, to: leg.toStation.crs)
         Task { await notificationStore.refresh() }
         ToastStore.shared.show("Cleared local mute for today", icon: "bell")
     }

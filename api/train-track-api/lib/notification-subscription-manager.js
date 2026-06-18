@@ -1217,13 +1217,14 @@ class NotificationSubscriptionManager {
         };
     }
 
-    async muteLegForDate({ deviceId, subscriptionId, from, to, date }) {
+    async muteLegForDate({ deviceId, subscriptionId, from, to, date, reason = 'mute_on_arrival' }) {
         const subscription = this.subscriptions.get(subscriptionId);
         if (!subscription) return null;
         if (deviceId && subscription.deviceId !== deviceId) return null;
         const legKey = `${from}-${to}`;
         const leg = subscription.legs.find((l) => l.from === from && l.to === to);
         if (!leg) return null;
+        const muteReason = normalizeMuteReason(reason);
         const todayKey = currentScheduleDateKey();
         const dateKey = typeof date === 'string' && date ? date : todayKey;
         const mutedAt = new Date().toISOString();
@@ -1241,7 +1242,7 @@ class NotificationSubscriptionManager {
                 console.warn('[notifications] Failed to fetch departures snapshot for muted notification:', error?.message || error);
             }
 
-            const mutedNotifications = buildMutedMessages(subscription, leg, snapshot);
+            const mutedNotifications = buildMutedMessages(subscription, leg, snapshot, muteReason);
             const pushResults = [];
 
             for (let index = 0; index < mutedNotifications.length; index += 1) {
@@ -1256,7 +1257,7 @@ class NotificationSubscriptionManager {
                     {
                         useSandbox: subscription.useSandbox,
                         event: mutedNotification.type,
-                        context: buildPushContext(subscription, leg, 'mute_on_arrival')
+                        context: buildPushContext(subscription, leg, muteReason)
                     }
                 );
                 pushResults.push({
@@ -1272,34 +1273,39 @@ class NotificationSubscriptionManager {
                 }
             }
 
-            console.log('[notifications] mute_on_arrival', JSON.stringify({
+            console.log('[notifications] mute_leg_for_date', JSON.stringify({
                 subscription_id: subscription.id,
                 device_id: subscription.deviceId,
                 route_key: subscription.routeKey,
                 leg: legKey,
                 use_sandbox: subscription.useSandbox,
+                reason: muteReason,
                 notifications: pushResults
             }));
         }
 
         if (this.subscriptionSource(subscription) === LIVE_SESSION_SOURCE) {
+            const liveSessionMuteReason = isStationExitMuteReason(muteReason)
+                ? 'live_session_muted_on_station_exit'
+                : 'live_session_muted_on_arrival';
             await this.muteScheduledLegsForToday({
                 deviceId: subscription.deviceId,
                 legs: [leg],
-                reason: 'live_session_muted_on_arrival',
+                reason: liveSessionMuteReason,
                 metadata: {
                     live_session_id: subscription.id,
-                    date: dateKey
+                    date: dateKey,
+                    trigger_reason: muteReason
                 }
             });
             this.subscriptions.delete(subscription.id);
             await this._deleteFromMongo(subscription.id);
             await this.recordSubscriptionAudit({
                 action: 'delete',
-                reason: 'live_session_muted_on_arrival',
+                reason: liveSessionMuteReason,
                 source: LIVE_SESSION_SOURCE,
                 before: subscription,
-                metadata: { date: dateKey }
+                metadata: { date: dateKey, trigger_reason: muteReason }
             });
         }
 
@@ -1913,12 +1919,21 @@ function buildPlatformMessage(subscription, leg, dep) {
     return buildNotificationPayload(legRouteTitle(leg), body, buildLegMeta(subscription, leg, 'platform'), 'platform');
 }
 
-function buildMutedMessages(subscription, leg, snapshot = null) {
+function normalizeMuteReason(reason) {
+    const value = typeof reason === 'string' ? reason.trim().toLowerCase() : '';
+    return value || 'mute_on_arrival';
+}
+
+function isStationExitMuteReason(reason) {
+    return reason === 'station_exit' || reason === 'debug_station_exit';
+}
+
+function buildMutedMessages(subscription, leg, snapshot = null, reason = 'mute_on_arrival') {
     const routeTitle = legRouteTitle(leg);
     return [
         buildNotificationPayload(
             routeTitle,
-            buildMutedGreetingBody(leg),
+            buildMutedGreetingBody(leg, reason),
             buildLegMeta(subscription, leg, 'muted_greeting'),
             'muted_greeting',
             'STATION_ARRIVAL'
@@ -1932,7 +1947,10 @@ function buildMutedMessages(subscription, leg, snapshot = null) {
     ];
 }
 
-function buildMutedGreetingBody(leg) {
+function buildMutedGreetingBody(leg, reason = 'mute_on_arrival') {
+    if (isStationExitMuteReason(reason)) {
+        return `You have left ${formatStationGreetingName(legFromLabel(leg))}`;
+    }
     return `Welcome to ${formatStationGreetingName(legFromLabel(leg))}`;
 }
 

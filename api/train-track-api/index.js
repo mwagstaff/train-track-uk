@@ -791,13 +791,14 @@ app.delete('/api/v2/notifications/live_sessions', async (req, res) => {
 });
 
 app.post('/api/v2/notifications/terminate', async (req, res) => {
-    const { device_id, subscription_id, from, to, date } = req.body || {};
+    const { device_id, subscription_id, from, to, date, reason } = req.body || {};
     logNotificationRequest('terminate', req, {
         device_id,
         subscription_id,
         from,
         to,
-        date
+        date,
+        reason
     });
     if (!device_id || !subscription_id || !from || !to) {
         return res.status(400).json({
@@ -809,12 +810,13 @@ app.post('/api/v2/notifications/terminate', async (req, res) => {
         subscriptionId: subscription_id,
         from,
         to,
-        date
+        date,
+        reason
     });
     if (!result) {
         return res.status(404).json({ error: 'Subscription or leg not found' });
     }
-    res.json({ status: 'muted', date: result });
+    res.json({ status: 'muted', date: result, reason: reason || null });
 });
 
 app.post('/api/v2/notifications/geofence-event', async (req, res) => {

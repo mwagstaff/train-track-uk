@@ -56,7 +56,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     static let shared = NotificationGeofenceManager()
 
     private enum ArrivalConfig {
-        static let regionRadiusMeters: CLLocationDistance = 300
+        static let regionRadiusMeters: CLLocationDistance = 250
         // Tight inner geofence. Entering it is treated as arrival directly, without relying
         // on continuous background location surviving the approach. Kept at the upper end of
         // CLCircularRegion's reliable range (~100–150m) so the OS triggers it dependably,
@@ -77,6 +77,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         static let staleLocationCutoffSeconds: TimeInterval = 45
         static let recentRegionHintSeconds: TimeInterval = 30
         static let recentLocationForRegionHintSeconds: TimeInterval = 60
+        static let recentLocationForExitCheckSeconds: TimeInterval = 10
         static let fullAccuracyPurposeKey = "StationArrivalMonitoring"
     }
 
@@ -97,6 +98,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
     private var monitoredTargets: [String: StationArrivalTarget] = [:]
     private var confirmationStates: [String: StationArrivalConfirmationState] = [:]
+    private var outerRegionInsideStates: [String: Bool] = [:]
     private var trackingMode: TrackingMode?
     private var hasRequestedFullAccuracyThisSession = false
 
@@ -322,6 +324,9 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         let desiredTargets = desiredTargets(subscriptions: subscriptions, stationsByCrs: stationsByCrs)
         let desired = desiredRegions(targets: desiredTargets)
         syncMonitoredTargets(desiredTargets)
+        outerRegionInsideStates = outerRegionInsideStates.filter { identifier, _ in
+            desired[identifier] != nil && regionTier(for: identifier) == .outer
+        }
 
         var removedCount = 0
         for region in existing where desired[region.identifier] == nil {
@@ -619,6 +624,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     private func clearArrivalMonitoringState() {
         monitoredTargets.removeAll()
         confirmationStates.removeAll()
+        outerRegionInsideStates.removeAll()
         hasRequestedFullAccuracyThisSession = false
     }
 
@@ -946,10 +952,11 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 ])
                 print("✅ \(msg)")
                 Task { @MainActor in
-                    await self.triggerMuteFlow(
+                    await self.armDepartureCleanupAfterArrival(
                         subscriptionId: target.subscriptionId,
                         from: target.from,
-                        to: target.to
+                        to: target.to,
+                        source: source
                     )
                 }
             }
@@ -1031,8 +1038,8 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         if tier == .inner {
             // Entering the tight arrival ring IS the arrival. Confirm directly — no dependency
             // on continuous background updates surviving the approach (the root cause of
-            // silent misses). triggerMuteFlow is idempotent, so this coexists safely with the
-            // homing path that the outer ring may also have started.
+            // silent misses). The arrival confirmation is idempotent, so this coexists safely
+            // with the homing path that the outer ring may also have started.
             let message = "Entered ARRIVAL region: \(circular.identifier)\nSub: \(parsed.subscriptionId)\nFrom: \(parsed.from.uppercased()) To: \(parsed.to.uppercased())"
             Task { @MainActor in
                 defer { muteFlowToken.end() }
@@ -1052,12 +1059,13 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         // Outer "approach" ring. Record that the user physically reached the origin station.
         // If arrival is never confirmed (e.g. background location suspended before the inner
         // ring fires), this marker lets us surface a "couldn't detect your arrival"
-        // notification rather than failing silently. Cleared in triggerMuteFlow on success.
+        // notification rather than failing silently. Cleared once arrival is confirmed.
         NotificationMuteStorage.markArrivalDetectionPending(from: parsed.from, to: parsed.to)
 
         let message = "Entered region: \(circular.identifier)\nSub: \(parsed.subscriptionId)\nFrom: \(parsed.from.uppercased()) To: \(parsed.to.uppercased())"
         Task { @MainActor in
             defer { muteFlowToken.end() }
+            self.outerRegionInsideStates[circular.identifier] = true
             DebugLogStore.shared.log(message, category: "Geofence")
             self.logGeofenceDiagnostic("region_entered", metadata: [
                 "region_id": circular.identifier,
@@ -1070,7 +1078,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    /// Confirms arrival from a tight inner-ring crossing and runs the standard mute flow.
+    /// Confirms arrival from a tight inner-ring crossing and arms station-exit cleanup.
     /// Distinct from the homing heuristic: a region crossing is itself the confirmation, so
     /// there is no distance/dwell evaluation here.
     private func confirmArrivalFromRegion(parsed: (subscriptionId: String, from: String, to: String), source: String) async {
@@ -1091,55 +1099,165 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         ])
         print("✅ \(msg)")
 
-        await triggerMuteFlow(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to)
+        await armDepartureCleanupAfterArrival(
+            subscriptionId: parsed.subscriptionId,
+            from: parsed.from,
+            to: parsed.to,
+            source: source
+        )
+    }
+
+    private func armDepartureCleanupAfterArrival(
+        subscriptionId: String,
+        from: String,
+        to: String,
+        source: String
+    ) async {
+        let fromCode = from.uppercased()
+        let toCode = to.uppercased()
+        guard !NotificationMuteStorage.isMutedToday(from: fromCode, to: toCode) else { return }
+
+        NotificationMuteStorage.clearArrivalDetectionPending(from: fromCode, to: toCode)
+
+        let targetIdentifier = regionIdentifier(subscriptionId: subscriptionId, from: fromCode, to: toCode)
+        if var state = confirmationStates[targetIdentifier] {
+            state.isFiring = true
+            confirmationStates[targetIdentifier] = state
+        }
+
+        if NotificationMuteStorage.hasPendingStationDepartureCleanup(from: fromCode, to: toCode) {
+            let duplicateMsg = "Station arrival already confirmed for \(fromCode)→\(toCode); waiting for station exit"
+            DebugLogStore.shared.log(duplicateMsg, category: "Geofence")
+            logGeofenceDiagnostic("station_departure_cleanup_already_armed", metadata: [
+                "subscription_id": subscriptionId,
+                "from": fromCode,
+                "to": toCode,
+                "source": source
+            ])
+            print("⏭ \(duplicateMsg)")
+            return
+        }
+
+        let dateKey = NotificationMuteStorage.markPendingStationDepartureCleanup(from: fromCode, to: toCode)
+        let msg = "Station arrival confirmed for \(fromCode)→\(toCode); journey updates continue until leaving the \(Int(Self.regionRadiusMeters))m station area"
+        DebugLogStore.shared.log(msg, category: "Geofence")
+        logGeofenceDiagnostic("station_departure_cleanup_armed", metadata: [
+            "subscription_id": subscriptionId,
+            "from": fromCode,
+            "to": toCode,
+            "date": dateKey,
+            "source": source,
+            "exit_radius_m": Self.regionRadiusMeters
+        ])
+        print("✅ \(msg)")
+    }
+
+    private func hasOtherKnownOuterRegionInside(
+        subscriptionId: String,
+        from: String,
+        to: String,
+        excluding excludedIdentifier: String
+    ) -> Bool {
+        outerRegionInsideStates.contains { identifier, isInside in
+            guard isInside, identifier != excludedIdentifier else { return false }
+            guard regionTier(for: identifier) == .outer else { return false }
+            guard let parsed = parseRegionIdentifier(identifier) else { return false }
+            return parsed.subscriptionId == subscriptionId
+                && parsed.from.caseInsensitiveCompare(from) == .orderedSame
+                && parsed.to.caseInsensitiveCompare(to) == .orderedSame
+        }
+    }
+
+    private func isStillInsideStationArea(
+        parsed: (subscriptionId: String, from: String, to: String),
+        exitingRegionId: String
+    ) async -> Bool {
+        if hasOtherKnownOuterRegionInside(
+            subscriptionId: parsed.subscriptionId,
+            from: parsed.from,
+            to: parsed.to,
+            excluding: exitingRegionId
+        ) {
+            return true
+        }
+
+        let targetIdentifier = regionIdentifier(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to)
+        guard let target = await ensureTargetExists(identifier: targetIdentifier, parsed: parsed),
+              target.station.coordinates.count > 1,
+              let location = currentUsableLocation(maxAge: ArrivalConfig.recentLocationForExitCheckSeconds) else {
+            return false
+        }
+
+        return target.distance(from: location) <= Self.regionRadiusMeters
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
         guard let circular = region as? CLCircularRegion else { return }
         guard let parsed = parseRegionIdentifier(circular.identifier) else { return }
+        let tier = regionTier(for: circular.identifier)
 
         GeofenceEventSender.shared.sendEvent(
             regionId: circular.identifier,
             from: parsed.from,
             to: parsed.to,
-            eventType: "exit"
+            eventType: tier == .inner ? "arrival_exit" : "exit"
         )
 
+        let exitFlowToken = AppBackgroundTaskToken(name: "geofence-exit-cleanup")
         let message = "Exited region: \(circular.identifier)\nFrom: \(parsed.from.uppercased()) To: \(parsed.to.uppercased())"
         Task { @MainActor in
+            defer { exitFlowToken.end() }
             DebugLogStore.shared.log(message, category: "Geofence")
             self.logGeofenceDiagnostic("region_exited", metadata: [
                 "region_id": circular.identifier,
                 "subscription_id": parsed.subscriptionId,
                 "from": parsed.from.uppercased(),
-                "to": parsed.to.uppercased()
+                "to": parsed.to.uppercased(),
+                "tier": tier == .inner ? "inner" : "outer"
             ])
 
-            // The user entered and left the origin station. If arrival was never confirmed,
-            // background detection failed silently — surface it so the user can re-arm it.
-            await self.checkForMissedArrival(from: parsed.from, to: parsed.to, reason: "region-exit")
+            guard tier == .outer else { return }
+            self.outerRegionInsideStates[circular.identifier] = false
+
+            if await self.isStillInsideStationArea(parsed: parsed, exitingRegionId: circular.identifier) {
+                let insideMsg = "Geofence exit for \(parsed.from)→\(parsed.to) ignored; still inside another \(Int(Self.regionRadiusMeters))m station area"
+                DebugLogStore.shared.log(insideMsg, category: "Geofence")
+                self.logGeofenceDiagnostic("station_exit_ignored_still_inside", metadata: [
+                    "region_id": circular.identifier,
+                    "subscription_id": parsed.subscriptionId,
+                    "from": parsed.from.uppercased(),
+                    "to": parsed.to.uppercased(),
+                    "exit_radius_m": Self.regionRadiusMeters
+                ])
+                print("📍 \(insideMsg)")
+                return
+            }
+
+            guard NotificationMuteStorage.consumePendingStationDepartureCleanup(from: parsed.from, to: parsed.to) else {
+                // The user entered and left the origin station. If arrival was never confirmed,
+                // background detection failed silently — surface it so the user can re-arm it.
+                await self.checkForMissedArrival(from: parsed.from, to: parsed.to, reason: "region-exit")
+                return
+            }
+            NotificationMuteStorage.clearArrivalDetectionPending(from: parsed.from, to: parsed.to)
 
             let autoEndEnabled = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? true
-            let hasPendingAutoEnd = NotificationMuteStorage.hasPendingLiveActivityAutoEndOnDeparture(from: parsed.from, to: parsed.to)
-
-            guard autoEndEnabled else {
-                if hasPendingAutoEnd {
-                    NotificationMuteStorage.clearPendingLiveActivityAutoEndOnDeparture(from: parsed.from, to: parsed.to)
-                    let skipMsg = "Geofence exit for \(parsed.from)→\(parsed.to) — auto-end disabled, clearing pending Live Activity departure end"
-                    DebugLogStore.shared.log(skipMsg, category: "Geofence")
-                    print("📍 \(skipMsg)")
-                }
-                return
-            }
-
-            guard NotificationMuteStorage.consumePendingLiveActivityAutoEndOnDeparture(from: parsed.from, to: parsed.to) else {
-                return
-            }
-
-            let endMsg = "Geofence exit for \(parsed.from)→\(parsed.to) — sending departure event to end Live Activity"
+            let endMsg = autoEndEnabled
+                ? "Geofence exit for \(parsed.from)→\(parsed.to) — muting notifications and ending Live Activity"
+                : "Geofence exit for \(parsed.from)→\(parsed.to) — muting notifications; Live Activity auto-end disabled"
             DebugLogStore.shared.log(endMsg, category: "Geofence")
             print("🏁 \(endMsg)")
-            LiveActivityDepartureSender.shared.sendDeparture(from: parsed.from, to: parsed.to)
+            await self.triggerMuteFlow(
+                subscriptionId: parsed.subscriptionId,
+                from: parsed.from,
+                to: parsed.to,
+                simulate: false,
+                endLiveActivity: autoEndEnabled,
+                reason: "station_exit"
+            )
+            if autoEndEnabled {
+                LiveActivityDepartureSender.shared.sendDeparture(from: parsed.from, to: parsed.to)
+            }
         }
         print("📍 \(message)")
     }
@@ -1247,6 +1365,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     nonisolated func locationManager(_ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
         guard let circular = region as? CLCircularRegion,
               let parsed = parseRegionIdentifier(circular.identifier) else { return }
+        let tier = regionTier(for: circular.identifier)
 
         let stateStr: String
         switch state {
@@ -1264,8 +1383,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 "subscription_id": parsed.subscriptionId,
                 "from": parsed.from.uppercased(),
                 "to": parsed.to.uppercased(),
-                "state": stateStr
+                "state": stateStr,
+                "tier": tier == .inner ? "inner" : "outer"
             ])
+            if tier == .outer {
+                self.outerRegionInsideStates[circular.identifier] = state == .inside
+            }
         }
         print("📍 \(msg)")
 
@@ -1275,7 +1398,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
         Task { @MainActor in
             defer { muteFlowToken.end() }
-            await self.handleRegionHint(identifier: circular.identifier, parsed: parsed, source: "inside")
+            if tier == .inner {
+                await self.confirmArrivalFromRegion(parsed: parsed, source: "arrival-region-inside")
+            } else {
+                NotificationMuteStorage.markArrivalDetectionPending(from: parsed.from, to: parsed.to)
+                await self.handleRegionHint(identifier: circular.identifier, parsed: parsed, source: "inside")
+            }
         }
     }
 
@@ -1321,21 +1449,20 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         print("📍 \(msg)")
     }
 
-    /// Triggers the mute flow immediately once the arrival heuristic confirms station arrival.
+    /// Triggers the mute flow once the user has left the station area after confirmed arrival.
     ///
     /// **Why async**: Some callers hold an `AppBackgroundTaskToken` during a background
     /// geofence wake. Making this function async (instead of wrapping in an internal
     /// Task) lets the caller await the point where the mute upload has been queued.
     ///
-    /// **Why no client-side sleep**: iOS only grants ~30 s of background execution after a
-    /// geofence wake, so `Task.sleep` is unreliable for delays > a few seconds. Instead,
-    /// we pass `delay_minutes` to the server which applies the wait via `setTimeout`
-    /// (always-on, never suspended). The server also sends the "muted" confirmation push
-    /// after the delay, so no local notification is needed here.
-    ///
-    /// - Parameter simulate: When true the delay is zero (used by the debug simulate-arrival action).
+    /// The request is sent immediately on exit. The old "mute after X minutes at station"
+    /// delay does not apply here because updates must continue until the user is at least
+    /// outside the configured station radius.
     func triggerMuteFlow(subscriptionId: String, from: String, to: String,
-                         sendNotification: Bool = true, simulate: Bool = false) async {
+                         sendNotification _: Bool = true,
+                         simulate: Bool = false,
+                         endLiveActivity: Bool = true,
+                         reason: String = "station_exit") async {
         // Guard against duplicate calls — both didEnterRegion and didDetermineState can fire
         // for the same region event. Since this function runs on @MainActor (via class
         // default isolation), the first call marks locally then any concurrent second call
@@ -1348,55 +1475,58 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         }
 
         // Mark locally immediately — prevents any concurrent triggerMuteFlow call (above guard)
-        // from also sending a terminate request during the server-side delay window.
+        // from also sending a duplicate terminate request.
         markLegMutedLocally(from: from, to: to)
 
-        // Arrival was detected — clear the pending marker so no missed-arrival
-        // notification fires on the subsequent region exit.
+        // Station exit has been handled — clear pending arrival/departure markers.
         NotificationMuteStorage.clearArrivalDetectionPending(from: from, to: to)
+        NotificationMuteStorage.clearPendingStationDepartureCleanup(from: from, to: to)
 
-        let delayMinutes = simulate ? 0 : ((UserDefaults.standard.object(forKey: "muteDelayMinutes") as? Int) ?? 3)
-        let msg = delayMinutes > 0
-            ? "Sending mute request with \(delayMinutes)-min server-side delay for \(from)→\(to)"
-            : "Sending immediate mute request for \(from)→\(to)"
+        let delayMinutes = 0
+        let msg = "Sending station-exit mute request for \(from)→\(to)"
         DebugLogStore.shared.log(msg, category: "Mute")
         logGeofenceDiagnostic("mute_flow_started", metadata: [
             "subscription_id": subscriptionId,
             "from": from.uppercased(),
             "to": to.uppercased(),
             "delay_minutes": delayMinutes,
-            "simulate": simulate
+            "simulate": simulate,
+            "end_live_activity": endLiveActivity,
+            "reason": reason
         ])
         print("⏳ \(msg)")
 
-        // The terminate request is sent immediately via background URLSession (reliable
-        // even after iOS suspends the app). The server delays the actual mute + push.
         NotificationMuteRequestSender.shared.enqueueMute(
             subscriptionId: subscriptionId,
             from: from,
             to: to,
-            delayMinutes: delayMinutes
+            delayMinutes: delayMinutes,
+            reason: reason
         )
 
-        NotificationMuteStorage.markPendingLiveSessionPreserveOnArrival(from: from, to: to)
-        NotificationMuteStorage.clearPendingLiveActivityAutoEndOnDeparture(from: from, to: to)
-
-        let endMsg = "Ending journey updates immediately for arrival at \(from)→\(to)"
-        DebugLogStore.shared.log(endMsg, category: "Mute")
-        print("🏁 \(endMsg)")
-        await LiveActivityManager.shared.stopMatching(
-            fromCRS: from,
-            toCRS: to,
-            preserveNotificationLiveSession: true
-        )
+        if endLiveActivity {
+            NotificationMuteStorage.markPendingLiveSessionPreserveOnArrival(from: from, to: to)
+            let endMsg = "Ending Live Activity after leaving station for \(from)→\(to)"
+            DebugLogStore.shared.log(endMsg, category: "Mute")
+            print("🏁 \(endMsg)")
+            await LiveActivityManager.shared.stopMatching(
+                fromCRS: from,
+                toCRS: to,
+                preserveNotificationLiveSession: true
+            )
+        } else {
+            let keepMsg = "Leaving Live Activity active after station exit for \(from)→\(to) because auto-end is disabled"
+            DebugLogStore.shared.log(keepMsg, category: "Mute")
+            print("📍 \(keepMsg)")
+        }
         // Remove the live session locally so UI/geofences stop immediately, but do not
         // DELETE it from the backend here. `/notifications/terminate` uses that server-side
-        // record to send the welcome + muted-status pushes, and deleting it first can race
+        // record to send the muted-status pushes, and deleting it first can race
         // the terminate request and cause a 404/no confirmation notification.
         await NotificationSubscriptionStore.shared.removeLiveSessionsLocally(containingFrom: from, to: to)
     }
 
-    func simulateArrival(subscriptionId: String, from: String, to: String, sendNotification: Bool = true) {
+    func simulateArrival(subscriptionId: String, from: String, to: String, sendNotification _: Bool = true) {
         let msg = "Simulated arrival for \(from.uppercased()) → \(to.uppercased())"
         Task { @MainActor in
             DebugLogStore.shared.log(msg, category: "Geofence")
@@ -1408,8 +1538,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         }
         print("🧪 \(msg)")
         Task {
-            await triggerMuteFlow(subscriptionId: subscriptionId, from: from, to: to,
-                                  sendNotification: sendNotification, simulate: true)
+            await armDepartureCleanupAfterArrival(
+                subscriptionId: subscriptionId,
+                from: from,
+                to: to,
+                source: "debug-simulate-arrival"
+            )
         }
     }
 
@@ -1595,6 +1729,7 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
         let to: String
         let delayMinutes: Int
         let dateKey: String
+        let reason: String
     }
 
     private lazy var session: URLSession = {
@@ -1639,7 +1774,7 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
         }
     }
 
-    func enqueueMute(subscriptionId: String, from: String, to: String, delayMinutes: Int = 0) {
+    func enqueueMute(subscriptionId: String, from: String, to: String, delayMinutes: Int = 0, reason: String = "manual") {
         let baseURL = ApiHostPreference.currentBaseURL
         guard let url = URL(string: "\(baseURL)/notifications/terminate") else {
             let errorMsg = "Invalid URL for terminate endpoint: \(baseURL)"
@@ -1658,7 +1793,8 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             "from": from.uppercased(),
             "to": to.uppercased(),
             "date": currentDateKey(),
-            "delay_minutes": delayMinutes
+            "delay_minutes": delayMinutes,
+            "reason": reason
         ]
         guard let body = try? JSONSerialization.data(withJSONObject: payload) else {
             let errorMsg = "Failed to encode mute request payload"
@@ -1693,7 +1829,8 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
                 from: from.uppercased(),
                 to: to.uppercased(),
                 delayMinutes: delayMinutes,
-                dateKey: currentDateKey()
+                dateKey: currentDateKey(),
+                reason: reason
             )
         }
         task.resume()
@@ -1705,7 +1842,8 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             "from": from.uppercased(),
             "to": to.uppercased(),
             "date": currentDateKey(),
-            "delay_minutes": delayMinutes
+            "delay_minutes": delayMinutes,
+            "reason": reason
         ])
 
         let msg = "Mute request task started for \(from.uppercased()) → \(to.uppercased())"
@@ -1743,6 +1881,7 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
                 msg += "\nSubscription: \(context.subscriptionId)"
                 msg += "\nLeg: \(context.from)→\(context.to)"
                 msg += "\nDate: \(context.dateKey) Delay: \(context.delayMinutes)m"
+                msg += "\nReason: \(context.reason)"
             }
             ClientDiagnosticsLogger.log("mute", "terminate_request_failed", metadata: [
                 "task_id": taskId,
@@ -1752,7 +1891,8 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
                 "from": context?.from,
                 "to": context?.to,
                 "date": context?.dateKey,
-                "delay_minutes": context?.delayMinutes
+                "delay_minutes": context?.delayMinutes,
+                "reason": context?.reason
             ])
             let loggedMessage = msg
             Task { @MainActor in DebugLogStore.shared.log(loggedMessage, category: "Error") }
@@ -1768,6 +1908,7 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
                 msg += "\nSubscription: \(context.subscriptionId)"
                 msg += "\nLeg: \(context.from)→\(context.to)"
                 msg += "\nDate: \(context.dateKey) Delay: \(context.delayMinutes)m"
+                msg += "\nReason: \(context.reason)"
             }
 
             if let data = data, !data.isEmpty, let responseString = String(data: data, encoding: .utf8) {
@@ -1782,6 +1923,7 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
                 "to": context?.to,
                 "date": context?.dateKey,
                 "delay_minutes": context?.delayMinutes,
+                "reason": context?.reason,
                 "response": data.flatMap { String(data: $0, encoding: .utf8) }
             ])
 
