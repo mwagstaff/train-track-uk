@@ -1565,6 +1565,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     /// is used as a fresh chance to: re-sample location and complete an in-flight arrival
     /// confirmation, and surface a missed-arrival notification if detection silently failed.
     func refreshArrivalFromBackgroundWake(trigger: String) async {
+        NotificationMuteRequestSender.shared.retryPendingMuteRequests(trigger: "background-wake-\(trigger)")
         guard !monitoredTargets.isEmpty else { return }
 
         // Only run a sampling burst when an arrival is awaiting confirmation — i.e. the user
@@ -1730,6 +1731,7 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
         let delayMinutes: Int
         let dateKey: String
         let reason: String
+        let pendingRequestId: String?
     }
 
     private lazy var session: URLSession = {
@@ -1751,6 +1753,8 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
     private var requestContexts: [Int: RequestContext] = [:]
     private var backgroundTasks: [Int: AppBackgroundTaskToken] = [:]
     private var deferredLiveActivityUnregistrations: [String: Set<String>] = [:]
+    private var inFlightPendingRequestIDs: Set<String> = []
+    private var retryScheduled = false
     private let syncQueue = DispatchQueue(label: "dev.skynolimit.traintrack.notifications.mute.sync")
 
     private func legKey(from: String, to: String) -> String {
@@ -1775,11 +1779,78 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
     }
 
     func enqueueMute(subscriptionId: String, from: String, to: String, delayMinutes: Int = 0, reason: String = "manual") {
+        let dateKey = currentDateKey()
+        let pending = NotificationMuteStorage.upsertPendingMuteRequest(
+            subscriptionId: subscriptionId,
+            from: from,
+            to: to,
+            dateKey: dateKey,
+            delayMinutes: delayMinutes,
+            reason: reason
+        )
+        startMuteRequest(
+            subscriptionId: subscriptionId,
+            from: from,
+            to: to,
+            dateKey: dateKey,
+            delayMinutes: delayMinutes,
+            reason: reason,
+            pendingRequestId: pending?.id
+        )
+    }
+
+    func retryPendingMuteRequests(trigger: String) {
+        let pending = NotificationMuteStorage.pendingMuteRequests()
+        guard !pending.isEmpty else { return }
+
+        let msg = "Retrying \(pending.count) pending mute request(s) (\(trigger))"
+        Task { @MainActor in DebugLogStore.shared.log(msg, category: "Mute") }
+        ClientDiagnosticsLogger.log("mute", "terminate_retry_scan", metadata: [
+            "trigger": trigger,
+            "pending_count": pending.count
+        ])
+
+        for request in pending {
+            startMuteRequest(
+                subscriptionId: request.subscriptionId,
+                from: request.from,
+                to: request.to,
+                dateKey: request.dateKey,
+                delayMinutes: request.delayMinutes,
+                reason: request.reason,
+                pendingRequestId: request.id
+            )
+        }
+    }
+
+    private func startMuteRequest(
+        subscriptionId: String,
+        from: String,
+        to: String,
+        dateKey: String,
+        delayMinutes: Int,
+        reason: String,
+        pendingRequestId: String?
+    ) {
+        if let pendingRequestId {
+            let shouldStart = syncQueue.sync { () -> Bool in
+                guard !self.inFlightPendingRequestIDs.contains(pendingRequestId) else { return false }
+                self.inFlightPendingRequestIDs.insert(pendingRequestId)
+                return true
+            }
+            guard shouldStart else {
+                let msg = "Pending mute request already in flight for \(from.uppercased())→\(to.uppercased())"
+                Task { @MainActor in DebugLogStore.shared.log(msg, category: "Mute") }
+                return
+            }
+        }
+
         let baseURL = ApiHostPreference.currentBaseURL
         guard let url = URL(string: "\(baseURL)/notifications/terminate") else {
             let errorMsg = "Invalid URL for terminate endpoint: \(baseURL)"
             Task { @MainActor in DebugLogStore.shared.log(errorMsg, category: "Error") }
             print("❌ \(errorMsg)")
+            finishPendingRequest(id: pendingRequestId)
             return
         }
         var request = URLRequest(url: url)
@@ -1792,7 +1863,7 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             "subscription_id": subscriptionId,
             "from": from.uppercased(),
             "to": to.uppercased(),
-            "date": currentDateKey(),
+            "date": dateKey,
             "delay_minutes": delayMinutes,
             "reason": reason
         ]
@@ -1800,6 +1871,7 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             let errorMsg = "Failed to encode mute request payload"
             Task { @MainActor in DebugLogStore.shared.log(errorMsg, category: "Error") }
             print("❌ \(errorMsg)")
+            finishPendingRequest(id: pendingRequestId)
             return
         }
 
@@ -1829,9 +1901,13 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
                 from: from.uppercased(),
                 to: to.uppercased(),
                 delayMinutes: delayMinutes,
-                dateKey: currentDateKey(),
-                reason: reason
+                dateKey: dateKey,
+                reason: reason,
+                pendingRequestId: pendingRequestId
             )
+        }
+        if let pendingRequestId {
+            NotificationMuteStorage.markPendingMuteRequestAttempt(id: pendingRequestId)
         }
         task.resume()
 
@@ -1841,14 +1917,39 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             "subscription_id": subscriptionId,
             "from": from.uppercased(),
             "to": to.uppercased(),
-            "date": currentDateKey(),
+            "date": dateKey,
             "delay_minutes": delayMinutes,
-            "reason": reason
+            "reason": reason,
+            "pending_request_id": pendingRequestId
         ])
 
         let msg = "Mute request task started for \(from.uppercased()) → \(to.uppercased())"
         Task { @MainActor in DebugLogStore.shared.log(msg, category: "Mute") }
         print("✅ \(msg)")
+    }
+
+    private func finishPendingRequest(id: String?) {
+        guard let id else { return }
+        syncQueue.async {
+            self.inFlightPendingRequestIDs.remove(id)
+        }
+    }
+
+    private func schedulePendingRetry(after seconds: TimeInterval = 20, reason: String) {
+        let shouldSchedule = syncQueue.sync { () -> Bool in
+            guard !self.retryScheduled else { return false }
+            self.retryScheduled = true
+            return true
+        }
+        guard shouldSchedule else { return }
+
+        Task {
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            syncQueue.async {
+                self.retryScheduled = false
+            }
+            self.retryPendingMuteRequests(trigger: reason)
+        }
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
@@ -1870,6 +1971,9 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             let context = self.requestContexts.removeValue(forKey: taskId)
             // Release the background task token now that the transfer is complete.
             self.backgroundTasks.removeValue(forKey: taskId)?.end()
+            if let pendingRequestId = context?.pendingRequestId {
+                self.inFlightPendingRequestIDs.remove(pendingRequestId)
+            }
             return (data, context)
         }
 
@@ -1892,8 +1996,13 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
                 "to": context?.to,
                 "date": context?.dateKey,
                 "delay_minutes": context?.delayMinutes,
-                "reason": context?.reason
+                "reason": context?.reason,
+                "pending_request_id": context?.pendingRequestId
             ])
+            if let pendingRequestId = context?.pendingRequestId {
+                NotificationMuteStorage.markPendingMuteRequestFailure(id: pendingRequestId, error: error.localizedDescription)
+                schedulePendingRetry(reason: "terminate-failure")
+            }
             let loggedMessage = msg
             Task { @MainActor in DebugLogStore.shared.log(loggedMessage, category: "Error") }
             print("❌ \(msg)")
@@ -1924,6 +2033,7 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
                 "date": context?.dateKey,
                 "delay_minutes": context?.delayMinutes,
                 "reason": context?.reason,
+                "pending_request_id": context?.pendingRequestId,
                 "response": data.flatMap { String(data: $0, encoding: .utf8) }
             ])
 
@@ -1950,6 +2060,9 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             }
 
             if response.statusCode == 200, let context {
+                if let pendingRequestId = context.pendingRequestId {
+                    NotificationMuteStorage.removePendingMuteRequest(id: pendingRequestId)
+                }
                 let pendingActivityIDs = consumeDeferredLiveActivityUnregistrations(from: context.from, to: context.to)
                 for activityID in pendingActivityIDs {
                     Task { @MainActor in
@@ -1960,12 +2073,26 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
                         )
                     }
                 }
+            } else if let pendingRequestId = context?.pendingRequestId {
+                if response.statusCode == 400 {
+                    NotificationMuteStorage.removePendingMuteRequest(id: pendingRequestId)
+                } else {
+                    NotificationMuteStorage.markPendingMuteRequestFailure(
+                        id: pendingRequestId,
+                        error: "HTTP \(response.statusCode)"
+                    )
+                    schedulePendingRetry(reason: "terminate-http-\(response.statusCode)")
+                }
             }
         } else {
             let msg = "Mute request completed (no response details)"
             ClientDiagnosticsLogger.log("mute", "terminate_request_completed_without_response", metadata: [
                 "task_id": taskId
             ])
+            if let pendingRequestId = context?.pendingRequestId {
+                NotificationMuteStorage.markPendingMuteRequestFailure(id: pendingRequestId, error: "No HTTP response")
+                schedulePendingRetry(reason: "terminate-no-response")
+            }
             Task { @MainActor in DebugLogStore.shared.log(msg, category: "Mute") }
             print("✅ \(msg)")
             Task { @MainActor in

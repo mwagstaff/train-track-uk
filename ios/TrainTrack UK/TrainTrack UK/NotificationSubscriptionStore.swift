@@ -175,6 +175,7 @@ final class NotificationSubscriptionStore: ObservableObject {
             hasLoadedRemoteState = true
             hasLoadedOnce = true
             lastError = nil
+            NotificationMuteRequestSender.shared.retryPendingMuteRequests(trigger: "subscription-refresh")
             await syncGeofences()
         } catch {
             lastError = error.localizedDescription

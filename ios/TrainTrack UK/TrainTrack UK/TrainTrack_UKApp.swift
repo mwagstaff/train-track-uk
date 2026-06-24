@@ -70,6 +70,7 @@ struct TrainTrackUKApp: App {
                 // geofence set in step with any subscription changes made elsewhere.
                 print("📍 [App] App became active - refreshing notification subscriptions & geofences")
                 Task {
+                    NotificationMuteRequestSender.shared.retryPendingMuteRequests(trigger: "app-active")
                     await NotificationSubscriptionStore.shared.refresh()
                 }
 

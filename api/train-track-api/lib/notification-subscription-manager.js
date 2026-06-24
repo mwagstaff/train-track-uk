@@ -462,6 +462,21 @@ class NotificationSubscriptionManager {
         return muted;
     }
 
+    findScheduledSubscriptionForLeg({ deviceId, from, to }) {
+        const fromCode = typeof from === 'string' ? from.trim().toUpperCase() : '';
+        const toCode = typeof to === 'string' ? to.trim().toUpperCase() : '';
+        if (!deviceId || !fromCode || !toCode) return null;
+
+        return Array.from(this.subscriptions.values()).find((sub) => {
+            if (sub.deviceId !== deviceId) return false;
+            if (this.subscriptionSource(sub) !== SCHEDULED_SOURCE) return false;
+            return Array.isArray(sub.legs) && sub.legs.some((leg) =>
+                String(leg?.from || '').trim().toUpperCase() === fromCode
+                    && String(leg?.to || '').trim().toUpperCase() === toCode
+            );
+        }) || null;
+    }
+
     async deleteLiveSessionsForLeg({ deviceId, from, to, fallbackDeviceIds = [] }) {
         const fromCode = typeof from === 'string' ? from.trim().toUpperCase() : '';
         const toCode = typeof to === 'string' ? to.trim().toUpperCase() : '';
@@ -1218,13 +1233,30 @@ class NotificationSubscriptionManager {
     }
 
     async muteLegForDate({ deviceId, subscriptionId, from, to, date, reason = 'mute_on_arrival' }) {
-        const subscription = this.subscriptions.get(subscriptionId);
+        const fromCode = typeof from === 'string' ? from.trim().toUpperCase() : '';
+        const toCode = typeof to === 'string' ? to.trim().toUpperCase() : '';
+        const muteReason = normalizeMuteReason(reason);
+        let subscription = this.subscriptions.get(subscriptionId);
+        if (!subscription && isStationExitMuteReason(muteReason)) {
+            subscription = this.findScheduledSubscriptionForLeg({
+                deviceId,
+                from: fromCode,
+                to: toCode
+            });
+            if (subscription) {
+                console.log('[notifications] station_exit_terminate_fallback', JSON.stringify({
+                    requested_subscription_id: subscriptionId,
+                    scheduled_subscription_id: subscription.id,
+                    device_id: deviceId,
+                    leg: `${fromCode}-${toCode}`
+                }));
+            }
+        }
         if (!subscription) return null;
         if (deviceId && subscription.deviceId !== deviceId) return null;
-        const legKey = `${from}-${to}`;
-        const leg = subscription.legs.find((l) => l.from === from && l.to === to);
+        const legKey = `${fromCode}-${toCode}`;
+        const leg = subscription.legs.find((l) => l.from === fromCode && l.to === toCode);
         if (!leg) return null;
-        const muteReason = normalizeMuteReason(reason);
         const todayKey = currentScheduleDateKey();
         const dateKey = typeof date === 'string' && date ? date : todayKey;
         const mutedAt = new Date().toISOString();
@@ -1236,10 +1268,12 @@ class NotificationSubscriptionManager {
         // confirmation push so the user knows notifications have been muted.
         if (dateKey === todayKey) {
             let snapshot = null;
-            try {
-                snapshot = await getDeparturesSnapshot(leg.from, leg.to);
-            } catch (error) {
-                console.warn('[notifications] Failed to fetch departures snapshot for muted notification:', error?.message || error);
+            if (!isStationExitMuteReason(muteReason)) {
+                try {
+                    snapshot = await getDeparturesSnapshot(leg.from, leg.to);
+                } catch (error) {
+                    console.warn('[notifications] Failed to fetch departures snapshot for muted notification:', error?.message || error);
+                }
             }
 
             const mutedNotifications = buildMutedMessages(subscription, leg, snapshot, muteReason);
@@ -1930,14 +1964,20 @@ function isStationExitMuteReason(reason) {
 
 function buildMutedMessages(subscription, leg, snapshot = null, reason = 'mute_on_arrival') {
     const routeTitle = legRouteTitle(leg);
+    const greeting = buildNotificationPayload(
+        routeTitle,
+        buildMutedGreetingBody(leg, reason),
+        buildLegMeta(subscription, leg, 'muted_greeting'),
+        'muted_greeting',
+        'STATION_ARRIVAL'
+    );
+
+    if (isStationExitMuteReason(reason)) {
+        return [greeting];
+    }
+
     return [
-        buildNotificationPayload(
-            routeTitle,
-            buildMutedGreetingBody(leg, reason),
-            buildLegMeta(subscription, leg, 'muted_greeting'),
-            'muted_greeting',
-            'STATION_ARRIVAL'
-        ),
+        greeting,
         buildNotificationPayload(
             routeTitle,
             buildMutedStatusBody(leg, snapshot),

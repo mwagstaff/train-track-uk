@@ -8,6 +8,21 @@ enum NotificationMuteStorage {
     private static let pendingArrivalDetectionKey = "pendingArrivalDetection"
     private static let pendingArrivalDetectionAtKey = "pendingArrivalDetectionAt"
     private static let pendingStationDepartureCleanupKey = "pendingStationDepartureCleanup"
+    private static let pendingMuteRequestsKey = "pendingMuteRequests"
+
+    struct PendingMuteRequest: Codable, Identifiable {
+        let id: String
+        let subscriptionId: String
+        let from: String
+        let to: String
+        let dateKey: String
+        let delayMinutes: Int
+        let reason: String
+        let createdAt: Date
+        var attempts: Int
+        var lastAttemptAt: Date?
+        var lastError: String?
+    }
 
     static func currentDateKey() -> String {
         let formatter = DateFormatter()
@@ -125,6 +140,119 @@ enum NotificationMuteStorage {
         if var pending = sharedDefaults.dictionary(forKey: pendingStationDepartureCleanupKey) as? [String: String] {
             pending.removeValue(forKey: key)
             sharedDefaults.set(pending, forKey: pendingStationDepartureCleanupKey)
+        }
+    }
+
+    // MARK: - Pending mute requests
+    //
+    // Station-exit mute requests are the authoritative server call that sends the
+    // "left station" confirmation and mutes the scheduled leg. Persist them before
+    // upload so a transient mobile-network drop cannot lose that server transition.
+
+    @discardableResult
+    static func upsertPendingMuteRequest(
+        subscriptionId: String,
+        from: String,
+        to: String,
+        dateKey: String,
+        delayMinutes: Int,
+        reason: String
+    ) -> PendingMuteRequest? {
+        guard let sharedDefaults = UserDefaults(suiteName: suiteName) else { return nil }
+        let id = pendingMuteRequestId(
+            subscriptionId: subscriptionId,
+            from: from,
+            to: to,
+            dateKey: dateKey,
+            reason: reason
+        )
+        var requests = loadPendingMuteRequests(defaults: sharedDefaults)
+        if let index = requests.firstIndex(where: { $0.id == id }) {
+            requests[index].lastError = nil
+            savePendingMuteRequests(requests, defaults: sharedDefaults)
+            return requests[index]
+        }
+
+        let request = PendingMuteRequest(
+            id: id,
+            subscriptionId: subscriptionId,
+            from: from.uppercased(),
+            to: to.uppercased(),
+            dateKey: dateKey,
+            delayMinutes: delayMinutes,
+            reason: reason,
+            createdAt: Date(),
+            attempts: 0,
+            lastAttemptAt: nil,
+            lastError: nil
+        )
+        requests.append(request)
+        savePendingMuteRequests(requests, defaults: sharedDefaults)
+        return request
+    }
+
+    static func pendingMuteRequests(maxAge: TimeInterval = 24 * 60 * 60) -> [PendingMuteRequest] {
+        guard let sharedDefaults = UserDefaults(suiteName: suiteName) else { return [] }
+        let cutoff = Date().addingTimeInterval(-maxAge)
+        let loaded = loadPendingMuteRequests(defaults: sharedDefaults)
+        let current = loaded.filter { $0.createdAt >= cutoff }
+        if current.count != loaded.count {
+            savePendingMuteRequests(current, defaults: sharedDefaults)
+        }
+        return current
+    }
+
+    static func markPendingMuteRequestAttempt(id: String, at date: Date = Date()) {
+        updatePendingMuteRequest(id: id) { request in
+            request.attempts += 1
+            request.lastAttemptAt = date
+            request.lastError = nil
+        }
+    }
+
+    static func markPendingMuteRequestFailure(id: String, error: String) {
+        updatePendingMuteRequest(id: id) { request in
+            request.lastError = error
+        }
+    }
+
+    static func removePendingMuteRequest(id: String) {
+        guard let sharedDefaults = UserDefaults(suiteName: suiteName) else { return }
+        let requests = loadPendingMuteRequests(defaults: sharedDefaults).filter { $0.id != id }
+        savePendingMuteRequests(requests, defaults: sharedDefaults)
+    }
+
+    private static func pendingMuteRequestId(
+        subscriptionId: String,
+        from: String,
+        to: String,
+        dateKey: String,
+        reason: String
+    ) -> String {
+        [
+            subscriptionId,
+            legKey(from: from, to: to),
+            dateKey,
+            reason
+        ].joined(separator: "|")
+    }
+
+    private static func updatePendingMuteRequest(id: String, update: (inout PendingMuteRequest) -> Void) {
+        guard let sharedDefaults = UserDefaults(suiteName: suiteName) else { return }
+        var requests = loadPendingMuteRequests(defaults: sharedDefaults)
+        guard let index = requests.firstIndex(where: { $0.id == id }) else { return }
+        update(&requests[index])
+        savePendingMuteRequests(requests, defaults: sharedDefaults)
+    }
+
+    private static func loadPendingMuteRequests(defaults: UserDefaults) -> [PendingMuteRequest] {
+        guard let data = defaults.data(forKey: pendingMuteRequestsKey) else { return [] }
+        return (try? JSONDecoder().decode([PendingMuteRequest].self, from: data)) ?? []
+    }
+
+    private static func savePendingMuteRequests(_ requests: [PendingMuteRequest], defaults: UserDefaults) {
+        if let data = try? JSONEncoder().encode(requests) {
+            defaults.set(data, forKey: pendingMuteRequestsKey)
         }
     }
 
