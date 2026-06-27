@@ -1141,7 +1141,7 @@ final class LiveActivityManager: ObservableObject {
             let laterDeps = Array(upcomingDeps.dropFirst(index + 1))
             let hasFaster = checkForFasterLaterService(dep: dep, allDeps: laterDeps, fromCRS: journey.fromStation.crs, toCRS: journey.toStation.crs, depStore: depStore)
             upcoming.append(JourneyActivityAttributes.UpcomingDeparture(
-                time: dep.departureTime.estimated ?? dep.departureTime.scheduled,
+                time: displayDepartureTime(for: dep),
                 arrivalTime: dep.isCancelled ? nil : await finalArrivalTime(for: dep, startingJourney: journey, depStore: depStore),
                 delayMinutes: depDelayMins,
                 isCancelled: dep.isCancelled,

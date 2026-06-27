@@ -65,6 +65,7 @@ struct Live_ActivityLiveActivity: Widget {
                                     .font(.caption)
                                     .fontWeight(.semibold)
                                     .foregroundStyle(.red)
+                                    .strikethrough(true, color: .red)
                             } else if let length = context.state.length, length > 0 {
                                 Text("\(length) cars")
                                     .font(.caption)
@@ -181,6 +182,7 @@ struct LiveActivityLockScreenView: View {
                             .font(.caption)
                             .fontWeight(.semibold)
                             .foregroundStyle(.red)
+                            .strikethrough(true, color: .red)
                     } else if let length = state.length, length > 0 {
                         Text("\(length) cars")
                             .font(.caption2)
@@ -335,12 +337,14 @@ private struct PrimaryDepartureTimeText: View {
     }
 
     var body: some View {
-        Text(text)
-            .font(font)
-            .fontWeight(weight)
-            .monospacedDigit()
-            .foregroundStyle(primaryAccentColor(for: state))
-            .strikethrough(state.isCancelled, color: .red)
+        StruckThroughTimeText(
+            time: text,
+            color: primaryAccentColor(for: state),
+            isStruckThrough: state.isCancelled,
+            font: font,
+            weight: weight,
+            lineHeight: 2
+        )
     }
 }
 
@@ -357,12 +361,13 @@ private struct UpcomingDeparturesStrip: View {
                                 .font(.system(size: 8))
                                 .foregroundStyle(.yellow)
                         }
-                        Text(departure.time)
-                            .font(.caption)
-                            .fontWeight(.medium)
-                            .monospacedDigit()
-                            .foregroundColor(departure.isCancelled ? .red : estimatedTimeColor(departure.delayMinutes))
-                            .strikethrough(departure.isCancelled, color: .red)
+                        StruckThroughTimeText(
+                            time: departure.time,
+                            color: departure.isCancelled ? .red : estimatedTimeColor(departure.delayMinutes),
+                            isStruckThrough: departure.isCancelled,
+                            font: .caption,
+                            weight: .medium
+                        )
                     }
 
                     if let arrivalTime = departure.arrivalTime, !departure.isCancelled {
@@ -384,6 +389,30 @@ private struct UpcomingDeparturesStrip: View {
                 .frame(maxWidth: .infinity)
             }
         }
+    }
+}
+
+private struct StruckThroughTimeText: View {
+    let time: String
+    let color: Color
+    let isStruckThrough: Bool
+    let font: Font
+    let weight: Font.Weight
+    var lineHeight: CGFloat = 1
+
+    var body: some View {
+        Text(time)
+            .font(font)
+            .fontWeight(weight)
+            .monospacedDigit()
+            .foregroundColor(color)
+            .overlay {
+                if isStruckThrough {
+                    Rectangle()
+                        .fill(color)
+                        .frame(height: lineHeight)
+                }
+            }
     }
 }
 
