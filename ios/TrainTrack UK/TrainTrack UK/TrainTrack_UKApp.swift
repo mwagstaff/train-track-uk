@@ -27,6 +27,7 @@ struct TrainTrackUKApp: App {
                 .environmentObject(NotificationSubscriptionStore.shared)
                 .environmentObject(MuteRequestDebugStore.shared)
                 .environmentObject(ToastStore.shared)
+                .environmentObject(HolidayModeStore.shared)
                 .environmentObject(deepLink)
                 .onAppear {
                     // Defer to next runloop to avoid "Publishing changes from within view updates" warnings
@@ -62,6 +63,10 @@ struct TrainTrackUKApp: App {
 
                 Task {
                     await DevicePreferencesSync.syncCurrent()
+                }
+
+                Task {
+                    await HolidayModeStore.shared.syncToServer()
                 }
 
                 // Re-sync subscriptions and geofences each time the app comes to the

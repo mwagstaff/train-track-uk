@@ -5,6 +5,7 @@ import { NotificationPushClient } from './notification-push-client.js';
 import { LiveActivityPushClient } from './live-activity-push-client.js';
 import { pushToStartTokenStore } from './push-to-start-token-store.js';
 import { recordNotificationEvent, recordSubscriptionAuditEvent } from './admin-data-store.js';
+import { holidayModeStore } from './holiday-mode-store.js';
 import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
 import { sleep } from './retry-utils.js';
 
@@ -48,6 +49,7 @@ class NotificationSubscriptionManager {
         this.isPolling = false;
         this.hasHydratedFromMongo = false;
         this.pollTimer = null;
+        this.holidayModeDeviceIds = new Set();
         // Polling loop is started by init() after Mongo hydration.
     }
 
@@ -55,6 +57,7 @@ class NotificationSubscriptionManager {
     // Must be called once at server startup before handling requests.
     async init() {
         await this.hydrateFromMongoWithRetry();
+        await this.hydrateHolidayModeFromMongo();
         await this.pruneExpiredLiveSessions();
         this.startPollingLoop();
     }
@@ -462,6 +465,46 @@ class NotificationSubscriptionManager {
         return muted;
     }
 
+    // Holiday mode: a single on/off flag per device. While enabled, pollSubscription
+    // returns immediately for every subscription belonging to that device, so no
+    // summary/update/auto-start/wake pushes are sent for scheduled or live-session
+    // subscriptions. The flag is cached in memory (hydrated at startup) and persisted
+    // via the existing device-preferences store so it survives a server restart.
+    isHolidayModeEnabled(deviceId) {
+        return this.holidayModeDeviceIds.has(deviceId);
+    }
+
+    async setHolidayMode({ deviceId, enabled, auditContext = null }) {
+        if (!deviceId) {
+            throw new Error('device_id is required');
+        }
+        const isEnabling = Boolean(enabled);
+        if (isEnabling) {
+            this.holidayModeDeviceIds.add(deviceId);
+        } else {
+            this.holidayModeDeviceIds.delete(deviceId);
+        }
+
+        await holidayModeStore.set(deviceId, isEnabling);
+        await this.recordSubscriptionAudit({
+            action: isEnabling ? 'holiday_mode_enabled' : 'holiday_mode_disabled',
+            reason: 'holiday_mode',
+            device_id: deviceId,
+            metadata: { request: auditContext }
+        });
+
+        console.log('[notifications] holiday_mode', JSON.stringify({ device_id: deviceId, enabled: isEnabling }));
+        return { paused: isEnabling };
+    }
+
+    async hydrateHolidayModeFromMongo() {
+        try {
+            this.holidayModeDeviceIds = new Set(await holidayModeStore.listEnabledDeviceIds());
+        } catch (error) {
+            console.error('[notifications] Failed to hydrate holiday mode state from Mongo:', error?.message || error);
+        }
+    }
+
     findScheduledSubscriptionForLeg({ deviceId, from, to }) {
         const fromCode = typeof from === 'string' ? from.trim().toUpperCase() : '';
         const toCode = typeof to === 'string' ? to.trim().toUpperCase() : '';
@@ -558,6 +601,9 @@ class NotificationSubscriptionManager {
                 subscriptionId: subscription.id,
                 reason: 'expired_live_session_poll'
             });
+            return;
+        }
+        if (this.isHolidayModeEnabled(subscription.deviceId)) {
             return;
         }
         for (const leg of subscription.legs) {
@@ -1266,7 +1312,7 @@ class NotificationSubscriptionManager {
 
         // When muting for today (i.e. triggered by geofence arrival), send a
         // confirmation push so the user knows notifications have been muted.
-        if (dateKey === todayKey) {
+        if (dateKey === todayKey && !this.isHolidayModeEnabled(subscription.deviceId)) {
             let snapshot = null;
             if (!isStationExitMuteReason(muteReason)) {
                 try {
@@ -1989,7 +2035,7 @@ function buildMutedMessages(subscription, leg, snapshot = null, reason = 'mute_o
 
 function buildMutedGreetingBody(leg, reason = 'mute_on_arrival') {
     if (isStationExitMuteReason(reason)) {
-        return `You have left ${formatStationGreetingName(legFromLabel(leg))}`;
+        return `You've left ${formatStationGreetingName(legFromLabel(leg))}. Enjoy your journey!`;
     }
     return `Welcome to ${formatStationGreetingName(legFromLabel(leg))}`;
 }

@@ -790,6 +790,29 @@ app.delete('/api/v2/notifications/live_sessions', async (req, res) => {
     });
 });
 
+app.post('/api/v2/notifications/holiday-mode', async (req, res) => {
+    const { device_id, enabled } = req.body || {};
+    logNotificationRequest('holiday_mode', req, { device_id, enabled });
+    if (!device_id || typeof enabled !== 'boolean') {
+        return res.status(400).json({ error: 'device_id and enabled (boolean) are required' });
+    }
+    try {
+        const result = await notificationSubscriptionManager.setHolidayMode({
+            deviceId: device_id,
+            enabled,
+            auditContext: buildRequestAuditContext(req)
+        });
+        res.json({ status: 'ok', ...result });
+    } catch (error) {
+        logNotificationRequest('holiday_mode_failed', req, {
+            device_id,
+            enabled,
+            error: error?.message || error
+        });
+        res.status(400).json({ error: error?.message || error });
+    }
+});
+
 app.post('/api/v2/notifications/terminate', async (req, res) => {
     const { device_id, subscription_id, from, to, date, reason } = req.body || {};
     logNotificationRequest('terminate', req, {

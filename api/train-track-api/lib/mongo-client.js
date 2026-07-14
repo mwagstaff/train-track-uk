@@ -16,7 +16,8 @@ export const COLLECTIONS = Object.freeze({
     pushAuditEvents: 'push_audit_events',
     liveActivityPayloads: 'live_activity_payloads',
     subscriptionAuditEvents: 'subscription_audit_events',
-    geofenceEvents: 'geofence_events'
+    geofenceEvents: 'geofence_events',
+    holidayMode: 'holiday_mode'
 });
 
 export async function getMongoClient() {
