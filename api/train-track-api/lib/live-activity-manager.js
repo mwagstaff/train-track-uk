@@ -457,6 +457,26 @@ class LiveActivityManager {
         return { snapshot, payload, pushResponse };
     }
 
+    async endAllForDevice(deviceId, { reason = 'manual', trigger = 'manual' } = {}) {
+        const matching = Array.from(this.subscriptions.values()).filter((subscription) =>
+            subscription.deviceId === deviceId
+        );
+        const results = await Promise.allSettled(matching.map((subscription) =>
+            this.sendEndUpdate(subscription, { reason, trigger })
+        ));
+
+        for (const result of results) {
+            if (result.status === 'rejected') {
+                console.error(`[live-activity] Failed to end activity for ${deviceId}: ${result.reason?.message || result.reason}`);
+            }
+        }
+
+        return {
+            requested: matching.length,
+            ended: results.filter((result) => result.status === 'fulfilled').length
+        };
+    }
+
     logPushEvent(subscription, payload, pushResponse, type, extraMetadata = {}) {
         const status = pushResponse?.status ?? null;
         const success = typeof status === 'number' && status >= 200 && status < 300;
@@ -786,7 +806,7 @@ class LiveActivityManager {
 
     buildContentState(subscription, snapshot, appIsActive = false) {
         const primary = snapshot.departures[0] || {};
-        const estimated = this.getTimeString(primary.estimated, primary.scheduled);
+        const estimated = this.getDisplayTime(primary.estimated, primary.scheduled);
         const delayMinutes = this.calculateDelay(primary.scheduled, primary.estimated);
 
         const platform = this.ensureString(primary.platform);
@@ -795,7 +815,7 @@ class LiveActivityManager {
         const deepLinkFromCRS = this.ensureOptionalString(subscription.deepLinkFromStation) || this.ensureString(subscription.fromStation);
         const deepLinkToCRS = this.ensureOptionalString(subscription.deepLinkToStation) || this.ensureString(subscription.toStation);
         const upcomingDepartures = snapshot.departures.slice(1).map((dep) => ({
-            time: this.getTimeString(dep.estimated, dep.scheduled),
+            time: this.getDisplayTime(dep.estimated, dep.scheduled),
             arrivalTime: dep.isCancelled ? null : this.ensureOptionalString(dep.arrivalTime),
             delayMinutes: this.calculateDelay(dep.scheduled, dep.estimated),
             isCancelled: Boolean(dep.isCancelled),
@@ -1110,6 +1130,7 @@ class LiveActivityManager {
 
     calculateDelay(scheduled, estimated) {
         if (!scheduled || !estimated || estimated === 'On time') return 0;
+        if (estimated.trim().toLowerCase() === 'delayed') return 240;
         const sched = moment(scheduled, 'HH:mm');
         const est = moment(estimated, 'HH:mm');
         if (!sched.isValid() || !est.isValid()) return 0;
@@ -1122,6 +1143,13 @@ class LiveActivityManager {
         const schedValid = scheduled && moment(scheduled, 'HH:mm', true).isValid();
         if (schedValid) return scheduled;
         return fallback;
+    }
+
+    getDisplayTime(estimated, scheduled, fallback = '') {
+        if (typeof estimated === 'string' && estimated.trim().toLowerCase() === 'delayed') {
+            return 'Delayed';
+        }
+        return this.getTimeString(estimated, scheduled, fallback);
     }
 
     ensureString(value, fallback = '') {

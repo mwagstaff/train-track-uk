@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import UserNotifications
 
 @MainActor
 final class HolidayModeStore: ObservableObject {
@@ -17,7 +18,13 @@ final class HolidayModeStore: ObservableObject {
         isEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: Self.defaultsKey)
         Task {
-            await syncToServer()
+            if enabled {
+                async let serverSync: Void = syncToServer()
+                async let localTermination: Void = terminateExistingJourneyUpdates()
+                _ = await (serverSync, localTermination)
+            } else {
+                await syncToServer()
+            }
         }
     }
 
@@ -30,5 +37,15 @@ final class HolidayModeStore: ObservableObject {
         } catch {
             print("⚠️ [HolidayMode] Failed to sync holiday mode to server: \(error.localizedDescription)")
         }
+    }
+
+    private func terminateExistingJourneyUpdates() async {
+        await LiveActivityManager.shared.stop()
+        await NotificationSubscriptionStore.shared.deleteAllLiveSessions()
+        ScheduledLiveActivityAutoStartManager.shared.clearRecords()
+
+        let notificationCenter = UNUserNotificationCenter.current()
+        notificationCenter.removeAllPendingNotificationRequests()
+        notificationCenter.removeAllDeliveredNotifications()
     }
 }

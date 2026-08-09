@@ -563,7 +563,20 @@ final class LiveActivityManager: ObservableObject {
             await stopActivity(activityID: activityID)
         }
 
+        // A Live Activity can have been remote-started while the app was not
+        // running, so it may not yet be represented in trackedActivities.
+        // End those as well when all journey updates are being stopped.
+        let untrackedActivities = currentSystemActivities().filter {
+            trackedActivities[$0.id] == nil
+        }
+        for activity in untrackedActivities {
+            await activity.end(nil, dismissalPolicy: .immediate)
+            ScheduledLiveActivityAutoStartManager.shared.removeRecord(activityID: activity.id)
+            await sendLiveActivityUnregistration(activityID: activity.id)
+        }
+
         lastEndedAt = Date()
+        updatePublishedState()
         os_log("[LiveActivity] All activities stopped")
     }
 
@@ -1119,9 +1132,14 @@ final class LiveActivityManager: ObservableObject {
                     delayMins = live.delayMinutes
                 }
             }
+            if n.departureTime.estimated
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased() == "delayed" {
+                delayMins = 240
+            }
         }
         let platform = next?.platform?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? (next?.platform ?? "TBC") : "TBC"
-        let est = displayDepartureTime(for: next)
+        let est = liveActivityDepartureText(for: next)
         let scheduledDeparture = next?.departureTime.scheduled
         let length = next?.length
 
@@ -1141,7 +1159,7 @@ final class LiveActivityManager: ObservableObject {
             let laterDeps = Array(upcomingDeps.dropFirst(index + 1))
             let hasFaster = checkForFasterLaterService(dep: dep, allDeps: laterDeps, fromCRS: journey.fromStation.crs, toCRS: journey.toStation.crs, depStore: depStore)
             upcoming.append(JourneyActivityAttributes.UpcomingDeparture(
-                time: displayDepartureTime(for: dep),
+                time: liveActivityDepartureText(for: dep),
                 arrivalTime: dep.isCancelled ? nil : await finalArrivalTime(for: dep, startingJourney: journey, depStore: depStore),
                 delayMinutes: depDelayMins,
                 isCancelled: dep.isCancelled,
@@ -1339,6 +1357,9 @@ final class LiveActivityManager: ObservableObject {
 
     private func calculateDelayMinutes(scheduled: String, estimated: String?) -> Int {
         guard let est = estimated, !est.isEmpty, est.lowercased() != "on time" else { return 0 }
+        if est.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "delayed" {
+            return 240
+        }
         guard let schedTime = parseTimeToMinutes(scheduled), let estTime = parseTimeToMinutes(est) else { return 0 }
         return estTime - schedTime
     }
@@ -1421,6 +1442,15 @@ final class LiveActivityManager: ObservableObject {
             return departure.departureTime.scheduled
         }
         return estimated
+    }
+
+    private func liveActivityDepartureText(for departure: DepartureV2?) -> String {
+        guard let departure else { return "—" }
+        let estimated = departure.departureTime.estimated.trimmingCharacters(in: .whitespacesAndNewlines)
+        if estimated.lowercased() == "delayed" {
+            return "Delayed"
+        }
+        return displayDepartureTime(for: departure)
     }
 
     private func startActivityLifecycleLogging() {

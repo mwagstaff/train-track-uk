@@ -556,6 +556,10 @@ final class ScheduledLiveActivityAutoStartManager {
         saveRecords(records)
     }
 
+    func clearRecords() {
+        saveRecords([])
+    }
+
     private func startIfNeeded(for trigger: ScheduledLiveActivityTrigger, overwriteExisting: Bool) async -> Bool {
         let scheduleKey = trigger.scheduleKey
         guard !scheduleKey.isEmpty else {

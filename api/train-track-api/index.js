@@ -802,7 +802,24 @@ app.post('/api/v2/notifications/holiday-mode', async (req, res) => {
             enabled,
             auditContext: buildRequestAuditContext(req)
         });
-        res.json({ status: 'ok', ...result });
+        let terminatedLiveActivities = { requested: 0, ended: 0 };
+        let removedLiveSessions = 0;
+        if (enabled) {
+            terminatedLiveActivities = await liveActivityManager.endAllForDevice(device_id, {
+                reason: 'holiday_mode',
+                trigger: 'holiday_mode_enabled'
+            });
+            removedLiveSessions = await notificationSubscriptionManager.deleteLiveSessionsForDevice({
+                deviceId: device_id,
+                reason: 'holiday_mode'
+            });
+        }
+        res.json({
+            status: 'ok',
+            ...result,
+            terminated_live_activities: terminatedLiveActivities,
+            removed_live_sessions: removedLiveSessions
+        });
     } catch (error) {
         logNotificationRequest('holiday_mode_failed', req, {
             device_id,

@@ -549,6 +549,23 @@ class NotificationSubscriptionManager {
         return matching.length;
     }
 
+    async deleteLiveSessionsForDevice({ deviceId, reason = 'delete_live_sessions_for_device' }) {
+        if (!deviceId) return 0;
+
+        const matching = Array.from(this.subscriptions.values()).filter((sub) =>
+            sub.deviceId === deviceId && this.subscriptionSource(sub) === LIVE_SESSION_SOURCE
+        );
+
+        await Promise.all(matching.map((sub) => this.deleteSubscription({
+            deviceId,
+            subscriptionId: sub.id,
+            reason,
+            metadata: { device_id: deviceId }
+        })));
+
+        return matching.length;
+    }
+
     countSubscriptionsForDevice(deviceId, { source = null } = {}) {
         return Array.from(this.subscriptions.values()).filter((sub) => {
             if (sub.deviceId !== deviceId) return false;
