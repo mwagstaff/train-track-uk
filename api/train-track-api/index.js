@@ -831,14 +831,25 @@ app.post('/api/v2/notifications/holiday-mode', async (req, res) => {
 });
 
 app.post('/api/v2/notifications/terminate', async (req, res) => {
-    const { device_id, subscription_id, from, to, date, reason } = req.body || {};
+    const {
+        device_id,
+        subscription_id,
+        from,
+        to,
+        date,
+        reason,
+        transition,
+        detection_source
+    } = req.body || {};
     logNotificationRequest('terminate', req, {
         device_id,
         subscription_id,
         from,
         to,
         date,
-        reason
+        reason,
+        transition,
+        detection_source
     });
     if (!device_id || !subscription_id || !from || !to) {
         return res.status(400).json({
@@ -851,12 +862,20 @@ app.post('/api/v2/notifications/terminate', async (req, res) => {
         from,
         to,
         date,
-        reason
+        reason,
+        transition,
+        detectionSource: detection_source
     });
     if (!result) {
         return res.status(404).json({ error: 'Subscription or leg not found' });
     }
-    res.json({ status: 'muted', date: result, reason: reason || null });
+    res.json({
+        status: 'muted',
+        date: result.date,
+        reason: reason || null,
+        transition: result.transition,
+        detection_source: result.detectionSource
+    });
 });
 
 app.post('/api/v2/notifications/geofence-event', async (req, res) => {

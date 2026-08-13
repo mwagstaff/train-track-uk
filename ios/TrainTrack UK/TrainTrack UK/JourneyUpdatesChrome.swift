@@ -15,12 +15,11 @@ struct JourneyUpdatesChrome: ViewModifier {
         guard !sessions.isEmpty else { return nil }
         if sessions.count == 1, let session = sessions.first {
             let route = session.primaryRoute
-            let showsViewButton = route != nil && deepLink.visibleJourneyRoute != route
             return ActiveJourneyUpdatesBanner(
                 title: "Live updates active",
                 subtitle: session.routeTitle,
                 buttonTitle: "Stop",
-                viewRoute: showsViewButton ? route : nil
+                viewRoute: route
             )
         }
         return ActiveJourneyUpdatesBanner(
@@ -66,7 +65,6 @@ struct JourneyUpdatesChrome: ViewModifier {
             .animation(.easeOut(duration: 0.25), value: holidayMode.isEnabled)
             .animation(.easeOut(duration: 0.25), value: notificationStore.liveSessions)
             .animation(.easeOut(duration: 0.25), value: toastStore.toast)
-            .animation(.easeOut(duration: 0.25), value: deepLink.visibleJourneyRoute)
     }
 
     private func openJourney(for banner: ActiveJourneyUpdatesBanner) {

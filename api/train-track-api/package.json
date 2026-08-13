@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "./.dev.sh",
     "start": "node index.js",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node --test test/*.test.js",
     "deploy": "fly deploy --ha=false && fly logs"
   },
   "author": "Mike Wagstaff",

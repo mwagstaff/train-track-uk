@@ -8,6 +8,11 @@ import { recordNotificationEvent, recordSubscriptionAuditEvent } from './admin-d
 import { holidayModeStore } from './holiday-mode-store.js';
 import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
 import { sleep } from './retry-utils.js';
+import {
+    buildMuteNotificationPlan,
+    resolveDetectionSource,
+    resolveMuteTransition
+} from './notification-mute-policy.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.NOTIFICATION_POLL_INTERVAL_SECONDS || '30');
 const MAX_SUBSCRIPTIONS_PER_DEVICE = Number(process.env.NOTIFICATION_MAX_SUBSCRIPTIONS || '3');
@@ -1295,12 +1300,24 @@ class NotificationSubscriptionManager {
         };
     }
 
-    async muteLegForDate({ deviceId, subscriptionId, from, to, date, reason = 'mute_on_arrival' }) {
+    async muteLegForDate({
+        deviceId,
+        subscriptionId,
+        from,
+        to,
+        date,
+        reason = 'mute_on_arrival',
+        transition = null,
+        detectionSource = null
+    }) {
         const fromCode = typeof from === 'string' ? from.trim().toUpperCase() : '';
         const toCode = typeof to === 'string' ? to.trim().toUpperCase() : '';
         const muteReason = normalizeMuteReason(reason);
+        const muteTransition = resolveMuteTransition({ transition, reason: muteReason });
+        const muteDetectionSource = resolveDetectionSource({ detectionSource, reason: muteReason });
+        const isStationExit = muteTransition === 'station_exit';
         let subscription = this.subscriptions.get(subscriptionId);
-        if (!subscription && isStationExitMuteReason(muteReason)) {
+        if (!subscription && isStationExit) {
             subscription = this.findScheduledSubscriptionForLeg({
                 deviceId,
                 from: fromCode,
@@ -1331,7 +1348,7 @@ class NotificationSubscriptionManager {
         // confirmation push so the user knows notifications have been muted.
         if (dateKey === todayKey && !this.isHolidayModeEnabled(subscription.deviceId)) {
             let snapshot = null;
-            if (!isStationExitMuteReason(muteReason)) {
+            if (!isStationExit) {
                 try {
                     snapshot = await getDeparturesSnapshot(leg.from, leg.to);
                 } catch (error) {
@@ -1339,7 +1356,10 @@ class NotificationSubscriptionManager {
                 }
             }
 
-            const mutedNotifications = buildMutedMessages(subscription, leg, snapshot, muteReason);
+            const mutedNotifications = buildMutedMessages(subscription, leg, snapshot, {
+                reason: muteReason,
+                transition: muteTransition
+            });
             const pushResults = [];
 
             for (let index = 0; index < mutedNotifications.length; index += 1) {
@@ -1354,7 +1374,10 @@ class NotificationSubscriptionManager {
                     {
                         useSandbox: subscription.useSandbox,
                         event: mutedNotification.type,
-                        context: buildPushContext(subscription, leg, muteReason)
+                        context: buildPushContext(subscription, leg, muteReason, {
+                            transition: muteTransition,
+                            detection_source: muteDetectionSource
+                        })
                     }
                 );
                 pushResults.push({
@@ -1377,12 +1400,14 @@ class NotificationSubscriptionManager {
                 leg: legKey,
                 use_sandbox: subscription.useSandbox,
                 reason: muteReason,
+                transition: muteTransition,
+                detection_source: muteDetectionSource,
                 notifications: pushResults
             }));
         }
 
         if (this.subscriptionSource(subscription) === LIVE_SESSION_SOURCE) {
-            const liveSessionMuteReason = isStationExitMuteReason(muteReason)
+            const liveSessionMuteReason = isStationExit
                 ? 'live_session_muted_on_station_exit'
                 : 'live_session_muted_on_arrival';
             await this.muteScheduledLegsForToday({
@@ -1392,7 +1417,9 @@ class NotificationSubscriptionManager {
                 metadata: {
                     live_session_id: subscription.id,
                     date: dateKey,
-                    trigger_reason: muteReason
+                    trigger_reason: muteReason,
+                    transition: muteTransition,
+                    detection_source: muteDetectionSource
                 }
             });
             this.subscriptions.delete(subscription.id);
@@ -1402,11 +1429,20 @@ class NotificationSubscriptionManager {
                 reason: liveSessionMuteReason,
                 source: LIVE_SESSION_SOURCE,
                 before: subscription,
-                metadata: { date: dateKey, trigger_reason: muteReason }
+                metadata: {
+                    date: dateKey,
+                    trigger_reason: muteReason,
+                    transition: muteTransition,
+                    detection_source: muteDetectionSource
+                }
             });
         }
 
-        return dateKey;
+        return {
+            date: dateKey,
+            transition: muteTransition,
+            detectionSource: muteDetectionSource
+        };
     }
 
     isMutedToday(subscription, legKey) {
@@ -2021,21 +2057,27 @@ function normalizeMuteReason(reason) {
     return value || 'mute_on_arrival';
 }
 
-function isStationExitMuteReason(reason) {
-    return reason === 'station_exit' || reason === 'debug_station_exit';
-}
-
-function buildMutedMessages(subscription, leg, snapshot = null, reason = 'mute_on_arrival') {
+function buildMutedMessages(
+    subscription,
+    leg,
+    snapshot = null,
+    context = { reason: 'mute_on_arrival' }
+) {
+    const muteContext = typeof context === 'string' ? { reason: context } : context;
+    const notificationPlan = buildMuteNotificationPlan({
+        stationName: legFromLabel(leg),
+        ...muteContext
+    });
     const routeTitle = legRouteTitle(leg);
     const greeting = buildNotificationPayload(
         routeTitle,
-        buildMutedGreetingBody(leg, reason),
+        notificationPlan[0].body,
         buildLegMeta(subscription, leg, 'muted_greeting'),
         'muted_greeting',
         'STATION_ARRIVAL'
     );
 
-    if (isStationExitMuteReason(reason)) {
+    if (!notificationPlan.some((notification) => notification.type === 'muted_status')) {
         return [greeting];
     }
 
@@ -2048,13 +2090,6 @@ function buildMutedMessages(subscription, leg, snapshot = null, reason = 'mute_o
             'muted_status'
         )
     ];
-}
-
-function buildMutedGreetingBody(leg, reason = 'mute_on_arrival') {
-    if (isStationExitMuteReason(reason)) {
-        return `You've left ${formatStationGreetingName(legFromLabel(leg))}. Enjoy your journey!`;
-    }
-    return `Welcome to ${formatStationGreetingName(legFromLabel(leg))}`;
 }
 
 function buildMutedStatusBody(leg, snapshot) {
@@ -2207,11 +2242,6 @@ function normalizePlatform(value) {
     return trimmed.length > 0 ? trimmed : null;
 }
 
-function formatStationGreetingName(value) {
-    const label = typeof value === 'string' && value.trim().length > 0 ? value.trim() : 'your station';
-    return / station$/i.test(label) ? label : `${label} station`;
-}
-
 function buildNotificationPayload(
     title,
     body,
@@ -2259,9 +2289,10 @@ function buildLegMeta(subscription, leg, alertType) {
     return meta;
 }
 
-function buildPushContext(subscription, leg, reason) {
+function buildPushContext(subscription, leg, reason, metadata = {}) {
     return {
         reason,
+        ...metadata,
         device_id: subscription?.deviceId || null,
         subscription_id: subscription?.id || null,
         route_key: leg ? legRouteKey(leg) : (subscription?.routeKey || null),

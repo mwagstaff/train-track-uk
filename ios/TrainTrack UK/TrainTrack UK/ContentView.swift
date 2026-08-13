@@ -11,11 +11,9 @@ struct ContentView: View {
     @EnvironmentObject var router: TabRouter
     @EnvironmentObject var journeyStore: JourneyStore
     @EnvironmentObject var depStore: DeparturesStore
-    @EnvironmentObject var deepLink: DeepLinkRouter
     @EnvironmentObject var toastStore: ToastStore
 
     // Navigation paths for each tab to enable programmatic pop-to-root
-    @State private var pinnedPath = NavigationPath()
     @State private var favouritesPath = NavigationPath()
     @State private var myJourneysPath = NavigationPath()
     @State private var addJourneyPath = NavigationPath()
@@ -23,16 +21,9 @@ struct ContentView: View {
 
     var body: some View {
         TabView(selection: $router.selected) {
-            if depStore.hasPinnedItems {
-                NavigationStack(path: $pinnedPath) { PinnedJourneysView() }
-                    .modifier(JourneyUpdatesChrome(includeToast: true))
-                    .tabItem { Label("Pinned", systemImage: "pin.fill") }
-                    .tag(Tab.pinned)
-            }
-
             NavigationStack(path: $favouritesPath) { FavouritesView() }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
-                .tabItem { Label("Favourites", systemImage: "star.fill") }
+                .tabItem { Label("Favourites", systemImage: "heart.fill") }
                 .tag(Tab.favourites)
 
             NavigationStack(path: $myJourneysPath) { MyJourneysView() }
@@ -55,22 +46,12 @@ struct ContentView: View {
             // Ensure polling starts even if App.onAppear wasn't fired
             depStore.startPolling(journeyStore: journeyStore)
         }
-        .sheet(item: $deepLink.pendingJourneyGroup) { group in
-            DeepLinkJourneySheet(group: group)
-                .environmentObject(depStore)
-        }
-        .onChange(of: depStore.hasPinnedItems) { hasPinned in
-            if !hasPinned && router.selected == .pinned {
-                router.selected = .favourites
-            }
-        }
         .onChange(of: router.selected) { newTab in
             // Remember the last tab that isn't Add Journey so we can return there
             if newTab != .addJourney { router.lastNonAddTab = newTab }
         }
         .onChange(of: router.navigationResetTrigger) { _ in
             // Pop all navigation stacks to root when triggered
-            pinnedPath = NavigationPath()
             favouritesPath = NavigationPath()
             myJourneysPath = NavigationPath()
             addJourneyPath = NavigationPath()

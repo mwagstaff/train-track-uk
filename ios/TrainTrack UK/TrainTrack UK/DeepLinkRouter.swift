@@ -7,9 +7,6 @@ import UIKit
 final class DeepLinkRouter: ObservableObject {
     static let shared = DeepLinkRouter()
 
-    @Published var pendingJourneyGroup: JourneyGroup? = nil
-    @Published private(set) var pendingJourneyActivation: JourneyActivationRequest? = nil
-    @Published private(set) var visibleJourneyRoute: JourneyRouteIdentity? = nil
 
     func handle(url: URL) {
         guard url.scheme == "traintrack" else { return }
@@ -66,42 +63,28 @@ final class DeepLinkRouter: ObservableObject {
     func openJourney(from: String, to: String, activateUpdates: Bool = false) async {
         if StationsService.shared.stations.isEmpty { await ensureStations() }
         if let group = findOrCreateJourneyGroup(from: from, to: to) {
-            pendingJourneyGroup = group
-            pendingJourneyActivation = activateUpdates
-                ? JourneyActivationRequest(from: from, to: to)
-                : nil
+            TabRouter.shared.selected = group.favorite ? .favourites : .myJourneys
+            if activateUpdates {
+                let notificationStore = NotificationSubscriptionStore.shared
+                _ = await JourneyUpdateActions.start(
+                    group: group,
+                    scheduledSubscription: notificationStore.subscription(
+                        for: JourneyUpdateActions.scheduledRouteKey(for: group)
+                    ),
+                    liveSession: notificationStore.liveSession(
+                        for: JourneyUpdateActions.liveSessionRouteKey(for: group)
+                    ),
+                    liveActivityDurationMinutes: UserDefaults.standard.object(
+                        forKey: "liveActivityDurationMinutes"
+                    ) as? Int ?? 60,
+                    notificationStore: notificationStore,
+                    activityManager: LiveActivityManager.shared,
+                    departuresStore: DeparturesStore.shared
+                )
+            }
         }
     }
 
-    func consumeJourneyActivationIfNeeded(for group: JourneyGroup) -> JourneyActivationRequest? {
-        guard let activation = pendingJourneyActivation else { return nil }
-        let start = group.startStation.crs.uppercased()
-        let end = group.endStation.crs.uppercased()
-        guard activation.fromCRS == start, activation.toCRS == end else { return nil }
-        pendingJourneyActivation = nil
-        return activation
-    }
-
-    func setVisibleJourney(_ group: JourneyGroup) {
-        visibleJourneyRoute = JourneyRouteIdentity(group: group)
-    }
-
-    func clearVisibleJourney(_ group: JourneyGroup) {
-        let route = JourneyRouteIdentity(group: group)
-        if visibleJourneyRoute == route {
-            visibleJourneyRoute = nil
-        }
-    }
-}
-
-struct JourneyActivationRequest: Equatable {
-    let fromCRS: String
-    let toCRS: String
-
-    init(from: String, to: String) {
-        self.fromCRS = from.uppercased()
-        self.toCRS = to.uppercased()
-    }
 }
 
 struct JourneyRouteIdentity: Equatable {

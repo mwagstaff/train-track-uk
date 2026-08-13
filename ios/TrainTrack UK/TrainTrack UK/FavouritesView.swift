@@ -5,6 +5,7 @@ struct FavouritesView: View {
     @EnvironmentObject var store: JourneyStore
     @EnvironmentObject var depStore: DeparturesStore
     @EnvironmentObject var activityMgr: LiveActivityManager
+    @EnvironmentObject var notificationStore: NotificationSubscriptionStore
     @EnvironmentObject var router: TabRouter
     @Environment(\.scenePhase) private var scenePhase
     @State private var journeyPendingDelete: JourneyGroup? = nil
@@ -15,15 +16,21 @@ struct FavouritesView: View {
     @State private var searchText = ""
     @State private var debouncedSearchText = ""
     @State private var debounceTask: Task<Void, Never>?
+    @State private var isSearching = false
     @FocusState private var searchFocused: Bool
     @StateObject private var location = LocationManagerPhone()
     @State private var isSelecting = false
     @State private var selectedJourneyIds: Set<UUID> = []
     @State private var showMultiDeleteDialog = false
+    @State private var scheduleGroup: JourneyGroup?
+    @State private var liveActionGroupIDs: Set<UUID> = []
+    @State private var expandedJourneyIDs: Set<UUID> = []
+    @State private var cardDestination: JourneyCardNavigationDestination?
     @AppStorage("showClosestJourneyLegOnly") private var showClosestJourneyLegOnly: Bool = true
     @AppStorage("distanceVeryCloseMiles") private var veryCloseMiles: Double = 3
     @AppStorage("distanceModeratelyCloseMiles") private var moderatelyCloseMiles: Double = 5
     @AppStorage("journeySortMode") private var journeySortModeRaw: String = JourneySortMode.distance.rawValue
+    @AppStorage("liveActivityDurationMinutes") private var liveActivityDurationMinutes: Int = 60
 
     private var sortMode: JourneySortMode {
         JourneySortMode(rawValue: journeySortModeRaw) ?? .distance
@@ -55,19 +62,19 @@ struct FavouritesView: View {
 
     private var groups: [Group] { grouped(from: filteredFavourites) }
     private var filteredManualJourneys: [JourneyGroup] { applyClosestLegFilter(manualOrderedJourneys).filter(matchesSearch) }
-    private var shouldShowSearchBar: Bool { visibleFavourites.count >= 2 }
-
     var body: some View { toolbarView }
 
     private var baseListView: AnyView {
         let snapshot = groups
         return AnyView(
             VStack(spacing: 0) {
-                List { listContent(snapshot) }
-                    .refreshable { await manualRefresh() }
-                if shouldShowSearchBar {
+                if isSearching {
                     searchBar
                 }
+                List { listContent(snapshot) }
+                    .refreshable { await manualRefresh() }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
             }
         )
     }
@@ -76,10 +83,10 @@ struct FavouritesView: View {
         baseListView
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Favourites")
-            .navigationDestination(for: JourneyGroup.self) { group in
-                JourneyDetailsView(group: group)
-                    .onAppear { searchFocused = false }
+            .navigationDestination(item: $cardDestination) { destination in
+                cardDestinationView(destination)
             }
+            .task { await notificationStore.refresh() }
     }
 
     private var lifecycleView: some View {
@@ -152,7 +159,7 @@ struct FavouritesView: View {
             } message: {
                 Text("Are you sure you want to delete the selected \(multiDeleteNoun)?")
             }
-        .confirmationDialog(
+        .alert(
             "Remove from favourites?",
             isPresented: $showFavDialog,
             presenting: journeyPendingFav
@@ -161,8 +168,11 @@ struct FavouritesView: View {
                 store.setFavorite(group: j, includeReturn: true, value: false)
             }
             Button("Cancel", role: .cancel) { }
-        } message: { _ in
-            Text("Remove this journey from favourites?")
+        } message: { journey in
+            Text("Remove \(journey.displayTitle) from favourites?")
+        }
+        .sheet(item: $scheduleGroup) { group in
+            NotificationScheduleView(group: group, reverseGroup: store.reverseGroup(for: group))
         }
     }
 
@@ -170,6 +180,14 @@ struct FavouritesView: View {
         let view = alertsView
             .toolbar {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    if !isSelecting && !isSearching {
+                        Button {
+                            openSearch()
+                        } label: {
+                            Image(systemName: "magnifyingglass")
+                        }
+                        .accessibilityLabel("Search favourites")
+                    }
                     if isSelecting {
                         Button("Cancel") {
                             selectedJourneyIds.removeAll()
@@ -299,7 +317,7 @@ extension FavouritesView {
             } else {
                 compatUnavailable(
                     title: "No favourites yet",
-                    systemImage: "star",
+                    systemImage: "heart",
                     description: "Add favourite journeys to see them here.",
                     actionTitle: "Add favourite journey",
                     action: {
@@ -339,26 +357,23 @@ extension FavouritesView {
     private func groupSections(_ groups: [Group]) -> some View {
         ForEach(groups) { group in
             if !group.items.isEmpty {
-                Section(group.title) {
+                Section {
+                    distanceSectionLabel(group.title)
                     ForEach(group.items) { j in
-                        journeyRow(j) {
-                            Button(role: .destructive) {
-                                journeyPendingDelete = j
-                                showDeleteDialog = true
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                            Button {
-                                journeyPendingFav = j
-                                showFavDialog = true
-                            } label: {
-                                Label("Unfavourite", systemImage: "star.slash.fill")
-                            }
-                        }
+                        journeyRow(j)
                     }
                 }
             }
         }
+    }
+
+    private func distanceSectionLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.headline)
+            .foregroundStyle(.secondary)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
     }
 
     private func refreshManualOrder() {
@@ -369,20 +384,7 @@ extension FavouritesView {
     private var alphabeticalSection: some View {
         Section("Favourites") {
             ForEach(alphabeticallySortedFavourites) { j in
-                journeyRow(j) {
-                    Button(role: .destructive) {
-                        journeyPendingDelete = j
-                        showDeleteDialog = true
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                    Button {
-                        journeyPendingFav = j
-                        showFavDialog = true
-                    } label: {
-                        Label("Unfavourite", systemImage: "star.slash.fill")
-                    }
-                }
+                journeyRow(j)
             }
         }
     }
@@ -391,20 +393,7 @@ extension FavouritesView {
     private var manualSection: some View {
         Section("Favourites") {
             ForEach(filteredManualJourneys) { j in
-                journeyRow(j) {
-                    Button(role: .destructive) {
-                        journeyPendingDelete = j
-                        showDeleteDialog = true
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                    Button {
-                        journeyPendingFav = j
-                        showFavDialog = true
-                    } label: {
-                        Label("Unfavourite", systemImage: "star.slash.fill")
-                    }
-                }
+                journeyRow(j)
             }
             .onMove { source, destination in
                 if isSelecting { return }
@@ -419,7 +408,7 @@ extension FavouritesView {
     }
 }
 
-// Row is now shared in JourneyListRow.swift
+// Journey cards are shared in JourneyListRow.swift.
 
 #Preview {
     NavigationStack {
@@ -504,7 +493,6 @@ private extension FavouritesView {
                 Button {
                     searchText = ""
                     debouncedSearchText = ""
-                    searchFocused = false
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
@@ -514,15 +502,36 @@ private extension FavouritesView {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear search")
             }
+            Button("Close") {
+                closeSearch()
+            }
+            .font(.callout.weight(.semibold))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(.ultraThinMaterial, in: Capsule())
-        .frame(maxWidth: UIScreen.main.bounds.width * ((hasEnteredSearch || searchFocused) ? 1.0 : 0.3))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .frame(maxWidth: .infinity)
         .padding(.horizontal)
         .padding(.vertical, 8)
-        .animation(.easeInOut(duration: 0.2), value: hasEnteredSearch)
-        .animation(.easeInOut(duration: 0.2), value: searchFocused)
+    }
+
+    func openSearch() {
+        guard !isSearching else {
+            searchFocused = true
+            return
+        }
+        isSearching = true
+        Task { @MainActor in
+            await Task.yield()
+            searchFocused = true
+        }
+    }
+
+    func closeSearch() {
+        searchFocused = false
+        isSearching = false
+        searchText = ""
+        debouncedSearchText = ""
     }
 
     private var multiDeleteNoun: String {
@@ -534,7 +543,7 @@ private extension FavouritesView {
     }
 
     @ViewBuilder
-    private func journeyRow(_ group: JourneyGroup, @ViewBuilder actions: () -> some View) -> some View {
+    private func journeyRow(_ group: JourneyGroup) -> some View {
         if isSelecting {
             Button {
                 toggleSelection(group)
@@ -543,10 +552,7 @@ private extension FavouritesView {
             }
             .buttonStyle(.plain)
         } else {
-            NavigationLink(value: group) {
-                rowContent(for: group)
-            }
-            .swipeActions(edge: .trailing, allowsFullSwipe: true, content: actions)
+            rowContent(for: group)
             .highPriorityGesture(
                 LongPressGesture(minimumDuration: longPressDuration, maximumDistance: longPressDistance)
                     .onEnded { _ in startSelection(with: group) }
@@ -559,9 +565,96 @@ private extension FavouritesView {
             if isSelecting {
                 selectionIndicator(for: group)
             }
-            JourneyListRow(group: group)
+            JourneyCard(
+                group: group,
+                isFavourite: true,
+                defaultDepartureCount: JourneyCardPresentation.defaultDepartureCount(
+                    journeyCount: visibleFavourites.count
+                ),
+                isLiveActive: liveSession(for: group) != nil,
+                isScheduled: scheduledSubscription(for: group) != nil,
+                isBusy: liveActionGroupIDs.contains(group.id),
+                isInteractive: !isSelecting,
+                isExpanded: expandedJourneyIDs.contains(group.id),
+                onToggleExpanded: { toggleExpanded(group.id) },
+                onOpenDeparture: { leg, departure in
+                    cardDestination = .service(
+                        serviceID: departure.serviceID,
+                        fromCRS: leg.fromStation.crs,
+                        toCRS: leg.toStation.crs
+                    )
+                },
+                onToggleFavourite: {
+                    journeyPendingFav = group
+                    showFavDialog = true
+                },
+                onToggleJourneyUpdates: { toggleJourneyUpdates(for: group) },
+                onScheduleJourneyUpdates: { scheduleGroup = group },
+                onRemoveJourney: {
+                    journeyPendingDelete = group
+                    showDeleteDialog = true
+                }
+            )
         }
         .contentShape(Rectangle())
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+    }
+
+    private func toggleExpanded(_ groupID: UUID) {
+        if expandedJourneyIDs.contains(groupID) {
+            expandedJourneyIDs.remove(groupID)
+        } else {
+            expandedJourneyIDs.insert(groupID)
+        }
+    }
+
+    @ViewBuilder
+    private func cardDestinationView(_ destination: JourneyCardNavigationDestination) -> some View {
+        switch destination {
+        case .service(let serviceID, let fromCRS, let toCRS):
+            ServiceMapView(serviceID: serviceID, fromCRS: fromCRS, toCRS: toCRS)
+                .onAppear { searchFocused = false }
+        }
+    }
+
+    private func scheduledSubscription(for group: JourneyGroup) -> NotificationSubscription? {
+        notificationStore.subscription(for: JourneyUpdateActions.scheduledRouteKey(for: group))
+    }
+
+    private func liveSession(for group: JourneyGroup) -> NotificationSubscription? {
+        notificationStore.liveSession(for: JourneyUpdateActions.liveSessionRouteKey(for: group))
+    }
+
+    private func toggleJourneyUpdates(for group: JourneyGroup) {
+        guard liveActionGroupIDs.insert(group.id).inserted else { return }
+        Task {
+            defer { liveActionGroupIDs.remove(group.id) }
+            if let session = liveSession(for: group) {
+                do {
+                    try await JourneyUpdateActions.stop(
+                        session: session,
+                        notificationStore: notificationStore,
+                        activityManager: activityMgr
+                    )
+                    ToastStore.shared.show("Journey updates stopped", icon: "stop.fill")
+                } catch {
+                    activityMgr.lastMessage = error.localizedDescription
+                    ToastStore.shared.show("Unable to stop journey updates", icon: "exclamationmark.triangle.fill")
+                }
+            } else {
+                _ = await JourneyUpdateActions.start(
+                    group: group,
+                    scheduledSubscription: scheduledSubscription(for: group),
+                    liveSession: nil,
+                    liveActivityDurationMinutes: liveActivityDurationMinutes,
+                    notificationStore: notificationStore,
+                    activityManager: activityMgr,
+                    departuresStore: depStore
+                )
+            }
+        }
     }
 
     private func selectionIndicator(for group: JourneyGroup) -> some View {

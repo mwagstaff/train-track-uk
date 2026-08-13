@@ -5,6 +5,7 @@ struct MyJourneysView: View {
     @EnvironmentObject var store: JourneyStore
     @EnvironmentObject var depStore: DeparturesStore
     @EnvironmentObject var activityMgr: LiveActivityManager
+    @EnvironmentObject var notificationStore: NotificationSubscriptionStore
     @EnvironmentObject var router: TabRouter
     @Environment(\.scenePhase) private var scenePhase
     @State private var journeyPendingDelete: JourneyGroup? = nil
@@ -15,15 +16,21 @@ struct MyJourneysView: View {
     @State private var searchText = ""
     @State private var debouncedSearchText = ""
     @State private var debounceTask: Task<Void, Never>?
+    @State private var isSearching = false
     @FocusState private var searchFocused: Bool
     @StateObject private var location = LocationManagerPhone()
     @State private var isSelecting = false
     @State private var selectedJourneyIds: Set<UUID> = []
     @State private var showMultiDeleteDialog = false
+    @State private var scheduleGroup: JourneyGroup?
+    @State private var liveActionGroupIDs: Set<UUID> = []
+    @State private var expandedJourneyIDs: Set<UUID> = []
+    @State private var cardDestination: JourneyCardNavigationDestination?
     @AppStorage("showClosestJourneyLegOnly") private var showClosestJourneyLegOnly: Bool = true
     @AppStorage("distanceVeryCloseMiles") private var veryCloseMiles: Double = 3
     @AppStorage("distanceModeratelyCloseMiles") private var moderatelyCloseMiles: Double = 5
     @AppStorage("journeySortMode") private var journeySortModeRaw: String = JourneySortMode.distance.rawValue
+    @AppStorage("liveActivityDurationMinutes") private var liveActivityDurationMinutes: Int = 60
 
     private var sortMode: JourneySortMode {
         JourneySortMode(rawValue: journeySortModeRaw) ?? .distance
@@ -46,7 +53,6 @@ struct MyJourneysView: View {
     private var visibleJourneys: [JourneyGroup] { applyClosestLegFilter(nonFavourites) }
     private var filteredJourneys: [JourneyGroup] { visibleJourneys.filter(matchesSearch) }
     private var filteredManualJourneys: [JourneyGroup] { applyClosestLegFilter(manualOrderedJourneys).filter(matchesSearch) }
-    private var shouldShowSearchBar: Bool { visibleJourneys.count >= 2 }
 
     private var alphabeticallySortedJourneys: [JourneyGroup] {
         filteredJourneys.sorted { $0.startStation.name < $1.startStation.name }
@@ -115,11 +121,13 @@ struct MyJourneysView: View {
         let snapshot = groups
         return AnyView(
             VStack(spacing: 0) {
-                List { listContent(snapshot) }
-                    .refreshable { await manualRefresh() }
-                if shouldShowSearchBar {
+                if isSearching {
                     searchBar
                 }
+                List { listContent(snapshot) }
+                    .refreshable { await manualRefresh() }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
             }
         )
     }
@@ -128,10 +136,10 @@ struct MyJourneysView: View {
         baseListView
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle("My Journeys")
-            .navigationDestination(for: JourneyGroup.self) { group in
-                JourneyDetailsView(group: group)
-                    .onAppear { searchFocused = false }
+            .navigationDestination(item: $cardDestination) { destination in
+                cardDestinationView(destination)
             }
+            .task { await notificationStore.refresh() }
     }
 
     private var lifecycleView: some View {
@@ -204,17 +212,20 @@ struct MyJourneysView: View {
             } message: {
                 Text("Are you sure you want to delete the selected \(multiDeleteNoun)?")
             }
-        .confirmationDialog(
+        .alert(
             "Add to favourites?",
             isPresented: $showFavDialog,
             presenting: journeyPendingFav
         ) { j in
-            Button("Add to favourites", role: .destructive) {
+            Button("Add to favourites") {
                 store.setFavorite(group: j, includeReturn: true, value: true)
             }
             Button("Cancel", role: .cancel) { }
-        } message: { _ in
-            Text("Add this journey to favourites?")
+        } message: { journey in
+            Text("Add \(journey.displayTitle) to favourites?")
+        }
+        .sheet(item: $scheduleGroup) { group in
+            NotificationScheduleView(group: group, reverseGroup: store.reverseGroup(for: group))
         }
     }
 
@@ -222,6 +233,14 @@ struct MyJourneysView: View {
         let view = alertsView
             .toolbar {
                 ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    if !isSelecting && !isSearching {
+                        Button {
+                            openSearch()
+                        } label: {
+                            Image(systemName: "magnifyingglass")
+                        }
+                        .accessibilityLabel("Search journeys")
+                    }
                     if isSelecting {
                         Button("Cancel") {
                             selectedJourneyIds.removeAll()
@@ -334,38 +353,30 @@ struct MyJourneysView: View {
     private func distanceGroupSections(_ groups: [Group]) -> some View {
         ForEach(groups) { group in
             if !group.items.isEmpty {
-                Section(group.title) {
+                Section {
+                    distanceSectionLabel(group.title)
                     ForEach(group.items) { j in
-                        journeyRow(j) {
-                            Button(role: .destructive) {
-                                journeyPendingDelete = j
-                                showDeleteDialog = true
-                            } label: { Label("Delete", systemImage: "trash") }
-                            Button {
-                                journeyPendingFav = j
-                                showFavDialog = true
-                            } label: { Label("Favourite", systemImage: "star.fill") }
-                        }
+                        journeyRow(j)
                     }
                 }
             }
         }
     }
 
+    private func distanceSectionLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.headline)
+            .foregroundStyle(.secondary)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
+    }
+
     @ViewBuilder
     private var alphabeticalSection: some View {
         Section("My Journeys") {
             ForEach(alphabeticallySortedJourneys) { j in
-                journeyRow(j) {
-                    Button(role: .destructive) {
-                        journeyPendingDelete = j
-                        showDeleteDialog = true
-                    } label: { Label("Delete", systemImage: "trash") }
-                    Button {
-                        journeyPendingFav = j
-                        showFavDialog = true
-                    } label: { Label("Favourite", systemImage: "star.fill") }
-                }
+                journeyRow(j)
             }
         }
     }
@@ -374,16 +385,7 @@ struct MyJourneysView: View {
     private var manualSection: some View {
         Section("My Journeys") {
             ForEach(filteredManualJourneys) { j in
-                journeyRow(j) {
-                    Button(role: .destructive) {
-                        journeyPendingDelete = j
-                        showDeleteDialog = true
-                    } label: { Label("Delete", systemImage: "trash") }
-                    Button {
-                        journeyPendingFav = j
-                        showFavDialog = true
-                    } label: { Label("Favourite", systemImage: "star.fill") }
-                }
+                journeyRow(j)
             }
             .onMove { source, destination in
                 if isSelecting { return }
@@ -398,7 +400,7 @@ struct MyJourneysView: View {
     }
 }
 
-// Row is now shared in JourneyListRow.swift
+// Journey cards are shared in JourneyListRow.swift.
 
 #Preview {
     NavigationStack {
@@ -483,7 +485,6 @@ private extension MyJourneysView {
                 Button {
                     searchText = ""
                     debouncedSearchText = ""
-                    searchFocused = false
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary)
@@ -493,15 +494,36 @@ private extension MyJourneysView {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear search")
             }
+            Button("Close") {
+                closeSearch()
+            }
+            .font(.callout.weight(.semibold))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .background(.ultraThinMaterial, in: Capsule())
-        .frame(maxWidth: UIScreen.main.bounds.width * ((hasEnteredSearch || searchFocused) ? 1.0 : 0.3))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .frame(maxWidth: .infinity)
         .padding(.horizontal)
         .padding(.vertical, 8)
-        .animation(.easeInOut(duration: 0.2), value: hasEnteredSearch)
-        .animation(.easeInOut(duration: 0.2), value: searchFocused)
+    }
+
+    func openSearch() {
+        guard !isSearching else {
+            searchFocused = true
+            return
+        }
+        isSearching = true
+        Task { @MainActor in
+            await Task.yield()
+            searchFocused = true
+        }
+    }
+
+    func closeSearch() {
+        searchFocused = false
+        isSearching = false
+        searchText = ""
+        debouncedSearchText = ""
     }
 
 
@@ -514,7 +536,7 @@ private extension MyJourneysView {
     }
 
     @ViewBuilder
-    private func journeyRow(_ group: JourneyGroup, @ViewBuilder actions: () -> some View) -> some View {
+    private func journeyRow(_ group: JourneyGroup) -> some View {
         if isSelecting {
             Button {
                 toggleSelection(group)
@@ -523,10 +545,7 @@ private extension MyJourneysView {
             }
             .buttonStyle(.plain)
         } else {
-            NavigationLink(value: group) {
-                rowContent(for: group)
-            }
-            .swipeActions(edge: .trailing, allowsFullSwipe: true, content: actions)
+            rowContent(for: group)
             .highPriorityGesture(
                 LongPressGesture(minimumDuration: longPressDuration, maximumDistance: longPressDistance)
                     .onEnded { _ in startSelection(with: group) }
@@ -539,9 +558,96 @@ private extension MyJourneysView {
             if isSelecting {
                 selectionIndicator(for: group)
             }
-            JourneyListRow(group: group)
+            JourneyCard(
+                group: group,
+                isFavourite: false,
+                defaultDepartureCount: JourneyCardPresentation.defaultDepartureCount(
+                    journeyCount: visibleJourneys.count
+                ),
+                isLiveActive: liveSession(for: group) != nil,
+                isScheduled: scheduledSubscription(for: group) != nil,
+                isBusy: liveActionGroupIDs.contains(group.id),
+                isInteractive: !isSelecting,
+                isExpanded: expandedJourneyIDs.contains(group.id),
+                onToggleExpanded: { toggleExpanded(group.id) },
+                onOpenDeparture: { leg, departure in
+                    cardDestination = .service(
+                        serviceID: departure.serviceID,
+                        fromCRS: leg.fromStation.crs,
+                        toCRS: leg.toStation.crs
+                    )
+                },
+                onToggleFavourite: {
+                    journeyPendingFav = group
+                    showFavDialog = true
+                },
+                onToggleJourneyUpdates: { toggleJourneyUpdates(for: group) },
+                onScheduleJourneyUpdates: { scheduleGroup = group },
+                onRemoveJourney: {
+                    journeyPendingDelete = group
+                    showDeleteDialog = true
+                }
+            )
         }
         .contentShape(Rectangle())
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+    }
+
+    private func toggleExpanded(_ groupID: UUID) {
+        if expandedJourneyIDs.contains(groupID) {
+            expandedJourneyIDs.remove(groupID)
+        } else {
+            expandedJourneyIDs.insert(groupID)
+        }
+    }
+
+    @ViewBuilder
+    private func cardDestinationView(_ destination: JourneyCardNavigationDestination) -> some View {
+        switch destination {
+        case .service(let serviceID, let fromCRS, let toCRS):
+            ServiceMapView(serviceID: serviceID, fromCRS: fromCRS, toCRS: toCRS)
+                .onAppear { searchFocused = false }
+        }
+    }
+
+    private func scheduledSubscription(for group: JourneyGroup) -> NotificationSubscription? {
+        notificationStore.subscription(for: JourneyUpdateActions.scheduledRouteKey(for: group))
+    }
+
+    private func liveSession(for group: JourneyGroup) -> NotificationSubscription? {
+        notificationStore.liveSession(for: JourneyUpdateActions.liveSessionRouteKey(for: group))
+    }
+
+    private func toggleJourneyUpdates(for group: JourneyGroup) {
+        guard liveActionGroupIDs.insert(group.id).inserted else { return }
+        Task {
+            defer { liveActionGroupIDs.remove(group.id) }
+            if let session = liveSession(for: group) {
+                do {
+                    try await JourneyUpdateActions.stop(
+                        session: session,
+                        notificationStore: notificationStore,
+                        activityManager: activityMgr
+                    )
+                    ToastStore.shared.show("Journey updates stopped", icon: "stop.fill")
+                } catch {
+                    activityMgr.lastMessage = error.localizedDescription
+                    ToastStore.shared.show("Unable to stop journey updates", icon: "exclamationmark.triangle.fill")
+                }
+            } else {
+                _ = await JourneyUpdateActions.start(
+                    group: group,
+                    scheduledSubscription: scheduledSubscription(for: group),
+                    liveSession: nil,
+                    liveActivityDurationMinutes: liveActivityDurationMinutes,
+                    notificationStore: notificationStore,
+                    activityManager: activityMgr,
+                    departuresStore: depStore
+                )
+            }
+        }
     }
 
     private func selectionIndicator(for group: JourneyGroup) -> some View {
@@ -572,782 +678,3 @@ private extension MyJourneysView {
 }
 
 private struct AlertMsg: Identifiable { let id = UUID(); let text: String }
-
-private struct PinnedDepartureUnpinButton: View {
-    let fromName: String
-    let destinationName: String
-    let onConfirm: () -> Void
-    @State private var showingConfirmation = false
-
-    var body: some View {
-        Button {
-            showingConfirmation = true
-        } label: {
-            Image(systemName: "pin.fill")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(.orange)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.borderless)
-        .accessibilityLabel("Unpin departure")
-        .accessibilityHint("Removes this pinned departure.")
-        .confirmationDialog(
-            "Remove pinned departure?",
-            isPresented: $showingConfirmation
-        ) {
-            Button("Unpin departure", role: .destructive) {
-                onConfirm()
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("This will remove the pinned \(fromName) → \(destinationName) departure.")
-        }
-    }
-}
-
-private struct PinnedJourneyUnpinButton: View {
-    let heading: String
-    let onConfirm: () -> Void
-    @State private var showingConfirmation = false
-
-    var body: some View {
-        Button {
-            showingConfirmation = true
-        } label: {
-            Image(systemName: "pin.fill")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(.orange)
-                .frame(width: 30, height: 30)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Unpin journey")
-        .accessibilityHint("Removes this pinned multi-leg journey.")
-        .confirmationDialog(
-            "Remove pinned journey?",
-            isPresented: $showingConfirmation
-        ) {
-            Button("Unpin journey", role: .destructive) {
-                onConfirm()
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("This will remove the pinned \(heading) journey.")
-        }
-    }
-}
-
-private struct PinnedDepartureLiveActivityButton: View {
-    let isActive: Bool
-    let onTap: () -> Void
-
-    var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 4) {
-                Image(systemName: isActive ? "stop.fill" : "dot.radiowaves.left.and.right")
-                Text(isActive ? "Stop" : "Start")
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(isActive ? .red : .blue)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background((isActive ? Color.red : Color.blue).opacity(0.15), in: Capsule())
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.borderless)
-        .accessibilityLabel(isActive ? "Stop Live Activity" : "Start Live Activity")
-        .accessibilityHint(isActive ? "Stops Live Activity tracking for this pinned journey." : "Starts Live Activity tracking for this pinned journey.")
-    }
-}
-
-struct PinnedJourneysView: View {
-    @EnvironmentObject var store: JourneyStore
-    @EnvironmentObject var depStore: DeparturesStore
-    @EnvironmentObject var activityMgr: LiveActivityManager
-    @StateObject private var location = LocationManagerPhone()
-    @State private var searchText: String = ""
-    @State private var debouncedSearchText: String = ""
-    @State private var debounceTask: Task<Void, Never>?
-    @FocusState private var searchFocused: Bool
-    @AppStorage("distanceVeryCloseMiles") private var veryCloseMiles: Double = 3
-    @AppStorage("distanceModeratelyCloseMiles") private var moderatelyCloseMiles: Double = 5
-
-    private struct Group: Identifiable {
-        let id = UUID()
-        let title: String
-        let items: [PinnedJourneyBucket]
-    }
-
-    private struct PinnedJourneyBucket: Identifiable {
-        let id: String
-        let heading: String
-        let pinSetID: String?
-        let isMultiLeg: Bool
-        let fromStation: Station
-        var rows: [PinnedDepartureRowItem]
-    }
-
-    fileprivate struct PinnedDepartureRowItem: Identifiable {
-        let id: String
-        let leg: Journey
-        let departure: DepartureV2
-        let metadata: PinnedDepartureMetadata
-    }
-
-    private var pinnedDepartureRows: [PinnedDepartureRowItem] {
-        var rows: [PinnedDepartureRowItem] = []
-        var seen = Set<String>()
-        for group in store.journeyGroups() {
-            for leg in group.legs {
-                for dep in depStore.departures(for: leg) where depStore.isPinned(dep, fromCRS: leg.fromStation.crs, toCRS: leg.toStation.crs) {
-                    guard let metadata = depStore.pinnedMetadata(for: dep, fromCRS: leg.fromStation.crs, toCRS: leg.toStation.crs) else { continue }
-                    let key = "\(leg.fromStation.crs.uppercased())_\(leg.toStation.crs.uppercased())_\(dep.serviceID)"
-                    if seen.insert(key).inserted {
-                        rows.append(PinnedDepartureRowItem(id: key, leg: leg, departure: dep, metadata: metadata))
-                    }
-                }
-            }
-        }
-        return rows
-    }
-
-    private var visiblePinnedDepartureRows: [PinnedDepartureRowItem] {
-        pinnedDepartureRows
-    }
-
-    private var shouldShowSearchBar: Bool {
-        visiblePinnedDepartureRows.count >= 2
-    }
-
-    private var hasEnteredSearch: Bool {
-        !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private var normalizedActiveSearchText: String {
-        debouncedSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    }
-
-    private var hasActiveSearch: Bool {
-        !normalizedActiveSearchText.isEmpty
-    }
-
-    private var filteredPinnedDepartureRows: [PinnedDepartureRowItem] {
-        visiblePinnedDepartureRows.filter(matchesSearch)
-    }
-
-    private var groupedJourneys: [Group] {
-        grouped(from: filteredPinnedDepartureRows)
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            List {
-                if groupedJourneys.allSatisfy({ $0.items.isEmpty }) {
-                    Section("Pinned Departures") {
-                        if hasActiveSearch {
-                            if #available(iOS 17.0, *) {
-                                ContentUnavailableView(
-                                    "No matches",
-                                    systemImage: "magnifyingglass",
-                                    description: Text("Try searching for another station or CRS code.")
-                                )
-                            } else {
-                                VStack(spacing: 8) {
-                                    Image(systemName: "magnifyingglass")
-                                        .font(.system(size: 34))
-                                        .foregroundStyle(.secondary)
-                                    Text("No matches")
-                                        .font(.headline)
-                                    Text("Try searching for another station or CRS code.")
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
-                                        .multilineTextAlignment(.center)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .center)
-                                .padding(.vertical, 24)
-                            }
-                        } else {
-                            if #available(iOS 17.0, *) {
-                                ContentUnavailableView(
-                                    "No pinned departures",
-                                    systemImage: "pin.slash",
-                                    description: Text("Pin a departure or multi-leg journey option from Journey Details to keep tracking it.")
-                                )
-                            } else {
-                                VStack(spacing: 8) {
-                                    Image(systemName: "pin.slash")
-                                        .font(.system(size: 34))
-                                        .foregroundStyle(.secondary)
-                                    Text("No pinned departures")
-                                        .font(.headline)
-                                    Text("Pin a departure or multi-leg journey option from Journey Details to keep tracking it.")
-                                        .font(.footnote)
-                                        .foregroundStyle(.secondary)
-                                        .multilineTextAlignment(.center)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .center)
-                                .padding(.vertical, 24)
-                            }
-                        }
-                    }
-                } else {
-                    ForEach(groupedJourneys) { group in
-                        if !group.items.isEmpty {
-                            Section(group.title) {
-                                ForEach(group.items) { bucket in
-                                    VStack(alignment: .leading, spacing: 10) {
-                                        HStack(alignment: .center, spacing: 10) {
-                                            Text(bucket.heading)
-                                                .font(.headline)
-                                                .foregroundStyle(.primary)
-                                            Spacer(minLength: 0)
-                                            PinnedDepartureLiveActivityButton(
-                                                isActive: isLiveActivityActive(for: bucket)
-                                            ) {
-                                                Task {
-                                                    await toggleLiveActivityForPinnedBucket(bucket)
-                                                }
-                                            }
-                                        }
-                                        if bucket.isMultiLeg {
-                                            HStack(spacing: 8) {
-                                                Text("Dep \(journeyDepartureLabel(for: bucket))")
-                                                Text("Arr \(journeyArrivalLabel(for: bucket))")
-                                                Spacer(minLength: 0)
-                                                if let pinSetID = bucket.pinSetID {
-                                                    PinnedJourneyUnpinButton(heading: bucket.heading) {
-                                                        depStore.unpinPinSet(pinSetID)
-                                                    }
-                                                }
-                                            }
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        }
-                                        ForEach(Array(bucket.rows.enumerated()), id: \.element.id) { index, row in
-                                            HStack(spacing: 10) {
-                                                NavigationLink(
-                                                    destination: ServiceMapView(
-                                                        serviceID: row.departure.serviceID,
-                                                        fromCRS: row.leg.fromStation.crs,
-                                                        toCRS: row.leg.toStation.crs
-                                                    )
-                                                ) {
-                                                    PinnedDepartureRowContent(
-                                                        row: row,
-                                                        showLegRoute: bucket.isMultiLeg
-                                                    )
-                                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                                }
-                                                .buttonStyle(.plain)
-
-                                                if !bucket.isMultiLeg {
-                                                    PinnedDepartureUnpinButton(
-                                                        fromName: row.leg.fromStation.name,
-                                                        destinationName: row.departure.destination.first?.locationName ?? row.leg.toStation.name
-                                                    ) {
-                                                        depStore.unpin(row.departure, fromCRS: row.leg.fromStation.crs, toCRS: row.leg.toStation.crs)
-                                                    }
-                                                }
-                                            }
-                                            if index < bucket.rows.count - 1 {
-                                                Divider()
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            if shouldShowSearchBar {
-                searchBar
-            }
-        }
-        .navigationTitle("Pinned")
-        .scrollDismissesKeyboard(.interactively)
-        .onChange(of: searchText) { value in
-            debounceTask?.cancel()
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty {
-                debouncedSearchText = ""
-                return
-            }
-            debounceTask = Task {
-                try? await Task.sleep(nanoseconds: 300_000_000)
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    debouncedSearchText = trimmed
-                }
-            }
-        }
-        .onDisappear {
-            searchFocused = false
-            debounceTask?.cancel()
-        }
-    }
-
-    private func matchesSearch(_ row: PinnedDepartureRowItem) -> Bool {
-        guard !normalizedActiveSearchText.isEmpty else { return true }
-        let destinationName = row.departure.destination.first?.locationName ?? row.leg.toStation.name
-        return row.leg.fromStation.name.lowercased().contains(normalizedActiveSearchText)
-            || row.leg.toStation.name.lowercased().contains(normalizedActiveSearchText)
-            || row.leg.fromStation.crs.lowercased().contains(normalizedActiveSearchText)
-            || row.leg.toStation.crs.lowercased().contains(normalizedActiveSearchText)
-            || destinationName.lowercased().contains(normalizedActiveSearchText)
-    }
-
-    private func activityLegsForPinnedRow(_ row: PinnedDepartureRowItem) -> [Journey] {
-        let allGroups = store.journeyGroups()
-        let group = allGroups.first { $0.id == row.leg.groupId }
-            ?? allGroups.first { g in g.legs.contains(where: { $0.id == row.leg.id }) }
-
-        return {
-            guard let group else { return [row.leg] }
-            guard let startIndex = group.legs.firstIndex(where: { $0.id == row.leg.id }) else {
-                return Array(group.legs.prefix(3))
-            }
-            let tail = Array(group.legs.dropFirst(startIndex))
-            return Array(tail.prefix(3))
-        }()
-    }
-
-    private func isLiveActivityActive(for row: PinnedDepartureRowItem) -> Bool {
-        activityMgr.isActive(for: row.leg, preferredServiceID: row.departure.serviceID)
-    }
-
-    private func isLiveActivityActive(for bucket: PinnedJourneyBucket) -> Bool {
-        bucket.rows.contains { isLiveActivityActive(for: $0) }
-    }
-
-    private func toggleLiveActivityForPinnedBucket(_ bucket: PinnedJourneyBucket) async {
-        if let activeRow = bucket.rows.first(where: { isLiveActivityActive(for: $0) }) {
-            await toggleLiveActivityForPinnedRow(activeRow)
-            return
-        }
-        guard let firstRow = bucket.rows.first else { return }
-        await toggleLiveActivityForPinnedRow(firstRow)
-    }
-
-    private func toggleLiveActivityForPinnedRow(_ row: PinnedDepartureRowItem) async {
-        let legsToTrack = activityLegsForPinnedRow(row)
-        let isSelectedPinnedServiceActive = activityMgr.isActive(for: row.leg, preferredServiceID: row.departure.serviceID)
-        let activeLegs = legsToTrack.filter { activityMgr.isActive(for: $0) }
-
-        if isSelectedPinnedServiceActive {
-            for leg in activeLegs {
-                await activityMgr.stop(for: leg)
-            }
-            let stillActive = activeLegs.filter { activityMgr.isActive(for: $0) }.count
-            let stoppedCount = activeLegs.count - stillActive
-            if stoppedCount > 0 {
-                let message = stoppedCount == 1
-                    ? "Live Activity stopped"
-                    : "Live Activity stopped for \(stoppedCount) legs"
-                ToastStore.shared.show(message, icon: "stop.fill")
-            } else {
-                ToastStore.shared.show("Unable to stop Live Activity", icon: "exclamationmark.triangle.fill")
-            }
-            return
-        }
-
-        // Always start/retarget the selected leg to this exact pinned service.
-        // For downstream legs, only start if they are not already active.
-        let legsToStart: [Journey] = legsToTrack.filter { leg in
-            if leg.id == row.leg.id { return true }
-            return !activityMgr.isActive(for: leg)
-        }
-        guard !legsToStart.isEmpty else {
-            ToastStore.shared.show("Unable to start Live Activity", icon: "exclamationmark.triangle.fill")
-            return
-        }
-
-        for leg in legsToStart {
-            let preferredServiceID = (leg.id == row.leg.id) ? row.departure.serviceID : nil
-            await activityMgr.start(
-                for: leg,
-                depStore: depStore,
-                preferredServiceID: preferredServiceID,
-                triggeredByUser: true,
-                bypassSuppression: true
-            )
-        }
-
-        let selectedNowActive = activityMgr.isActive(for: row.leg, preferredServiceID: row.departure.serviceID)
-        let downstreamStartedCount = legsToTrack
-            .filter { $0.id != row.leg.id && activityMgr.isActive(for: $0) }
-            .count
-        if selectedNowActive {
-            let totalStarted = 1 + downstreamStartedCount
-            let message = totalStarted == 1
-                ? "Live Activity started"
-                : "Live Activity started for \(totalStarted) legs"
-            ToastStore.shared.show(message, icon: "dot.radiowaves.left.and.right")
-        } else {
-            ToastStore.shared.show("Unable to start Live Activity", icon: "exclamationmark.triangle.fill")
-        }
-    }
-
-    private func distanceMiles(from coord: CLLocationCoordinate2D?, to station: Station) -> Double? {
-        guard let loc = coord else { return nil }
-        let currentLocation = CLLocation(latitude: loc.latitude, longitude: loc.longitude)
-        let d = station.distance(from: currentLocation)
-        return d / 1609.344
-    }
-
-    private func grouped(from rows: [PinnedDepartureRowItem]) -> [Group] {
-        let sorted: [PinnedDepartureRowItem]
-        if location.coordinate != nil {
-            sorted = rows.sorted { lhs, rhs in
-                let lhsMiles = distanceMiles(from: location.coordinate, to: lhs.leg.fromStation) ?? .greatestFiniteMagnitude
-                let rhsMiles = distanceMiles(from: location.coordinate, to: rhs.leg.fromStation) ?? .greatestFiniteMagnitude
-                if lhsMiles != rhsMiles { return lhsMiles < rhsMiles }
-                let fromCompare = lhs.leg.fromStation.name.localizedCaseInsensitiveCompare(rhs.leg.fromStation.name)
-                if fromCompare != .orderedSame { return fromCompare == .orderedAscending }
-                let endCompare = lhs.leg.toStation.name.localizedCaseInsensitiveCompare(rhs.leg.toStation.name)
-                if endCompare != .orderedSame { return endCompare == .orderedAscending }
-                let lhsDate = departureComparableDate(lhs.departure) ?? .distantFuture
-                let rhsDate = departureComparableDate(rhs.departure) ?? .distantFuture
-                if lhsDate != rhsDate { return lhsDate < rhsDate }
-                return lhs.id < rhs.id
-            }
-        } else {
-            sorted = rows.sorted { lhs, rhs in
-                let fromCompare = lhs.leg.fromStation.name.localizedCaseInsensitiveCompare(rhs.leg.fromStation.name)
-                if fromCompare != .orderedSame { return fromCompare == .orderedAscending }
-                let toCompare = lhs.leg.toStation.name.localizedCaseInsensitiveCompare(rhs.leg.toStation.name)
-                if toCompare != .orderedSame { return toCompare == .orderedAscending }
-                let lhsDate = departureComparableDate(lhs.departure) ?? .distantFuture
-                let rhsDate = departureComparableDate(rhs.departure) ?? .distantFuture
-                if lhsDate != rhsDate { return lhsDate < rhsDate }
-                return lhs.id < rhs.id
-            }
-        }
-
-        var byJourney: [String: PinnedJourneyBucket] = [:]
-        var journeyOrder: [String] = []
-        for row in sorted {
-            let key = journeyBucketKey(for: row)
-            if var existing = byJourney[key] {
-                existing.rows.append(row)
-                byJourney[key] = existing
-            } else {
-                journeyOrder.append(key)
-                byJourney[key] = PinnedJourneyBucket(
-                    id: key,
-                    heading: "\(row.leg.fromStation.name) → \(row.leg.toStation.name)",
-                    pinSetID: row.metadata.pinSetID,
-                    isMultiLeg: false,
-                    fromStation: row.leg.fromStation,
-                    rows: [row]
-                )
-            }
-        }
-
-        var orderedBuckets: [PinnedJourneyBucket] = journeyOrder.compactMap { byJourney[$0] }
-        orderedBuckets = orderedBuckets.map { bucket in
-            var sortedBucket = bucket
-            let isMultiLeg = sortedBucket.pinSetID != nil && sortedBucket.rows.count > 1
-
-            sortedBucket.rows.sort { lhs, rhs in
-                if isMultiLeg {
-                    let lhsIndex = legSortIndex(lhs)
-                    let rhsIndex = legSortIndex(rhs)
-                    if lhsIndex != rhsIndex { return lhsIndex < rhsIndex }
-                }
-                let lhsDate = departureComparableDate(lhs.departure) ?? .distantFuture
-                let rhsDate = departureComparableDate(rhs.departure) ?? .distantFuture
-                if lhsDate != rhsDate { return lhsDate < rhsDate }
-                return lhs.id < rhs.id
-            }
-
-            guard let first = sortedBucket.rows.first, let last = sortedBucket.rows.last else {
-                return sortedBucket
-            }
-            let heading: String = {
-                if isMultiLeg {
-                    return "\(first.leg.fromStation.name) → \(last.leg.toStation.name)"
-                }
-                return "\(first.leg.fromStation.name) → \(first.leg.toStation.name)"
-            }()
-
-            return PinnedJourneyBucket(
-                id: sortedBucket.id,
-                heading: heading,
-                pinSetID: sortedBucket.pinSetID,
-                isMultiLeg: isMultiLeg,
-                fromStation: first.leg.fromStation,
-                rows: sortedBucket.rows
-            )
-        }
-
-        var veryClose: [PinnedJourneyBucket] = []
-        var moderately: [PinnedJourneyBucket] = []
-        var far: [PinnedJourneyBucket] = []
-
-        for bucket in orderedBuckets {
-            let miles = distanceMiles(from: location.coordinate, to: bucket.fromStation) ?? .infinity
-            if miles < veryCloseMiles {
-                veryClose.append(bucket)
-            } else if miles <= moderatelyCloseMiles {
-                moderately.append(bucket)
-            } else {
-                far.append(bucket)
-            }
-        }
-
-        return [
-            Group(title: "Very close (<\(formatMiles(veryCloseMiles)) miles)", items: veryClose),
-            Group(title: "Moderately close (≤\(formatMiles(moderatelyCloseMiles)) miles)", items: moderately),
-            Group(title: "Far away (>\(formatMiles(moderatelyCloseMiles)) miles)", items: far)
-        ]
-    }
-
-    private func journeyBucketKey(for row: PinnedDepartureRowItem) -> String {
-        if let pinSetID = row.metadata.pinSetID {
-            return "pinset_\(pinSetID)"
-        }
-        return "\(row.leg.fromStation.crs.uppercased())_\(row.leg.toStation.crs.uppercased())"
-    }
-
-    private func legSortIndex(_ row: PinnedDepartureRowItem) -> Int {
-        row.metadata.journeyLegIndex ?? row.leg.legIndex
-    }
-
-    private func journeyDepartureLabel(for bucket: PinnedJourneyBucket) -> String {
-        guard let first = bucket.rows.first else { return "—" }
-        return displayDepartureTime(first.departure)
-    }
-
-    private func journeyArrivalLabel(for bucket: PinnedJourneyBucket) -> String {
-        guard let last = bucket.rows.last else { return "—" }
-        guard let details = depStore.serviceDetailsById[last.departure.serviceID] else { return "—" }
-        if let cp = details.allStations.first(where: { $0.crs == last.leg.toStation.crs }) {
-            if let et = cp.et, !et.isEmpty, et.lowercased() != "on time" { return et }
-            return cp.st
-        }
-        return "—"
-    }
-
-    private func displayDepartureTime(_ dep: DepartureV2) -> String {
-        let est = dep.departureTime.estimated.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lower = est.lowercased()
-        if est.isEmpty || lower == "delayed" || lower == "cancelled" || lower == "on time" {
-            return dep.departureTime.scheduled
-        }
-        return est
-    }
-
-    private func departureComparableDate(_ dep: DepartureV2) -> Date? {
-        parseHHmm(dep.departureTime.estimated) ?? parseHHmm(dep.departureTime.scheduled)
-    }
-
-    private func parseHHmm(_ t: String?) -> Date? {
-        guard let t = t else { return nil }
-        let lower = t.lowercased()
-        if lower == "delayed" || lower == "cancelled" || lower == "on time" { return nil }
-        let parts = t.split(separator: ":")
-        guard parts.count == 2, let h = Int(parts[0]), let m = Int(parts[1]) else { return nil }
-        let now = Date()
-        var comps = Calendar.current.dateComponents([.year, .month, .day], from: now)
-        comps.hour = h
-        comps.minute = m
-        guard var candidate = Calendar.current.date(from: comps) else { return nil }
-        if candidate < now && now.timeIntervalSince(candidate) > 6 * 3600 {
-            candidate = Calendar.current.date(byAdding: .day, value: 1, to: candidate) ?? candidate
-        }
-        return candidate
-    }
-
-    private var searchBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField("Search", text: $searchText)
-                .textInputAutocapitalization(.never)
-                .disableAutocorrection(true)
-                .font(.callout)
-                .focused($searchFocused)
-                .submitLabel(.done)
-                .onSubmit { searchFocused = false }
-            if hasEnteredSearch {
-                Button {
-                    searchText = ""
-                    debouncedSearchText = ""
-                    searchFocused = false
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                        .padding(6)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Clear search")
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(.ultraThinMaterial, in: Capsule())
-        .frame(maxWidth: UIScreen.main.bounds.width * ((hasEnteredSearch || searchFocused) ? 1.0 : 0.3))
-        .padding(.horizontal)
-        .padding(.vertical, 8)
-        .animation(.easeInOut(duration: 0.2), value: hasEnteredSearch)
-        .animation(.easeInOut(duration: 0.2), value: searchFocused)
-    }
-}
-
-private struct PinnedDepartureRowContent: View {
-    let row: PinnedJourneysView.PinnedDepartureRowItem
-    let showLegRoute: Bool
-    @EnvironmentObject var depStore: DeparturesStore
-    @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
-
-    private var isCancelledDeparture: Bool {
-        if row.departure.isCancelled { return true }
-        return row.departure.departureTime.estimated
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() == "cancelled"
-    }
-
-    private var originalScheduledLabel: String {
-        let scheduled = row.departure.departureTime.scheduled
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let value = scheduled.isEmpty ? row.departure.departureTime.estimated : scheduled
-        return "Originally scheduled for \(value)"
-    }
-
-    private var timeColor: Color {
-        colorForDelay(estimated: row.departure.departureTime.estimated, scheduled: row.departure.departureTime.scheduled)
-    }
-
-    private var isBus: Bool {
-        row.departure.serviceType.lowercased() == "bus" || (row.departure.platform?.uppercased() == "BUS")
-    }
-
-    private var destinationLabel: String {
-        if let first = row.departure.destination.first {
-            if let via = first.via, !via.isEmpty {
-                return "\(first.locationName) \(via)"
-            }
-            return first.locationName
-        }
-        return row.leg.toStation.name
-    }
-
-    private var routeLabel: String {
-        "\(row.leg.fromStation.name) → \(destinationLabel)"
-    }
-
-    private func arrivalLabel() -> String? {
-        guard let details = depStore.serviceDetailsById[row.departure.serviceID] else { return nil }
-        if let cp = details.allStations.first(where: { $0.crs == row.leg.toStation.crs }) {
-            if let et = cp.et, !et.isEmpty, et.lowercased() != "on time" { return "Arr \(et)" }
-            return "Arr \(cp.st)"
-        }
-        return nil
-    }
-
-    private func statusInfo() -> (text: String, color: Color)? {
-        if let mins = departureDelayMinutes(
-            estimated: row.departure.departureTime.estimated,
-            scheduled: row.departure.departureTime.scheduled
-        ), mins > 0 {
-            return ("Departure delayed by \(mins) minute\(mins == 1 ? "" : "s")", .yellow)
-        }
-        let estimated = row.departure.departureTime.estimated
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        if estimated == "delayed" {
-            return ("Departure status unknown at present", .yellow)
-        }
-        guard let details = depStore.serviceDetailsById[row.departure.serviceID] else { return nil }
-        if let live = computeLiveStatus(from: details, within: row.leg.fromStation.crs, toCRS: row.leg.toStation.crs) {
-            let c: Color = live.delayMinutes >= 5 ? .red : (live.delayMinutes > 0 ? .yellow : .green)
-            return (live.text, c)
-        }
-        return nil
-    }
-
-    @ViewBuilder
-    private var metaLine: some View {
-        if isCancelledDeparture {
-            Text(originalScheduledLabel)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        } else {
-            HStack(spacing: 10) {
-                if let arr = arrivalLabel() {
-                    Text(arr)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                if isBus {
-                    EmptyView()
-                } else if let l = row.departure.length, l > 0 {
-                    HStack(spacing: 4) {
-                        Text("\(l) cars")
-                        if l <= minShortTrainCars {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.yellow)
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                } else {
-                    HStack(spacing: 4) {
-                        Text("Unknown length")
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.yellow)
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(showLegRoute ? routeLabel : destinationLabel)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(alignment: .center, spacing: 8) {
-                metaLine
-                Spacer(minLength: 0)
-                HStack(spacing: 8) {
-                    if !isCancelledDeparture {
-                        PlatformBadge(
-                            platform: row.departure.platform?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-                            ? (row.departure.platform ?? "TBC")
-                            : "TBC",
-                            isBus: isBus
-                        )
-                    }
-                    Text(row.departure.departureTime.estimated)
-                        .font(.headline)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(timeColor)
-                        .monospacedDigit()
-                }
-            }
-
-            if let info = statusInfo() {
-                HStack(spacing: 6) {
-                    Circle().fill(info.color).frame(width: 8, height: 8)
-                    Text(info.text)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .multilineTextAlignment(.leading)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 2)
-            }
-        }
-        .contentShape(Rectangle())
-        .task {
-            await depStore.ensureServiceDetails(for: [row.departure.serviceID])
-        }
-    }
-}

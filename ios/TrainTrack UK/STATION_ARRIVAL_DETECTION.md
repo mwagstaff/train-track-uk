@@ -12,7 +12,8 @@ The implementation lives in [NotificationGeofenceManager.swift](./TrainTrack%20U
 
 ## Why This App Needs More Than Geofencing
 
-Simple `CLCircularRegion` entry handling was not reliable enough on its own.
+Simple region entry handling was not reliable enough on its own. The app now uses a named
+`CLMonitor`, whose condition records and last-observed states persist across launches.
 
 Practical issues:
 
@@ -30,8 +31,8 @@ For TrainTrack UK the pattern is therefore a **two-ring geofence** plus a homing
    is the failure mode the homing heuristic alone cannot cover (iOS grants only a brief wake
    after a geofence event and may re-suspend the app before it homes in, especially once the
    app has been dormant for a day or two).
-2. **Outer "approach" ring (~250m).** Wakes the app, starts continuous standard location
-   updates, and drives departure detection on exit.
+2. **Outer "approach" ring (~250m).** Wakes the app, starts a bounded precision sample,
+   and drives departure detection on exit.
 3. **Homing heuristic (secondary).** While the outer ring is active, judge arrival using
    both raw distance and the reported horizontal-accuracy envelope, with a short confirmation
    dwell before arming station-exit cleanup. This still confirms arrival when continuous
@@ -72,7 +73,7 @@ The feature prefers Always authorization for the most reliable cold-wake behavio
 - `NSLocationAlwaysAndWhenInUseUsageDescription`
 - `NSLocationTemporaryUsageDescriptionDictionary`
 - `UIBackgroundModes` includes `location`
-- `allowsBackgroundLocationUpdates = true` while monitoring is active
+- `allowsBackgroundLocationUpdates = true` only during bounded precision sampling
 
 When the app detects Reduced Accuracy on iOS 14+, it requests temporary full accuracy using:
 
@@ -89,17 +90,18 @@ This matters because Apple documents that Reduced Accuracy prevents effective re
 
 While station-arrival monitoring is active, the app uses the same two-stage tracking pattern as the dock-arrival flow in My Boris Bikes:
 
-1. Start continuous low-sensitivity location updates for the active session.
-2. Escalate to high-sensitivity updates when a region hint arrives or a location fix is plausibly within the station activation distance.
+1. Use significant-location-change monitoring as the low-power recovery path.
+2. Request a one-shot location on sync and background-push wakes.
+3. Escalate to a maximum 20-second high-sensitivity burst when a region hint arrives or a
+   location fix is plausibly within the station activation distance.
 
-The low-sensitivity profile uses:
+The low-power profile uses:
 
-- `desiredAccuracy = kCLLocationAccuracyNearestTenMeters`
-- `distanceFilter = 25`
+- significant-location-change monitoring
+- `desiredAccuracy = kCLLocationAccuracyHundredMeters` for one-shot requests
+- `distanceFilter = 100`
 - `activityType = .fitness`
-- `pausesLocationUpdatesAutomatically = false`
-- `allowsBackgroundLocationUpdates = true`
-- `showsBackgroundLocationIndicator = true`
+- `pausesLocationUpdatesAutomatically = true`
 
 The high-sensitivity confirmation profile uses:
 
@@ -109,12 +111,18 @@ The high-sensitivity confirmation profile uses:
 - `pausesLocationUpdatesAutomatically = false`
 - `allowsBackgroundLocationUpdates = true`
 - `showsBackgroundLocationIndicator = true`
+- maximum burst duration = `20s`
 
-This keeps the app alive and receiving updates in the background without running the most aggressive location profile until the user is likely close enough for arrival confirmation.
+This avoids continuous GPS use between station decisions. `CLBackgroundActivitySession` is
+held only for a precision burst, except when the user granted only When In Use authorization.
 
 ## Role Of Region Monitoring
 
-Region monitoring is still enabled, but it is not the primary detector.
+Condition monitoring is still enabled, but it is not the only detector.
+
+The app enforces Core Location's 20-condition limit. It reserves an inner/outer pair for
+each highest-priority journey before adding secondary coordinates, prioritising journeys
+awaiting departure, then nearby and soonest-expiring journeys.
 
 Current role:
 
@@ -127,10 +135,11 @@ Important rule:
 
 - region entry does not mute immediately
 
-Instead, entry and inside events:
+An inner-ring entry confirms arrival and arms departure cleanup immediately. Outer-ring entry
+and inside events:
 
-1. reconstruct the target if needed after a cold wake
-2. restart continuous tracking if required
+1. resolve the persisted local target
+2. start a bounded precision burst if required
 3. record a region hint
 4. re-run the same arrival heuristic against the latest usable location
 
@@ -206,13 +215,15 @@ The dwell is still short because long dwells tend to increase missed arrivals mo
 
 ## Cold-Wake Behavior
 
-`CLLocationManager` persists monitored regions across launches, but the in-memory target list does not.
+`CLMonitor` persists condition records across launches. TrainTrack also persists the matching
+route and station target locally so a cold wake never needs the stations API before recording
+an arrival or departure.
 
-Because of that, TrainTrack UK reconstructs a temporary monitoring target from the region identifier on region entry / inside callbacks. The app then:
+On launch, the app then:
 
-1. resolves the starting station from the CRS code
-2. restarts continuous tracking
-3. evaluates the latest usable location immediately when available
+1. restores persisted targets from the app-group store
+2. promptly recreates the Always service session and named monitor event sequence
+3. starts the low-power recovery path and evaluates the latest usable location when available
 
 This makes region events useful even when the app process was previously dead.
 
@@ -224,9 +235,9 @@ When a journey-updates session becomes geofence-eligible:
 2. build monitored targets from active live sessions
 3. request Always authorization if needed
 4. request temporary full accuracy if the app is active and accuracy is reduced
-5. start continuous location updates
-6. start region monitoring for the same targets
-7. request region state immediately for the "already inside" case
+5. start significant-change monitoring and request one current location
+6. add prioritized `CLMonitor` conditions within the 20-condition budget
+7. assume outside when adding a new condition so an already-inside correction produces an event
 
 ## Each Location Update
 
@@ -244,8 +255,8 @@ For each new `CLLocation`:
 
 When all monitored live sessions disappear:
 
-1. stop continuous location updates
-2. stop region monitoring for removed targets
+1. stop significant-change and precision location updates
+2. remove obsolete monitor conditions
 3. invalidate the background activity session if nothing remains
 4. clear in-memory confirmation state
 
@@ -273,6 +284,11 @@ These are the active values in `NotificationGeofenceManager`:
 - region-hint dwell: `4s`
 - confirmation timeout: `150s`
 - reset hysteresis: `20m`
+- precision sampling burst: at most `20s`
+- departure fallback: accuracy envelope at least `50m` beyond the `250m` outer radius
+- departure confirmation dwell: `6s`
+- persisted departure-state lifetime: `4h`
+- maximum monitored conditions: `20` (two per station coordinate)
 
 ## Tuning Guidance
 
@@ -305,11 +321,9 @@ depth for the residual cases where even the inner ring's entry event is delayed 
 (iOS region events are best-effort):
 
 1. **Background-wake re-check** (`refreshArrivalFromBackgroundWake`) — every background push
-   wake (Live Activity / journey-update push, via `didReceiveRemoteNotification`) is used as
-   a fresh chance to re-sample location and complete an in-flight arrival confirmation. It
-   runs a short high-sensitivity sampling burst (held alive by a background-task token) so
-   the dwell-based confirmation can complete even if the post-geofence continuous tracking
-   was suspended, then downgrades back to the low-power profile.
+   requests a fresh location even when no entry event was observed, recovering completely
+   missed entries. After arrival, the same path conservatively confirms a missed exit when
+   `distance - accuracy` remains at least 50m beyond the outer radius for 6 seconds.
 
 2. **Missed-arrival health notification** — when the user **enters** the origin geofence we
    set a pending-arrival marker (`NotificationMuteStorage.markArrivalDetectionPending`),
@@ -333,7 +347,8 @@ depth for the residual cases where even the inner ring's entry event is delayed 
 - [`CLLocationManager.pausesLocationUpdatesAutomatically`](https://developer.apple.com/documentation/corelocation/cllocationmanager/pauseslocationupdatesautomatically)
 - [`CLLocationManager.accuracyAuthorization`](https://developer.apple.com/documentation/corelocation/cllocationmanager/accuracyauthorization)
 - [`CLLocationManager.requestTemporaryFullAccuracyAuthorization(withPurposeKey:)`](https://developer.apple.com/documentation/corelocation/cllocationmanager/requesttemporaryfullaccuracyauthorization(withpurposekey:))
-- [`CLLocationManager.startMonitoring(for:)`](https://developer.apple.com/documentation/corelocation/cllocationmanager/startmonitoring(for:))
+- [`CLMonitor`](https://developer.apple.com/documentation/corelocation/clmonitor-2r51v)
+- [`CLBackgroundActivitySession`](https://developer.apple.com/documentation/corelocation/clbackgroundactivitysession-3mzv3)
 
 ## Short Version
 

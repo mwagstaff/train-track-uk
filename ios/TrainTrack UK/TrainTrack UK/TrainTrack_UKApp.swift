@@ -53,8 +53,6 @@ struct TrainTrackUKApp: App {
                         depStore: DeparturesStore.shared
                     )
                 }
-                DeparturesStore.shared.runPinnedCleanupImmediately()
-
                 // Refresh server-side config (subscription limits etc.) so the client
                 // stays in sync without requiring an app update.
                 Task {

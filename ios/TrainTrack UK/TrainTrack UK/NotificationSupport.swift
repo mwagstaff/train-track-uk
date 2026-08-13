@@ -94,11 +94,14 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
             category: "Scheduled"
         )
         _ = LiveActivityManager.shared
-        // If relaunched in background to deliver a region event, ensure the
-        // geofence manager's CLLocationManager is initialised before iOS
-        // delivers the queued CLLocationManagerDelegate callbacks.
-        if launchOptions?[.location] != nil {
-            _ = NotificationGeofenceManager.shared
+        // Recreate the location authorization/session state promptly on every launch.
+        // Core Location only preserves a terminated app's service-session intent for a
+        // short grace period, and a location launch must not wait for a network refresh.
+        let locationLaunch = launchOptions?[.location] != nil
+        Task { @MainActor in
+            await NotificationGeofenceManager.shared.restoreAfterLaunch(
+                trigger: locationLaunch ? "location" : "application"
+            )
         }
         return true
     }

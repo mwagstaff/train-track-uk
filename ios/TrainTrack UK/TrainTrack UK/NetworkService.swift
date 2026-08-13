@@ -240,6 +240,7 @@ final class NetworkServicePhone {
         let path = ids.joined(separator: "/")
         guard let url = URL(string: "\(base)/service_details/\(path)") else { throw PhoneNetworkError.invalidURL }
         var request = URLRequest(url: url)
+        request.timeoutInterval = 10
         request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
         let (data, _) = try await URLSession.shared.data(for: request)
         let arrAny = try JSONSerialization.jsonObject(with: data, options: [])

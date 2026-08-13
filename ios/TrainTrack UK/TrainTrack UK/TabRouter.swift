@@ -2,7 +2,6 @@ import Foundation
 import Combine
 
 enum Tab: Hashable {
-    case pinned
     case favourites
     case myJourneys
     case addJourney

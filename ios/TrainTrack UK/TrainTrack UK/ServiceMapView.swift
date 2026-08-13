@@ -10,35 +10,128 @@ struct ServiceMapView: View {
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
 
     @State private var timer = Timer.publish(every: 20, on: .main, in: .common).autoconnect()
+    @State private var retryClock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     @State private var currentIndex: Double = -1
+    @State private var hasFinishedInitialLoad = false
+    @State private var isRetrying = false
+    @State private var retryAttempt = 0
+    @State private var nextRetryAt: Date?
+    @State private var currentTime = Date()
+    @State private var loadRequestID = UUID()
+
+    private var hasCallingPoints: Bool {
+        !stations().isEmpty
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
-            VStack(spacing: 0) {
-                // Static header pinned at top
-                headerView
-                    .background(.ultraThinMaterial)
-                Divider()
-                ScrollView {
-                    stationsList
-                        .padding(.vertical, 12)
-                        .onAppear {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                                if let anchor = anchorIDForScroll() { withAnimation { proxy.scrollTo(anchor, anchor: .center) } }
+            Group {
+                if hasCallingPoints {
+                    VStack(spacing: 0) {
+                        // Static header pinned at top
+                        headerView
+                            .background(.ultraThinMaterial)
+                        Divider()
+                        ScrollView {
+                            stationsList
+                                .padding(.vertical, 12)
+                                .onAppear {
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                        if let anchor = anchorIDForScroll() {
+                                            withAnimation { proxy.scrollTo(anchor, anchor: .center) }
+                                        }
+                                    }
+                                }
+                        }
+                    }
+                } else if !hasFinishedInitialLoad {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("Loading service information…")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ContentUnavailableView {
+                        Label("Service information unavailable", systemImage: "tram.fill")
+                    } description: {
+                        VStack(spacing: 8) {
+                            Text("National Rail has not provided calling-point data for this train.")
+                            if isRetrying {
+                                HStack(spacing: 6) {
+                                    ProgressView()
+                                    Text(retryStatusText)
+                                }
                             }
                         }
+                    } actions: {
+                        Button("Try again now") {
+                            loadRequestID = UUID()
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .navigationTitle(routeTitle())
+            .navigationTitle(hasCallingPoints ? routeTitle() : "Service map")
             .onReceive(timer) { _ in
-                Task { await depStore.ensureServiceDetails(for: [serviceID], force: true) }
-                recalcCurrentIndex()
+                guard hasCallingPoints else { return }
+                Task {
+                    await depStore.ensureServiceDetails(for: [serviceID], force: true)
+                    recalcCurrentIndex()
+                }
             }
-            .onAppear {
-                Task { await depStore.ensureServiceDetails(for: [serviceID], force: true) }
-                recalcCurrentIndex()
+            .onReceive(retryClock) { now in
+                currentTime = now
+            }
+            .task(id: loadRequestID) {
+                await loadServiceDetails()
             }
         }
+    }
+
+    private func loadServiceDetails() async {
+        var attempt = 0
+        repeat {
+            attempt += 1
+            retryAttempt = attempt
+            nextRetryAt = nil
+            let receivedCallingPoints = await depStore.ensureServiceDetails(for: [serviceID], force: true)
+            recalcCurrentIndex()
+            hasFinishedInitialLoad = true
+
+            if receivedCallingPoints && hasCallingPoints {
+                isRetrying = false
+                nextRetryAt = nil
+                return
+            }
+
+            isRetrying = true
+            let delay = retryDelay(for: attempt)
+            nextRetryAt = Date().addingTimeInterval(delay)
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+        } while !Task.isCancelled
+    }
+
+    private func retryDelay(for attempt: Int) -> TimeInterval {
+        switch attempt {
+        case 1: return 5
+        case 2: return 10
+        default: return 20
+        }
+    }
+
+    private var retryStatusText: String {
+        guard let nextRetryAt else {
+            return "Checking National Rail for service information…"
+        }
+        let seconds = max(1, Int(ceil(nextRetryAt.timeIntervalSince(currentTime))))
+        return "National Rail data unavailable — retry \(retryAttempt + 1) in \(seconds)s"
     }
 
     // MARK: - Header

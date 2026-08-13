@@ -41,13 +41,6 @@
 			remoteGlobalIDString = E75AE1382F3272D200591535;
 			remoteInfo = NotificationServiceExtension;
 		};
-		E7BD08112ED8A1D6009FAC62 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = E7186E232EBAB5E70038C96B /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = E7BD07FF2ED8A1D5009FAC62;
-			remoteInfo = "Live ActivityExtension";
-		};
 		E7D479F82EBB4B11002D81D7 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = E7186E232EBAB5E70038C96B /* Project object */;
@@ -773,11 +766,6 @@
 			target = E75AE1382F3272D200591535 /* NotificationServiceExtension */;
 			targetProxy = E75AE13E2F3272D200591535 /* PBXContainerItemProxy */;
 		};
-		E7BD08122ED8A1D6009FAC62 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = E7BD07FF2ED8A1D5009FAC62 /* Live ActivityExtension */;
-			targetProxy = E7BD08112ED8A1D6009FAC62 /* PBXContainerItemProxy */;
-		};
 		E7D479F92EBB4B11002D81D7 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = E7D479E32EBB4B10002D81D7 /* Phone WidgetExtension */;
@@ -1013,7 +1001,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = SJ8X4DLAN9;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.TrainTrack-UKTests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -1035,7 +1023,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = SJ8X4DLAN9;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "dev.skynolimit.TrainTrack-UKTests";
 				PRODUCT_NAME = "$(TARGET_NAME)";

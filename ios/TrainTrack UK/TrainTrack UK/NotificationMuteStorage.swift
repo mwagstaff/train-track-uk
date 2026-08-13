@@ -1,6 +1,6 @@
 import Foundation
 
-enum NotificationMuteStorage {
+nonisolated enum NotificationMuteStorage {
     static let suiteName = "group.dev.skynolimit.traintrack"
     private static let mutedLegsKey = "mutedLegsToday"
     private static let mutedLegsAtKey = "mutedLegsTodayAt"
@@ -8,6 +8,7 @@ enum NotificationMuteStorage {
     private static let pendingArrivalDetectionKey = "pendingArrivalDetection"
     private static let pendingArrivalDetectionAtKey = "pendingArrivalDetectionAt"
     private static let pendingStationDepartureCleanupKey = "pendingStationDepartureCleanup"
+    private static let pendingStationDepartureCleanupAtKey = "pendingStationDepartureCleanupAt"
     private static let pendingMuteRequestsKey = "pendingMuteRequests"
 
     struct PendingMuteRequest: Codable, Identifiable {
@@ -18,6 +19,8 @@ enum NotificationMuteStorage {
         let dateKey: String
         let delayMinutes: Int
         let reason: String
+        let transition: String?
+        let detectionSource: String?
         let createdAt: Date
         var attempts: Int
         var lastAttemptAt: Date?
@@ -98,7 +101,7 @@ enum NotificationMuteStorage {
     }
 
     @discardableResult
-    static func markPendingStationDepartureCleanup(from: String, to: String) -> String {
+    static func markPendingStationDepartureCleanup(from: String, to: String, at date: Date = Date()) -> String {
         guard let sharedDefaults = UserDefaults(suiteName: suiteName) else {
             return currentDateKey()
         }
@@ -108,30 +111,60 @@ enum NotificationMuteStorage {
         var pending = sharedDefaults.dictionary(forKey: pendingStationDepartureCleanupKey) as? [String: String] ?? [:]
         pending[key] = dateKey
         sharedDefaults.set(pending, forKey: pendingStationDepartureCleanupKey)
+
+        var pendingAt = sharedDefaults.dictionary(forKey: pendingStationDepartureCleanupAtKey) as? [String: String] ?? [:]
+        pendingAt[key] = ISO8601DateFormatter().string(from: date)
+        sharedDefaults.set(pendingAt, forKey: pendingStationDepartureCleanupAtKey)
         return dateKey
     }
 
-    static func hasPendingStationDepartureCleanup(from: String, to: String, dateKey: String? = nil) -> Bool {
+    static func hasPendingStationDepartureCleanup(
+        from: String,
+        to: String,
+        dateKey: String? = nil,
+        now: Date = Date()
+    ) -> Bool {
         guard let sharedDefaults = UserDefaults(suiteName: suiteName) else { return false }
         guard let pending = sharedDefaults.dictionary(forKey: pendingStationDepartureCleanupKey) as? [String: String] else { return false }
         let key = legKey(from: from, to: to)
-        let today = dateKey ?? currentDateKey()
-        return pending[key] == today
+        guard pending[key] != nil else { return false }
+
+        if let iso = (sharedDefaults.dictionary(forKey: pendingStationDepartureCleanupAtKey) as? [String: String])?[key],
+           let recordedAt = ISO8601DateFormatter().date(from: iso) {
+            return StationDetectionPolicy.isPersistedStateCurrent(recordedAt: recordedAt, now: now)
+        }
+
+        // Legacy records did not have a timestamp. Keep today's record valid so an update
+        // does not strand an already-armed journey, then replace it on the next arrival.
+        return pending[key] == (dateKey ?? currentDateKey())
     }
 
     @discardableResult
-    static func consumePendingStationDepartureCleanup(from: String, to: String, dateKey: String? = nil) -> Bool {
+    static func consumePendingStationDepartureCleanup(
+        from: String,
+        to: String,
+        dateKey: String? = nil,
+        now: Date = Date()
+    ) -> Bool {
         guard let sharedDefaults = UserDefaults(suiteName: suiteName) else { return false }
         let key = legKey(from: from, to: to)
-        let today = dateKey ?? currentDateKey()
         guard var pending = sharedDefaults.dictionary(forKey: pendingStationDepartureCleanupKey) as? [String: String],
-              pending[key] == today else {
+              pending[key] != nil else {
             return false
+        }
+
+        let isCurrent: Bool
+        if let iso = (sharedDefaults.dictionary(forKey: pendingStationDepartureCleanupAtKey) as? [String: String])?[key],
+           let recordedAt = ISO8601DateFormatter().date(from: iso) {
+            isCurrent = StationDetectionPolicy.isPersistedStateCurrent(recordedAt: recordedAt, now: now)
+        } else {
+            isCurrent = pending[key] == (dateKey ?? currentDateKey())
         }
 
         pending.removeValue(forKey: key)
         sharedDefaults.set(pending, forKey: pendingStationDepartureCleanupKey)
-        return true
+        removePendingStationDepartureTimestamp(key: key, defaults: sharedDefaults)
+        return isCurrent
     }
 
     static func clearPendingStationDepartureCleanup(from: String, to: String) {
@@ -140,6 +173,14 @@ enum NotificationMuteStorage {
         if var pending = sharedDefaults.dictionary(forKey: pendingStationDepartureCleanupKey) as? [String: String] {
             pending.removeValue(forKey: key)
             sharedDefaults.set(pending, forKey: pendingStationDepartureCleanupKey)
+        }
+        removePendingStationDepartureTimestamp(key: key, defaults: sharedDefaults)
+    }
+
+    private static func removePendingStationDepartureTimestamp(key: String, defaults: UserDefaults) {
+        if var pendingAt = defaults.dictionary(forKey: pendingStationDepartureCleanupAtKey) as? [String: String] {
+            pendingAt.removeValue(forKey: key)
+            defaults.set(pendingAt, forKey: pendingStationDepartureCleanupAtKey)
         }
     }
 
@@ -156,7 +197,9 @@ enum NotificationMuteStorage {
         to: String,
         dateKey: String,
         delayMinutes: Int,
-        reason: String
+        reason: String,
+        transition: String? = nil,
+        detectionSource: String? = nil
     ) -> PendingMuteRequest? {
         guard let sharedDefaults = UserDefaults(suiteName: suiteName) else { return nil }
         let id = pendingMuteRequestId(
@@ -181,6 +224,8 @@ enum NotificationMuteStorage {
             dateKey: dateKey,
             delayMinutes: delayMinutes,
             reason: reason,
+            transition: transition,
+            detectionSource: detectionSource,
             createdAt: Date(),
             attempts: 0,
             lastAttemptAt: nil,

@@ -86,25 +86,34 @@ To view debug logs on your device without Xcode:
 
 ## How It Works
 
-### When you arrive at a station:
+### When you arrive at and leave a station:
 
-1. **Geofence triggers** (`NotificationGeofenceManager`)
-   - iOS detects entry into 250m radius around station
-   - Logs: "Entered region: tt_notify_mute:..."
+1. **Arrival is armed** (`NotificationGeofenceManager`)
+   - iOS detects the inner-station condition or confirms proximity from location samples
+   - Journey notifications remain active until departure
 
 2. **Local mute tracking**
    - Writes to shared UserDefaults: `mutedLegsToday[KTH-VIC] = "2026-02-03"`
    - This allows the extension to filter notifications immediately
    - Logs: "Marked leg KTH-VIC as muted locally"
 
-3. **Send arrival notification**
-   - Shows user confirmation: "Arrived at Kent House"
+3. **Send departure notification**
+   - Shows one confirmation: "You've left Kent House station. Enjoy your journey!"
 
 4. **Backend mute request**
    - Background URLSession sends POST to `/notifications/terminate`
-   - Payload includes subscription ID, station codes, and date
+   - Payload includes subscription ID, station codes, date, `transition`, and `detection_source`
    - Logs: "Sending mute request: {...}"
    - Response logged with status code
+
+The semantic transition and its detector are deliberately separate:
+
+- `transition: "station_exit"` determines mute and notification behavior
+- `detection_source: "geofence" | "location_fallback"` records how departure was detected
+- `reason: "station_exit"` remains in the payload for compatibility with older API versions
+
+The API also maps the legacy `reason: "location_exit_fallback"` to `station_exit`, so already
+installed app builds receive the departure notification after the server is updated.
 
 5. **Future notifications filtered**
    - Backend checks `isMutedToday()` before sending (if mute succeeded)
