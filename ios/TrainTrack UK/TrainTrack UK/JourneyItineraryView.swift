@@ -379,7 +379,9 @@ struct JourneyItineraryView: View {
                 ServiceMapView(
                     serviceID: departure.serviceID,
                     fromCRS: leg.journey.fromStation.crs,
-                    toCRS: leg.journey.toStation.crs
+                    toCRS: leg.journey.toStation.crs,
+                    departureTime: JourneyItineraryBuilder.departureDisplayTime(departure),
+                    destinationName: leg.journey.toStation.name
                 )
             } label: {
                 serviceRowContent(leg, departure: departure, index: index)

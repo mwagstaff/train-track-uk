@@ -37,7 +37,7 @@ struct MyJourneysView: View {
         JourneySortMode(rawValue: journeySortModeRaw) ?? .distance
     }
 
-    private let longPressDuration: Double = 0.2
+    private let longPressDuration: Double = 0.5
     private let longPressDistance: CGFloat = 20
 
     private var normalizedActiveSearchText: String {
@@ -547,7 +547,7 @@ private extension MyJourneysView {
             .buttonStyle(.plain)
         } else {
             rowContent(for: group)
-            .highPriorityGesture(
+            .simultaneousGesture(
                 LongPressGesture(minimumDuration: longPressDuration, maximumDistance: longPressDistance)
                     .onEnded { _ in startSelection(with: group) }
             )
@@ -588,7 +588,9 @@ private extension MyJourneysView {
                         cardDestination = .service(
                             serviceID: departure.serviceID,
                             fromCRS: leg.fromStation.crs,
-                            toCRS: leg.toStation.crs
+                            toCRS: leg.toStation.crs,
+                            departureTime: JourneyItineraryBuilder.departureDisplayTime(departure),
+                            destinationName: leg.toStation.name
                         )
                     }
                 },
@@ -629,8 +631,14 @@ private extension MyJourneysView {
     @ViewBuilder
     private func cardDestinationView(_ destination: JourneyCardNavigationDestination) -> some View {
         switch destination {
-        case .service(let serviceID, let fromCRS, let toCRS):
-            ServiceMapView(serviceID: serviceID, fromCRS: fromCRS, toCRS: toCRS)
+        case .service(let serviceID, let fromCRS, let toCRS, let departureTime, let destinationName):
+            ServiceMapView(
+                serviceID: serviceID,
+                fromCRS: fromCRS,
+                toCRS: toCRS,
+                departureTime: departureTime,
+                destinationName: destinationName
+            )
                 .onAppear { searchFocused = false }
         case .itinerary(let group, let firstDeparture):
             JourneyItineraryView(group: group, firstDeparture: firstDeparture)

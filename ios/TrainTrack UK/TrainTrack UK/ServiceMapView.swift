@@ -5,6 +5,8 @@ struct ServiceMapView: View {
     let serviceID: String
     let fromCRS: String
     let toCRS: String
+    let departureTime: String
+    let destinationName: String
 
     @EnvironmentObject var depStore: DeparturesStore
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
@@ -54,7 +56,7 @@ struct ServiceMapView: View {
                         Label("Service information unavailable", systemImage: "tram.fill")
                     } description: {
                         VStack(spacing: 8) {
-                            Text("National Rail has not provided calling-point data for this train.")
+                            Text("National Rail calling-point data can't be found for this train.")
                             if isRetrying {
                                 HStack(spacing: 6) {
                                     ProgressView()
@@ -71,7 +73,7 @@ struct ServiceMapView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .navigationTitle(hasCallingPoints ? routeTitle() : "Service map")
+            .navigationTitle("\(departureTime) to \(destinationName)")
             .onReceive(timer) { _ in
                 guard hasCallingPoints else { return }
                 Task {

@@ -67,6 +67,33 @@ struct TrainTrack_UKTests {
         #expect(JourneyCardPresentation.defaultDepartureCount(journeyCount: 6) == 3)
     }
 
+    @Test func singleLegJourneyCardsKeepCancelledDeparturesVisible() {
+        let groupID = UUID()
+        let directJourney = journey(
+            groupID: groupID,
+            index: 0,
+            from: station(crs: "KTH", name: "Kent House"),
+            to: station(crs: "VIC", name: "London Victoria")
+        )
+        let cancelledDeparture = departure(
+            at: "20:42",
+            serviceID: "cancelled-direct-service",
+            isCancelled: true
+        )
+        let itinerary = JourneyItineraryBuilder.build(
+            group: JourneyGroup(id: groupID, legs: [directJourney]),
+            firstDeparture: cancelledDeparture,
+            departuresForJourney: { _ in [cancelledDeparture] },
+            serviceDetailsByID: [:]
+        )
+
+        #expect(!itinerary.hasServicesForAllLegs)
+        #expect(JourneyCardPresentation.shouldDisplaySummary(
+            legCount: 1,
+            hasServicesForAllLegs: itinerary.hasServicesForAllLegs
+        ))
+    }
+
     @Test func journeyCardRelativeDepartureLabelsRoundUpToTheNextMinute() {
         let now = Date(timeIntervalSince1970: 1_000)
 

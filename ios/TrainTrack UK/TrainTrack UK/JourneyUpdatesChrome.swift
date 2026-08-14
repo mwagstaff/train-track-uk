@@ -30,6 +30,10 @@ struct JourneyUpdatesChrome: ViewModifier {
         )
     }
 
+    private var bottomBannerSpacing: CGFloat {
+        holidayMode.isEnabled || activeJourneyUpdatesBanner != nil ? 16 : 0
+    }
+
     func body(content: Content) -> some View {
         content
             .safeAreaInset(edge: .top, spacing: 0) {
@@ -41,7 +45,7 @@ struct JourneyUpdatesChrome: ViewModifier {
                         .padding(.horizontal, 16)
                 }
             }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
+            .safeAreaInset(edge: .bottom, spacing: bottomBannerSpacing) {
                 if holidayMode.isEnabled || activeJourneyUpdatesBanner != nil {
                     VStack(spacing: 8) {
                         if holidayMode.isEnabled {

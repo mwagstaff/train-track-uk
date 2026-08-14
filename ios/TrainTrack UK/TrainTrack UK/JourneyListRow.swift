@@ -5,6 +5,10 @@ enum JourneyCardPresentation {
         journeyCount == 1 ? 5 : 3
     }
 
+    static func shouldDisplaySummary(legCount: Int, hasServicesForAllLegs: Bool) -> Bool {
+        legCount == 1 || hasServicesForAllLegs
+    }
+
     static func relativeDepartureLabel(departure: Date, now: Date = Date()) -> String {
         let seconds = departure.timeIntervalSince(now)
         guard seconds > 0 else { return "Due" }
@@ -38,12 +42,18 @@ enum JourneyCardPresentation {
 }
 
 enum JourneyCardNavigationDestination: Hashable, Identifiable {
-    case service(serviceID: String, fromCRS: String, toCRS: String)
+    case service(
+        serviceID: String,
+        fromCRS: String,
+        toCRS: String,
+        departureTime: String,
+        destinationName: String
+    )
     case itinerary(group: JourneyGroup, firstDeparture: DepartureV2)
 
     var id: String {
         switch self {
-        case .service(let serviceID, let fromCRS, let toCRS):
+        case .service(let serviceID, let fromCRS, let toCRS, _, _):
             return "service-\(serviceID)-\(fromCRS)-\(toCRS)"
         case .itinerary(let group, let firstDeparture):
             return "itinerary-\(group.id)-\(firstDeparture.serviceID)"
@@ -422,7 +432,10 @@ struct JourneyCard: View {
             departuresForJourney: depStore.departures(for:),
             serviceDetailsByID: depStore.serviceDetailsById
         )
-        guard itinerary.hasServicesForAllLegs else { return nil }
+        guard JourneyCardPresentation.shouldDisplaySummary(
+            legCount: group.legs.count,
+            hasServicesForAllLegs: itinerary.hasServicesForAllLegs
+        ) else { return nil }
 
         return Summary(
             firstLeg: firstLeg,

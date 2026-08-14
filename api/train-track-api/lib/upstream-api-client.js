@@ -130,11 +130,23 @@ async function waitForRequestSpacing(url) {
     }
 }
 
-export async function getWithRetry({ api, operation, url, headers = {} }) {
+export async function getWithRetry({
+    api,
+    operation,
+    url,
+    headers = {},
+    maxRetries = DEFAULT_MAX_RETRIES,
+    timeoutMs = DEFAULT_TIMEOUT_MS
+}) {
     const method = 'GET';
-    const retries = Number.isFinite(DEFAULT_MAX_RETRIES) && DEFAULT_MAX_RETRIES >= 0
-        ? Math.trunc(DEFAULT_MAX_RETRIES)
+    const configuredRetries = Number(maxRetries);
+    const retries = Number.isFinite(configuredRetries) && configuredRetries >= 0
+        ? Math.trunc(configuredRetries)
         : 3;
+    const configuredTimeoutMs = Number(timeoutMs);
+    const requestTimeoutMs = Number.isFinite(configuredTimeoutMs) && configuredTimeoutMs > 0
+        ? configuredTimeoutMs
+        : 8000;
 
     let attempt = 0;
 
@@ -142,7 +154,7 @@ export async function getWithRetry({ api, operation, url, headers = {} }) {
         await waitForRequestSpacing(url);
         const startedAt = Date.now();
         try {
-            const response = await client.get(url, { headers });
+            const response = await client.get(url, { headers, timeout: requestTimeoutMs });
             recordUpstreamApiRequest({
                 api,
                 operation,

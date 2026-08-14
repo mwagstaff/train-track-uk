@@ -1,6 +1,8 @@
 import { getWithRetry } from './upstream-api-client.js';
 import { testServiceHarness } from './test-service-harness.js';
 
+const SERVICE_DETAILS_TIMEOUT_MS = 3000;
+
 // Fetches data from the service details API
 export async function getServiceDetails(serviceId) {
     const testDetails = testServiceHarness.getServiceDetails(serviceId);
@@ -15,6 +17,8 @@ export async function getServiceDetails(serviceId) {
             api: 'rail_service_details',
             operation: 'get_service_details',
             url,
+            maxRetries: 0,
+            timeoutMs: SERVICE_DETAILS_TIMEOUT_MS,
             headers: {
                 'x-apikey': process.env.SERVICE_DETAILS_API_KEY
             }

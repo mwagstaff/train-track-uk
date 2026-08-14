@@ -6,6 +6,7 @@ import { recordNotificationEvent } from './admin-data-store.js';
 import { getDeviceLastSeen } from './metrics.js';
 import { notificationSubscriptionManager } from './notification-subscription-manager.js';
 import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
+import { minutesUntilDeparture } from './live-activity-departure-order.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.LIVE_ACTIVITY_POLL_INTERVAL_SECONDS || '20');
 const DEFAULT_END_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_END_AFTER_SECONDS || '7200'); // default 2 hours
@@ -757,23 +758,20 @@ class LiveActivityManager {
         // i.e. still 1 hour away, so it never gets filtered out).
         const nowMinutes = this.currentLondonMinutes();
         const gracePeriodMinutes = 1;
+        const departureOffset = (dep) => {
+            const timeStr = this.getTimeString(dep.estimated, dep.scheduled, dep.scheduled || '');
+            return minutesUntilDeparture(timeStr, nowMinutes);
+        };
 
         return departures
             .filter((dep) => dep.scheduled || dep.estimated)
             .filter((dep) => {
-                const timeStr = this.getTimeString(dep.estimated, dep.scheduled, dep.scheduled || '');
-                const depMinutes = this.timeStringToMinutes(timeStr);
-                if (depMinutes === null) return false;
-                // Handle post-midnight wrap: if the departure appears >720 min
-                // behind the current time, it is almost certainly a next-day
-                // service — keep it rather than filtering it out.
-                const diff = depMinutes - nowMinutes;
-                if (diff < -720) return true;
-                return depMinutes > (nowMinutes - gracePeriodMinutes);
+                const diff = departureOffset(dep);
+                return diff !== null && diff > -gracePeriodMinutes;
             })
             .sort((a, b) => {
-                const timeA = this.timeStringToMinutes(this.getTimeString(a.estimated, a.scheduled, a.scheduled || '')) ?? Infinity;
-                const timeB = this.timeStringToMinutes(this.getTimeString(b.estimated, b.scheduled, b.scheduled || '')) ?? Infinity;
+                const timeA = departureOffset(a) ?? Infinity;
+                const timeB = departureOffset(b) ?? Infinity;
                 return timeA - timeB;
             });
     }

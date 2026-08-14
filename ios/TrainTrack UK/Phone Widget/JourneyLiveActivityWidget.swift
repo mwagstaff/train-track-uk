@@ -9,7 +9,6 @@ import ActivityKit
 import WidgetKit
 import SwiftUI
 import JourneyActivityShared
-import UIKit
 
 struct Live_ActivityLiveActivity: Widget {
     private func deepLinkURL(for context: ActivityViewContext<JourneyActivityAttributes>) -> URL? {
@@ -93,11 +92,7 @@ struct Live_ActivityLiveActivity: Widget {
                     .padding(.horizontal, 8)
                 }
             } compactLeading: {
-                HStack(spacing: 4) {
-                    Image(systemName: "train.side.front.car")
-                        .font(.caption2)
-                    PlatformPill(platform: context.state.platform, font: .caption, horizontalPadding: 6, verticalPadding: 1.5)
-                }
+                PlatformPill(platform: context.state.platform, font: .caption, horizontalPadding: 6, verticalPadding: 1.5)
             } compactTrailing: {
                 PrimaryDepartureTimeText(
                     state: context.state,
@@ -105,8 +100,7 @@ struct Live_ActivityLiveActivity: Widget {
                     weight: .semibold
                 )
             } minimal: {
-                Image(systemName: "train.side.front.car")
-                    .font(.caption2)
+                PlatformPill(platform: context.state.platform, font: .caption2, horizontalPadding: 5, verticalPadding: 1)
             }
             .keylineTint(primaryAccentColor(for: context.state))
             .widgetURL(deepLinkURL(for: context))
@@ -137,17 +131,13 @@ struct LiveActivityLockScreenView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            // Header with journey name
-            HStack {
-                Image(systemName: "train.side.front.car")
-                    .font(.headline)
-                Text(routeTitle)
-                    .font(.headline)
-                    .fontWeight(.semibold)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Spacer()
-            }
+            Text(routeTitle)
+                .font(.headline)
+                .fontWeight(.semibold)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .multilineTextAlignment(.center)
 
             // Main departure info
             HStack(alignment: .top, spacing: 12) {
@@ -458,21 +448,6 @@ private func formatLastUpdated(_ date: Date) -> String {
     return formatter.string(from: date)
 }
 
-
-// Resolve the live activity icon with extra logging to catch bundle/name issues.
-private func resolvedIconImage() -> Image? {
-    if let uiImage = UIImage(named: "LiveActivityIcon") {
-        return Image(uiImage: uiImage)
-    }
-    // Extra fallback: look up in the bundle by path and log once.
-    if let path = Bundle.main.path(forResource: "LiveActivityIcon", ofType: "png"),
-       let uiImage = UIImage(contentsOfFile: path) {
-        print("✅ [LiveActivity] Loaded LiveActivityIcon via path lookup")
-        return Image(uiImage: uiImage)
-    }
-    print("⚠️ [LiveActivity] LiveActivityIcon not found in bundle; using SF Symbol fallback")
-    return nil
-}
 
 // MARK: - Previews
 extension JourneyActivityAttributes {

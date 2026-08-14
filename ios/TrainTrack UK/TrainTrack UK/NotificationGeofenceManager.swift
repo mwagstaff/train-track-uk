@@ -102,6 +102,11 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         case outer  // wide "approach" ring — wakes the app and starts homing
         case inner  // tight "arrival" ring — entering it confirms arrival directly
     }
+
+    // Core Location background sessions aren't available to iOS apps running on macOS.
+    private nonisolated var isGeofencingSupported: Bool {
+        !ProcessInfo.processInfo.isiOSAppOnMac
+    }
     private var monitoredTargets: [String: StationArrivalTarget] = [:]
     private var confirmationStates: [String: StationArrivalConfirmationState] = [:]
     private var outerRegionInsideStates: [String: Bool] = [:]
@@ -135,12 +140,13 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     //
     // Stored as Any? to avoid @available spreading everywhere.
     private var backgroundActivitySession: Any?
-    private var backgroundActivityDiagnosticsTask: Task<Void, Never>?
 
     private override init() {
         super.init()
         manager.delegate = self
-        restorePersistedTargets()
+        if isGeofencingSupported {
+            restorePersistedTargets()
+        }
         configureLowSensitivityTrackingProfile()
         manager.allowsBackgroundLocationUpdates = false
         manager.showsBackgroundLocationIndicator = false
@@ -187,32 +193,8 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         }
     }
 
-    @available(iOS 18.0, *)
-    private func startBackgroundActivityDiagnostics(_ session: CLBackgroundActivitySession) {
-        backgroundActivityDiagnosticsTask?.cancel()
-        backgroundActivityDiagnosticsTask = Task { [diagnostics = session.diagnostics] in
-            do {
-                for try await diagnostic in diagnostics {
-                    ClientDiagnosticsLogger.log("geofence", "background_activity_diagnostic", metadata: [
-                        "authorization_denied": diagnostic.authorizationDenied,
-                        "authorization_denied_globally": diagnostic.authorizationDeniedGlobally,
-                        "authorization_request_in_progress": diagnostic.authorizationRequestInProgress,
-                        "authorization_restricted": diagnostic.authorizationRestricted,
-                        "insufficiently_in_use": diagnostic.insufficientlyInUse,
-                        "service_session_required": diagnostic.serviceSessionRequired
-                    ])
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                ClientDiagnosticsLogger.log("geofence", "background_activity_diagnostics_failed", metadata: [
-                    "error": error.localizedDescription
-                ])
-            }
-        }
-    }
-
     func requestAlwaysAuthorizationIfNeeded() {
+        guard isGeofencingSupported else { return }
         print("📍 [GeofenceManager] requestAlwaysAuthorizationIfNeeded auth=\(manager.authorizationStatus.rawValue)")
         logGeofenceDiagnostic("request_always_authorization_if_needed")
         if #available(iOS 18.0, *) {
@@ -234,6 +216,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     func stopLocationActivityIfIdle() {
+        guard isGeofencingSupported else { return }
         let trackedRegions = manager.monitoredRegions.filter { self.isManagedRegion($0.identifier) }
         guard trackedRegions.isEmpty, monitoredConditionIdentifiers.isEmpty else { return }
         print("📍 [GeofenceManager] stopLocationActivityIfIdle: no tracked regions, clearing background location state")
@@ -245,6 +228,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     /// launch. Persisted region targets make this independent of the stations API, which is
     /// essential when Core Location cold-launches the app with weak connectivity.
     func restoreAfterLaunch(trigger: String) async {
+        guard isGeofencingSupported else { return }
         if !monitoredTargets.isEmpty {
             ensureLocationServiceSessionIfNeeded()
         }
@@ -266,6 +250,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     func sync(subscriptions: [NotificationSubscription]) async {
+        guard isGeofencingSupported else {
+            logGeofenceDiagnostic("sync_skipped_ios_app_on_mac", metadata: [
+                "subscription_count": subscriptions.count
+            ])
+            return
+        }
         guard CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else {
             logGeofenceDiagnostic("sync_skipped_monitoring_unavailable", metadata: [
                 "subscription_count": subscriptions.count
@@ -490,6 +480,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     private func ensureLocationServiceSessionIfNeeded() {
+        guard isGeofencingSupported else { return }
         guard #available(iOS 18.0, *) else { return }
         guard locationServiceSession == nil else { return }
         let session = CLServiceSession(authorization: .always)
@@ -540,6 +531,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     private func startLowSensitivityTrackingIfNeeded(reason: String) {
+        guard isGeofencingSupported else { return }
         guard !monitoredTargets.isEmpty else { return }
         guard canMonitorWithCurrentAuthorization else { return }
 
@@ -562,6 +554,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     private func startHighSensitivityTracking(reason: String) {
+        guard isGeofencingSupported else { return }
         guard !monitoredTargets.isEmpty else { return }
         guard canMonitorWithCurrentAuthorization else { return }
 
@@ -621,6 +614,11 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     private func updateBackgroundLocationState(hasActiveGeofences: Bool) {
+        guard isGeofencingSupported else {
+            manager.allowsBackgroundLocationUpdates = false
+            manager.showsBackgroundLocationIndicator = false
+            return
+        }
         let needsWhenInUseBackgroundSession = hasActiveGeofences
             && manager.authorizationStatus == .authorizedWhenInUse
         if trackingMode != .highSensitivity {
@@ -654,17 +652,19 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     private func ensureBackgroundActivitySessionIfNeeded() {
+        guard isGeofencingSupported else { return }
         guard #available(iOS 17.0, *), backgroundActivitySession == nil else { return }
         let session = CLBackgroundActivitySession()
         backgroundActivitySession = session
-        if #available(iOS 18.0, *) {
-            startBackgroundActivityDiagnostics(session)
-        }
         logGeofenceDiagnostic("background_activity_started")
         print("📍 [GeofenceManager] Started CLBackgroundActivitySession")
     }
 
     private func stopBackgroundActivitySessionIfPossible(force: Bool = false) {
+        guard isGeofencingSupported else {
+            backgroundActivitySession = nil
+            return
+        }
         guard #available(iOS 17.0, *) else { return }
         let keepForWhenInUse = !force
             && (!monitoredTargets.isEmpty || !monitoredConditionIdentifiers.isEmpty)
@@ -674,8 +674,6 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         if let session = backgroundActivitySession as? CLBackgroundActivitySession {
             session.invalidate()
         }
-        backgroundActivityDiagnosticsTask?.cancel()
-        backgroundActivityDiagnosticsTask = nil
         backgroundActivitySession = nil
         logGeofenceDiagnostic("background_activity_stopped")
         print("📍 [GeofenceManager] Stopped CLBackgroundActivitySession")
@@ -1312,6 +1310,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     // MARK: - CLLocationManagerDelegate
 
     nonisolated func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
+        guard isGeofencingSupported else { return }
         guard let circular = region as? CLCircularRegion else { return }
         guard let parsed = parseRegionIdentifier(circular.identifier) else { return }
         let tier = regionTier(for: circular.identifier)
@@ -1490,6 +1489,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didExitRegion region: CLRegion) {
+        guard isGeofencingSupported else { return }
         guard let circular = region as? CLCircularRegion else { return }
         guard let parsed = parseRegionIdentifier(circular.identifier) else { return }
         let tier = regionTier(for: circular.identifier)
@@ -1598,6 +1598,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         location: CLLocation,
         source: String = "foreground-proximity"
     ) {
+        guard isGeofencingSupported else { return }
         guard subscription.muteOnArrival != false else { return }
         if let activeUntil = subscription.activeUntil, activeUntil <= Date() {
             return
@@ -1635,6 +1636,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didStartMonitoringFor region: CLRegion) {
+        guard isGeofencingSupported else { return }
         guard isManagedRegion(region.identifier) else { return }
         let msg = "Started monitoring: \(region.identifier)"
         Task { @MainActor in
@@ -1647,6 +1649,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, monitoringDidFailFor region: CLRegion?, withError error: Error) {
+        guard isGeofencingSupported else { return }
         let regionId = region?.identifier ?? "unknown"
         let msg = "Monitoring FAILED for \(regionId): \(error.localizedDescription)"
         Task { @MainActor in
@@ -1663,6 +1666,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     // Handles the critical "already inside" case: if the user is already within the
     // geofence boundary when monitoring starts, only didDetermineState(.inside) fires.
     nonisolated func locationManager(_ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
+        guard isGeofencingSupported else { return }
         guard let circular = region as? CLCircularRegion,
               let parsed = parseRegionIdentifier(circular.identifier) else { return }
         let tier = regionTier(for: circular.identifier)
@@ -1714,6 +1718,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard isGeofencingSupported else { return }
         guard let location = locations.last else { return }
         Task { @MainActor in
             self.evaluateArrival(using: location, source: "continuous")
@@ -1721,6 +1726,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        guard isGeofencingSupported else { return }
         let nsError = error as NSError
         if nsError.domain == kCLErrorDomain, nsError.code == CLError.locationUnknown.rawValue {
             return
@@ -1736,6 +1742,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManagerDidPauseLocationUpdates(_ manager: CLLocationManager) {
+        guard isGeofencingSupported else { return }
         let msg = "Location updates paused unexpectedly; restarting continuous arrival tracking"
         Task { @MainActor in
             DebugLogStore.shared.log(msg, category: "Geofence")
@@ -1747,6 +1754,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManagerDidResumeLocationUpdates(_ manager: CLLocationManager) {
+        guard isGeofencingSupported else { return }
         let msg = "Location updates resumed"
         Task { @MainActor in
             DebugLogStore.shared.log(msg, category: "Geofence")
@@ -1875,6 +1883,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     /// confirmation, and surface a missed-arrival notification if detection silently failed.
     func refreshArrivalFromBackgroundWake(trigger: String) async {
         NotificationMuteRequestSender.shared.retryPendingMuteRequests(trigger: "background-wake-\(trigger)")
+        guard isGeofencingSupported else { return }
         guard !monitoredTargets.isEmpty else { return }
 
         // A push is independent evidence: sample even if the entry callback was completely
@@ -1975,6 +1984,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        guard isGeofencingSupported else { return }
         Task { @MainActor in
             let msg = "Location authorization changed: status=\(self.authorizationStatusDescription(manager.authorizationStatus))"
             DebugLogStore.shared.log(msg, category: "Geofence")

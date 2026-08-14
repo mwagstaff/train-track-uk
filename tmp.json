@@ -1,0 +1,3174 @@
+{
+  "trainServices": [
+    {
+      "subsequentLocations": [
+        {
+          "locationName": "Penge East",
+          "tiploc": "PNGEE",
+          "crs": "PNE",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "1",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:14:00",
+          "staSpecified": true,
+          "ata": "2026-08-14T22:21:03",
+          "ataSpecified": true,
+          "etaSpecified": false,
+          "arrivalType": "Actual",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "TD",
+          "std": "2026-08-14T22:14:00",
+          "stdSpecified": true,
+          "atd": "2026-08-14T22:22:11",
+          "atdSpecified": true,
+          "etdSpecified": false,
+          "departureType": "Actual",
+          "departureTypeSpecified": true,
+          "departureSource": "TD",
+          "lateness": "480"
+        },
+        {
+          "locationName": "Sydenham Hill",
+          "tiploc": "SYDNHMH",
+          "crs": "SYH",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "1",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:17:00",
+          "staSpecified": true,
+          "ata": "2026-08-14T22:24:02",
+          "ataSpecified": true,
+          "etaSpecified": false,
+          "arrivalType": "Actual",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "TD",
+          "std": "2026-08-14T22:18:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:25:02",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin",
+          "lateness": "420"
+        },
+        {
+          "locationName": "West Dulwich",
+          "tiploc": "WDULWCH",
+          "crs": "WDU",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "1",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:20:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:26:32",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T22:20:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:27:02",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Herne Hill",
+          "tiploc": "HERNEH",
+          "crs": "HNH",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "2",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:22:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:29:02",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T22:23:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:30:02",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Brixton",
+          "tiploc": "BRIXTON",
+          "crs": "BRX",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "1",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:25:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:32:02",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T22:26:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:33:02",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "VOLTRDJ",
+          "tiploc": "VOLTRDJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": false,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-14T22:27:30",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:34:32",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "GRVRBGJ",
+          "tiploc": "GRVRBGJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": false,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-14T22:29:30",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:36:32",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "London Victoria",
+          "tiploc": "VICTRIE",
+          "crs": "VIC",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:33:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:40:02",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "stdSpecified": false,
+          "atdSpecified": false,
+          "etdSpecified": false,
+          "departureTypeSpecified": false,
+          "associations": [
+            {
+              "category": "next",
+              "rid": "202608148088565",
+              "uid": "P88565",
+              "trainid": "2M56",
+              "sdd": "2026-08-14",
+              "origin": "London Victoria",
+              "originCRS": "VIC",
+              "originTiploc": "VICTRIE",
+              "destination": "Orpington",
+              "destCRS": "ORP",
+              "destTiploc": "ORPNGTN",
+              "isCancelled": false
+            }
+          ]
+        }
+      ],
+      "formation": {
+        "serviceLoading": {
+          "loadingPercentage": {
+            "type": "Typical",
+            "src": "C",
+            "srcInst": "SENG",
+            "Value": 8
+          }
+        },
+        "coaches": [
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "A3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A4"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "B3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B4"
+          }
+        ],
+        "source": "C",
+        "sourceInstance": "SENG"
+      },
+      "origin": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "Orpington",
+          "crs": "ORP",
+          "tiploc": "ORPNGTN",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "destination": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "London Victoria",
+          "crs": "VIC",
+          "tiploc": "VICTRIE",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "delayReason": {
+        "near": false,
+        "Value": 848
+      },
+      "category": "OO",
+      "activities": "T ",
+      "length": 8,
+      "isReverseFormation": false,
+      "detachFront": false,
+      "futureDelay": false,
+      "futureCancellation": false,
+      "rid": "202608148087187",
+      "uid": "P87187",
+      "trainid": "2D52",
+      "sdd": "2026-08-14",
+      "operator": "Southeastern",
+      "operatorCode": "SE",
+      "isPassengerService": true,
+      "isCharter": false,
+      "isCancelled": false,
+      "isCircularRoute": false,
+      "filterLocationCancelled": false,
+      "filterLocationOperational": false,
+      "isOperationalCall": false,
+      "sta": "2026-08-14T22:12:00",
+      "staSpecified": true,
+      "ata": "2026-08-14T22:17:28",
+      "ataSpecified": true,
+      "etaSpecified": false,
+      "arrivalType": "Actual",
+      "arrivalTypeSpecified": true,
+      "std": "2026-08-14T22:12:00",
+      "stdSpecified": true,
+      "atd": "2026-08-14T22:19:32",
+      "atdSpecified": true,
+      "etdSpecified": false,
+      "departureType": "Actual",
+      "departureTypeSpecified": true,
+      "departureSource": "TD",
+      "platform": "1",
+      "platformIsHidden": false,
+      "serviceIsSupressed": false
+    },
+    {
+      "subsequentLocations": [
+        {
+          "locationName": "Beckenham Junction",
+          "tiploc": "BCKNHMJ",
+          "crs": "BKJ",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "3",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:20:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:28:26",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T22:20:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:28:56",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Shortlands",
+          "tiploc": "SHRTLND",
+          "crs": "SRT",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "2",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:23:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:31:26",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T22:24:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:32:26",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Bromley South",
+          "tiploc": "BROMLYS",
+          "crs": "BMS",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "2",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:26:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:34:26",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T22:27:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:35:26",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Bickley",
+          "tiploc": "BICKLEY",
+          "crs": "BKL",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "2",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:29:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:37:26",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T22:30:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:38:26",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "BICKLYJ",
+          "tiploc": "BICKLYJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": false,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-14T22:31:30",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:39:56",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "PETSWDJ",
+          "tiploc": "PETSWDJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": false,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-14T22:33:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:41:26",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Petts Wood",
+          "tiploc": "PETSWD",
+          "crs": "PET",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "4",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:34:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:42:26",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T22:35:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:43:26",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Orpington",
+          "tiploc": "ORPNGTN",
+          "crs": "ORP",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "8",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:39:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:47:26",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "stdSpecified": false,
+          "atdSpecified": false,
+          "etdSpecified": false,
+          "departureTypeSpecified": false,
+          "associations": [
+            {
+              "category": "next",
+              "rid": "202608148087246",
+              "uid": "P87246",
+              "trainid": "2D60",
+              "sdd": "2026-08-14",
+              "origin": "Orpington",
+              "originCRS": "ORP",
+              "originTiploc": "ORPNGTN",
+              "destination": "London Victoria",
+              "destCRS": "VIC",
+              "destTiploc": "VICTRIE",
+              "isCancelled": false
+            }
+          ]
+        }
+      ],
+      "formation": {
+        "serviceLoading": {
+          "loadingPercentage": {
+            "type": "Typical",
+            "src": "C",
+            "srcInst": "SENG",
+            "Value": 27
+          }
+        },
+        "coaches": [
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "A3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A4"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "B2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B4"
+          }
+        ],
+        "source": "C",
+        "sourceInstance": "SENG"
+      },
+      "origin": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "London Victoria",
+          "crs": "VIC",
+          "tiploc": "VICTRIE",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "destination": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "Orpington",
+          "crs": "ORP",
+          "tiploc": "ORPNGTN",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "delayReason": {
+        "near": false,
+        "Value": 848
+      },
+      "category": "OO",
+      "activities": "T ",
+      "length": 8,
+      "isReverseFormation": false,
+      "detachFront": false,
+      "futureDelay": false,
+      "futureCancellation": false,
+      "rid": "202608148088535",
+      "uid": "P88535",
+      "trainid": "2M48",
+      "sdd": "2026-08-14",
+      "operator": "Southeastern",
+      "operatorCode": "SE",
+      "isPassengerService": true,
+      "isCharter": false,
+      "isCancelled": false,
+      "isCircularRoute": false,
+      "filterLocationCancelled": false,
+      "filterLocationOperational": false,
+      "isOperationalCall": false,
+      "sta": "2026-08-14T22:17:00",
+      "staSpecified": true,
+      "ataSpecified": false,
+      "eta": "2026-08-14T22:25:56",
+      "etaSpecified": true,
+      "arrivalType": "Forecast",
+      "arrivalTypeSpecified": true,
+      "std": "2026-08-14T22:17:00",
+      "stdSpecified": true,
+      "atdSpecified": false,
+      "etd": "2026-08-14T22:26:26",
+      "etdSpecified": true,
+      "departureType": "Forecast",
+      "departureTypeSpecified": true,
+      "departureSource": "Darwin",
+      "platform": "3",
+      "platformIsHidden": false,
+      "serviceIsSupressed": false
+    },
+    {
+      "subsequentLocations": [
+        {
+          "locationName": "Penge East",
+          "tiploc": "PNGEE",
+          "crs": "PNE",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": true,
+          "platform": "1",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:44:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:44:00",
+          "etaSpecified": true,
+          "arrivalTypeSpecified": false,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T22:44:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:44:00",
+          "etdSpecified": true,
+          "departureTypeSpecified": false,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Sydenham Hill",
+          "tiploc": "SYDNHMH",
+          "crs": "SYH",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": true,
+          "platform": "1",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:47:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:47:00",
+          "etaSpecified": true,
+          "arrivalTypeSpecified": false,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T22:47:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:47:00",
+          "etdSpecified": true,
+          "departureTypeSpecified": false,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "West Dulwich",
+          "tiploc": "WDULWCH",
+          "crs": "WDU",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": true,
+          "platform": "1",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:49:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:49:00",
+          "etaSpecified": true,
+          "arrivalTypeSpecified": false,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T22:50:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:50:00",
+          "etdSpecified": true,
+          "departureTypeSpecified": false,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Herne Hill",
+          "tiploc": "HERNEH",
+          "crs": "HNH",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": true,
+          "platform": "2",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:52:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:52:00",
+          "etaSpecified": true,
+          "arrivalTypeSpecified": false,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T22:53:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:53:00",
+          "etdSpecified": true,
+          "departureTypeSpecified": false,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Brixton",
+          "tiploc": "BRIXTON",
+          "crs": "BRX",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": true,
+          "platform": "1",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:55:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:55:00",
+          "etaSpecified": true,
+          "arrivalTypeSpecified": false,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T22:56:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:56:00",
+          "etdSpecified": true,
+          "departureTypeSpecified": false,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "VOLTRDJ",
+          "tiploc": "VOLTRDJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": true,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-14T22:57:30",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:57:30",
+          "etdSpecified": true,
+          "departureTypeSpecified": false,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "GRVRBGJ",
+          "tiploc": "GRVRBGJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": true,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-14T22:59:30",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:59:30",
+          "etdSpecified": true,
+          "departureTypeSpecified": false,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "London Victoria",
+          "tiploc": "VICTRIE",
+          "crs": "VIC",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": true,
+          "platform": "",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:03:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:03:00",
+          "etaSpecified": true,
+          "arrivalTypeSpecified": false,
+          "arrivalSource": "Darwin",
+          "stdSpecified": false,
+          "atdSpecified": false,
+          "etdSpecified": false,
+          "departureTypeSpecified": false
+        }
+      ],
+      "formation": {
+        "serviceLoading": {},
+        "coaches": [
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "A3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A4"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "B3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B4"
+          }
+        ],
+        "source": "C",
+        "sourceInstance": "SENG"
+      },
+      "origin": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "Orpington",
+          "crs": "ORP",
+          "tiploc": "ORPNGTN",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "destination": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "London Victoria",
+          "crs": "VIC",
+          "tiploc": "VICTRIE",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "cancelReason": {
+        "near": false,
+        "Value": 871
+      },
+      "category": "OO",
+      "activities": "T ",
+      "length": 0,
+      "isReverseFormation": false,
+      "detachFront": false,
+      "futureDelay": false,
+      "futureCancellation": false,
+      "rid": "202608148087216",
+      "uid": "P87216",
+      "trainid": "2D56",
+      "sdd": "2026-08-14",
+      "operator": "Southeastern",
+      "operatorCode": "SE",
+      "isPassengerService": true,
+      "isCharter": false,
+      "isCancelled": true,
+      "isCircularRoute": false,
+      "filterLocationCancelled": false,
+      "filterLocationOperational": false,
+      "isOperationalCall": false,
+      "staSpecified": false,
+      "ataSpecified": false,
+      "etaSpecified": false,
+      "arrivalTypeSpecified": false,
+      "std": "2026-08-14T22:42:00",
+      "stdSpecified": true,
+      "atdSpecified": false,
+      "etdSpecified": false,
+      "departureTypeSpecified": false,
+      "platform": "2",
+      "platformIsHidden": false,
+      "serviceIsSupressed": false
+    },
+    {
+      "subsequentLocations": [
+        {
+          "locationName": "Beckenham Junction",
+          "tiploc": "BCKNHMJ",
+          "crs": "BKJ",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "3",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:50:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:50:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T22:50:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:50:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Shortlands",
+          "tiploc": "SHRTLND",
+          "crs": "SRT",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "2",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:53:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:53:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T22:54:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:54:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Bromley South",
+          "tiploc": "BROMLYS",
+          "crs": "BMS",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "2",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:56:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:56:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T22:57:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T22:57:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Bickley",
+          "tiploc": "BICKLEY",
+          "crs": "BKL",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "2",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T22:59:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T22:59:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:00:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:00:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "BICKLYJ",
+          "tiploc": "BICKLYJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": false,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-14T23:01:30",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:01:30",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "PETSWDJ",
+          "tiploc": "PETSWDJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": false,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-14T23:03:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:03:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Petts Wood",
+          "tiploc": "PETSWD",
+          "crs": "PET",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "4",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:04:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:04:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:05:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:05:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Orpington",
+          "tiploc": "ORPNGTN",
+          "crs": "ORP",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "8",
+          "platformIsHidden": false,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:10:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:10:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "stdSpecified": false,
+          "atdSpecified": false,
+          "etdSpecified": false,
+          "departureTypeSpecified": false,
+          "associations": [
+            {
+              "category": "next",
+              "rid": "202608148087273",
+              "uid": "P87273",
+              "trainid": "2D64",
+              "sdd": "2026-08-14",
+              "origin": "Orpington",
+              "originCRS": "ORP",
+              "originTiploc": "ORPNGTN",
+              "destination": "London Victoria",
+              "destCRS": "VIC",
+              "destTiploc": "VICTRIE",
+              "isCancelled": false
+            }
+          ]
+        }
+      ],
+      "formation": {
+        "serviceLoading": {
+          "loadingPercentage": {
+            "type": "Typical",
+            "src": "C",
+            "srcInst": "SENG",
+            "Value": 31
+          }
+        },
+        "coaches": [
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "A3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A4"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "B2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B4"
+          }
+        ],
+        "source": "C",
+        "sourceInstance": "SENG"
+      },
+      "origin": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "London Victoria",
+          "crs": "VIC",
+          "tiploc": "VICTRIE",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "destination": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "Orpington",
+          "crs": "ORP",
+          "tiploc": "ORPNGTN",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "category": "OO",
+      "activities": "T ",
+      "length": 8,
+      "isReverseFormation": false,
+      "detachFront": false,
+      "futureDelay": false,
+      "futureCancellation": false,
+      "rid": "202608148088550",
+      "uid": "P88550",
+      "trainid": "2M52",
+      "sdd": "2026-08-14",
+      "operator": "Southeastern",
+      "operatorCode": "SE",
+      "isPassengerService": true,
+      "isCharter": false,
+      "isCancelled": false,
+      "isCircularRoute": false,
+      "filterLocationCancelled": false,
+      "filterLocationOperational": false,
+      "isOperationalCall": false,
+      "sta": "2026-08-14T22:47:00",
+      "staSpecified": true,
+      "ataSpecified": false,
+      "eta": "2026-08-14T22:47:00",
+      "etaSpecified": true,
+      "arrivalType": "Forecast",
+      "arrivalTypeSpecified": true,
+      "std": "2026-08-14T22:47:00",
+      "stdSpecified": true,
+      "atdSpecified": false,
+      "etd": "2026-08-14T22:47:00",
+      "etdSpecified": true,
+      "departureType": "Forecast",
+      "departureTypeSpecified": true,
+      "departureSource": "Darwin",
+      "platform": "3",
+      "platformIsHidden": false,
+      "serviceIsSupressed": false
+    },
+    {
+      "subsequentLocations": [
+        {
+          "locationName": "Penge East",
+          "tiploc": "PNGEE",
+          "crs": "PNE",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "1",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:14:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:14:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:14:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:14:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Sydenham Hill",
+          "tiploc": "SYDNHMH",
+          "crs": "SYH",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "1",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:17:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:17:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:18:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:18:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "West Dulwich",
+          "tiploc": "WDULWCH",
+          "crs": "WDU",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "1",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:20:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:20:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:20:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:20:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Herne Hill",
+          "tiploc": "HERNEH",
+          "crs": "HNH",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "2",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:22:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:22:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:23:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:23:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Brixton",
+          "tiploc": "BRIXTON",
+          "crs": "BRX",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "1",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:25:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:25:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:26:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:26:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "VOLTRDJ",
+          "tiploc": "VOLTRDJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": false,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-14T23:27:30",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:27:30",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "GRVRBGJ",
+          "tiploc": "GRVRBGJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": false,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-14T23:29:30",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:29:30",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "London Victoria",
+          "tiploc": "VICTRIE",
+          "crs": "VIC",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:33:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:33:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "stdSpecified": false,
+          "atdSpecified": false,
+          "etdSpecified": false,
+          "departureTypeSpecified": false,
+          "associations": [
+            {
+              "category": "next",
+              "rid": "202608147417404",
+              "uid": "J17404",
+              "trainid": "5D62",
+              "sdd": "2026-08-14",
+              "origin": "London Victoria",
+              "originCRS": "VIC",
+              "originTiploc": "VICTRIE",
+              "destination": "VICTGCS",
+              "destCRS": "",
+              "destTiploc": "VICTGCS",
+              "isCancelled": false
+            }
+          ]
+        }
+      ],
+      "formation": {
+        "serviceLoading": {
+          "loadingPercentage": {
+            "type": "Typical",
+            "src": "C",
+            "srcInst": "SENG",
+            "Value": 10
+          }
+        },
+        "coaches": [
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "A2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A4"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "B3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B4"
+          }
+        ],
+        "source": "C",
+        "sourceInstance": "SENG"
+      },
+      "origin": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "Orpington",
+          "crs": "ORP",
+          "tiploc": "ORPNGTN",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "destination": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "London Victoria",
+          "crs": "VIC",
+          "tiploc": "VICTRIE",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "category": "OO",
+      "activities": "T ",
+      "length": 8,
+      "isReverseFormation": false,
+      "detachFront": false,
+      "futureDelay": false,
+      "futureCancellation": false,
+      "rid": "202608148087246",
+      "uid": "P87246",
+      "trainid": "2D60",
+      "sdd": "2026-08-14",
+      "operator": "Southeastern",
+      "operatorCode": "SE",
+      "isPassengerService": true,
+      "isCharter": false,
+      "isCancelled": false,
+      "isCircularRoute": false,
+      "filterLocationCancelled": false,
+      "filterLocationOperational": false,
+      "isOperationalCall": false,
+      "sta": "2026-08-14T23:12:00",
+      "staSpecified": true,
+      "ataSpecified": false,
+      "eta": "2026-08-14T23:12:00",
+      "etaSpecified": true,
+      "arrivalType": "Forecast",
+      "arrivalTypeSpecified": true,
+      "std": "2026-08-14T23:12:00",
+      "stdSpecified": true,
+      "atdSpecified": false,
+      "etd": "2026-08-14T23:12:00",
+      "etdSpecified": true,
+      "departureType": "Forecast",
+      "departureTypeSpecified": true,
+      "departureSource": "Darwin",
+      "platform": "2",
+      "platformIsHidden": true,
+      "serviceIsSupressed": false
+    },
+    {
+      "subsequentLocations": [
+        {
+          "locationName": "Beckenham Junction",
+          "tiploc": "BCKNHMJ",
+          "crs": "BKJ",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "3",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:20:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:20:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:20:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:20:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Shortlands",
+          "tiploc": "SHRTLND",
+          "crs": "SRT",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "2",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:23:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:23:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:24:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:24:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Bromley South",
+          "tiploc": "BROMLYS",
+          "crs": "BMS",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "2",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:26:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:26:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:27:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:27:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Bickley",
+          "tiploc": "BICKLEY",
+          "crs": "BKL",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "2",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:29:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:29:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:30:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:30:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "BICKLYJ",
+          "tiploc": "BICKLYJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": false,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-14T23:31:30",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:31:30",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "PETSWDJ",
+          "tiploc": "PETSWDJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": false,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-14T23:33:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:33:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Petts Wood",
+          "tiploc": "PETSWD",
+          "crs": "PET",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "4",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:34:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:34:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:35:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:35:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Orpington",
+          "tiploc": "ORPNGTN",
+          "crs": "ORP",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "8",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:39:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:39:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "stdSpecified": false,
+          "atdSpecified": false,
+          "etdSpecified": false,
+          "departureTypeSpecified": false,
+          "associations": [
+            {
+              "category": "next",
+              "rid": "202608148087298",
+              "uid": "P87298",
+              "trainid": "2D68",
+              "sdd": "2026-08-14",
+              "origin": "Orpington",
+              "originCRS": "ORP",
+              "originTiploc": "ORPNGTN",
+              "destination": "London Victoria",
+              "destCRS": "VIC",
+              "destTiploc": "VICTRIE",
+              "isCancelled": false
+            }
+          ]
+        }
+      ],
+      "formation": {
+        "serviceLoading": {
+          "loadingPercentage": {
+            "type": "Typical",
+            "src": "C",
+            "srcInst": "SENG",
+            "Value": 44
+          }
+        },
+        "coaches": [
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "A3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A4"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "B3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B4"
+          }
+        ],
+        "source": "C",
+        "sourceInstance": "SENG"
+      },
+      "origin": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "London Victoria",
+          "crs": "VIC",
+          "tiploc": "VICTRIE",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "destination": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "Orpington",
+          "crs": "ORP",
+          "tiploc": "ORPNGTN",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "category": "OO",
+      "activities": "T ",
+      "length": 8,
+      "isReverseFormation": false,
+      "detachFront": false,
+      "futureDelay": false,
+      "futureCancellation": false,
+      "rid": "202608148088565",
+      "uid": "P88565",
+      "trainid": "2M56",
+      "sdd": "2026-08-14",
+      "operator": "Southeastern",
+      "operatorCode": "SE",
+      "isPassengerService": true,
+      "isCharter": false,
+      "isCancelled": false,
+      "isCircularRoute": false,
+      "filterLocationCancelled": false,
+      "filterLocationOperational": false,
+      "isOperationalCall": false,
+      "sta": "2026-08-14T23:17:00",
+      "staSpecified": true,
+      "ataSpecified": false,
+      "eta": "2026-08-14T23:17:00",
+      "etaSpecified": true,
+      "arrivalType": "Forecast",
+      "arrivalTypeSpecified": true,
+      "std": "2026-08-14T23:17:00",
+      "stdSpecified": true,
+      "atdSpecified": false,
+      "etd": "2026-08-14T23:17:00",
+      "etdSpecified": true,
+      "departureType": "Forecast",
+      "departureTypeSpecified": true,
+      "departureSource": "Darwin",
+      "platform": "3",
+      "platformIsHidden": true,
+      "serviceIsSupressed": false
+    },
+    {
+      "subsequentLocations": [
+        {
+          "locationName": "Penge East",
+          "tiploc": "PNGEE",
+          "crs": "PNE",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "1",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:44:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:44:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:44:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:44:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Sydenham Hill",
+          "tiploc": "SYDNHMH",
+          "crs": "SYH",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "1",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:47:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:47:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:47:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:47:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "West Dulwich",
+          "tiploc": "WDULWCH",
+          "crs": "WDU",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "1",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:49:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:49:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:50:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:50:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Herne Hill",
+          "tiploc": "HERNEH",
+          "crs": "HNH",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "2",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:52:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:52:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:53:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:53:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Brixton",
+          "tiploc": "BRIXTON",
+          "crs": "BRX",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "1",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:55:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:55:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:56:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:56:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "VOLTRDJ",
+          "tiploc": "VOLTRDJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": false,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-14T23:57:30",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:57:30",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "GRVRBGJ",
+          "tiploc": "GRVRBGJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": false,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-14T23:59:30",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:59:30",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "London Victoria",
+          "tiploc": "VICTRIE",
+          "crs": "VIC",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-15T00:03:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-15T00:03:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "stdSpecified": false,
+          "atdSpecified": false,
+          "etdSpecified": false,
+          "departureTypeSpecified": false,
+          "associations": [
+            {
+              "category": "next",
+              "rid": "202608158088603",
+              "uid": "P88603",
+              "trainid": "2M68",
+              "sdd": "2026-08-14",
+              "origin": "London Victoria",
+              "originCRS": "VIC",
+              "originTiploc": "VICTRIE",
+              "destination": "Orpington",
+              "destCRS": "ORP",
+              "destTiploc": "ORPNGTN",
+              "isCancelled": false
+            }
+          ]
+        }
+      ],
+      "formation": {
+        "serviceLoading": {
+          "loadingPercentage": {
+            "type": "Typical",
+            "src": "C",
+            "srcInst": "SENG",
+            "Value": 12
+          }
+        },
+        "coaches": [
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "A2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A4"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "B3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B4"
+          }
+        ],
+        "source": "C",
+        "sourceInstance": "SENG"
+      },
+      "origin": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "Orpington",
+          "crs": "ORP",
+          "tiploc": "ORPNGTN",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "destination": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "London Victoria",
+          "crs": "VIC",
+          "tiploc": "VICTRIE",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "category": "OO",
+      "activities": "T ",
+      "length": 8,
+      "isReverseFormation": false,
+      "detachFront": false,
+      "futureDelay": false,
+      "futureCancellation": false,
+      "rid": "202608148087273",
+      "uid": "P87273",
+      "trainid": "2D64",
+      "sdd": "2026-08-14",
+      "operator": "Southeastern",
+      "operatorCode": "SE",
+      "isPassengerService": true,
+      "isCharter": false,
+      "isCancelled": false,
+      "isCircularRoute": false,
+      "filterLocationCancelled": false,
+      "filterLocationOperational": false,
+      "isOperationalCall": false,
+      "sta": "2026-08-14T23:42:00",
+      "staSpecified": true,
+      "ataSpecified": false,
+      "eta": "2026-08-14T23:42:00",
+      "etaSpecified": true,
+      "arrivalType": "Forecast",
+      "arrivalTypeSpecified": true,
+      "std": "2026-08-14T23:42:00",
+      "stdSpecified": true,
+      "atdSpecified": false,
+      "etd": "2026-08-14T23:42:00",
+      "etdSpecified": true,
+      "departureType": "Forecast",
+      "departureTypeSpecified": true,
+      "departureSource": "Darwin",
+      "platform": "2",
+      "platformIsHidden": true,
+      "serviceIsSupressed": false
+    },
+    {
+      "subsequentLocations": [
+        {
+          "locationName": "Beckenham Junction",
+          "tiploc": "BCKNHMJ",
+          "crs": "BKJ",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "3",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:50:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:50:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:50:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:50:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Shortlands",
+          "tiploc": "SHRTLND",
+          "crs": "SRT",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "2",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:53:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:53:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:54:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:54:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Bromley South",
+          "tiploc": "BROMLYS",
+          "crs": "BMS",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "2",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:56:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:56:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:57:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:57:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Bickley",
+          "tiploc": "BICKLEY",
+          "crs": "BKL",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "2",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-14T23:59:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-14T23:59:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-14T23:59:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-14T23:59:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "BICKLYJ",
+          "tiploc": "BICKLYJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": false,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-15T00:01:30",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-15T00:01:30",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "PETSWDJ",
+          "tiploc": "PETSWDJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": false,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-15T00:03:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-15T00:03:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Petts Wood",
+          "tiploc": "PETSWD",
+          "crs": "PET",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "4",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-15T00:04:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-15T00:04:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-15T00:05:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-15T00:05:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Orpington",
+          "tiploc": "ORPNGTN",
+          "crs": "ORP",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "8",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-15T00:09:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-15T00:09:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "stdSpecified": false,
+          "atdSpecified": false,
+          "etdSpecified": false,
+          "departureTypeSpecified": false,
+          "associations": [
+            {
+              "category": "next",
+              "rid": "202608158091021",
+              "uid": "P91021",
+              "trainid": "5M60",
+              "sdd": "2026-08-14",
+              "origin": "Orpington",
+              "originCRS": "ORP",
+              "originTiploc": "ORPNGTN",
+              "destination": "ORPNDSG",
+              "destCRS": "",
+              "destTiploc": "ORPNDSG",
+              "isCancelled": false
+            }
+          ]
+        }
+      ],
+      "formation": {
+        "serviceLoading": {
+          "loadingPercentage": {
+            "type": "Typical",
+            "src": "C",
+            "srcInst": "SENG",
+            "Value": 19
+          }
+        },
+        "coaches": [
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "A3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A4"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "B3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B4"
+          }
+        ],
+        "source": "C",
+        "sourceInstance": "SENG"
+      },
+      "origin": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "London Victoria",
+          "crs": "VIC",
+          "tiploc": "VICTRIE",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "destination": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "Orpington",
+          "crs": "ORP",
+          "tiploc": "ORPNGTN",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "category": "OO",
+      "activities": "T ",
+      "length": 8,
+      "isReverseFormation": false,
+      "detachFront": false,
+      "futureDelay": false,
+      "futureCancellation": false,
+      "rid": "202608148088579",
+      "uid": "P88579",
+      "trainid": "2M60",
+      "sdd": "2026-08-14",
+      "operator": "Southeastern",
+      "operatorCode": "SE",
+      "isPassengerService": true,
+      "isCharter": false,
+      "isCancelled": false,
+      "isCircularRoute": false,
+      "filterLocationCancelled": false,
+      "filterLocationOperational": false,
+      "isOperationalCall": false,
+      "sta": "2026-08-14T23:47:00",
+      "staSpecified": true,
+      "ataSpecified": false,
+      "eta": "2026-08-14T23:47:00",
+      "etaSpecified": true,
+      "arrivalType": "Forecast",
+      "arrivalTypeSpecified": true,
+      "std": "2026-08-14T23:47:00",
+      "stdSpecified": true,
+      "atdSpecified": false,
+      "etd": "2026-08-14T23:47:00",
+      "etdSpecified": true,
+      "departureType": "Forecast",
+      "departureTypeSpecified": true,
+      "departureSource": "Darwin",
+      "platform": "3",
+      "platformIsHidden": true,
+      "serviceIsSupressed": false
+    },
+    {
+      "subsequentLocations": [
+        {
+          "locationName": "Penge East",
+          "tiploc": "PNGEE",
+          "crs": "PNE",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "1",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-15T00:19:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-15T00:19:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-15T00:19:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-15T00:19:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Sydenham Hill",
+          "tiploc": "SYDNHMH",
+          "crs": "SYH",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "1",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-15T00:22:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-15T00:22:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-15T00:22:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-15T00:22:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "West Dulwich",
+          "tiploc": "WDULWCH",
+          "crs": "WDU",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "1",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-15T00:24:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-15T00:24:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-15T00:25:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-15T00:25:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Herne Hill",
+          "tiploc": "HERNEH",
+          "crs": "HNH",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "2",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-15T00:27:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-15T00:27:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-15T00:28:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-15T00:28:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "Brixton",
+          "tiploc": "BRIXTON",
+          "crs": "BRX",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "1",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-15T00:30:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-15T00:30:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "std": "2026-08-15T00:31:00",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-15T00:31:00",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "VOLTRDJ",
+          "tiploc": "VOLTRDJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": false,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-15T00:32:30",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-15T00:32:30",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "GRVRBGJ",
+          "tiploc": "GRVRBGJ",
+          "isOperational": false,
+          "isPass": true,
+          "isCancelled": false,
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "staSpecified": false,
+          "ataSpecified": false,
+          "etaSpecified": false,
+          "arrivalTypeSpecified": false,
+          "std": "2026-08-15T00:34:30",
+          "stdSpecified": true,
+          "atdSpecified": false,
+          "etd": "2026-08-15T00:34:30",
+          "etdSpecified": true,
+          "departureType": "Forecast",
+          "departureTypeSpecified": true,
+          "departureSource": "Darwin"
+        },
+        {
+          "locationName": "London Victoria",
+          "tiploc": "VICTRIE",
+          "crs": "VIC",
+          "isOperational": false,
+          "isPass": false,
+          "isCancelled": false,
+          "platform": "",
+          "platformIsHidden": true,
+          "serviceIsSupressed": false,
+          "sta": "2026-08-15T00:38:00",
+          "staSpecified": true,
+          "ataSpecified": false,
+          "eta": "2026-08-15T00:38:00",
+          "etaSpecified": true,
+          "arrivalType": "Forecast",
+          "arrivalTypeSpecified": true,
+          "arrivalSource": "Darwin",
+          "stdSpecified": false,
+          "atdSpecified": false,
+          "etdSpecified": false,
+          "departureTypeSpecified": false,
+          "associations": [
+            {
+              "category": "next",
+              "rid": "202608158091024",
+              "uid": "P91024",
+              "trainid": "5M68",
+              "sdd": "2026-08-14",
+              "origin": "London Victoria",
+              "originCRS": "VIC",
+              "originTiploc": "VICTRIE",
+              "destination": "VICTGCS",
+              "destCRS": "",
+              "destTiploc": "VICTGCS",
+              "isCancelled": false
+            }
+          ]
+        }
+      ],
+      "formation": {
+        "serviceLoading": {},
+        "coaches": [
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "A2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "A4"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B1"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B2"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "InService",
+              "Value": "Accessible"
+            },
+            "number": "B3"
+          },
+          {
+            "coachClass": "Standard",
+            "toilet": {
+              "status": "Unknown",
+              "Value": "None"
+            },
+            "number": "B4"
+          }
+        ],
+        "source": "C",
+        "sourceInstance": "SENG"
+      },
+      "origin": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "Orpington",
+          "crs": "ORP",
+          "tiploc": "ORPNGTN",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "destination": [
+        {
+          "isOperationalEndPoint": false,
+          "locationName": "London Victoria",
+          "crs": "VIC",
+          "tiploc": "VICTRIE",
+          "futureChangeToSpecified": false
+        }
+      ],
+      "category": "OO",
+      "activities": "T ",
+      "length": 4,
+      "isReverseFormation": false,
+      "detachFront": false,
+      "futureDelay": false,
+      "futureCancellation": false,
+      "rid": "202608148087298",
+      "uid": "P87298",
+      "trainid": "2D68",
+      "sdd": "2026-08-14",
+      "operator": "Southeastern",
+      "operatorCode": "SE",
+      "isPassengerService": true,
+      "isCharter": false,
+      "isCancelled": false,
+      "isCircularRoute": false,
+      "filterLocationCancelled": false,
+      "filterLocationOperational": false,
+      "isOperationalCall": false,
+      "sta": "2026-08-15T00:17:00",
+      "staSpecified": true,
+      "ataSpecified": false,
+      "eta": "2026-08-15T00:17:00",
+      "etaSpecified": true,
+      "arrivalType": "Forecast",
+      "arrivalTypeSpecified": true,
+      "std": "2026-08-15T00:17:00",
+      "stdSpecified": true,
+      "atdSpecified": false,
+      "etd": "2026-08-15T00:17:00",
+      "etdSpecified": true,
+      "departureType": "Forecast",
+      "departureTypeSpecified": true,
+      "departureSource": "Darwin",
+      "platform": "2",
+      "platformIsHidden": true,
+      "serviceIsSupressed": false
+    }
+  ],
+  "isTruncated": false,
+  "generatedAt": "2026-08-14T22:24:44.4423753+01:00",
+  "locationName": "Kent House",
+  "crs": "KTH",
+  "filterType": "to",
+  "stationManager": "Southeastern",
+  "stationManagerCode": "SE",
+  "nrccMessages": [
+    {
+      "category": "Trainservice",
+      "severity": "Minor",
+      "xhtmlMessage": "Delays across the Southeastern network are expected. More details can be found in <a href=\"https://www.nationalrail.co.uk/service-disruptions/southeastern-network-20260814/\">Status and Disruptions. </a>"
+    }
+  ],
+  "platformsAreHidden": false,
+  "servicesAreUnavailable": false,
+  "Xmlns": {
+    "Count": 20
+  }
+}
