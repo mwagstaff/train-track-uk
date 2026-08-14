@@ -10,6 +10,7 @@ final class DeparturesStore: ObservableObject {
 
     @Published private(set) var departuresByPair: [String: [DepartureV2]] = [:]
     @Published private(set) var serviceDetailsById: [String: ServiceDetails] = [:]
+    @Published private(set) var isInitialLoadInProgress = true
 
     private var timerCancellable: AnyCancellable?
     private var journeysCancellable: AnyCancellable?
@@ -26,6 +27,9 @@ final class DeparturesStore: ObservableObject {
         if timerCancellable != nil || journeysCancellable != nil {
             return
         }
+        if departuresByPair.isEmpty {
+            isInitialLoadInProgress = true
+        }
         // React to journey changes after the explicit startup refresh path has run.
         journeysCancellable = journeyStore.$journeys
             .dropFirst()
@@ -36,6 +40,7 @@ final class DeparturesStore: ObservableObject {
             }
         initialRefreshTask = Task { [weak self] in
             guard let self else { return }
+            defer { self.isInitialLoadInProgress = false }
             await self.refreshPrioritizingFavourites(for: journeyStore.journeys)
         }
         // Every 20 seconds

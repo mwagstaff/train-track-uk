@@ -25,6 +25,7 @@ struct FavouritesView: View {
     @State private var scheduleGroup: JourneyGroup?
     @State private var liveActionGroupIDs: Set<UUID> = []
     @State private var expandedJourneyIDs: Set<UUID> = []
+    @State private var reversedJourneyIDs: Set<UUID> = []
     @State private var cardDestination: JourneyCardNavigationDestination?
     @AppStorage("showClosestJourneyLegOnly") private var showClosestJourneyLegOnly: Bool = true
     @AppStorage("distanceVeryCloseMiles") private var veryCloseMiles: Double = 3
@@ -561,37 +562,51 @@ private extension FavouritesView {
     }
 
     private func rowContent(for group: JourneyGroup) -> some View {
-        HStack(spacing: 12) {
+        let reverseGroup = store.reverseGroup(for: group)
+        let isReversed = reversedJourneyIDs.contains(group.id) && reverseGroup != nil
+        let displayedGroup = isReversed ? (reverseGroup ?? group) : group
+
+        return HStack(spacing: 12) {
             if isSelecting {
                 selectionIndicator(for: group)
             }
             JourneyCard(
-                group: group,
+                group: displayedGroup,
                 isFavourite: true,
                 defaultDepartureCount: JourneyCardPresentation.defaultDepartureCount(
                     journeyCount: visibleFavourites.count
                 ),
-                isLiveActive: liveSession(for: group) != nil,
-                isScheduled: scheduledSubscription(for: group) != nil,
-                isBusy: liveActionGroupIDs.contains(group.id),
+                isLiveActive: liveSession(for: displayedGroup) != nil,
+                isScheduled: scheduledSubscription(for: displayedGroup) != nil,
+                isBusy: liveActionGroupIDs.contains(displayedGroup.id),
                 isInteractive: !isSelecting,
                 isExpanded: expandedJourneyIDs.contains(group.id),
+                canReverseJourney: reverseGroup != nil,
+                isJourneyReversed: isReversed,
                 onToggleExpanded: { toggleExpanded(group.id) },
+                onToggleJourneyReversed: { toggleReversed(group.id) },
                 onOpenDeparture: { leg, departure in
-                    cardDestination = .service(
-                        serviceID: departure.serviceID,
-                        fromCRS: leg.fromStation.crs,
-                        toCRS: leg.toStation.crs
-                    )
+                    if displayedGroup.legs.count > 1 {
+                        cardDestination = .itinerary(
+                            group: displayedGroup,
+                            firstDeparture: departure
+                        )
+                    } else {
+                        cardDestination = .service(
+                            serviceID: departure.serviceID,
+                            fromCRS: leg.fromStation.crs,
+                            toCRS: leg.toStation.crs
+                        )
+                    }
                 },
                 onToggleFavourite: {
-                    journeyPendingFav = group
+                    journeyPendingFav = displayedGroup
                     showFavDialog = true
                 },
-                onToggleJourneyUpdates: { toggleJourneyUpdates(for: group) },
-                onScheduleJourneyUpdates: { scheduleGroup = group },
+                onToggleJourneyUpdates: { toggleJourneyUpdates(for: displayedGroup) },
+                onScheduleJourneyUpdates: { scheduleGroup = displayedGroup },
                 onRemoveJourney: {
-                    journeyPendingDelete = group
+                    journeyPendingDelete = displayedGroup
                     showDeleteDialog = true
                 }
             )
@@ -610,11 +625,22 @@ private extension FavouritesView {
         }
     }
 
+    private func toggleReversed(_ groupID: UUID) {
+        if reversedJourneyIDs.contains(groupID) {
+            reversedJourneyIDs.remove(groupID)
+        } else {
+            reversedJourneyIDs.insert(groupID)
+        }
+    }
+
     @ViewBuilder
     private func cardDestinationView(_ destination: JourneyCardNavigationDestination) -> some View {
         switch destination {
         case .service(let serviceID, let fromCRS, let toCRS):
             ServiceMapView(serviceID: serviceID, fromCRS: fromCRS, toCRS: toCRS)
+                .onAppear { searchFocused = false }
+        case .itinerary(let group, let firstDeparture):
+            JourneyItineraryView(group: group, firstDeparture: firstDeparture)
                 .onAppear { searchFocused = false }
         }
     }

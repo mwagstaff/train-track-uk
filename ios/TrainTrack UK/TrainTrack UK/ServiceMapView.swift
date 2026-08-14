@@ -18,6 +18,7 @@ struct ServiceMapView: View {
     @State private var nextRetryAt: Date?
     @State private var currentTime = Date()
     @State private var loadRequestID = UUID()
+    @State private var hasCenteredOnCurrentPosition = false
 
     private var hasCallingPoints: Bool {
         !stations().isEmpty
@@ -35,13 +36,9 @@ struct ServiceMapView: View {
                         ScrollView {
                             stationsList
                                 .padding(.vertical, 12)
-                                .onAppear {
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                                        if let anchor = anchorIDForScroll() {
-                                            withAnimation { proxy.scrollTo(anchor, anchor: .center) }
-                                        }
-                                    }
-                                }
+                        }
+                        .task(id: currentIndex >= 0) {
+                            await centerOnCurrentPosition(using: proxy)
                         }
                     }
                 } else if !hasFinishedInitialLoad {
@@ -136,41 +133,57 @@ struct ServiceMapView: View {
 
     // MARK: - Header
     private var headerView: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             // Title is also used in the nav bar, but include here for context on scroll
             Text(routeTitle())
                 .font(.title2).bold()
-            if let op = serviceOperator() {
-                Text("Operator: \(op)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            // Length header: show unknown + warning when nil or 0
-            let isBus = (depStore.serviceDetailsById[serviceID]?.serviceType.lowercased() == "bus")
-            if isBus {
+
+            if isBusService {
                 HStack(spacing: 6) {
                     Image(systemName: "bus")
                     Text("Bus service")
                 }
                 .font(.caption)
                 .foregroundStyle(.orange)
-            } else if let len = serviceLength(), len > 0 {
-                HStack(spacing: 6) {
-                    Text("Length: \(len) coach\(len == 1 ? "" : "es")")
-                    if len <= minShortTrainCars {
-                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            } else if let length = serviceLength(), length > 0 {
+                TrainLengthIndicator(cars: length, warningThreshold: minShortTrainCars)
             } else {
                 HStack(spacing: 6) {
-                    Text("Length: unknown")
+                    Text("Train length unknown")
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
+
+            if let platform = platformInfo() {
+                Text(platform)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let arrival = arrivalInfo() {
+                Text(arrival)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if let op = serviceOperator() {
+                Text("Operator: \(op)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            let status = serviceStatus()
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Circle()
+                    .fill(status.color)
+                    .frame(width: 8, height: 8)
+                Text(status.text)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
             if let info = delayOrCancelInfo() {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow)
@@ -374,6 +387,60 @@ struct ServiceMapView: View {
         return d.length
     }
 
+    private var isBusService: Bool {
+        depStore.serviceDetailsById[serviceID]?.serviceType.lowercased() == "bus"
+    }
+
+    private func serviceStatus() -> (text: String, color: Color) {
+        guard let details = depStore.serviceDetailsById[serviceID] else {
+            return ("Live status unavailable", .secondary)
+        }
+        if details.isCancelled == true || stations().allSatisfy(\.isCancelledAtStation) {
+            return ("Service cancelled", .red)
+        }
+        if let live = computeLiveStatus(from: details) {
+            let color: Color = live.delayMinutes >= 5 ? .red : (live.delayMinutes > 0 ? .yellow : .green)
+            return (live.text, color)
+        }
+        return ("Live status unavailable", .secondary)
+    }
+
+    private func platformInfo() -> String? {
+        guard !isBusService, let details = depStore.serviceDetailsById[serviceID] else { return nil }
+        let platform = details.platform?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayedPlatform = platform?.isEmpty == false ? platform ?? "TBC" : "TBC"
+        let estimatedDeparture = details.etd?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let departureTime: String
+        if let estimatedDeparture, !estimatedDeparture.isEmpty, estimatedDeparture != "On time" {
+            departureTime = JourneyCardPresentation.arrivalTimeLabel(estimatedDeparture)
+        } else {
+            departureTime = details.std ?? "TBC"
+        }
+        return "Expected to depart \(details.locationName) at \(departureTime) (platform \(displayedPlatform))"
+    }
+
+    private func arrivalInfo() -> String? {
+        let normalizedDestination = toCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let destination = stations().first {
+            $0.crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == normalizedDestination
+        } ?? stations().last
+        guard let destination else { return nil }
+        if destination.isCancelledAtStation {
+            return "Arrival at \(destination.locationName) cancelled"
+        }
+        return "Expected to arrive \(displayTime(for: destination)) at \(destination.locationName)"
+    }
+
+    private func displayTime(for station: CallingPoint) -> String {
+        if let actual = station.at, actual != "Cancelled" {
+            return actual == "On time" ? station.st : actual
+        }
+        if let estimated = station.et, estimated != "Cancelled" {
+            return estimated == "On time" ? station.st : JourneyCardPresentation.arrivalTimeLabel(estimated)
+        }
+        return station.st
+    }
+
     private func delayOrCancelInfo() -> String? {
         guard let d = depStore.serviceDetailsById[serviceID] else { return nil }
         if let reason = d.delayReason, !reason.isEmpty { return reason }
@@ -386,6 +453,21 @@ struct ServiceMapView: View {
         let frac = currentIndex - floor(currentIndex)
         if frac < 0.5 { return "station-\(Int(floor(currentIndex)))" }
         return "seg-\(Int(floor(currentIndex)))"
+    }
+
+    @MainActor
+    private func centerOnCurrentPosition(using proxy: ScrollViewProxy) async {
+        guard !hasCenteredOnCurrentPosition, let anchor = anchorIDForScroll() else { return }
+        do {
+            try await Task.sleep(for: .milliseconds(100))
+        } catch {
+            return
+        }
+        guard !Task.isCancelled else { return }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            proxy.scrollTo(anchor, anchor: .center)
+        }
+        hasCenteredOnCurrentPosition = true
     }
 
     private func timeLabel(for s: CallingPoint, isFinal: Bool) -> String {

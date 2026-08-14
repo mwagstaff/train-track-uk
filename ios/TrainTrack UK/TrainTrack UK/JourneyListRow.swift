@@ -39,11 +39,14 @@ enum JourneyCardPresentation {
 
 enum JourneyCardNavigationDestination: Hashable, Identifiable {
     case service(serviceID: String, fromCRS: String, toCRS: String)
+    case itinerary(group: JourneyGroup, firstDeparture: DepartureV2)
 
     var id: String {
         switch self {
         case .service(let serviceID, let fromCRS, let toCRS):
             return "service-\(serviceID)-\(fromCRS)-\(toCRS)"
+        case .itinerary(let group, let firstDeparture):
+            return "itinerary-\(group.id)-\(firstDeparture.serviceID)"
         }
     }
 }
@@ -57,7 +60,10 @@ struct JourneyCard: View {
     let isBusy: Bool
     let isInteractive: Bool
     let isExpanded: Bool
+    let canReverseJourney: Bool
+    let isJourneyReversed: Bool
     let onToggleExpanded: () -> Void
+    let onToggleJourneyReversed: () -> Void
     let onOpenDeparture: (Journey, DepartureV2) -> Void
     let onToggleFavourite: () -> Void
     let onToggleJourneyUpdates: () -> Void
@@ -67,12 +73,12 @@ struct JourneyCard: View {
     @EnvironmentObject private var depStore: DeparturesStore
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
+    @State private var isLoadingServiceDetails = false
 
     private struct Summary: Identifiable {
         let firstLeg: Journey
         let firstDeparture: DepartureV2
         let finalArrivalTime: String?
-        let completedLegCount: Int
 
         var id: String { firstDeparture.serviceID }
     }
@@ -87,7 +93,7 @@ struct JourneyCard: View {
     }
 
     private var summaries: [Summary] {
-        upcomingDepartures.map(buildSummary)
+        upcomingDepartures.compactMap(buildSummary)
     }
 
     private var displayedSummaries: [Summary] {
@@ -109,21 +115,27 @@ struct JourneyCard: View {
                 .padding(.horizontal, 16)
 
             VStack(alignment: .leading, spacing: 0) {
-                Text("Upcoming departures")
-                    .font(.caption2.weight(.medium))
-                    .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 16)
-                    .padding(.bottom, 8)
-
                 if displayedSummaries.isEmpty {
-                    Text("No upcoming departures found")
+                    if depStore.isInitialLoadInProgress || isLoadingServiceDetails {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                                .accessibilityHidden(true)
+                            Text("Loading upcoming departures…")
+                        }
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
-                        .padding(.bottom, 16)
+                        .padding(.vertical, 16)
+                    } else {
+                        Text("No upcoming departures found")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 16)
+                    }
                 } else {
                     ForEach(Array(displayedSummaries.enumerated()), id: \.element.id) { index, summary in
                         departureLink(summary)
@@ -174,25 +186,13 @@ struct JourneyCard: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 routeTitle
-
-                if let summary = firstSummary {
-                    metadata(for: summary)
-                    if let status = detailedStatus(for: summary.firstDeparture) {
-                        HStack(alignment: .firstTextBaseline, spacing: 7) {
-                            Circle()
-                                .fill(status.color)
-                                .frame(width: 8, height: 8)
-                            Text(status.text)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                }
             }
 
             Spacer(minLength: 0)
-            journeyMenu
+            HStack(spacing: 4) {
+                reverseJourneyControl
+                journeyMenu
+            }
         }
     }
 
@@ -223,6 +223,36 @@ struct JourneyCard: View {
             .font(.headline)
             .foregroundStyle(.primary)
             .multilineTextAlignment(.leading)
+    }
+
+    @ViewBuilder
+    private var reverseJourneyControl: some View {
+        if isInteractive {
+            Button(action: onToggleJourneyReversed) {
+                reverseJourneyImage
+            }
+            .buttonStyle(.plain)
+            .disabled(!canReverseJourney)
+            .opacity(canReverseJourney ? 1 : 0.35)
+            .accessibilityLabel("Reverse journey")
+            .accessibilityValue(isJourneyReversed ? "On" : "Off")
+            .accessibilityHint("Switches the origin and destination shown on this card.")
+        } else {
+            reverseJourneyImage
+                .opacity(canReverseJourney ? 1 : 0.35)
+        }
+    }
+
+    private var reverseJourneyImage: some View {
+        Image(systemName: "arrow.left.arrow.right")
+            .font(.body.weight(.semibold))
+            .foregroundStyle(isJourneyReversed ? Color.white : Color.secondary)
+            .frame(width: 30, height: 30)
+            .background {
+                Circle()
+                    .fill(isJourneyReversed ? Color.accentColor : Color.clear)
+            }
+            .contentShape(Rectangle())
     }
 
     @ViewBuilder
@@ -266,37 +296,6 @@ struct JourneyCard: View {
         }
     }
 
-    private func metadata(for summary: Summary) -> some View {
-        HStack(spacing: 6) {
-            if !summary.firstDeparture.isCancelled {
-                if let arrival = summary.finalArrivalTime {
-                    Text("Arr \(JourneyCardPresentation.arrivalTimeLabel(arrival))")
-                } else if group.legs.count > summary.completedLegCount {
-                    Text("Loading connection")
-                }
-            }
-
-            if !isBus(summary.firstDeparture) {
-                if !summary.firstDeparture.isCancelled,
-                   summary.finalArrivalTime != nil || group.legs.count > summary.completedLegCount {
-                    Text("•")
-                }
-                if let length = summary.firstDeparture.length, length > 0 {
-                    Text("\(length) cars")
-                    if length <= minShortTrainCars {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.yellow)
-                            .accessibilityLabel("Short train")
-                    }
-                } else {
-                    Text("Unknown length")
-                }
-            }
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-    }
-
     @ViewBuilder
     private func departureLink(_ summary: Summary) -> some View {
         if isInteractive {
@@ -314,26 +313,42 @@ struct JourneyCard: View {
 
     @ViewBuilder
     private func departureRow(_ summary: Summary) -> some View {
-        if dynamicTypeSize.isAccessibilitySize {
-            VStack(alignment: .leading, spacing: 8) {
-                departureIdentity(summary)
-                HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 8) {
+                    departureIdentity(summary)
+                    HStack(spacing: 12) {
+                        platform(for: summary.firstDeparture)
+                        departureStatus(summary.firstDeparture)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                    }
+                }
+            } else {
+                HStack(alignment: .center, spacing: 12) {
+                    departureIdentity(summary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     platform(for: summary.firstDeparture)
                     departureStatus(summary.firstDeparture)
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+                        .frame(minWidth: 86, alignment: .leading)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.tertiary)
                 }
             }
-        } else {
-            HStack(alignment: .center, spacing: 12) {
-                departureIdentity(summary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                platform(for: summary.firstDeparture)
-                departureStatus(summary.firstDeparture)
-                    .frame(minWidth: 86, alignment: .leading)
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.tertiary)
+
+            if summary.id == firstSummary?.id,
+               let status = detailedStatus(for: summary.firstDeparture) {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    Circle()
+                        .fill(status.color)
+                        .frame(width: 8, height: 8)
+                    Text(status.text)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -400,80 +415,20 @@ struct JourneyCard: View {
         }
     }
 
-    private func buildSummary(startingWith firstDeparture: DepartureV2) -> Summary {
-        var previousArrivalDate: Date?
-        var previousDepartureDate: Date?
-        var finalArrivalTime: String?
-        var completedLegCount = 0
-
-        for (index, leg) in group.legs.enumerated() {
-            let departure: DepartureV2
-            if index == 0 {
-                departure = firstDeparture
-            } else {
-                let earliest = previousArrivalDate ?? previousDepartureDate
-                guard let selected = selectDeparture(for: leg, earliest: earliest) else { break }
-                departure = selected
-            }
-
-            let arrival = arrivalInfo(for: departure, toCRS: leg.toStation.crs)
-            previousArrivalDate = arrival.date
-            previousDepartureDate = departureDate(departure)
-            finalArrivalTime = arrival.time
-            completedLegCount += 1
-
-            if index < group.legs.count - 1, arrival.date == nil {
-                break
-            }
-        }
+    private func buildSummary(startingWith firstDeparture: DepartureV2) -> Summary? {
+        let itinerary = JourneyItineraryBuilder.build(
+            group: group,
+            firstDeparture: firstDeparture,
+            departuresForJourney: depStore.departures(for:),
+            serviceDetailsByID: depStore.serviceDetailsById
+        )
+        guard itinerary.hasServicesForAllLegs else { return nil }
 
         return Summary(
             firstLeg: firstLeg,
             firstDeparture: firstDeparture,
-            finalArrivalTime: completedLegCount == group.legs.count ? finalArrivalTime : nil,
-            completedLegCount: completedLegCount
+            finalArrivalTime: itinerary.finalArrivalTime
         )
-    }
-
-    private func selectDeparture(for leg: Journey, earliest: Date?) -> DepartureV2? {
-        let departures = depStore.departures(for: leg).filter { !$0.isCancelled }
-        if let earliest,
-           let match = departures.first(where: { departure in
-               guard let date = departureDate(departure) else { return false }
-               return date >= earliest
-           }) {
-            return match
-        }
-        return departures.first
-    }
-
-    private func arrivalInfo(for departure: DepartureV2, toCRS: String) -> (time: String?, date: Date?) {
-        guard let details = depStore.serviceDetailsById[departure.serviceID] else { return (nil, nil) }
-        let targetCRS = toCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        if let callingPoint = details.allStations.first(where: {
-            $0.crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == targetCRS
-        }) {
-            let display: String = {
-                if let actual = callingPoint.at, actual != "Cancelled" {
-                    return actual == "On time" ? callingPoint.st : actual
-                }
-                if let estimated = callingPoint.et, estimated != "Cancelled" {
-                    return estimated == "On time" ? callingPoint.st : estimated
-                }
-                return callingPoint.st
-            }()
-            return (display, parseHHmm(display))
-        }
-        if details.crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == targetCRS {
-            let display: String? = {
-                if let actual = details.ata, actual != "Cancelled" {
-                    return actual == "On time" ? details.sta : actual
-                }
-                return details.sta
-            }()
-            return (display, parseHHmm(display))
-        }
-        return (nil, nil)
     }
 
     private func detailedStatus(for departure: DepartureV2) -> (text: String, color: Color)? {
@@ -555,16 +510,25 @@ struct JourneyCard: View {
     }
 
     private func prefetchVisibleServiceDetails() async {
+        let requestedTaskID = prefetchTaskID
         let visibleCount = isExpanded ? upcomingDepartures.count : defaultDepartureCount
         var ids = upcomingDepartures.prefix(visibleCount).map(\.serviceID)
         for leg in group.legs.dropFirst() {
             ids.append(contentsOf: depStore.departures(for: leg).prefix(8).map(\.serviceID))
         }
-        await depStore.ensureServiceDetails(for: Array(Set(ids)))
+        let uniqueIDs = Array(Set(ids))
+        guard !uniqueIDs.isEmpty else { return }
+        isLoadingServiceDetails = true
+        defer {
+            if requestedTaskID == prefetchTaskID {
+                isLoadingServiceDetails = false
+            }
+        }
+        await depStore.ensureServiceDetails(for: uniqueIDs)
     }
 }
 
-private struct TrainLengthIndicator: View {
+struct TrainLengthIndicator: View {
     let cars: Int?
     let warningThreshold: Int
 
@@ -575,9 +539,13 @@ private struct TrainLengthIndicator: View {
 
     var body: some View {
         if let carCount {
-            ViewThatFits(in: .horizontal) {
-                formation(carCount)
-                shortenedFormation
+            HStack(spacing: 2) {
+                ViewThatFits(in: .horizontal) {
+                    formation(carCount)
+                    shortenedFormation
+                }
+                Text("x\(carCount)")
+                    .monospacedDigit()
             }
             .font(.system(size: 8, weight: .medium))
             .foregroundStyle(carCount <= warningThreshold ? Color.yellow : Color.secondary)
