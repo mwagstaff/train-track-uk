@@ -117,6 +117,76 @@ struct DepartureV2: Codable, Identifiable, Hashable {
     }
 }
 
+// MARK: - Independent train-loading service
+struct CoachLoadingV1: Codable, Identifiable, Hashable {
+    let number: String
+    let position: Int
+    let percentage: Int?
+    let band: String?
+    let coachClass: String?
+
+    var id: String { "\(position)-\(number)" }
+}
+
+struct ServiceLoadingV1: Codable, Hashable {
+    let serviceID: String?
+    let status: String
+    let rid: String?
+    let formationId: String?
+    let observedAt: String?
+    let ageSeconds: Int?
+    let coaches: [CoachLoadingV1]?
+    let reason: String?
+    let error: String?
+
+    var freshCoaches: [CoachLoadingV1]? {
+        guard status == "available", let coaches, coaches.contains(where: { $0.percentage != nil }) else {
+            return nil
+        }
+        return coaches
+    }
+}
+
+struct LoadingDetailsRequestV1: Encodable, Hashable {
+    let serviceID: String
+    let from: String
+    let to: String
+    let scheduledDeparture: String
+    let destinationCRS: String?
+    let length: Int?
+}
+
+struct LoadingDetailsBatchRequestV1: Encodable {
+    let services: [LoadingDetailsRequestV1]
+}
+
+struct LoadingDetailsBatchResponseV1: Decodable {
+    let services: [String: ServiceLoadingV1]
+}
+
+enum CarriageLoadingBand: Equatable {
+    case green
+    case amber
+    case red
+    case unknown
+
+    static func value(for percentage: Int?) -> CarriageLoadingBand {
+        guard let percentage else { return .unknown }
+        if percentage <= 33 { return .green }
+        if percentage <= 66 { return .amber }
+        return .red
+    }
+
+    var accessibilityDescription: String {
+        switch self {
+        case .green: return "low loading"
+        case .amber: return "moderate loading"
+        case .red: return "high loading"
+        case .unknown: return "loading unknown"
+        }
+    }
+}
+
 // MARK: - Service Details (shared shape with Watch)
 struct CallingPoint: Codable, Identifiable, Equatable {
     let locationName: String

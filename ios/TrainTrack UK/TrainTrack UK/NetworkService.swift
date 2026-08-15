@@ -20,6 +20,13 @@ enum ApiHost: String, CaseIterable, Identifiable {
         }
     }
 
+    var loadingBaseURL: String {
+        switch self {
+        case .prod: return "https://api.skynolimit.dev/train-track-loading/api/v1"
+        case .dev: return "http://Mikes-MacBook-Air.local:3001/api/v1"
+        }
+    }
+
     var hostDescription: String {
         switch self {
         case .prod: return "api.skynolimit.dev"
@@ -38,6 +45,13 @@ enum ApiHostPreference {
             return envBase
         }
         return (ApiHost(rawValue: store.string(forKey: storageKey) ?? "") ?? .prod).baseURL
+    }
+
+    static var currentLoadingBaseURL: String {
+        if let envBase = ProcessInfo.processInfo.environment["LOADING_API_BASE"], !envBase.isEmpty {
+            return envBase
+        }
+        return (ApiHost(rawValue: store.string(forKey: storageKey) ?? "") ?? .prod).loadingBaseURL
     }
 }
 
@@ -137,6 +151,7 @@ final class NetworkServicePhone {
 
     // Read the current host selection (production by default) from shared settings.
     private var base: String { ApiHostPreference.currentBaseURL }
+    private var loadingBase: String { ApiHostPreference.currentLoadingBaseURL }
     private var deviceToken: String { DeviceIdentity.deviceToken }
 
     private let jsonDecoder: JSONDecoder = {
@@ -284,5 +299,23 @@ final class NetworkServicePhone {
             }
         }
         return combined
+    }
+
+    func fetchLoadingDetails(requests: [LoadingDetailsRequestV1]) async throws -> [String: ServiceLoadingV1] {
+        guard !requests.isEmpty else { return [:] }
+        guard let url = URL(string: "\(loadingBase)/loading_details/batch") else {
+            throw PhoneNetworkError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 8
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
+        request.httpBody = try JSONEncoder().encode(LoadingDetailsBatchRequestV1(services: requests))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw PhoneNetworkError.noData
+        }
+        return try jsonDecoder.decode(LoadingDetailsBatchResponseV1.self, from: data).services
     }
 }

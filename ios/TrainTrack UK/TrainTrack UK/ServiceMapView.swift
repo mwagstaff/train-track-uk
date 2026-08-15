@@ -148,7 +148,11 @@ struct ServiceMapView: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
             } else if let length = serviceLength(), length > 0 {
-                TrainLengthIndicator(cars: length, warningThreshold: minShortTrainCars)
+                TrainLengthIndicator(
+                    cars: length,
+                    warningThreshold: minShortTrainCars,
+                    carriageLoading: depStore.loadingDetailsByServiceId[serviceID]?.freshCoaches
+                )
             } else {
                 HStack(spacing: 6) {
                     Text("Train length unknown")

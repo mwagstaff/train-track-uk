@@ -10,12 +10,14 @@ final class DeparturesStore: ObservableObject {
 
     @Published private(set) var departuresByPair: [String: [DepartureV2]] = [:]
     @Published private(set) var serviceDetailsById: [String: ServiceDetails] = [:]
+    @Published private(set) var loadingDetailsByServiceId: [String: ServiceLoadingV1] = [:]
     @Published private(set) var isInitialLoadInProgress = true
 
     private var timerCancellable: AnyCancellable?
     private var journeysCancellable: AnyCancellable?
     private var initialRefreshTask: Task<Void, Never>?
     private var lastWidgetReloadAt: Date? = nil
+    private var loadingRefreshInProgress = false
 
     private init() {
         // Remove data created by the retired pinned-journey feature.
@@ -77,6 +79,7 @@ final class DeparturesStore: ObservableObject {
                     existing: departuresByPair[key] ?? []
                 )
             }
+            await refreshLoading(for: map)
         } catch {
             // swallow errors for now
         }
@@ -144,6 +147,7 @@ final class DeparturesStore: ObservableObject {
         if pairs.isEmpty {
             if replacingExistingDepartures {
                 departuresByPair = [:]
+                loadingDetailsByServiceId = [:]
             }
             return
         }
@@ -161,6 +165,7 @@ final class DeparturesStore: ObservableObject {
                 }
             }
             reloadClosestFavouriteWidgetIfNeeded()
+            await refreshLoading(for: mergedMap)
         } catch {
             // swallow errors for now
         }
@@ -276,6 +281,57 @@ final class DeparturesStore: ObservableObject {
             candidate = Calendar.current.date(byAdding: .day, value: 1, to: candidate) ?? candidate
         }
         return candidate
+    }
+
+    private func refreshLoading(for departures: [String: [DepartureV2]]) async {
+        guard !loadingRefreshInProgress else { return }
+        let requests = loadingRequests(for: departures)
+        pruneLoadingDetailsToCurrentDepartures()
+        guard !requests.isEmpty else { return }
+        loadingRefreshInProgress = true
+        defer { loadingRefreshInProgress = false }
+        do {
+            let response = try await NetworkServicePhone.shared.fetchLoadingDetails(requests: requests)
+            for (serviceID, details) in response {
+                loadingDetailsByServiceId[serviceID] = details
+            }
+            pruneLoadingDetailsToCurrentDepartures()
+        } catch {
+            // Loading is an optional enhancement. Existing departure data remains usable.
+        }
+    }
+
+    private func loadingRequests(for departures: [String: [DepartureV2]]) -> [LoadingDetailsRequestV1] {
+        var seenServiceIDs = Set<String>()
+        var requests: [LoadingDetailsRequestV1] = []
+        for (key, services) in departures {
+            let stations = key.split(separator: "_", maxSplits: 1).map(String.init)
+            guard stations.count == 2 else { continue }
+            for departure in services.prefix(8) where departure.serviceType.lowercased() != "bus" {
+                guard seenServiceIDs.insert(departure.serviceID).inserted else { continue }
+                requests.append(LoadingDetailsRequestV1(
+                    serviceID: departure.serviceID,
+                    from: stations[0],
+                    to: stations[1],
+                    scheduledDeparture: scheduledDepartureISO(for: departure),
+                    destinationCRS: departure.destination.first?.crs,
+                    length: departure.length
+                ))
+            }
+        }
+        return Array(requests.prefix(50))
+    }
+
+    private func scheduledDepartureISO(for departure: DepartureV2) -> String {
+        guard let date = parseHHmm(departure.departureTime.scheduled) else {
+            return departure.departureTime.scheduled
+        }
+        return ISO8601DateFormatter().string(from: date)
+    }
+
+    private func pruneLoadingDetailsToCurrentDepartures() {
+        let activeServiceIDs = Set(departuresByPair.values.flatMap { $0.map(\.serviceID) })
+        loadingDetailsByServiceId = loadingDetailsByServiceId.filter { activeServiceIDs.contains($0.key) }
     }
 
 }

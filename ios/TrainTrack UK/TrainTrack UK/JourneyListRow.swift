@@ -373,7 +373,8 @@ struct JourneyCard: View {
             if !summary.firstDeparture.isCancelled {
                 TrainLengthIndicator(
                     cars: summary.firstDeparture.length,
-                    warningThreshold: minShortTrainCars
+                    warningThreshold: minShortTrainCars,
+                    carriageLoading: depStore.loadingDetailsByServiceId[summary.firstDeparture.serviceID]?.freshCoaches
                 )
             }
             if !summary.firstDeparture.isCancelled {
@@ -544,10 +545,25 @@ struct JourneyCard: View {
 struct TrainLengthIndicator: View {
     let cars: Int?
     let warningThreshold: Int
+    let carriageLoading: [CoachLoadingV1]?
+
+    init(cars: Int?, warningThreshold: Int, carriageLoading: [CoachLoadingV1]? = nil) {
+        self.cars = cars
+        self.warningThreshold = warningThreshold
+        self.carriageLoading = carriageLoading
+    }
 
     private var carCount: Int? {
-        guard let cars, cars > 0 else { return nil }
-        return cars
+        let loadingCount = carriageLoading?.count ?? 0
+        let knownCount = max(cars ?? 0, loadingCount)
+        return knownCount > 0 ? knownCount : nil
+    }
+
+    private var orderedLoading: [CoachLoadingV1] {
+        (carriageLoading ?? []).sorted {
+            if $0.position == $1.position { return $0.number < $1.number }
+            return $0.position < $1.position
+        }
     }
 
     var body: some View {
@@ -559,22 +575,20 @@ struct TrainLengthIndicator: View {
                 }
                 Text("x\(carCount)")
                     .monospacedDigit()
+                    .foregroundStyle(carCount <= warningThreshold ? Color.yellow : Color.secondary)
             }
             .font(.system(size: 8, weight: .medium))
-            .foregroundStyle(carCount <= warningThreshold ? Color.yellow : Color.secondary)
             .frame(height: 9, alignment: .leading)
-            .accessibilityLabel("\(carCount) car train\(carCount <= warningThreshold ? ", short train warning" : "")")
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilityDescription(carCount: carCount))
         }
     }
 
     private func formation(_ count: Int) -> some View {
         HStack(spacing: 1) {
-            terminatingCar(facingRight: true)
-            ForEach(1..<max(1, count - 1), id: \.self) { _ in
-                Image(systemName: "train.side.middle.car")
-            }
-            if count > 1 {
-                terminatingCar(facingRight: false)
+            ForEach(0..<count, id: \.self) { index in
+                carImage(index: index, count: count)
+                    .foregroundStyle(color(for: index, carCount: count))
             }
         }
         .fixedSize(horizontal: true, vertical: false)
@@ -582,17 +596,59 @@ struct TrainLengthIndicator: View {
     }
 
     private var shortenedFormation: some View {
-        HStack(spacing: 2) {
-            terminatingCar(facingRight: true)
-            Image(systemName: "ellipsis")
-            terminatingCar(facingRight: false)
+        HStack(spacing: 1) {
+            ForEach(0..<(carCount ?? 0), id: \.self) { index in
+                RoundedRectangle(cornerRadius: 0.75)
+                    .fill(color(for: index, carCount: carCount ?? 0))
+                    .frame(width: 4, height: 7)
+            }
         }
         .fixedSize(horizontal: true, vertical: false)
         .lineLimit(1)
     }
 
-    private func terminatingCar(facingRight: Bool) -> some View {
-        Image(systemName: "train.side.front.car")
-            .scaleEffect(x: facingRight ? -1 : 1, y: 1)
+    @ViewBuilder
+    private func carImage(index: Int, count: Int) -> some View {
+        if index == 0 {
+            Image(systemName: "train.side.front.car")
+                .scaleEffect(x: -1, y: 1)
+        } else if index == count - 1 {
+            Image(systemName: "train.side.front.car")
+        } else {
+            Image(systemName: "train.side.middle.car")
+        }
+    }
+
+    private func color(for index: Int, carCount: Int) -> Color {
+        if let coach = loading(for: index) {
+            switch CarriageLoadingBand.value(for: coach.percentage) {
+            case .green: return .green
+            case .amber: return .orange
+            case .red: return .red
+            case .unknown: break
+            }
+        }
+        return carCount <= warningThreshold ? .yellow : .secondary
+    }
+
+    private func loading(for index: Int) -> CoachLoadingV1? {
+        if let positioned = orderedLoading.first(where: { $0.position == index + 1 }) {
+            return positioned
+        }
+        guard orderedLoading.indices.contains(index) else { return nil }
+        return orderedLoading[index]
+    }
+
+    private func accessibilityDescription(carCount: Int) -> String {
+        var components = ["\(carCount) car train"]
+        if carCount <= warningThreshold {
+            components.append("short train warning")
+        }
+        for coach in orderedLoading {
+            let band = CarriageLoadingBand.value(for: coach.percentage)
+            let percentage = coach.percentage.map { ", \($0) percent" } ?? ""
+            components.append("Coach \(coach.number), \(band.accessibilityDescription)\(percentage)")
+        }
+        return components.joined(separator: ". ")
     }
 }

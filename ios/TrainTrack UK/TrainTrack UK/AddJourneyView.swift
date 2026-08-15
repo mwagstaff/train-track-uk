@@ -58,10 +58,18 @@ struct AddJourneyView: View {
                 if stopInputs.count < maxStops {
                     Section {
                         Button {
-                            addStop()
+                            addStop(.intermediate)
                         } label: {
-                            Label("Add another stop", systemImage: "plus.circle")
+                            Label("Add intermediate stop", systemImage: "plus.circle")
                         }
+
+                        Button {
+                            addStop(.destination)
+                        } label: {
+                            Label("Extend journey", systemImage: "arrow.right.circle")
+                        }
+                    } footer: {
+                        Text("Intermediate stops are inserted before your destination.")
                     }
                 }
 
@@ -171,10 +179,13 @@ struct AddJourneyView: View {
         return StationsService.shared.search(trimmed).first
     }
 
-    private func addStop() {
+    private func addStop(_ placement: JourneyStopPlacement) {
         guard stopInputs.count < maxStops else { return }
         let input = StationInput()
-        stopInputs.append(input)
+        stopInputs.insert(
+            input,
+            at: placement.insertionIndex(existingStopCount: stopInputs.count)
+        )
         focusedField = .stop(input.id)
         scrollTarget = input.id
     }
@@ -223,7 +234,7 @@ struct AddJourneyView: View {
     private func stopTitle(for id: UUID) -> String {
         guard let index = stopInputs.firstIndex(where: { $0.id == id }) else { return "Destination" }
         if index == stopInputs.count - 1 { return "Destination" }
-        return "Stop \(index + 2)"
+        return "Intermediate stop \(index + 1)"
     }
 
     @ViewBuilder
@@ -250,13 +261,6 @@ struct AddJourneyView: View {
                     input.wrappedValue.query = ""
                     focusedField = focus
                 }
-                if allowRemove, let onRemove {
-                    Button(role: .destructive) {
-                        onRemove()
-                    } label: {
-                        Label("Remove stop", systemImage: "minus.circle")
-                    }
-                }
             } else {
                 StationSuggestions(query: input.wrappedValue.query) { station in
                     input.wrappedValue.selected = station
@@ -268,6 +272,27 @@ struct AddJourneyView: View {
                     }
                 }
             }
+            if allowRemove, let onRemove {
+                Button(role: .destructive) {
+                    onRemove()
+                } label: {
+                    Label("Remove stop", systemImage: "minus.circle")
+                }
+            }
+        }
+    }
+}
+
+enum JourneyStopPlacement {
+    case intermediate
+    case destination
+
+    func insertionIndex(existingStopCount: Int) -> Int {
+        switch self {
+        case .intermediate:
+            return max(existingStopCount - 1, 0)
+        case .destination:
+            return existingStopCount
         }
     }
 }

@@ -11,6 +11,16 @@ import Testing
 
 struct TrainTrack_UKTests {
 
+    @Test func journeyStopPlacementPreservesTheCurrentDestination() {
+        #expect(JourneyStopPlacement.intermediate.insertionIndex(existingStopCount: 1) == 0)
+        #expect(JourneyStopPlacement.intermediate.insertionIndex(existingStopCount: 3) == 2)
+    }
+
+    @Test func journeyStopPlacementCanExtendBeyondTheCurrentDestination() {
+        #expect(JourneyStopPlacement.destination.insertionIndex(existingStopCount: 1) == 1)
+        #expect(JourneyStopPlacement.destination.insertionIndex(existingStopCount: 3) == 3)
+    }
+
     @Test func departureRequiresAccuracyEnvelopeBeyondHysteresis() {
         #expect(!StationDetectionPolicy.isDefinitelyOutsideStation(
             rawDistance: 340,
