@@ -1,8 +1,9 @@
 import { createApp } from "./lib/app.js";
 import { loadConfig, validateConfig } from "./lib/config.js";
-import { decodeDarwinBody, messageType, parseDarwinMessage } from "./lib/darwin.js";
+import { processDarwinFrame } from "./lib/consumer.js";
 import { HealthMonitor } from "./lib/health.js";
 import { createMetrics } from "./lib/metrics.js";
+import { RecentDarwinEventCache } from "./lib/recent-events.js";
 import { LoadingResolver } from "./lib/resolver.js";
 import { StaffDepartureBoardClient } from "./lib/staff-board.js";
 import { MongoLoadingStore } from "./lib/store.js";
@@ -16,8 +17,14 @@ const store = new MongoLoadingStore({
   uri: config.mongodbUri,
   databaseName: config.mongodbDatabase,
   ttlSeconds: config.ttlSeconds,
+  interestSeconds: config.interestSeconds,
 });
 await store.init();
+
+const recentEvents = new RecentDarwinEventCache({
+  ttlSeconds: config.recentCacheSeconds,
+  maxEvents: config.recentCacheMaxEvents,
+});
 
 const staffClient = new StaffDepartureBoardClient({
   ...config.staff,
@@ -27,29 +34,18 @@ const resolver = new LoadingResolver({
   store,
   staffClient,
   staleSeconds: config.loadingStaleSeconds,
+  recentEvents,
   onResolution: (result) => metrics.onResolution(result),
+  onReplay: (type, stored) => metrics.onReplay(type, stored),
 });
 
 let processChain = Promise.resolve();
-const processFrame = async (frame) => {
-  const type = messageType(frame.headers);
-  metrics.onStompMessage(type);
-  if (type && !["SC", "SF", "LO"].includes(type)) return;
-  const interestedRids = store.interestedRids();
-  if (interestedRids.length === 0) return;
-  const xml = decodeDarwinBody(frame.body);
-  if (!interestedRids.some((rid) => xml.includes(rid))) return;
-  for (const event of parseDarwinMessage(xml, frame.headers)) {
-    const stored = await store.applyEvent(event);
-    metrics.onEvent(event.type, stored);
-  }
-};
 
 const stomp = new DarwinStompClient({
   ...config.darwin,
   onMessage: (frame) => {
     processChain = processChain
-      .then(() => processFrame(frame))
+      .then(() => processDarwinFrame({ frame, store, recentEvents, metrics }))
       .catch((error) => console.error("[darwin] message processing failed", error?.message ?? error));
   },
   onState: (status) => {
@@ -69,12 +65,17 @@ stomp.start();
 
 const app = createApp({ resolver, health, metrics, maxBatchSize: config.maxBatchSize });
 const server = app.listen(config.port, () => {
-  console.log(`Train loading service listening on port ${config.port}; TTL=${config.ttlSeconds}s`);
+  console.log(
+    `Train loading service listening on port ${config.port}; `
+    + `interest=${config.interestSeconds}s cache=${config.recentCacheSeconds}s TTL=${config.ttlSeconds}s`,
+  );
 });
 
 const pruneTimer = setInterval(() => {
   store.pruneInterests();
+  recentEvents.prune();
   metrics.setInterests(store.activeInterestCount());
+  metrics.setRecentCacheEvents(recentEvents.size());
 }, 60_000);
 pruneTimer.unref?.();
 

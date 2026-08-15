@@ -27,8 +27,19 @@ export function createMetrics() {
   });
   const events = new client.Counter({
     name: "train_loading_events_total",
-    help: "Parsed Darwin events by type and storage result",
+    help: "Parsed Darwin events by type and active-interest match result",
     labelNames: ["event_type", "result"],
+    registers: [registry],
+  });
+  const replayedEvents = new client.Counter({
+    name: "train_loading_replayed_events_total",
+    help: "Recent cached Darwin events replayed when an interest is registered",
+    labelNames: ["event_type", "result"],
+    registers: [registry],
+  });
+  const recentCacheEvents = new client.Gauge({
+    name: "train_loading_recent_cache_events",
+    help: "Formation and loading events retained in the pre-interest memory cache",
     registers: [registry],
   });
   const interests = new client.Gauge({
@@ -70,7 +81,9 @@ export function createMetrics() {
     },
     onStompMessage(type) { stompMessages.inc({ message_type: type ?? "unknown" }); },
     onSequenceGap() { sequenceGaps.inc(); },
-    onEvent(type, stored) { events.inc({ event_type: type, result: stored ? "stored" : "ignored" }); },
+    onEvent(type, matched) { events.inc({ event_type: type, result: matched ? "matched" : "ignored" }); },
+    onReplay(type, stored) { replayedEvents.inc({ event_type: type, result: stored ? "stored" : "ignored" }); },
+    setRecentCacheEvents(value) { recentCacheEvents.set(value); },
     setInterests(value) { interests.set(value); },
     onResolution(result) { resolutions.inc({ result }); },
     onStaffRequest({ outcome, durationSeconds }) {

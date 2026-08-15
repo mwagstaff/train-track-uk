@@ -30,3 +30,15 @@ export function ukClockTime(value) {
   const parts = ukDateParts(date);
   return `${parts.hour}:${parts.minute}`;
 }
+
+export function ukCalendarDate(value) {
+  if (!value) return null;
+  const string = String(value);
+  const localDate = string.match(/^(\d{4}-\d{2}-\d{2})(?:T|$)/);
+  if (localDate && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(string)) return localDate[1];
+
+  const date = value instanceof Date ? value : new Date(string);
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = ukDateParts(date);
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}

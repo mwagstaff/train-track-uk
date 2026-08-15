@@ -84,4 +84,6 @@ test("admin page and active services endpoint are available without authenticati
   assert.match(pageResponse.headers.get("content-type"), /^text\/html/);
   assert.match(page, /Live carriage loading/);
   assert.match(page, /id="services"/);
+  assert.match(page, /formation only/);
+  assert.match(page, /waiting/);
 });

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadConfig } from "../lib/config.js";
 import {
+  activeUntilForDeparture,
   compareScheduledDepartures,
   loadingBand,
   mappingKey,
@@ -11,7 +12,23 @@ import {
 } from "../lib/store.js";
 
 test("defaults retention to 24 hours", () => {
-  assert.equal(loadConfig({}).ttlSeconds, 86_400);
+  const config = loadConfig({});
+  assert.equal(config.ttlSeconds, 86_400);
+  assert.equal(config.interestSeconds, 7_200);
+  assert.equal(config.recentCacheSeconds, 7_200);
+  assert.equal(config.recentCacheMaxEvents, 10_000);
+});
+
+test("active interests expire two hours after a dated scheduled departure", () => {
+  const now = new Date("2026-08-15T08:00:00.000Z");
+  assert.equal(
+    activeUntilForDeparture("2026-08-15T10:30:00+01:00", now, 7_200).toISOString(),
+    "2026-08-15T11:30:00.000Z",
+  );
+  assert.equal(
+    activeUntilForDeparture("10:30", now, 7_200).toISOString(),
+    "2026-08-15T10:00:00.000Z",
+  );
 });
 
 test("uses the requested loading thresholds", () => {
@@ -38,15 +55,16 @@ test("mapping keys include journey context", () => {
   assert.equal(mappingKey({ serviceID: "id", from: "kth", to: "vic", scheduledDeparture: "22:12" }), "id|KTH|VIC|22:12");
 });
 
-test("admin services sort by scheduled departure time", () => {
+test("admin services sort by latest scheduled departure first", () => {
   const services = [
-    { serviceID: "late", rid: "3", scheduledDeparture: "22:12" },
+    { serviceID: "late", rid: "3", scheduledDeparture: "2026-08-15T22:12:00+01:00" },
     { serviceID: "unknown", rid: "4", scheduledDeparture: null },
-    { serviceID: "early-b", rid: "2", scheduledDeparture: "07:05" },
-    { serviceID: "early-a", rid: "1", scheduledDeparture: "07:05" },
+    { serviceID: "early-b", rid: "2", scheduledDeparture: "2026-08-15T07:05:00+01:00" },
+    { serviceID: "yesterday", rid: "5", scheduledDeparture: "2026-08-14T23:55:00+01:00" },
+    { serviceID: "early-a", rid: "1", scheduledDeparture: "2026-08-15T07:05:00+01:00" },
   ];
   services.sort(compareScheduledDepartures);
-  assert.deepEqual(services.map((service) => service.serviceID), ["early-a", "early-b", "late", "unknown"]);
+  assert.deepEqual(services.map((service) => service.serviceID), ["late", "early-a", "early-b", "yesterday", "unknown"]);
 });
 
 test("admin services are limited to active in-memory interests", async () => {
@@ -64,7 +82,7 @@ test("admin services are limited to active in-memory interests", async () => {
           toArray: async () => [{
             _id: "active-rid",
             serviceID: "service-1",
-            context: { from: "LBG", to: "ORP", scheduledDeparture: "00:59" },
+            context: { from: "LBG", to: "ORP", scheduledDeparture: "2026-08-13T23:59:00Z" },
           }],
         }),
       };
@@ -86,6 +104,8 @@ test("admin services are limited to active in-memory interests", async () => {
     startStation: "LBG",
     endStation: "ORP",
     scheduledDeparture: "00:59",
+    scheduledDepartureDate: "2026-08-14",
+    departureDayOffset: -1,
     rid: "active-rid",
     status: "available",
     location: { tiploc: "LNDNBDE" },

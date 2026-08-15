@@ -110,6 +110,32 @@
 
     .summary strong { color: var(--ink); font-weight: 650; }
 
+    .summary-states {
+      display: inline-flex;
+      flex-wrap: wrap;
+      gap: 0.35rem 0.75rem;
+      margin-left: 0.75rem;
+    }
+
+    .summary-state {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      white-space: nowrap;
+    }
+
+    .summary-state::before {
+      content: "";
+      width: 0.42rem;
+      height: 0.42rem;
+      border-radius: 50%;
+      background: var(--line);
+    }
+
+    .summary-state--available::before { background: var(--green); }
+    .summary-state--stale::before { background: var(--amber); }
+    .summary-state--formation_only::before { background: var(--blue); }
+
     #error {
       display: none;
       margin: 0 0 1rem;
@@ -174,6 +200,21 @@
       color: var(--ink);
       font-size: 1rem;
       font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .day-offset {
+      display: inline-block;
+      min-width: 1.6rem;
+      margin-left: 0.35rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0.05rem 0.3rem;
+      color: var(--muted);
+      font-size: 0.65rem;
+      line-height: 1.35;
+      text-align: center;
+      vertical-align: 0.1rem;
     }
 
     .loading-cell { min-width: 23rem; }
@@ -322,6 +363,13 @@
       return hours * 60 + minutes;
     }
 
+    function departureSortValue(service) {
+      const minutes = departureMinutes(service.scheduledDeparture);
+      if (!Number.isFinite(minutes)) return Number.NEGATIVE_INFINITY;
+      if (!service.scheduledDepartureDate) return minutes;
+      return Date.parse(`${service.scheduledDepartureDate}T00:00:00Z`) / 60_000 + minutes;
+    }
+
     function relativeTime(value) {
       if (!value) return "Awaiting Darwin";
       const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
@@ -368,7 +416,16 @@
       row.append(textElement("td", service.serviceID ?? "RID only", "identifier"));
       row.append(textElement("td", service.startStation ?? "—", "station"));
       row.append(textElement("td", service.endStation ?? "—", "station"));
-      row.append(textElement("td", service.scheduledDeparture ?? "—", "departure"));
+      const departure = textElement("td", service.scheduledDeparture ?? "—", "departure");
+      if (Number.isInteger(service.departureDayOffset) && service.departureDayOffset !== 0) {
+        const offset = service.departureDayOffset > 0
+          ? `+${service.departureDayOffset}`
+          : String(service.departureDayOffset);
+        const indicator = textElement("span", offset, "day-offset");
+        indicator.title = `Scheduled ${Math.abs(service.departureDayOffset)} day${Math.abs(service.departureDayOffset) === 1 ? "" : "s"} ${service.departureDayOffset < 0 ? "ago" : "ahead"}`;
+        departure.append(indicator);
+      }
+      row.append(departure);
       row.append(textElement("td", service.rid, "identifier"));
       row.append(loadingCell(service));
 
@@ -389,7 +446,7 @@
 
     function render(services) {
       const ordered = [...services].sort((left, right) => {
-        const difference = departureMinutes(left.scheduledDeparture) - departureMinutes(right.scheduledDeparture);
+        const difference = departureSortValue(right) - departureSortValue(left);
         return difference || (left.serviceID ?? left.rid).localeCompare(right.serviceID ?? right.rid);
       });
       body.replaceChildren();
@@ -405,10 +462,27 @@
         ordered.forEach((service) => body.append(serviceRow(service)));
       }
 
-      const available = ordered.filter((service) => service.status === "available").length;
+      const counts = ordered.reduce((result, service) => {
+        result[service.status] = (result[service.status] ?? 0) + 1;
+        return result;
+      }, {});
+      const states = document.createElement("span");
+      states.className = "summary-states";
+      for (const [status, label] of [
+        ["available", "fresh"],
+        ["stale", "stale"],
+        ["formation_only", "formation only"],
+        ["waiting_for_update", "waiting"],
+      ]) {
+        states.append(textElement(
+          "span",
+          `${counts[status] ?? 0} ${label}`,
+          `summary-state summary-state--${status}`,
+        ));
+      }
       summary.replaceChildren(
         textElement("strong", `${ordered.length} active service${ordered.length === 1 ? "" : "s"}`),
-        document.createTextNode(` · ${available} with live loading`),
+        states,
       );
     }
 

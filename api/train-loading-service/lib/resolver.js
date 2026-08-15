@@ -9,11 +9,30 @@ export function validateLoadingRequest(request) {
 }
 
 export class LoadingResolver {
-  constructor({ store, staffClient, staleSeconds, onResolution = () => {} }) {
+  constructor({
+    store,
+    staffClient,
+    staleSeconds,
+    recentEvents,
+    onResolution = () => {},
+    onReplay = () => {},
+  }) {
     this.store = store;
     this.staffClient = staffClient;
     this.staleSeconds = staleSeconds;
+    this.recentEvents = recentEvents;
     this.onResolution = onResolution;
+    this.onReplay = onReplay;
+  }
+
+  async registerInterest(interest) {
+    await this.store.registerInterest(interest);
+    const events = this.recentEvents?.eventsForRid(interest.rid) ?? [];
+    for (const event of events) {
+      const stored = await this.store.applyEvent(event);
+      this.onReplay(event.type, stored);
+    }
+    if (events.length > 0) this.recentEvents.deleteRid(interest.rid);
   }
 
   async resolve(request) {
@@ -36,7 +55,7 @@ export class LoadingResolver {
       mapping = await this.store.saveMapping(request, service);
     }
 
-    await this.store.registerInterest({
+    await this.registerInterest({
       rid: mapping.rid,
       serviceID: request.serviceID,
       context: {
@@ -58,13 +77,13 @@ export class LoadingResolver {
         error: "A cold serviceID lookup also requires from, to, and scheduledDeparture",
       };
     }
-    await this.store.registerInterest({ rid: mapping.rid, serviceID, context: mapping.context });
+    await this.registerInterest({ rid: mapping.rid, serviceID, context: mapping.context });
     return this.details(mapping.rid, mapping.context, mapping);
   }
 
   async resolveRid(rid, scheduledDeparture) {
     if (!rid) return { status: "invalid", error: "rid is required" };
-    await this.store.registerInterest({ rid, context: { scheduledDeparture } });
+    await this.registerInterest({ rid, context: { scheduledDeparture } });
     return this.details(rid, { scheduledDeparture });
   }
 

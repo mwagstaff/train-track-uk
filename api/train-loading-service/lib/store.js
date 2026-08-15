@@ -1,5 +1,5 @@
 import { MongoClient } from "mongodb";
-import { ukClockTime } from "./time.js";
+import { ukCalendarDate, ukClockTime } from "./time.js";
 
 const COLLECTIONS = Object.freeze({
   interests: "loading_interests",
@@ -58,22 +58,36 @@ export function mappingKey(request) {
 }
 
 export function compareScheduledDepartures(left, right) {
-  const minutes = (value) => {
-    const clockTime = normalizeClockTime(value);
-    if (!clockTime) return Number.POSITIVE_INFINITY;
+  const sortValue = (service) => {
+    const clockTime = normalizeClockTime(service.scheduledDeparture);
+    if (!clockTime) return Number.NEGATIVE_INFINITY;
     const [hours, mins] = clockTime.split(":").map(Number);
-    return hours * 60 + mins;
+    const date = service.scheduledDepartureDate ?? ukCalendarDate(service.scheduledDeparture);
+    if (!date) return hours * 60 + mins;
+    return Date.parse(`${date}T00:00:00Z`) / 60_000 + hours * 60 + mins;
   };
-  const timeDifference = minutes(left.scheduledDeparture) - minutes(right.scheduledDeparture);
+  const timeDifference = sortValue(right) - sortValue(left);
   if (timeDifference !== 0) return timeDifference;
   return (left.serviceID ?? left.rid).localeCompare(right.serviceID ?? right.rid);
 }
 
+export function activeUntilForDeparture(scheduledDeparture, now, interestSeconds) {
+  const parsed = new Date(scheduledDeparture);
+  const base = scheduledDeparture && !Number.isNaN(parsed.getTime()) ? parsed : now;
+  return new Date(base.getTime() + interestSeconds * 1_000);
+}
+
+function calendarDayDifference(from, to) {
+  if (!from || !to) return null;
+  return Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
+}
+
 export class MongoLoadingStore {
-  constructor({ uri, databaseName, ttlSeconds, now = () => new Date() }) {
+  constructor({ uri, databaseName, ttlSeconds, interestSeconds = 2 * 60 * 60, now = () => new Date() }) {
     this.uri = uri;
     this.databaseName = databaseName ?? databaseNameFromUri(uri) ?? "train_loading";
     this.ttlSeconds = ttlSeconds;
+    this.interestSeconds = interestSeconds;
     this.now = now;
     this.client = null;
     this.db = null;
@@ -115,11 +129,13 @@ export class MongoLoadingStore {
   async reloadInterests() {
     const now = this.now();
     const interests = await this.collection(COLLECTIONS.interests)
-      .find({ expiresAt: { $gt: now } }, { projection: { _id: 1, expiresAt: 1 } })
+      .find({ expiresAt: { $gt: now } }, { projection: { _id: 1, activeUntil: 1, context: 1 } })
       .toArray();
     this.activeInterests.clear();
     for (const interest of interests) {
-      this.activeInterests.set(interest._id, interest.expiresAt);
+      const activeUntil = interest.activeUntil
+        ?? activeUntilForDeparture(interest.context?.scheduledDeparture, now, this.interestSeconds);
+      if (activeUntil > now) this.activeInterests.set(interest._id, activeUntil);
     }
   }
 
@@ -150,17 +166,15 @@ export class MongoLoadingStore {
     return [...this.activeInterests.keys()];
   }
 
-  interestExpiry(rid) {
-    return this.activeInterests.get(rid) ?? this.expiresAt();
-  }
-
   async registerInterest({ rid, serviceID, context, service }) {
     const now = this.now();
     const expiresAt = this.expiresAt();
-    this.activeInterests.set(rid, expiresAt);
+    const activeUntil = activeUntilForDeparture(context?.scheduledDeparture, now, this.interestSeconds);
+    if (activeUntil > now) this.activeInterests.set(rid, activeUntil);
+    else this.activeInterests.delete(rid);
     await this.collection(COLLECTIONS.interests).updateOne(
       { _id: rid },
-      { $set: defined(Object.entries({ serviceID, context, updatedAt: now, expiresAt })) },
+      { $set: defined(Object.entries({ serviceID, context, activeUntil, updatedAt: now, expiresAt })) },
       { upsert: true },
     );
 
@@ -173,10 +187,10 @@ export class MongoLoadingStore {
     if (service) {
       await this.seedFromStaffService(rid, service, expiresAt);
     }
-    return expiresAt;
+    return activeUntil;
   }
 
-  async seedFromStaffService(rid, service, expiresAt = this.interestExpiry(rid)) {
+  async seedFromStaffService(rid, service, expiresAt = this.expiresAt()) {
     const now = this.now();
     await this.collection(COLLECTIONS.services).updateOne(
       { _id: rid },
@@ -260,7 +274,7 @@ export class MongoLoadingStore {
 
   async applyEvent(event) {
     if (!this.hasInterest(event.rid)) return false;
-    const expiresAt = this.interestExpiry(event.rid);
+    const expiresAt = this.expiresAt();
     const now = this.now();
 
     if (event.type === "deactivated") {
@@ -415,11 +429,14 @@ export class MongoLoadingStore {
         scheduledDeparture: context.scheduledDeparture,
         staleSeconds,
       });
+      const scheduledDepartureDate = ukCalendarDate(context.scheduledDeparture);
       return {
         serviceID: interest.serviceID ?? mapping?.serviceID ?? null,
         startStation: context.from ?? null,
         endStation: context.to ?? null,
         scheduledDeparture: normalizeClockTime(context.scheduledDeparture),
+        scheduledDepartureDate,
+        departureDayOffset: calendarDayDifference(ukCalendarDate(this.now()), scheduledDepartureDate),
         rid: interest._id,
         status: loading.status,
         location: loading.location,

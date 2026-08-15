@@ -9,6 +9,9 @@ export function loadConfig(env = process.env) {
     mongodbUri: env.MONGODB_URI_TRAIN_LOADING ?? "mongodb://localhost:27017/train_loading",
     mongodbDatabase: env.MONGODB_DATABASE_TRAIN_LOADING,
     ttlSeconds: integer(env.TRAIN_LOADING_TTL_SECONDS, 24 * 60 * 60),
+    interestSeconds: integer(env.TRAIN_LOADING_INTEREST_SECONDS, 2 * 60 * 60),
+    recentCacheSeconds: integer(env.TRAIN_LOADING_RECENT_CACHE_SECONDS, 2 * 60 * 60),
+    recentCacheMaxEvents: integer(env.TRAIN_LOADING_RECENT_CACHE_MAX_EVENTS, 10_000),
     loadingStaleSeconds: integer(env.TRAIN_LOADING_STALE_SECONDS, 10 * 60),
     maxBatchSize: integer(env.TRAIN_LOADING_MAX_BATCH_SIZE, 50),
     staff: {

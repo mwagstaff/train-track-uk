@@ -59,8 +59,15 @@ struct MyJourneysView: View {
         filteredJourneys.sorted { $0.startStation.name < $1.startStation.name }
     }
 
+    private enum GroupID: Hashable {
+        case all
+        case veryClose
+        case moderatelyClose
+        case far
+    }
+
     private struct Group: Identifiable {
-        let id = UUID()
+        let id: GroupID
         let title: String
         let items: [JourneyGroup]
     }
@@ -91,6 +98,7 @@ struct MyJourneysView: View {
         guard location.lastKnownCoordinate != nil else {
             return [
                 Group(
+                    id: .all,
                     title: "My Journeys",
                     items: filteredJourneys.sorted { $0.startStation.name < $1.startStation.name }
                 )
@@ -107,9 +115,9 @@ struct MyJourneysView: View {
             else { far.append(j) }
         }
         return [
-            Group(title: "Very close (<\(formatMiles(veryCloseMiles)) miles)", items: veryClose),
-            Group(title: "Moderately close (≤\(formatMiles(moderatelyCloseMiles)) miles)", items: moderately),
-            Group(title: "Far away (>\(formatMiles(moderatelyCloseMiles)) miles)", items: far)
+            Group(id: .veryClose, title: "Very close (<\(formatMiles(veryCloseMiles)) miles)", items: veryClose),
+            Group(id: .moderatelyClose, title: "Moderately close (≤\(formatMiles(moderatelyCloseMiles)) miles)", items: moderately),
+            Group(id: .far, title: "Far away (>\(formatMiles(moderatelyCloseMiles)) miles)", items: far)
         ]
     }
 

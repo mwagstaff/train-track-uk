@@ -48,3 +48,35 @@ test("does not register an interest for an unresolved request", async () => {
   assert.equal(result.status, "unresolved");
   assert.equal(registered, false);
 });
+
+test("replays recent Darwin events immediately after registering an interest", async () => {
+  const calls = [];
+  const event = { type: "loading", rid: "rid-1", formationId: "fid-1", coaches: [] };
+  const recentEvents = {
+    eventsForRid: (rid) => rid === "rid-1" ? [event] : [],
+    deleteRid: (rid) => calls.push(["delete", rid]),
+  };
+  const resolver = new LoadingResolver({
+    store: {
+      registerInterest: async (interest) => calls.push(["register", interest.rid]),
+      applyEvent: async (value) => {
+        calls.push(["apply", value]);
+        return true;
+      },
+      getLoadingDetails: async (rid) => ({ status: "available", rid, coaches: [] }),
+    },
+    staffClient: {},
+    staleSeconds: 600,
+    recentEvents,
+    onReplay: (type, stored) => calls.push(["metric", type, stored]),
+  });
+
+  const result = await resolver.resolveRid("rid-1", "2026-08-15T10:30:00+01:00");
+  assert.equal(result.status, "available");
+  assert.deepEqual(calls, [
+    ["register", "rid-1"],
+    ["apply", event],
+    ["metric", "loading", true],
+    ["delete", "rid-1"],
+  ]);
+});

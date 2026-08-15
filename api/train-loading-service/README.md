@@ -7,23 +7,29 @@ back without changing departure or service-detail requests.
 ## What is retained
 
 The service consumes the nationwide Darwin feed, but stores formation/loading
-events only for a `rid` requested by a user through this API. An interest,
-service-ID mapping, formation, and loading update all carry an `expiresAt` value.
-MongoDB TTL indexes delete them after `TRAIN_LOADING_TTL_SECONDS` (24 hours by
-default). Mongo's TTL monitor is asynchronous, so physical deletion can occur a
-short time after the deadline.
+events in MongoDB only for a `rid` requested by a user through this API. Service
+interests remain active until the scheduled departure plus
+`TRAIN_LOADING_INTEREST_SECONDS` (two hours by default). Mongo records are kept
+independently for `TRAIN_LOADING_TTL_SECONDS` (24 hours by default), then removed
+by TTL indexes. Mongo's TTL monitor is asynchronous, so physical deletion can
+occur a short time after the deadline.
 
 The Staff departure board resolves the existing opaque LDB `serviceID` to
 Darwin's `rid`. A Staff response seeds coach order immediately. Because live
-loading is a delta stream, a newly interested service may initially report
-`formation_only` or `waiting_for_update` until its next Darwin loading update.
+loading is a delta stream, unmatched formation and loading events are held in a
+bounded in-process cache for two hours by default. Registering an interest
+immediately replays any cached events for that RID before returning. The cache
+is intentionally not durable, so a service may still initially report
+`formation_only` or `waiting_for_update` after a process restart or when Darwin
+has not published loading for that train.
 
 No TOC filter is applied. Southeastern is useful test data, but every operator
 with Darwin formation/loading data is supported.
 
-When there are no active interests, message bodies are not decompressed. With
-active interests, the service checks the decompressed XML for one of those RIDs
-before building the XML object tree, keeping transient CPU and memory work low.
+All nationwide `SF` and `LO` messages are parsed so they can populate the recent
+event cache. `SC` schedule messages retain the RID prefilter and are parsed only
+when they mention an active interest, keeping the much larger schedule stream
+cheap to process.
 
 ## Run locally
 
@@ -79,7 +85,8 @@ interests are deliberately excluded.
 
 The page reads `GET /api/v1/admin/services`, which returns service mapping,
 formation/loading data, and the most recent Darwin update time sorted by
-scheduled departure time.
+scheduled departure time, latest first. Departures outside the current UK
+calendar day include their date and day offset for the admin display.
 
 ## Health and robustness
 
@@ -87,7 +94,8 @@ scheduled departure time.
 - `GET /health/ready` independently checks MongoDB and the Darwin transport.
 - `GET /health/feed` exposes connection state, last broker traffic, last data
   message, sequence number/gap count, and reconnect count.
-- `GET /metrics` provides Prometheus metrics.
+- `GET /metrics` provides Prometheus metrics, including matched versus ignored
+  Darwin events, replay outcomes, and the current recent-cache size.
 
 STOMP heartbeats prove the broker transport is alive even when no relevant RID
 updates are being stored. A watchdog destroys and reconnects a socket that has
