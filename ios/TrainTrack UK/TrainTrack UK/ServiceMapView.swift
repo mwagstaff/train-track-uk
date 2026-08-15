@@ -1,5 +1,13 @@
 import SwiftUI
 import Combine
+import CoreLocation
+
+private enum ServiceMapPresentation: String, CaseIterable, Identifiable {
+    case map = "Map"
+    case callingPoints = "Calling points"
+
+    var id: Self { self }
+}
 
 struct ServiceMapView: View {
     let serviceID: String
@@ -9,11 +17,16 @@ struct ServiceMapView: View {
     let destinationName: String
 
     @EnvironmentObject var depStore: DeparturesStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
 
     @State private var timer = Timer.publish(every: 20, on: .main, in: .common).autoconnect()
     @State private var retryClock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-    @State private var currentIndex: Double = -1
+    @State private var currentProgress: ServiceProgressEstimate = .unavailable
+    @State private var railwayRoute: ServiceRailwayRoute?
+    @State private var railwayRouteStationRange: ClosedRange<Int>?
+    @State private var isLoadingRailwayRoute = false
+    @State private var selectedPresentation: ServiceMapPresentation = .map
     @State private var hasFinishedInitialLoad = false
     @State private var isRetrying = false
     @State private var retryAttempt = 0
@@ -26,21 +39,109 @@ struct ServiceMapView: View {
         !stations().isEmpty
     }
 
+    private var currentIndex: Double {
+        currentProgress.floatingIndex
+    }
+
+    private var routeRequestKey: String {
+        stations().map(\.crs).joined(separator: "|")
+    }
+
+    private var railwayRouteStations: [CallingPoint] {
+        guard let range = railwayRouteStationRange else { return [] }
+        return Array(stations()[range])
+    }
+
+    private var railwayMapProgress: ServiceProgressEstimate {
+        guard let range = railwayRouteStationRange,
+              currentProgress.isAvailable else {
+            return .unavailable
+        }
+        if currentProgress.nextStationIndex < range.lowerBound {
+            return .unavailable
+        }
+        if currentProgress.previousStationIndex > range.upperBound {
+            let lastIndex = range.count - 1
+            return ServiceProgressEstimate(
+                previousStationIndex: lastIndex,
+                nextStationIndex: lastIndex,
+                fraction: 0
+            )
+        }
+        let previous = min(max(currentProgress.previousStationIndex, range.lowerBound), range.upperBound)
+        let next = min(max(currentProgress.nextStationIndex, range.lowerBound), range.upperBound)
+        return ServiceProgressEstimate(
+            previousStationIndex: previous - range.lowerBound,
+            nextStationIndex: next - range.lowerBound,
+            fraction: currentProgress.fraction
+        )
+    }
+
+    private var estimatedTrainCoordinateOutsideRailwayRoute: CLLocationCoordinate2D? {
+        guard let range = railwayRouteStationRange,
+              currentProgress.isAvailable,
+              currentProgress.previousStationIndex < range.lowerBound
+                || currentProgress.nextStationIndex < range.lowerBound
+                || currentProgress.previousStationIndex > range.upperBound
+                || currentProgress.nextStationIndex > range.upperBound else {
+            return nil
+        }
+
+        let callingPoints = stations()
+        guard callingPoints.indices.contains(currentProgress.previousStationIndex),
+              callingPoints.indices.contains(currentProgress.nextStationIndex),
+              let previous = stationCoordinate(for: callingPoints[currentProgress.previousStationIndex].crs),
+              let next = stationCoordinate(for: callingPoints[currentProgress.nextStationIndex].crs) else {
+            return nil
+        }
+
+        let fraction = min(max(currentProgress.fraction, 0), 1)
+        return CLLocationCoordinate2D(
+            latitude: previous.latitude + ((next.latitude - previous.latitude) * fraction),
+            longitude: previous.longitude + ((next.longitude - previous.longitude) * fraction)
+        )
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             Group {
                 if hasCallingPoints {
                     VStack(spacing: 0) {
-                        // Static header pinned at top
                         headerView
                             .background(.ultraThinMaterial)
                         Divider()
-                        ScrollView {
-                            stationsList
-                                .padding(.vertical, 12)
-                        }
-                        .task(id: currentIndex >= 0) {
-                            await centerOnCurrentPosition(using: proxy)
+
+                        if let railwayRoute {
+                            Picker("Service view", selection: $selectedPresentation) {
+                                ForEach(ServiceMapPresentation.allCases) { presentation in
+                                    Text(presentation.rawValue).tag(presentation)
+                                }
+                            }
+                            .pickerStyle(.segmented)
+                            .padding(.horizontal)
+                            .padding(.vertical, 8)
+
+                            if selectedPresentation == .map {
+                                ServiceRailwayMapView(
+                                    route: railwayRoute,
+                                    stations: railwayRouteStations,
+                                    progress: railwayMapProgress,
+                                    estimatedTrainCoordinate: estimatedTrainCoordinateOutsideRailwayRoute,
+                                    fromCRS: fromCRS,
+                                    toCRS: toCRS
+                                )
+                            } else {
+                                callingPointsView(using: proxy)
+                            }
+                        } else {
+                            callingPointsView(using: proxy)
+                                .overlay(alignment: .topTrailing) {
+                                    if isLoadingRailwayRoute {
+                                        ProgressView()
+                                            .padding(12)
+                                            .accessibilityLabel("Loading geographic railway map")
+                                    }
+                                }
                         }
                     }
                 } else if !hasFinishedInitialLoad {
@@ -83,11 +184,96 @@ struct ServiceMapView: View {
             }
             .onReceive(retryClock) { now in
                 currentTime = now
+                guard hasCallingPoints else { return }
+                recalcCurrentIndex(at: now)
             }
             .task(id: loadRequestID) {
                 await loadServiceDetails()
             }
+            .task(id: serviceID) {
+                guard StationsService.shared.stations.isEmpty else { return }
+                try? await StationsService.shared.loadStations()
+                recalcCurrentIndex()
+            }
+            .task(id: routeRequestKey) {
+                await loadRailwayRoute()
+            }
         }
+    }
+
+    private func callingPointsView(using proxy: ScrollViewProxy) -> some View {
+        ScrollView {
+            stationsList
+                .padding(.vertical, 12)
+        }
+        .task(id: currentIndex >= 0) {
+            await centerOnCurrentPosition(using: proxy)
+        }
+    }
+
+    private func loadRailwayRoute() async {
+        let callingPoints = stations()
+        guard !isBusService, callingPoints.count >= 2 else {
+            railwayRoute = nil
+            railwayRouteStationRange = nil
+            return
+        }
+
+        isLoadingRailwayRoute = true
+        defer { isLoadingRailwayRoute = false }
+        do {
+            let route = try await RailwayRoutingService.shared.route(
+                forStationCRSs: callingPoints.map(\.crs)
+            )
+            guard !Task.isCancelled else { return }
+            railwayRoute = route
+            railwayRouteStationRange = 0...(callingPoints.count - 1)
+        } catch let fullRouteError {
+            guard !Task.isCancelled else { return }
+            guard let selectedRange = selectedCallingPointRange(in: callingPoints),
+                  selectedRange.count >= 2,
+                  selectedRange != 0...(callingPoints.count - 1) else {
+                handleRailwayRouteFailure(fullRouteError)
+                return
+            }
+            do {
+                let selectedCallingPoints = Array(callingPoints[selectedRange])
+                let route = try await RailwayRoutingService.shared.route(
+                    forStationCRSs: selectedCallingPoints.map(\.crs)
+                )
+                guard !Task.isCancelled else { return }
+                railwayRoute = route
+                railwayRouteStationRange = selectedRange
+                #if DEBUG
+                print("🗺️ [ServiceMapView] Full route unavailable; showing selected journey leg")
+                #endif
+            } catch {
+                handleRailwayRouteFailure(error)
+            }
+        }
+    }
+
+    private func selectedCallingPointRange(in callingPoints: [CallingPoint]) -> ClosedRange<Int>? {
+        let normalizedFrom = fromCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let normalizedTo = toCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard let start = callingPoints.firstIndex(where: {
+            $0.crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == normalizedFrom
+        }), let end = callingPoints.indices.first(where: { index in
+            index >= start
+                && callingPoints[index].crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == normalizedTo
+        }) else {
+            return nil
+        }
+        return start...end
+    }
+
+    private func handleRailwayRouteFailure(_ error: Error) {
+        railwayRoute = nil
+        railwayRouteStationRange = nil
+        selectedPresentation = .callingPoints
+        #if DEBUG
+        print("🗺️ [ServiceMapView] Geographic railway route unavailable: \(error.localizedDescription)")
+        #endif
     }
 
     private func loadServiceDetails() async {
@@ -291,89 +477,25 @@ struct ServiceMapView: View {
         return details.allStations
     }
 
-    // Determine the current floating index using the same rules as the web impl
-    private func recalcCurrentIndex() {
-        let list = stations()
-        guard !list.isEmpty else { currentIndex = -1; return }
-        let now = Date()
-        // Track last station with an actual time (has departed/arrived)
-        let lastActualIdx: Int = {
-            var idx = -1
-            for (i, s) in list.enumerated() {
-                if let at = s.at, at != "Cancelled" { idx = i }
-            }
-            return idx
-        }()
-
-        func parse(_ t: String?) -> Date? {
-            guard let t = t, !t.isEmpty, t != "On time", t != "Cancelled" else { return nil }
-            let comps = t.split(separator: ":")
-            guard comps.count == 2, let h = Int(comps[0]), let m = Int(comps[1]) else { return nil }
-            var dc = Calendar.current.dateComponents([.year, .month, .day], from: now)
-            dc.hour = h; dc.minute = m
-            return Calendar.current.date(from: dc)
+    private func stationCoordinate(for crs: String) -> CLLocationCoordinate2D? {
+        let normalizedCRS = crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard let station = StationsService.shared.stations.first(where: {
+            $0.crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == normalizedCRS
+        }), station.hasUsableCoordinate else {
+            return nil
         }
+        return station.coordinate
+    }
 
-        func effectiveTime(_ s: CallingPoint) -> Date? {
-            if let et = s.et, et != "On time", et != "Cancelled" { return parse(et) }
-            return parse(s.st)
-        }
-
-        func arrivalCutoff(_ s: CallingPoint) -> Date? {
-            guard let t = effectiveTime(s) else { return nil }
-            return t.addingTimeInterval(-30) // arrive 30s before depart time
-        }
-
-        // Walk forward to find where the train is
-        for i in 0..<list.count {
-            let s = list[i]
-            if s.isCancelledAtStation { continue }
-
-            // If actually departed, move on
-            if let at = s.at, at != "Cancelled" { continue }
-
-            guard let stTime = effectiveTime(s) else { continue }
-            let arrive = stTime.addingTimeInterval(-30)
-            if now < arrive {
-                // Between previous and this
-                if i == 0 { currentIndex = 0; return }
-
-                let prev = list[i-1]
-                // Departure from prev
-                var depFromPrev: Date? = nil
-                if let at = prev.at, at != "Cancelled" {
-                    depFromPrev = (at == "On time") ? parse(prev.st) : parse(at)
-                } else {
-                    depFromPrev = prev.et != nil && prev.et != "On time" && prev.et != "Cancelled" ? parse(prev.et) : parse(prev.st)
-                }
-                let nextArrive = arrivalCutoff(s)
-                guard let dep = depFromPrev, let arr = nextArrive else { currentIndex = Double(i-1); return }
-                if now <= dep { currentIndex = Double(i-1); return }
-                if now >= arr { currentIndex = Double(i); return }
-                let total = arr.timeIntervalSince(dep)
-                let elapsed = now.timeIntervalSince(dep)
-                if total <= 0 { currentIndex = Double(i-1); return }
-                let prog = max(0, min(1, elapsed / total))
-                currentIndex = Double(i-1) + prog
-                return
-            } else if now < stTime {
-                // At this station
-                currentIndex = Double(i)
-                return
+    private func recalcCurrentIndex(at now: Date = Date()) {
+        let estimate = ServiceProgressEstimator.estimate(for: stations(), at: now)
+        if reduceMotion {
+            currentProgress = estimate
+        } else {
+            withAnimation(.linear(duration: 0.9)) {
+                currentProgress = estimate
             }
         }
-
-        // If we reached here it means all effective times are in the past.
-        // When subsequent stations are marked as "Delayed" (unknown delay),
-        // do NOT snap the position to the final station; instead keep the dot
-        // at the last station with an actual time.
-        if lastActualIdx >= 0 && lastActualIdx < list.count - 1 {
-            let hasUnknownAhead = list[(lastActualIdx+1)...].contains { cp in
-                (cp.et?.lowercased() == "delayed") && !cp.isCancelledAtStation
-            }
-            if hasUnknownAhead { currentIndex = Double(lastActualIdx); return }
-        }
-        currentIndex = Double(max(0, list.count - 1))
     }
 
     // MARK: - Helpers for header

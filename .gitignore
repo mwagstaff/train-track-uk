@@ -95,6 +95,8 @@ pnpm-debug.log*
 dist/
 build/
 out/
+__pycache__/
+*.py[cod]
 lib-cov/
 coverage/
 .nyc_output/
@@ -277,3 +279,6 @@ chatgpt_config.yaml
 .vscode/settings/*ai*
 
 logs.*
+
+# Incremental OS NGD download cache (Premium licensed data)
+scripts/.railway-data-cache/
