@@ -1,11 +1,29 @@
 import Foundation
 import Combine
 
-enum Tab: Hashable {
+enum Tab: Hashable, CaseIterable {
     case favourites
     case myJourneys
     case addJourney
     case profile
+
+    var title: String {
+        switch self {
+        case .favourites: "Favourites"
+        case .myJourneys: "My Journeys"
+        case .addJourney: "Add Journey"
+        case .profile: "Profile"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .favourites: "heart.fill"
+        case .myJourneys: "list.bullet"
+        case .addJourney: "plus.circle"
+        case .profile: "person.circle"
+        }
+    }
 }
 
 final class TabRouter: ObservableObject {

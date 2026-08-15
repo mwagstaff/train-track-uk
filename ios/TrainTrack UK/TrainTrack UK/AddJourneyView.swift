@@ -99,10 +99,7 @@ struct AddJourneyView: View {
                     markAsFavorite = true
                     router.addJourneyPrefillFavourite = false
                 }
-                DispatchQueue.main.async {
-                    focusedField = .from
-                    scrollTarget = fromInput.id
-                }
+                updateFocus(for: router.selected)
             }
             .onChange(of: scrollTarget) { target in
                 guard let target else { return }
@@ -121,11 +118,31 @@ struct AddJourneyView: View {
                 Button("Cancel") { cancel() }
             }
         }
+        .onChange(of: router.selected) { _, selectedTab in
+            updateFocus(for: selectedTab)
+        }
         .onDisappear {
             // Ensure any pending focus/scroll updates are cleared before leaving.
-            scrollTarget = nil
-            focusedField = nil
+            clearFocus()
         }
+    }
+
+    private func updateFocus(for selectedTab: Tab) {
+        guard selectedTab == .addJourney else {
+            clearFocus()
+            return
+        }
+
+        DispatchQueue.main.async {
+            guard router.selected == .addJourney else { return }
+            focusedField = .from
+            scrollTarget = fromInput.id
+        }
+    }
+
+    private func clearFocus() {
+        scrollTarget = nil
+        focusedField = nil
     }
 
     private func loadStations() {

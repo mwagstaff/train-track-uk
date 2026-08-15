@@ -32,6 +32,52 @@ final class TrainTrack_UKUITests: XCTestCase {
     }
 
     @MainActor
+    func testTopLevelScreensCanBeSwipedAndSelectedFromTheTabBar() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
+
+        app.swipeLeft()
+
+        XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.tabBars.buttons["My Journeys"].isSelected)
+
+        app.swipeRight()
+
+        XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.tabBars.buttons["Favourites"].isSelected)
+
+        app.tabBars.buttons["Profile"].tap()
+
+        XCTAssertTrue(app.navigationBars["Profile"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.tabBars.buttons["Profile"].isSelected)
+    }
+
+    @MainActor
+    func testKeyboardDismissesWhenSwipingAwayFromAddJourney() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
+
+        app.swipeLeft()
+
+        XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 2))
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+
+        app.swipeLeft()
+
+        XCTAssertTrue(app.navigationBars["Add Journey"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 2))
+
+        app.swipeRight()
+
+        XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 2))
+    }
+
+    @MainActor
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {

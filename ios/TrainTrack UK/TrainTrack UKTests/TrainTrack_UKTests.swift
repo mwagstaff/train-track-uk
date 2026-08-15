@@ -11,6 +11,12 @@ import Testing
 
 struct TrainTrack_UKTests {
 
+    @Test func tabsHaveAStablePagingOrderAndPresentation() {
+        #expect(Tab.allCases == [.favourites, .myJourneys, .addJourney, .profile])
+        #expect(Tab.allCases.map(\.title) == ["Favourites", "My Journeys", "Add Journey", "Profile"])
+        #expect(Tab.allCases.map(\.systemImage) == ["heart.fill", "list.bullet", "plus.circle", "person.circle"])
+    }
+
     @Test func journeyStopPlacementPreservesTheCurrentDestination() {
         #expect(JourneyStopPlacement.intermediate.insertionIndex(existingStopCount: 1) == 0)
         #expect(JourneyStopPlacement.intermediate.insertionIndex(existingStopCount: 3) == 2)

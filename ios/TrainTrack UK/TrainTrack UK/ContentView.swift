@@ -18,29 +18,43 @@ struct ContentView: View {
     @State private var myJourneysPath = NavigationPath()
     @State private var addJourneyPath = NavigationPath()
     @State private var profilePath = NavigationPath()
+    @State private var pageCommitFeedbackTrigger = 0
+
+    private var pagingSelection: Binding<Tab> {
+        Binding(
+            get: { router.selected },
+            set: { newTab in
+                guard newTab != router.selected else { return }
+                router.selected = newTab
+                pageCommitFeedbackTrigger += 1
+            }
+        )
+    }
 
     var body: some View {
-        TabView(selection: $router.selected) {
+        TabView(selection: pagingSelection) {
             NavigationStack(path: $favouritesPath) { FavouritesView() }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
-                .tabItem { Label("Favourites", systemImage: "heart.fill") }
                 .tag(Tab.favourites)
 
             NavigationStack(path: $myJourneysPath) { MyJourneysView() }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
-                .tabItem { Label("My Journeys", systemImage: "list.bullet") }
                 .tag(Tab.myJourneys)
 
             NavigationStack(path: $addJourneyPath) { AddJourneyView() }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
-                .tabItem { Label("Add Journey", systemImage: "plus.circle") }
                 .tag(Tab.addJourney)
 
             NavigationStack(path: $profilePath) { ProfileView() }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
-                .tabItem { Label("Profile", systemImage: "person.circle") }
                 .tag(Tab.profile)
         }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            NativePagingTabBar(selection: $router.selected)
+                .frame(height: 49)
+        }
+        .sensoryFeedback(.selection, trigger: pageCommitFeedbackTrigger)
         .animation(.easeOut(duration: 0.25), value: toastStore.toast)
         .onAppear {
             // Ensure polling starts even if App.onAppear wasn't fired
