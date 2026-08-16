@@ -118,6 +118,64 @@ struct RailwayRoutingTests {
         )
     }
 
+    @Test @MainActor func stationPopoverShowsExpectedTimeAndPlatform() {
+        let onTime = callingPoint(
+            name: "East Croydon",
+            crs: "ECR",
+            scheduled: "11:04",
+            estimated: "On time",
+            platform: "3"
+        )
+        let delayed = callingPoint(
+            name: "East Croydon",
+            crs: "ECR",
+            scheduled: "11:04",
+            estimated: "11:06"
+        )
+
+        let onTimePresentation = RailwayStationInfoPresentation(station: onTime)
+        #expect(onTimePresentation.timingText == "Expected 11:04 (on time)")
+        #expect(onTimePresentation.platformText == "Expected platform: 3")
+
+        let delayedPresentation = RailwayStationInfoPresentation(station: delayed)
+        #expect(
+            delayedPresentation.timingText
+                == "Expected 11:06 (originally scheduled 11:04)"
+        )
+        #expect(delayedPresentation.platformText == "Expected platform: Not available")
+    }
+
+    @Test func finalCurrentStationUsesArrivalFields() throws {
+        let details = ServiceDetails(
+            previousCallingPoints: nil,
+            subsequentCallingPoints: nil,
+            generatedAt: "2026-08-16T01:00:00Z",
+            serviceType: "train",
+            locationName: "Brighton",
+            crs: "BTN",
+            operator: "Thameslink",
+            operatorCode: "TL",
+            isCancelled: false,
+            length: 12,
+            detachFront: false,
+            isReverseFormation: false,
+            platform: "3",
+            sta: "11:04",
+            eta: "11:06",
+            ata: nil,
+            std: nil,
+            etd: nil,
+            atd: nil,
+            delayReason: nil,
+            cancelReason: nil
+        )
+
+        let station = try #require(details.allStations.last)
+        #expect(station.st == "11:04")
+        #expect(station.et == "11:06")
+        #expect(station.platform == "3")
+    }
+
     @Test func progressInterpolatesWithinTheCurrentCallingPointSegment() {
         let now = date(year: 2026, month: 8, day: 15, hour: 12, minute: 5)
         let estimate = ServiceProgressEstimator.estimate(
@@ -203,7 +261,8 @@ struct RailwayRoutingTests {
         crs: String,
         scheduled: String,
         estimated: String? = "On time",
-        actual: String? = nil
+        actual: String? = nil,
+        platform: String? = nil
     ) -> CallingPoint {
         CallingPoint(
             locationName: name ?? crs,
@@ -213,6 +272,7 @@ struct RailwayRoutingTests {
             at: actual,
             isCancelled: false,
             cancelReason: nil,
+            platform: platform,
             length: nil,
             detachFront: nil,
             affectedByDiversion: false,

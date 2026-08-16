@@ -196,6 +196,7 @@ struct CallingPoint: Codable, Identifiable, Equatable {
     let at: String? // actual time
     let isCancelled: Bool?
     let cancelReason: String?
+    let platform: String?
     let length: Int?
     let detachFront: Bool?
     let affectedByDiversion: Bool?
@@ -261,6 +262,7 @@ struct ServiceDetails: Codable, Equatable {
     let isReverseFormation: Bool?
     let platform: String?
     let sta: String? // scheduled arrival
+    let eta: String? // estimated arrival
     let ata: String? // actual arrival
     let std: String? // scheduled departure
     let etd: String? // estimated departure
@@ -275,14 +277,17 @@ struct ServiceDetails: Codable, Equatable {
             for list in previous { stations.append(contentsOf: list.callingPoint) }
         }
 
+        let followingStations = subsequentCallingPoints?.flatMap(\.callingPoint) ?? []
+        let currentIsFinalStation = followingStations.isEmpty
         let currentStation = CallingPoint(
             locationName: locationName,
             crs: crs,
-            st: std ?? sta ?? "Unknown",
-            et: etd,
-            at: atd ?? ata,
+            st: currentIsFinalStation ? (sta ?? std ?? "Unknown") : (std ?? sta ?? "Unknown"),
+            et: currentIsFinalStation ? eta : etd,
+            at: currentIsFinalStation ? (ata ?? atd) : (atd ?? ata),
             isCancelled: isCancelled,
             cancelReason: cancelReason,
+            platform: platform,
             length: length,
             detachFront: detachFront,
             affectedByDiversion: false,
@@ -290,9 +295,7 @@ struct ServiceDetails: Codable, Equatable {
         )
         stations.append(currentStation)
 
-        if let subsequent = subsequentCallingPoints {
-            for list in subsequent { stations.append(contentsOf: list.callingPoint) }
-        }
+        stations.append(contentsOf: followingStations)
 
         return stations
     }

@@ -47,8 +47,8 @@ enum RailwayStationAnnotationLabel {
             return "\(station.locationName) (cancelled)"
         }
 
-        let actual = clockTime(station.at)
-        let estimate = clockTime(station.et)
+        let actual = railwayClockTime(station.at)
+        let estimate = railwayClockTime(station.et)
         let expectedTime = actual ?? estimate ?? station.st
         if actual == nil,
            station.et?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -66,22 +66,41 @@ enum RailwayStationAnnotationLabel {
         return "\(station.locationName) (expected \(expectedTime))"
     }
 
-    private static func clockTime(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let components = trimmed.split(separator: ":")
-        guard components.count == 2,
-              let hour = Int(components[0]),
-              let minute = Int(components[1]),
-              (0..<24).contains(hour),
-              (0..<60).contains(minute) else {
-            return nil
-        }
-        return String(format: "%02d:%02d", hour, minute)
-    }
-
     private static func minuteText(_ minutes: Int) -> String {
         "\(minutes) min\(minutes == 1 ? "" : "s")"
+    }
+}
+
+struct RailwayStationInfoPresentation: Equatable {
+    let timingText: String
+    let platformText: String
+
+    init(station: CallingPoint) {
+        let scheduledTime = railwayClockTime(station.st) ?? station.st
+        let expectedTime = railwayClockTime(station.et)
+        let normalizedEstimate = station.et?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        if station.isCancelledAtStation {
+            timingText = "Call cancelled (originally scheduled \(scheduledTime))"
+        } else if normalizedEstimate == "on time" || expectedTime == scheduledTime {
+            timingText = "Expected \(scheduledTime) (on time)"
+        } else if let expectedTime {
+            timingText = "Expected \(expectedTime) (originally scheduled \(scheduledTime))"
+        } else if normalizedEstimate == "delayed" {
+            timingText = "Expected time unavailable (originally scheduled \(scheduledTime))"
+        } else {
+            timingText = "Expected \(scheduledTime) (no live estimate)"
+        }
+
+        let platform = station.platform?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let platform, !platform.isEmpty {
+            platformText = "Expected platform: \(platform)"
+        } else {
+            platformText = "Expected platform: Not available"
+        }
     }
 }
 
@@ -92,6 +111,20 @@ enum RailwayEstimatedLocationLabel {
         }
         return "Estimated location (\(delayMinutes) min\(delayMinutes == 1 ? "" : "s") late)"
     }
+}
+
+private func railwayClockTime(_ value: String?) -> String? {
+    guard let value else { return nil }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    let components = trimmed.split(separator: ":")
+    guard components.count == 2,
+          let hour = Int(components[0]),
+          let minute = Int(components[1]),
+          (0..<24).contains(hour),
+          (0..<60).contains(minute) else {
+        return nil
+    }
+    return String(format: "%02d:%02d", hour, minute)
 }
 
 private struct RailwayMapSegment: Identifiable {
@@ -111,6 +144,7 @@ struct ServiceRailwayMapView: View {
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var hasCenteredOnTrain = false
+    @State private var selectedStationIndex: Int?
 
     var body: some View {
         Map(position: $cameraPosition, interactionModes: .all) {
@@ -122,23 +156,24 @@ struct ServiceRailwayMapView: View {
                     .stroke(segment.status.color, lineWidth: 6)
             }
 
-            ForEach(stations.indices, id: \.self) { index in
-                if let coordinate = route.coordinate(atStation: index) {
-                    Annotation(stationLabel(for: index), coordinate: coordinate) {
-                        stationDot(for: index)
-                            .accessibilityLabel(stationAccessibilityLabel(for: index))
-                    }
-                    .annotationTitles(.visible)
-                    .tag("station-\(index)-\(stations[index].crs)")
-                }
-            }
-
             if let trainCoordinate {
                 Annotation(estimatedLocationText, coordinate: trainCoordinate) {
                     estimatedTrainMarker
+                        .zIndex(1)
                 }
                 .annotationTitles(.hidden)
                 .tag("estimated-train")
+            }
+
+            ForEach(stations.indices, id: \.self) { index in
+                if let coordinate = route.coordinate(atStation: index) {
+                    Annotation("", coordinate: coordinate, anchor: .bottom) {
+                        stationAnnotation(for: index)
+                            .zIndex(2)
+                    }
+                    .annotationTitles(.hidden)
+                    .tag("station-\(index)-\(stations[index].crs)")
+                }
             }
         }
         .transaction { transaction in
@@ -244,6 +279,76 @@ struct ServiceRailwayMapView: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(estimatedLocationText)
+    }
+
+    private func stationAnnotation(for index: Int) -> some View {
+        Button {
+            selectedStationIndex = index
+        } label: {
+            VStack(spacing: 3) {
+                Text(stationLabel(for: index))
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(stations[index].isCancelledAtStation ? Color.red : Color.white)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: 180)
+                    .strikethrough(
+                        stations[index].isCancelledAtStation,
+                        color: stations[index].isCancelledAtStation ? .red : nil
+                    )
+                    .shadow(color: .black.opacity(0.9), radius: 2)
+
+                stationDot(for: index)
+            }
+            .padding(4)
+            .contentShape(Rectangle())
+            .offset(y: 8)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(stationAccessibilityLabel(for: index))
+        .accessibilityHint("Shows expected time and platform")
+        .popover(
+            isPresented: stationPopoverBinding(for: index),
+            attachmentAnchor: .rect(.bounds),
+            arrowEdge: .bottom
+        ) {
+            stationInfoPopover(for: index)
+                .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private func stationPopoverBinding(for index: Int) -> Binding<Bool> {
+        Binding(
+            get: { selectedStationIndex == index },
+            set: { isPresented in
+                if isPresented {
+                    selectedStationIndex = index
+                } else if selectedStationIndex == index {
+                    selectedStationIndex = nil
+                }
+            }
+        )
+    }
+
+    private func stationInfoPopover(for index: Int) -> some View {
+        let station = stations[index]
+        let presentation = RailwayStationInfoPresentation(station: station)
+        return VStack(alignment: .leading, spacing: 10) {
+            Text(station.locationName)
+                .font(.headline)
+                .strikethrough(
+                    station.isCancelledAtStation,
+                    color: station.isCancelledAtStation ? .red : nil
+                )
+            Text(presentation.timingText)
+            Text(presentation.platformText)
+                .foregroundStyle(.secondary)
+        }
+        .font(.subheadline)
+        .padding(16)
+        .frame(width: 300, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder

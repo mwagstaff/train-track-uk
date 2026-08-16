@@ -309,20 +309,15 @@ struct ServiceMapView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if isBusService {
-                        Label("Bus service", systemImage: "bus")
+                        Text("Service type: Bus")
                             .foregroundStyle(.orange)
                     } else if let length = serviceLength(), length > 0 {
-                        TrainLengthIndicator(
-                            cars: length,
-                            warningThreshold: minShortTrainCars,
-                            carriageLoading: depStore.loadingDetailsByServiceId[serviceID]?.freshCoaches
-                        )
+                        Text("Train length: \(length) car\(length == 1 ? "" : "s")")
+                            .foregroundStyle(length < minShortTrainCars ? .yellow : .primary)
                     } else {
-                        Label("Train length unknown", systemImage: "exclamationmark.triangle.fill")
+                        Text("Train length: Unknown")
                             .foregroundStyle(.secondary)
                     }
-
-                    Divider()
 
                     VStack(alignment: .leading, spacing: 12) {
                         if let platform = platformInfo() {
