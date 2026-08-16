@@ -503,7 +503,7 @@ struct ServiceMapView: View {
         if let railwayRouteError {
             return railwayRouteError
         }
-        return "National Rail calling-point data can't be found for this train."
+        return "Sorry, National Rail route data can't be found for this train right now. Please try again later."
     }
 
     private func serviceStatus() -> (text: String, color: Color) {

@@ -143,6 +143,102 @@ private struct RailwayMapSegment: Identifiable {
     let status: RailwayRouteSegmentStatus
 }
 
+private enum RailwayMapAnnotationIdentifier {
+    static let estimatedTrain = "railway-estimated-train"
+
+    static func station(_ index: Int) -> String {
+        "railway-station-\(index)"
+    }
+}
+
+private struct RailwayMapAnnotationZOrderConfigurator: UIViewRepresentable {
+    func makeUIView(context: Context) -> RailwayMapAnnotationZOrderView {
+        RailwayMapAnnotationZOrderView()
+    }
+
+    func updateUIView(_ uiView: RailwayMapAnnotationZOrderView, context: Context) {
+        uiView.refreshAnnotationPriorities()
+    }
+}
+
+private final class RailwayMapAnnotationZOrderView: UIView {
+    private weak var mapView: MKMapView?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        refreshAnnotationPriorities()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        refreshAnnotationPriorities()
+    }
+
+    func refreshAnnotationPriorities() {
+        NSObject.cancelPreviousPerformRequests(
+            withTarget: self,
+            selector: #selector(applyAnnotationPriorities),
+            object: nil
+        )
+        perform(#selector(applyAnnotationPriorities), with: nil, afterDelay: 0)
+        perform(#selector(applyAnnotationPriorities), with: nil, afterDelay: 0.1)
+        perform(#selector(applyAnnotationPriorities), with: nil, afterDelay: 0.5)
+    }
+
+    @objc private func applyAnnotationPriorities() {
+        guard let mapView = mapView ?? enclosingMapView() else { return }
+        self.mapView = mapView
+
+        for annotation in mapView.annotations {
+            guard let identifier = annotation.title ?? nil,
+                  let annotationView = mapView.view(for: annotation) else { continue }
+
+            if identifier.hasPrefix("railway-station-") {
+                annotationView.zPriority = .max
+                annotationView.selectedZPriority = .max
+            } else if identifier == RailwayMapAnnotationIdentifier.estimatedTrain {
+                annotationView.zPriority = .min
+                annotationView.selectedZPriority = .min
+            }
+        }
+    }
+
+    private func enclosingMapView() -> MKMapView? {
+        var ancestor = superview
+        while let current = ancestor {
+            if let mapView = current.firstDescendant(of: MKMapView.self) {
+                return mapView
+            }
+            ancestor = current.superview
+        }
+        return nil
+    }
+}
+
+private extension UIView {
+    func firstDescendant<ViewType: UIView>(of type: ViewType.Type) -> ViewType? {
+        if let match = self as? ViewType {
+            return match
+        }
+        for subview in subviews {
+            if let match = subview.firstDescendant(of: type) {
+                return match
+            }
+        }
+        return nil
+    }
+}
+
 struct ServiceRailwayMapView: View {
     let route: ServiceRailwayRoute
     let stations: [CallingPoint]
@@ -167,9 +263,8 @@ struct ServiceRailwayMapView: View {
             }
 
             if let trainCoordinate {
-                Annotation(estimatedLocationText, coordinate: trainCoordinate) {
+                Annotation(RailwayMapAnnotationIdentifier.estimatedTrain, coordinate: trainCoordinate) {
                     estimatedTrainMarker
-                        .zIndex(1)
                 }
                 .annotationTitles(.hidden)
                 .tag("estimated-train")
@@ -177,9 +272,12 @@ struct ServiceRailwayMapView: View {
 
             ForEach(stations.indices, id: \.self) { index in
                 if let coordinate = route.coordinate(atStation: index) {
-                    Annotation("", coordinate: coordinate, anchor: .bottom) {
+                    Annotation(
+                        RailwayMapAnnotationIdentifier.station(index),
+                        coordinate: coordinate,
+                        anchor: .bottom
+                    ) {
                         stationAnnotation(for: index)
-                            .zIndex(2)
                     }
                     .annotationTitles(.hidden)
                     .tag("station-\(index)-\(stations[index].crs)")
@@ -194,6 +292,7 @@ struct ServiceRailwayMapView: View {
             MapCompass()
             MapScaleView()
         }
+        .background(RailwayMapAnnotationZOrderConfigurator())
         .overlay(alignment: .topTrailing) {
             Button {
                 centerOnTrainOrFrameRoute()

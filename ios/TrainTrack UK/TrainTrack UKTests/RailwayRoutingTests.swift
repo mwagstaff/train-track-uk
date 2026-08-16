@@ -1,5 +1,7 @@
 import Foundation
 import CoreLocation
+import MapKit
+import SwiftUI
 import Testing
 @testable import TrainTrack_UK
 
@@ -165,6 +167,57 @@ struct RailwayRoutingTests {
         #expect(delayedPresentation.platformText == "Expected platform: Not available")
     }
 
+    @Test @MainActor func stationAnnotationsRenderAboveEstimatedTrain() async throws {
+        let coordinates = [
+            CLLocationCoordinate2D(latitude: 51.375, longitude: 0.099),
+            CLLocationCoordinate2D(latitude: 51.366, longitude: 0.089),
+        ]
+        let route = ServiceRailwayRoute(
+            coordinates: coordinates,
+            cumulativeDistances: [0, 1_000],
+            stationCoordinateIndices: [0, 1]
+        )
+        let map = ServiceRailwayMapView(
+            route: route,
+            stations: [
+                callingPoint(name: "Orpington", crs: "ORP", scheduled: "09:23"),
+                callingPoint(name: "Petts Wood", crs: "PET", scheduled: "09:27"),
+            ],
+            progress: .unavailable,
+            estimatedTrainCoordinate: coordinates[0],
+            currentDelayMinutes: 3,
+            fromCRS: "ORP",
+            toCRS: "PET"
+        )
+        let host = UIHostingController(rootView: map)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        host.view.frame = window.bounds
+        host.view.layoutIfNeeded()
+        try await Task.sleep(for: .seconds(1))
+
+        let mapView = try #require(firstDescendant(of: MKMapView.self, in: host.view))
+        let trainAnnotation = try #require(mapView.annotations.first {
+            ($0.title ?? nil) == "railway-estimated-train"
+        })
+        let stationAnnotation = try #require(mapView.annotations.first {
+            ($0.title ?? nil)?.hasPrefix("railway-station-") == true
+        })
+        let trainView = try #require(mapView.view(for: trainAnnotation))
+        let stationView = try #require(mapView.view(for: stationAnnotation))
+
+        #expect(stationView.zPriority.rawValue > trainView.zPriority.rawValue)
+        #expect(
+            stationView.selectedZPriority.rawValue > trainView.selectedZPriority.rawValue
+        )
+    }
+
     @Test func finalCurrentStationUsesArrivalFields() throws {
         let details = ServiceDetails(
             previousCallingPoints: nil,
@@ -298,5 +351,20 @@ struct RailwayRoutingTests {
             affectedByDiversion: false,
             rerouteDelay: 0
         )
+    }
+
+    private func firstDescendant<ViewType: UIView>(
+        of type: ViewType.Type,
+        in view: UIView
+    ) -> ViewType? {
+        if let match = view as? ViewType {
+            return match
+        }
+        for subview in view.subviews {
+            if let match = firstDescendant(of: type, in: subview) {
+                return match
+            }
+        }
+        return nil
     }
 }
