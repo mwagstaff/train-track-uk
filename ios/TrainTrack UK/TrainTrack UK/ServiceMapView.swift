@@ -3,6 +3,8 @@ import Combine
 import CoreLocation
 
 struct ServiceMapView: View {
+    private static let trainLocationEstimateMessage = "Train locations are estimates only"
+
     let serviceID: String
     let fromCRS: String
     let toCRS: String
@@ -12,7 +14,6 @@ struct ServiceMapView: View {
     @EnvironmentObject var depStore: DeparturesStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
-    @Namespace private var trainInfoTransition
 
     @State private var timer = Timer.publish(every: 20, on: .main, in: .common).autoconnect()
     @State private var retryClock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -23,6 +24,7 @@ struct ServiceMapView: View {
     @State private var railwayRouteError: String?
     @State private var isLoadingRailwayRoute = false
     @State private var isShowingTrainInfo = false
+    @State private var isShowingEstimateNotice = true
     @State private var hasFinishedInitialLoad = false
     @State private var isRetrying = false
     @State private var retryAttempt = 0
@@ -43,10 +45,6 @@ struct ServiceMapView: View {
                     && railwayRoute == nil
                     && railwayRouteError == nil
             )
-    }
-
-    private var mapLoadAnimation: Animation? {
-        reduceMotion ? nil : .timingCurve(0.22, 1, 0.36, 1, duration: 0.38)
     }
 
     private var routeRequestKey: String {
@@ -161,18 +159,9 @@ struct ServiceMapView: View {
                     Button {
                         isShowingTrainInfo = true
                     } label: {
-                        Label {
-                            Text("Train info")
-                        } icon: {
-                            Image(systemName: "info.circle")
-                                .matchedGeometryEffect(
-                                    id: "train-info-icon",
-                                    in: trainInfoTransition
-                                )
-                        }
+                        Label("Train info", systemImage: "info.circle")
                     }
                     .accessibilityHint("Shows service times, train length and live status")
-                    .transition(.opacity.combined(with: .scale(scale: 0.88)))
                 }
             }
         }
@@ -181,7 +170,12 @@ struct ServiceMapView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
-        .animation(mapLoadAnimation, value: isMapLoading)
+        .overlay(alignment: .bottom) {
+            if isShowingEstimateNotice {
+                estimateNoticeBanner
+                    .transition(.opacity)
+            }
+        }
         .onReceive(timer) { _ in
             guard hasCallingPoints else { return }
             Task {
@@ -205,6 +199,9 @@ struct ServiceMapView: View {
             try? await StationsService.shared.loadStations()
             recalcCurrentIndex()
         }
+        .task(id: serviceID) {
+            await displayEstimateNotice()
+        }
         .task(id: routeRequestKey) {
             await loadRailwayRoute()
         }
@@ -213,65 +210,48 @@ struct ServiceMapView: View {
     private var mapLoadingView: some View {
         ZStack {
             Color(.systemBackground)
-
-            VStack {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: "info.circle")
-                        .font(.title2)
-                        .foregroundStyle(.tint)
-                        .matchedGeometryEffect(
-                            id: "train-info-icon",
-                            in: trainInfoTransition
-                        )
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Train location is estimated")
-                            .font(.headline)
-                        Text("It’s calculated from live service times and may differ from the train’s exact position.")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-
-                        if let loadingTrainLengthText {
-                            Text(loadingTrainLengthText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .padding(.top, 2)
-                        }
-                        if let platform = platformInfo() {
-                            Text(platform)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text(hasFinishedInitialLoad ? "Loading route map…" : "Loading service information…")
-                        }
-                        .font(.caption.weight(.semibold))
-                        .padding(.top, 4)
-                    }
-                }
-                .padding(16)
-                .frame(maxWidth: 420, alignment: .leading)
-                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
-                .padding(.horizontal, 16)
-                .padding(.top, 16)
-
-                Spacer()
+            VStack(spacing: 12) {
+                ProgressView()
+                Text(hasFinishedInitialLoad ? "Loading route map…" : "Loading service information…")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
             }
         }
     }
 
-    private var loadingTrainLengthText: String? {
-        guard hasFinishedInitialLoad else { return nil }
-        if isBusService {
-            return "Service type: Bus"
+    private var estimateNoticeBanner: some View {
+        Label(Self.trainLocationEstimateMessage, systemImage: "info.circle")
+            .font(.subheadline.weight(.semibold))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(.primary.opacity(0.08), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+            .accessibilityElement(children: .combine)
+    }
+
+    @MainActor
+    private func displayEstimateNotice() async {
+        isShowingEstimateNotice = true
+        do {
+            try await Task.sleep(for: .seconds(5))
+        } catch {
+            return
         }
-        guard let length = serviceLength(), length > 0 else {
-            return "Train length: Unknown"
+
+        if reduceMotion {
+            isShowingEstimateNotice = false
+        } else {
+            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.3)) {
+                isShowingEstimateNotice = false
+            }
         }
-        return "Train length: \(length) car\(length == 1 ? "" : "s")"
     }
 
     private func loadRailwayRoute() async {
@@ -436,6 +416,13 @@ struct ServiceMapView: View {
                             .background(Color(.systemYellow).opacity(0.15))
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
+
+                    Divider()
+
+                    Label(Self.trainLocationEstimateMessage, systemImage: "info.circle")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 20)
