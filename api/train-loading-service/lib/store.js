@@ -1,4 +1,5 @@
 import { MongoClient } from "mongodb";
+import { serviceHasActiveDivide } from "./split-guidance.js";
 import { ukCalendarDate, ukClockTime } from "./time.js";
 
 const COLLECTIONS = Object.freeze({
@@ -247,6 +248,7 @@ export class MongoLoadingStore {
       },
       operator: service.operator,
       toc: service.operatorCode,
+      hasDivideAssociation: serviceHasActiveDivide(service, request.from),
       updatedAt: now,
       expiresAt,
     };

@@ -138,16 +138,29 @@ private func railwayClockTime(_ value: String?) -> String? {
 }
 
 private struct RailwayMapSegment: Identifiable {
-    let id: Int
+    let id: String
     let coordinates: [CLLocationCoordinate2D]
     let status: RailwayRouteSegmentStatus
+}
+
+struct ServiceRailwayMapBranch: Identifiable {
+    let id: String
+    let route: ServiceRailwayRoute
+    let stations: [CallingPoint]
+}
+
+private struct RailwayMapStationItem: Identifiable {
+    let id: String
+    let station: CallingPoint
+    let coordinate: CLLocationCoordinate2D
+    let primaryIndex: Int?
 }
 
 private enum RailwayMapAnnotationIdentifier {
     static let estimatedTrain = "railway-estimated-train"
 
-    static func station(_ index: Int) -> String {
-        "railway-station-\(index)"
+    static func station(_ identifier: String) -> String {
+        "railway-station-\(identifier)"
     }
 }
 
@@ -242,6 +255,7 @@ private extension UIView {
 struct ServiceRailwayMapView: View {
     let route: ServiceRailwayRoute
     let stations: [CallingPoint]
+    let additionalRoutes: [ServiceRailwayMapBranch]
     let progress: ServiceProgressEstimate
     let estimatedTrainCoordinate: CLLocationCoordinate2D?
     let currentDelayMinutes: Int?
@@ -250,12 +264,37 @@ struct ServiceRailwayMapView: View {
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var hasCenteredOnTrain = false
-    @State private var selectedStationIndex: Int?
+    @State private var selectedStationID: String?
+
+    init(
+        route: ServiceRailwayRoute,
+        stations: [CallingPoint],
+        additionalRoutes: [ServiceRailwayMapBranch] = [],
+        progress: ServiceProgressEstimate,
+        estimatedTrainCoordinate: CLLocationCoordinate2D?,
+        currentDelayMinutes: Int?,
+        fromCRS: String,
+        toCRS: String
+    ) {
+        self.route = route
+        self.stations = stations
+        self.additionalRoutes = additionalRoutes
+        self.progress = progress
+        self.estimatedTrainCoordinate = estimatedTrainCoordinate
+        self.currentDelayMinutes = currentDelayMinutes
+        self.fromCRS = fromCRS
+        self.toCRS = toCRS
+    }
 
     var body: some View {
         Map(position: $cameraPosition, interactionModes: .all) {
             MapPolyline(coordinates: route.coordinates)
                 .stroke(.secondary.opacity(0.45), lineWidth: 8)
+
+            ForEach(additionalRoutes) { branch in
+                MapPolyline(coordinates: branch.route.coordinates)
+                    .stroke(.secondary.opacity(0.45), lineWidth: 8)
+            }
 
             ForEach(routeSegments) { segment in
                 MapPolyline(coordinates: segment.coordinates)
@@ -270,18 +309,16 @@ struct ServiceRailwayMapView: View {
                 .tag("estimated-train")
             }
 
-            ForEach(stations.indices, id: \.self) { index in
-                if let coordinate = route.coordinate(atStation: index) {
-                    Annotation(
-                        RailwayMapAnnotationIdentifier.station(index),
-                        coordinate: coordinate,
-                        anchor: .bottom
-                    ) {
-                        stationAnnotation(for: index)
-                    }
-                    .annotationTitles(.hidden)
-                    .tag("station-\(index)-\(stations[index].crs)")
+            ForEach(stationItems) { item in
+                Annotation(
+                    RailwayMapAnnotationIdentifier.station(item.id),
+                    coordinate: item.coordinate,
+                    anchor: .bottom
+                ) {
+                    stationAnnotation(for: item)
                 }
+                .annotationTitles(.hidden)
+                .tag(item.id)
             }
         }
         .transaction { transaction in
@@ -333,16 +370,51 @@ struct ServiceRailwayMapView: View {
     }
 
     private var routeSegments: [RailwayMapSegment] {
+        segments(for: route, stations: stations, idPrefix: "primary")
+            + additionalRoutes.flatMap { branch in
+                segments(for: branch.route, stations: branch.stations, idPrefix: branch.id)
+            }
+    }
+
+    private func segments(
+        for route: ServiceRailwayRoute,
+        stations: [CallingPoint],
+        idPrefix: String
+    ) -> [RailwayMapSegment] {
         guard stations.count >= 2, route.stationCount == stations.count else { return [] }
         return stations.indices.dropLast().compactMap { index in
             let coordinates = route.coordinates(fromStation: index, throughStation: index + 1)
             guard coordinates.count >= 2 else { return nil }
             return RailwayMapSegment(
-                id: index,
+                id: "\(idPrefix)-\(index)",
                 coordinates: coordinates,
                 status: .between(stations[index], and: stations[index + 1])
             )
         }
+    }
+
+    private var stationItems: [RailwayMapStationItem] {
+        let primary = stations.indices.compactMap { index -> RailwayMapStationItem? in
+            guard let coordinate = route.coordinate(atStation: index) else { return nil }
+            return RailwayMapStationItem(
+                id: "primary-\(index)-\(stations[index].crs)",
+                station: stations[index],
+                coordinate: coordinate,
+                primaryIndex: index
+            )
+        }
+        let additional = additionalRoutes.flatMap { branch in
+            branch.stations.indices.dropFirst().compactMap { index -> RailwayMapStationItem? in
+                guard let coordinate = branch.route.coordinate(atStation: index) else { return nil }
+                return RailwayMapStationItem(
+                    id: "\(branch.id)-\(index)-\(branch.stations[index].crs)",
+                    station: branch.stations[index],
+                    coordinate: coordinate,
+                    primaryIndex: nil
+                )
+            }
+        }
+        return primary + additional
     }
 
     private var trainCoordinate: CLLocationCoordinate2D? {
@@ -363,7 +435,9 @@ struct ServiceRailwayMapView: View {
     }
 
     private var routeKey: String {
-        "\(route.coordinates.count):\(route.totalLength)"
+        (["\(route.coordinates.count):\(route.totalLength)"] + additionalRoutes.map {
+            "\($0.id):\($0.route.coordinates.count):\($0.route.totalLength)"
+        }).joined(separator: "|")
     }
 
     private var estimatedLocationText: String {
@@ -382,58 +456,58 @@ struct ServiceRailwayMapView: View {
             .accessibilityLabel(estimatedLocationText)
     }
 
-    private func stationAnnotation(for index: Int) -> some View {
+    private func stationAnnotation(for item: RailwayMapStationItem) -> some View {
         Button {
-            selectedStationIndex = index
+            selectedStationID = item.id
         } label: {
             VStack(spacing: 3) {
-                Text(stationLabel(for: index))
+                Text(stationLabel(for: item))
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(stations[index].isCancelledAtStation ? Color.red : Color.white)
+                    .foregroundStyle(item.station.isCancelledAtStation ? Color.red : Color.white)
                     .multilineTextAlignment(.center)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: 180)
                     .strikethrough(
-                        stations[index].isCancelledAtStation,
-                        color: stations[index].isCancelledAtStation ? .red : nil
+                        item.station.isCancelledAtStation,
+                        color: item.station.isCancelledAtStation ? .red : nil
                     )
                     .shadow(color: .black.opacity(0.9), radius: 2)
 
-                stationDot(for: index)
+                stationDot(for: item)
             }
             .padding(4)
             .contentShape(Rectangle())
             .offset(y: 8)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(stationAccessibilityLabel(for: index))
+        .accessibilityLabel(stationAccessibilityLabel(for: item))
         .accessibilityHint("Shows expected time and platform")
         .popover(
-            isPresented: stationPopoverBinding(for: index),
+            isPresented: stationPopoverBinding(for: item),
             attachmentAnchor: .rect(.bounds),
             arrowEdge: .bottom
         ) {
-            stationInfoPopover(for: index)
+            stationInfoPopover(for: item)
                 .presentationCompactAdaptation(.popover)
         }
     }
 
-    private func stationPopoverBinding(for index: Int) -> Binding<Bool> {
+    private func stationPopoverBinding(for item: RailwayMapStationItem) -> Binding<Bool> {
         Binding(
-            get: { selectedStationIndex == index },
+            get: { selectedStationID == item.id },
             set: { isPresented in
                 if isPresented {
-                    selectedStationIndex = index
-                } else if selectedStationIndex == index {
-                    selectedStationIndex = nil
+                    selectedStationID = item.id
+                } else if selectedStationID == item.id {
+                    selectedStationID = nil
                 }
             }
         )
     }
 
-    private func stationInfoPopover(for index: Int) -> some View {
-        let station = stations[index]
+    private func stationInfoPopover(for item: RailwayMapStationItem) -> some View {
+        let station = item.station
         let presentation = RailwayStationInfoPresentation(station: station)
         return VStack(alignment: .leading, spacing: 10) {
             Text(station.locationName)
@@ -453,15 +527,15 @@ struct ServiceRailwayMapView: View {
     }
 
     @ViewBuilder
-    private func stationDot(for index: Int) -> some View {
-        if index == selectedOriginStationIndex {
+    private func stationDot(for item: RailwayMapStationItem) -> some View {
+        if normalizedCRS(item.station.crs) == normalizedCRS(fromCRS) {
             Circle()
                 .fill(.orange)
                 .frame(width: 18, height: 18)
                 .overlay(Circle().stroke(.white, lineWidth: 2))
                 .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
         } else {
-            let state = stationState(for: index)
+            let state = stationState(for: item)
             Circle()
                 .fill(state.fill)
                 .frame(width: state.isCurrent ? 16 : 12, height: state.isCurrent ? 16 : 12)
@@ -470,43 +544,29 @@ struct ServiceRailwayMapView: View {
         }
     }
 
-    private var selectedOriginStationIndex: Int? {
-        let normalizedFrom = fromCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        return stations.firstIndex {
-            $0.crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == normalizedFrom
-        }
-    }
-
-    private var selectedDestinationStationIndex: Int? {
-        let normalizedTo = toCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        return stations.indices.first {
-            $0 >= (selectedOriginStationIndex ?? 0)
-                && stations[$0].crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-                    == normalizedTo
-        }
-    }
-
-    private func stationState(for index: Int) -> (fill: Color, isCurrent: Bool) {
+    private func stationState(for item: RailwayMapStationItem) -> (fill: Color, isCurrent: Bool) {
         let isCurrent = progress.isAvailable
             && progress.previousStationIndex == progress.nextStationIndex
-            && index == progress.previousStationIndex
+            && item.primaryIndex == progress.previousStationIndex
         return (.white, isCurrent)
     }
 
-    private func stationAccessibilityLabel(for index: Int) -> String {
-        let label = stationLabel(for: index)
-        if index == selectedOriginStationIndex {
+    private func stationAccessibilityLabel(for item: RailwayMapStationItem) -> String {
+        let label = stationLabel(for: item)
+        if normalizedCRS(item.station.crs) == normalizedCRS(fromCRS) {
             return "\(label), selected journey origin"
         }
-        if index == selectedDestinationStationIndex {
+        if normalizedCRS(item.station.crs) == normalizedCRS(toCRS) {
             return "\(label), selected journey destination"
         }
         let status: String
-        if progress.isAvailable,
+        if let index = item.primaryIndex,
+           progress.isAvailable,
            progress.previousStationIndex == progress.nextStationIndex,
            index == progress.previousStationIndex {
             status = "current station"
-        } else if progress.isAvailable && index <= progress.previousStationIndex {
+        } else if let index = item.primaryIndex,
+                  progress.isAvailable && index <= progress.previousStationIndex {
             status = "completed"
         } else {
             status = "upcoming"
@@ -514,8 +574,12 @@ struct ServiceRailwayMapView: View {
         return "\(label), \(status)"
     }
 
-    private func stationLabel(for index: Int) -> String {
-        RailwayStationAnnotationLabel.text(for: stations[index])
+    private func stationLabel(for item: RailwayMapStationItem) -> String {
+        RailwayStationAnnotationLabel.text(for: item.station)
+    }
+
+    private func normalizedCRS(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     }
 
     private func centerOnTrainOrFrameRoute() {
@@ -532,8 +596,9 @@ struct ServiceRailwayMapView: View {
     }
 
     private func frameRoute() {
-        guard route.coordinates.count >= 2 else { return }
-        let polyline = MKPolyline(coordinates: route.coordinates, count: route.coordinates.count)
+        let coordinates = route.coordinates + additionalRoutes.flatMap(\.route.coordinates)
+        guard coordinates.count >= 2 else { return }
+        let polyline = MKPolyline(coordinates: coordinates, count: coordinates.count)
         let rect = polyline.boundingMapRect
         let horizontalPadding = max(rect.size.width * 0.12, 800)
         let verticalPadding = max(rect.size.height * 0.12, 800)

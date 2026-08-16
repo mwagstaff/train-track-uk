@@ -115,9 +115,12 @@ class PastDeparturesCache {
     }
 
     startCleanupJob() {
-        setInterval(() => {
+        const cleanupTimer = setInterval(() => {
             this.cleanup();
         }, 60 * 60 * 1000);
+        if (typeof cleanupTimer.unref === 'function') {
+            cleanupTimer.unref();
+        }
     }
 
     getAllCacheContents() {

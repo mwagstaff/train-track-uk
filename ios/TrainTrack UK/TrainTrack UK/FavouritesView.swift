@@ -189,6 +189,14 @@ struct FavouritesView: View {
                             Image(systemName: "magnifyingglass")
                         }
                         .accessibilityLabel("Search favourites")
+
+                        Button {
+                            router.selected = .addJourney
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .accessibilityLabel("Add journey")
+                        .accessibilityIdentifier("toolbar.add-journey")
                     }
                     if isSelecting {
                         Button("Cancel") {

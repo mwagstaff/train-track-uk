@@ -39,6 +39,15 @@ enum JourneyCardPresentation {
         guard let scheduledDeparture else { return arrival }
         return "\(scheduledDeparture) • \(arrival)"
     }
+
+    static func splitGuidanceLabel(_ guidance: SplitGuidanceV1, destinationName: String) -> String? {
+        let position = guidance.position.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard (position == "front" || position == "rear"), guidance.coachCount > 0 else { return nil }
+        let splitLocation = guidance.splitAt.locationName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !splitLocation.isEmpty else { return nil }
+        let coachLabel = guidance.coachCount == 1 ? "coach" : "coaches"
+        return "Train divides at \(splitLocation). Travel in the \(position) \(guidance.coachCount) \(coachLabel) for \(destinationName)."
+    }
 }
 
 enum JourneyCardNavigationDestination: Hashable, Identifiable {
@@ -395,6 +404,25 @@ struct JourneyCard: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .padding(.top, 1)
+
+                if let guidance = depStore.loadingDetailsByServiceId[summary.firstDeparture.serviceID]?.splitGuidance,
+                   let note = JourneyCardPresentation.splitGuidanceLabel(
+                    guidance,
+                    destinationName: summary.firstLeg.toStation.name
+                   ) {
+                    HStack(alignment: .top, spacing: 5) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.orange)
+                        Text(note)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.top, 4)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Important. \(note)")
+                }
             }
         }
     }

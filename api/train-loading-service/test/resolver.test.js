@@ -80,3 +80,60 @@ test("replays recent Darwin events immediately after registering an interest", a
     ["delete", "rid-1"],
   ]);
 });
+
+test("includes validated split guidance without requiring carriage loading data", async () => {
+  const service = {
+    rid: "main-rid",
+    std: "2026-08-16T16:32:00",
+    length: 12,
+    destination: [{ crs: "PMH" }],
+    subsequentLocations: [
+      {
+        crs: "WRH",
+        locationName: "Worthing",
+        length: 4,
+        detachFront: false,
+        associations: [{ category: "divide", rid: "child-rid", destCRS: "LIT" }],
+      },
+      { crs: "PMH", length: 4 },
+    ],
+  };
+  const store = {
+    findMapping: async () => null,
+    saveMapping: async (request, matched) => ({ rid: matched.rid, serviceID: request.serviceID }),
+    registerInterest: async () => {},
+    getLoadingDetails: async (rid) => ({ status: "waiting_for_update", rid, coaches: [] }),
+  };
+  const resolver = new LoadingResolver({
+    store,
+    staffClient: {
+      getBoard: async () => ({ trainServices: [service] }),
+      getServiceDetailsByRid: async (rid) => {
+        assert.equal(rid, "child-rid");
+        return {
+          locations: [
+            { crs: "WRH", length: 8 },
+            { crs: "LIT", length: 8 },
+          ],
+        };
+      },
+    },
+    staleSeconds: 600,
+  });
+
+  const result = await resolver.resolve({
+    serviceID: "opaque",
+    from: "ECR",
+    to: "LIT",
+    scheduledDeparture: "16:32",
+    length: 12,
+  });
+
+  assert.deepEqual(result.splitGuidance, {
+    splitAt: { crs: "WRH", locationName: "Worthing" },
+    destinationCRS: "LIT",
+    position: "rear",
+    coachCount: 8,
+    confidence: "validated_lengths",
+  });
+});

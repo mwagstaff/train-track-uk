@@ -47,6 +47,21 @@ test("matches any operator rather than filtering to Southeastern", () => {
   assert.equal(result.service.rid, "rid-gtr");
 });
 
+test("matches a destination advertised by a divide association", () => {
+  const service = {
+    rid: "rid-divide",
+    std: "2026-08-14T22:12:00",
+    destination: [{ crs: "PMH" }],
+    subsequentLocations: [{
+      crs: "WRH",
+      associations: [{ category: "divide", rid: "child", destCRS: "LIT" }],
+    }],
+  };
+  const result = matchStaffService({ trainServices: [service] }, { ...request, to: "LIT" });
+  assert.equal(result.status, "resolved");
+  assert.equal(result.service.rid, "rid-divide");
+});
+
 test("refuses to guess when equally good services are ambiguous", () => {
   const service = {
     std: "2026-08-14T22:12:00",
@@ -77,4 +92,26 @@ test("deduplicates concurrent Staff API calls for the same station bucket", asyn
     client.getBoard("KTH", "2026-08-14T22:24:00+01:00"),
   ]);
   assert.equal(calls, 1);
+});
+
+test("fetches and caches Staff service details by RID", async () => {
+  const urls = [];
+  const client = new StaffDepartureBoardClient({
+    apiKey: "test",
+    baseUrl: "https://example.test",
+    timeoutMs: 1_000,
+    cacheTtlMs: 30_000,
+    fetchImpl: async (url) => {
+      urls.push(url);
+      return { ok: true, status: 200, json: async () => ({ locations: [] }) };
+    },
+  });
+
+  await Promise.all([
+    client.getServiceDetailsByRid("rid/one"),
+    client.getServiceDetailsByRid("rid/one"),
+  ]);
+  await client.getServiceDetailsByRid("rid/one");
+
+  assert.deepEqual(urls, ["https://example.test/GetServiceDetailsByRID/rid%2Fone"]);
 });

@@ -2,6 +2,7 @@ import moment from 'moment';
 import { getTrainTimes } from './realtime-trains-api.js';
 import { LiveActivityPushClient } from './live-activity-push-client.js';
 import { getServiceDetails } from './service-details.js';
+import { primaryPlace } from './departure-places.js';
 import { recordNotificationEvent } from './admin-data-store.js';
 import { getDeviceLastSeen } from './metrics.js';
 import { notificationSubscriptionManager } from './notification-subscription-manager.js';
@@ -808,7 +809,7 @@ class LiveActivityManager {
         const delayMinutes = this.calculateDelay(primary.scheduled, primary.estimated);
 
         const platform = this.ensureString(primary.platform);
-        const destinationTitle = this.ensureString(primary.destination?.locationName);
+        const destinationTitle = this.ensureString(primaryPlace(primary.destination)?.locationName);
         const routeTitle = this.ensureOptionalString(subscription.displayName);
         const deepLinkFromCRS = this.ensureOptionalString(subscription.deepLinkFromStation) || this.ensureString(subscription.fromStation);
         const deepLinkToCRS = this.ensureOptionalString(subscription.deepLinkToStation) || this.ensureString(subscription.toStation);

@@ -225,11 +225,18 @@ final class DeparturesStore: ObservableObject {
     }
 
     @discardableResult
-    func ensureServiceDetails(for ids: [String], force: Bool = false) async -> Bool {
+    func ensureServiceDetails(
+        for ids: [String],
+        force: Bool = false,
+        context: ServiceDetailsLookupContext? = nil
+    ) async -> Bool {
         let targets = force ? ids : ids.filter { serviceDetailsById[$0] == nil }
         guard !targets.isEmpty else { return true }
         do {
-            let map = try await NetworkServicePhone.shared.fetchServiceDetailsAggregatedChunked(ids: targets)
+            let map = try await NetworkServicePhone.shared.fetchServiceDetailsAggregatedChunked(
+                ids: targets,
+                context: context
+            )
             for (k, v) in map { serviceDetailsById[k] = v }
             objectWillChange.send()
             return targets.allSatisfy { map[$0] != nil }
@@ -241,6 +248,11 @@ final class DeparturesStore: ObservableObject {
     func departures(for journey: Journey) -> [DepartureV2] {
         let key = pairKey(from: journey.fromStation.crs, to: journey.toStation.crs)
         return sortDepartures(departuresByPair[key] ?? [])
+    }
+
+    func departure(serviceID: String, fromCRS: String, toCRS: String) -> DepartureV2? {
+        departuresByPair[pairKey(from: fromCRS, to: toCRS)]?
+            .first { $0.serviceID == serviceID }
     }
 
     private func sortDepartures(_ list: [DepartureV2]) -> [DepartureV2] {

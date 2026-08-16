@@ -22,6 +22,7 @@ struct ServiceMapView: View {
     @State private var progressClock = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
     @State private var currentProgress: ServiceProgressEstimate = .unavailable
     @State private var railwayRoute: ServiceRailwayRoute?
+    @State private var additionalRailwayRoutes: [ServiceRailwayMapBranch] = []
     @State private var railwayRouteStationRange: ClosedRange<Int>?
     @State private var railwayRouteError: String?
     @State private var isLoadingRailwayRoute = false
@@ -59,7 +60,10 @@ struct ServiceMapView: View {
     private var routeRequestKey: String {
         let normalizedFrom = fromCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         let normalizedTo = toCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        return ([normalizedFrom, normalizedTo] + stations().map(\.crs))
+        let branches = stationBranches().map { branch in
+            branch.map(\.crs).joined(separator: ",")
+        }
+        return ([normalizedFrom, normalizedTo] + branches)
             .joined(separator: "|")
     }
 
@@ -127,6 +131,7 @@ struct ServiceMapView: View {
                 ServiceRailwayMapView(
                     route: railwayRoute,
                     stations: railwayRouteStations,
+                    additionalRoutes: additionalRailwayRoutes,
                     progress: railwayMapProgress,
                     estimatedTrainCoordinate: estimatedTrainCoordinateOutsideRailwayRoute,
                     currentDelayMinutes: currentDelayMinutes,
@@ -189,7 +194,11 @@ struct ServiceMapView: View {
         .onReceive(timer) { _ in
             guard hasCallingPoints else { return }
             Task {
-                await depStore.ensureServiceDetails(for: [serviceID], force: true)
+                await depStore.ensureServiceDetails(
+                    for: [serviceID],
+                    force: true,
+                    context: serviceDetailsLookupContext
+                )
                 recalcCurrentIndex()
             }
         }
@@ -268,6 +277,7 @@ struct ServiceMapView: View {
         let callingPoints = stations()
         guard !isBusService, callingPoints.count >= 2 else {
             railwayRoute = nil
+            additionalRailwayRoutes = []
             railwayRouteStationRange = nil
             railwayRouteError = nil
             return
@@ -277,6 +287,7 @@ struct ServiceMapView: View {
         let fullRange = 0...(callingPoints.count - 1)
         let selectedRange = selectedCallingPointRange(in: callingPoints)
         railwayRoute = nil
+        additionalRailwayRoutes = []
         railwayRouteStationRange = nil
         railwayRouteError = nil
         isLoadingRailwayRoute = true
@@ -288,6 +299,10 @@ struct ServiceMapView: View {
             guard !Task.isCancelled else { return }
             railwayRoute = route
             railwayRouteStationRange = fullRange
+            additionalRailwayRoutes = await loadAdditionalRailwayRoutes(
+                routingService: routingService,
+                primaryCallingPoints: callingPoints
+            )
         } catch let fullRouteError {
             guard !Task.isCancelled else { return }
             guard let selectedRange,
@@ -304,6 +319,10 @@ struct ServiceMapView: View {
                 guard !Task.isCancelled else { return }
                 railwayRoute = route
                 railwayRouteStationRange = selectedRange
+                additionalRailwayRoutes = await loadAdditionalRailwayRoutes(
+                    routingService: routingService,
+                    primaryCallingPoints: callingPoints
+                )
             } catch {
                 guard !Task.isCancelled else { return }
                 handleRailwayRouteFailure(error)
@@ -325,8 +344,62 @@ struct ServiceMapView: View {
         return start...end
     }
 
+    private func loadAdditionalRailwayRoutes(
+        routingService: RailwayRoutingService,
+        primaryCallingPoints: [CallingPoint]
+    ) async -> [ServiceRailwayMapBranch] {
+        var routes: [ServiceRailwayMapBranch] = []
+
+        for (index, branch) in stationBranches().dropFirst().enumerated() {
+            guard !Task.isCancelled else { return routes }
+            let divergentCallingPoints = divergentSuffix(
+                of: branch,
+                comparedWith: primaryCallingPoints
+            )
+            guard divergentCallingPoints.count >= 2 else { continue }
+
+            do {
+                let route = try await routingService.route(
+                    forStationCRSs: divergentCallingPoints.map(\.crs)
+                )
+                guard !Task.isCancelled else { return routes }
+                routes.append(ServiceRailwayMapBranch(
+                    id: "branch-\(index)-\(divergentCallingPoints.last?.crs ?? "unknown")",
+                    route: route,
+                    stations: divergentCallingPoints
+                ))
+            } catch {
+                #if DEBUG
+                print(
+                    "🗺️ [ServiceMapView] additional branch route unavailable: "
+                    + error.localizedDescription
+                )
+                #endif
+            }
+        }
+
+        return routes
+    }
+
+    private func divergentSuffix(
+        of branch: [CallingPoint],
+        comparedWith primary: [CallingPoint]
+    ) -> [CallingPoint] {
+        var sharedCount = 0
+        while sharedCount < branch.count,
+              sharedCount < primary.count,
+              normalizedCRS(branch[sharedCount].crs) == normalizedCRS(primary[sharedCount].crs) {
+            sharedCount += 1
+        }
+
+        let splitStationIndex = max(0, sharedCount - 1)
+        guard branch.indices.contains(splitStationIndex) else { return [] }
+        return Array(branch[splitStationIndex...])
+    }
+
     private func handleRailwayRouteFailure(_ error: Error) {
         railwayRoute = nil
+        additionalRailwayRoutes = []
         railwayRouteStationRange = nil
         railwayRouteError = error.localizedDescription
         #if DEBUG
@@ -343,7 +416,11 @@ struct ServiceMapView: View {
             attempt += 1
             retryAttempt = attempt
             nextRetryAt = nil
-            let receivedCallingPoints = await depStore.ensureServiceDetails(for: [serviceID], force: true)
+            let receivedCallingPoints = await depStore.ensureServiceDetails(
+                for: [serviceID],
+                force: true,
+                context: serviceDetailsLookupContext
+            )
             recalcCurrentIndex()
             hasFinishedInitialLoad = true
 
@@ -459,14 +536,40 @@ struct ServiceMapView: View {
         return details.allStations
     }
 
+    private func stationBranches() -> [[CallingPoint]] {
+        depStore.serviceDetailsById[serviceID]?.stationBranches ?? []
+    }
+
+    private var serviceDetailsLookupContext: ServiceDetailsLookupContext? {
+        guard let departure = depStore.departure(
+            serviceID: serviceID,
+            fromCRS: fromCRS,
+            toCRS: toCRS
+        ) else {
+            return nil
+        }
+        return ServiceDetailsLookupContext(
+            fromCRS: fromCRS,
+            toCRS: toCRS,
+            originCRS: departure.origin?.first?.crs,
+            operator: nil,
+            destinationCRSs: departure.destination.compactMap(\.crs),
+            length: departure.length
+        )
+    }
+
     private func stationCoordinate(for crs: String) -> CLLocationCoordinate2D? {
-        let normalizedCRS = crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let targetCRS = normalizedCRS(crs)
         guard let station = StationsService.shared.stations.first(where: {
-            $0.crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == normalizedCRS
+            normalizedCRS($0.crs) == targetCRS
         }), station.hasUsableCoordinate else {
             return nil
         }
         return station.coordinate
+    }
+
+    private func normalizedCRS(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     }
 
     private func recalcCurrentIndex(at now: Date = Date()) {

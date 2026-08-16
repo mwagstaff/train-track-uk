@@ -128,6 +128,19 @@ struct CoachLoadingV1: Codable, Identifiable, Hashable {
     var id: String { "\(position)-\(number)" }
 }
 
+struct SplitLocationV1: Codable, Hashable {
+    let crs: String
+    let locationName: String
+}
+
+struct SplitGuidanceV1: Codable, Hashable {
+    let splitAt: SplitLocationV1
+    let destinationCRS: String
+    let position: String
+    let coachCount: Int
+    let confidence: String
+}
+
 struct ServiceLoadingV1: Codable, Hashable {
     let serviceID: String?
     let status: String
@@ -136,6 +149,7 @@ struct ServiceLoadingV1: Codable, Hashable {
     let observedAt: String?
     let ageSeconds: Int?
     let coaches: [CoachLoadingV1]?
+    let splitGuidance: SplitGuidanceV1?
     let reason: String?
     let error: String?
 
@@ -270,15 +284,12 @@ struct ServiceDetails: Codable, Equatable {
     let delayReason: String?
     let cancelReason: String?
 
-    var allStations: [CallingPoint] {
-        var stations: [CallingPoint] = []
-
-        if let previous = previousCallingPoints {
-            for list in previous { stations.append(contentsOf: list.callingPoint) }
-        }
-
-        let followingStations = subsequentCallingPoints?.flatMap(\.callingPoint) ?? []
-        let currentIsFinalStation = followingStations.isEmpty
+    var stationBranches: [[CallingPoint]] {
+        let previousStations = previousCallingPoints?.first?.callingPoint ?? []
+        let followingBranches = subsequentCallingPoints?
+            .map(\.callingPoint)
+            .filter { !$0.isEmpty } ?? []
+        let currentIsFinalStation = followingBranches.isEmpty
         let currentStation = CallingPoint(
             locationName: locationName,
             crs: crs,
@@ -293,10 +304,14 @@ struct ServiceDetails: Codable, Equatable {
             affectedByDiversion: false,
             rerouteDelay: 0
         )
-        stations.append(currentStation)
+        let sharedStations = previousStations + [currentStation]
+        guard !followingBranches.isEmpty else {
+            return [sharedStations]
+        }
+        return followingBranches.map { sharedStations + $0 }
+    }
 
-        stations.append(contentsOf: followingStations)
-
-        return stations
+    var allStations: [CallingPoint] {
+        stationBranches.first ?? []
     }
 }

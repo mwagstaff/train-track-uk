@@ -3258,6 +3258,12 @@
         "latitude": "52.930595"
     },
     {
+        "crs": "CMS",
+        "name": "Cambridge South",
+        "longitude": "0.1312738",
+        "latitude": "52.1740325"
+    },
+    {
         "crs": "CMY",
         "name": "Crossmyloof",
         "longitude": "-4.284813",

@@ -27,6 +27,24 @@ struct TrainTrack_UKTests {
         #expect(JourneyStopPlacement.destination.insertionIndex(existingStopCount: 3) == 3)
     }
 
+    @Test func stationCatalogueIncludesCambridgeSouthUntilTheAPIIsUpdated() throws {
+        let stations = StationsService.includingSupplementalStations(in: [
+            station(crs: "CBG", name: "Cambridge")
+        ])
+        let cambridgeSouth = try #require(stations.first { $0.crs == "CMS" })
+
+        #expect(cambridgeSouth.name == "Cambridge South")
+        #expect(cambridgeSouth.latitude == "52.1740325")
+        #expect(cambridgeSouth.longitude == "0.1312738")
+    }
+
+    @Test func stationCatalogueDoesNotDuplicateCambridgeSouthFromTheAPI() {
+        let apiStation = station(crs: "CMS", name: "Cambridge South")
+        let stations = StationsService.includingSupplementalStations(in: [apiStation])
+
+        #expect(stations == [apiStation])
+    }
+
     @Test func departureRequiresAccuracyEnvelopeBeyondHysteresis() {
         #expect(!StationDetectionPolicy.isDefinitelyOutsideStation(
             rawDistance: 340,

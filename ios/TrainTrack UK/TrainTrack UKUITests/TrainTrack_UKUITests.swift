@@ -37,6 +37,7 @@ final class TrainTrack_UKUITests: XCTestCase {
         app.launch()
 
         XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.tabBars.buttons["Add Journey"].exists)
 
         app.swipeLeft()
 
@@ -55,7 +56,7 @@ final class TrainTrack_UKUITests: XCTestCase {
     }
 
     @MainActor
-    func testKeyboardDismissesWhenSwipingAwayFromAddJourney() throws {
+    func testCancellingStandaloneAddJourneyReturnsToMyJourneys() throws {
         let app = XCUIApplication()
         app.launch()
 
@@ -66,12 +67,13 @@ final class TrainTrack_UKUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.keyboards.firstMatch.exists)
 
-        app.swipeLeft()
+        app.buttons["toolbar.add-journey"].tap()
 
         XCTAssertTrue(app.navigationBars["Add Journey"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 2))
+        XCTAssertFalse(app.tabBars.firstMatch.exists)
 
-        app.swipeRight()
+        app.buttons["Cancel"].tap()
 
         XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 2))
@@ -85,26 +87,29 @@ final class TrainTrack_UKUITests: XCTestCase {
 
         XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
 
-        app.tabBars.buttons["Add Journey"].tap()
+        app.buttons["toolbar.add-journey"].tap()
 
         XCTAssertTrue(app.navigationBars["Add Journey"].waitForExistence(timeout: 2))
+        XCTAssertFalse(app.tabBars.firstMatch.exists)
 
         let fromField = app.textFields["add-journey.from"]
         XCTAssertTrue(fromField.waitForExistence(timeout: 2))
 
         fromField.tap()
-        fromField.typeText("EDB")
+        fromField.typeText("cambridge")
 
-        let fromSuggestion = app.staticTexts["Edinburgh Waverley"]
+        XCTAssertTrue(app.staticTexts["Cambridge South"].waitForExistence(timeout: 5))
+
+        let fromSuggestion = app.staticTexts["Cambridge"]
         XCTAssertTrue(fromSuggestion.waitForExistence(timeout: 5))
         fromSuggestion.tap()
 
         let destinationField = app.textFields["add-journey.destination"]
         XCTAssertTrue(destinationField.waitForExistence(timeout: 5))
         destinationField.tap()
-        destinationField.typeText("Thurso")
+        destinationField.typeText("ECR")
 
-        let destinationSuggestion = app.staticTexts["Thurso"]
+        let destinationSuggestion = app.staticTexts["East Croydon"]
         XCTAssertTrue(destinationSuggestion.waitForExistence(timeout: 5))
         destinationSuggestion.tap()
 

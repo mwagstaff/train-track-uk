@@ -3,7 +3,7 @@ import cors from 'cors';
 import fs from 'fs';
 import os from 'os';
 import { getTrainTimes, refreshPastDepartures } from './lib/realtime-trains-api.js';
-import { getServiceDetails } from './lib/service-details.js';
+import { getServiceDetails, getServiceDetailsWithContext } from './lib/service-details.js';
 import { getXbarOutput } from './lib/xbar.js';
 import { pastDeparturesCache } from './lib/past-departures-cache.js';
 import {
@@ -1171,10 +1171,12 @@ app.get('/api/v2/service_details/:serviceId*', async (req, res) => {
         return res.status(400).json({ error: 'No service ID provided' });
     }
 
+    const context = serviceDetailsContextFromQuery(req.query);
+
     // Fetch all service IDs in parallel and return as array
     const results = await Promise.all(
         serviceIds.map(async (serviceId) => {
-            const serviceDetails = await getServiceDetails(serviceId);
+            const serviceDetails = await getServiceDetailsWithContext(serviceId, context);
             // If error, return empty object for this service
             if (serviceDetails.error) {
                 console.error(`Failed to get service details for ID ${serviceId}: ${serviceDetails.error}`);
@@ -1185,6 +1187,25 @@ app.get('/api/v2/service_details/:serviceId*', async (req, res) => {
     );
     res.json(results);
 });
+
+function serviceDetailsContextFromQuery(query) {
+    const destinationCRSs = String(query?.destinationCRS || '')
+        .split(',')
+        .map((value) => value.trim().toUpperCase())
+        .filter(Boolean);
+    return {
+        fromCRS: normalizedQueryValue(query?.fromCRS),
+        toCRS: normalizedQueryValue(query?.toCRS),
+        originCRS: normalizedQueryValue(query?.originCRS),
+        operator: normalizedQueryValue(query?.operator),
+        destinationCRSs,
+        length: Number(query?.length) || null
+    };
+}
+
+function normalizedQueryValue(value) {
+    return typeof value === 'string' ? value.trim() : '';
+}
 
 // V2 API - Stations endpoint
 app.get('/api/v2/stations', async (req, res) => {

@@ -44,20 +44,46 @@ export class StaffDepartureBoardClient {
   }
 
   async fetchBoard(station, timestamp, cacheKey) {
+    return this.fetchJson(
+      `${this.baseUrl}/GetDepBoardWithDetails/${encodeURIComponent(station)}/${timestamp}`,
+      cacheKey,
+      "Staff departure board",
+    );
+  }
+
+  async getServiceDetailsByRid(rid) {
+    const normalizedRid = String(rid ?? "").trim();
+    if (!normalizedRid) throw new Error("rid is required");
+    const key = `details:${normalizedRid}`;
+    const cached = this.cache.get(key);
+    if (cached && Date.now() - cached.storedAt < this.cacheTtlMs) return cached.data;
+    if (this.inFlight.has(key)) return this.inFlight.get(key);
+
+    const request = this.fetchJson(
+      `${this.baseUrl}/GetServiceDetailsByRID/${encodeURIComponent(normalizedRid)}`,
+      key,
+      "Staff service details",
+    );
+    this.inFlight.set(key, request);
+    try {
+      return await request;
+    } finally {
+      this.inFlight.delete(key);
+    }
+  }
+
+  async fetchJson(url, cacheKey, description) {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     const startedAt = Date.now();
     let outcome = "error";
     try {
-      const response = await this.fetchImpl(
-        `${this.baseUrl}/GetDepBoardWithDetails/${encodeURIComponent(station)}/${timestamp}`,
-        {
-          headers: { "x-apikey": this.apiKey, accept: "application/json" },
-          signal: controller.signal,
-        },
-      );
+      const response = await this.fetchImpl(url, {
+        headers: { "x-apikey": this.apiKey, accept: "application/json" },
+        signal: controller.signal,
+      });
       outcome = String(response.status);
-      if (!response.ok) throw new Error(`Staff departure board returned HTTP ${response.status}`);
+      if (!response.ok) throw new Error(`${description} returned HTTP ${response.status}`);
       const data = await response.json();
       this.cache.set(cacheKey, { storedAt: Date.now(), data });
       return data;
@@ -72,8 +98,14 @@ const normalizedCrs = (value) => value?.trim().toUpperCase();
 
 function serviceCallsAt(service, crs) {
   const target = normalizedCrs(crs);
-  return [...(service.subsequentLocations ?? []), ...(service.destination ?? [])]
-    .some((location) => normalizedCrs(location.crs) === target);
+  const locations = [...(service.subsequentLocations ?? []), ...(service.destination ?? [])];
+  return locations.some((location) => normalizedCrs(location.crs) === target)
+    || locations.some((location) => (location.associations ?? []).some((association) => (
+      String(association.category ?? "").toLowerCase() === "divide"
+        && association.isCancelled !== true
+        && (normalizedCrs(association.destCRS) === target
+          || normalizedCrs(association.destination?.crs) === target)
+    )));
 }
 
 function finalDestination(service) {

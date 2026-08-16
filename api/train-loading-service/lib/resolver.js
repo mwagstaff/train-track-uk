@@ -1,4 +1,5 @@
 import { matchStaffService } from "./staff-board.js";
+import { resolveSplitGuidance, serviceHasActiveDivide } from "./split-guidance.js";
 
 export function validateLoadingRequest(request) {
   const required = ["serviceID", "from", "to", "scheduledDeparture"];
@@ -66,7 +67,7 @@ export class LoadingResolver {
       service,
     });
     this.onResolution("resolved");
-    return this.details(mapping.rid, request, mapping);
+    return this.details(mapping.rid, request, mapping, service);
   }
 
   async resolveCachedServiceID(serviceID) {
@@ -91,14 +92,36 @@ export class LoadingResolver {
     return this.store.listActiveServices({ staleSeconds: this.staleSeconds });
   }
 
-  async details(rid, request, mapping = {}) {
-    const details = await this.store.getLoadingDetails(rid, {
-      scheduledDeparture: request.scheduledDeparture,
-      staleSeconds: this.staleSeconds,
-    });
+  async details(rid, request, mapping = {}, service) {
+    const [details, splitGuidance] = await Promise.all([
+      this.store.getLoadingDetails(rid, {
+        scheduledDeparture: request.scheduledDeparture,
+        staleSeconds: this.staleSeconds,
+      }),
+      this.splitGuidance(rid, request, mapping, service),
+    ]);
     return {
       serviceID: request.serviceID ?? mapping.serviceID ?? null,
       ...details,
+      splitGuidance,
     };
+  }
+
+  async splitGuidance(rid, request, mapping, matchedService) {
+    if (!request?.from || !request?.to) return null;
+    if (matchedService && !serviceHasActiveDivide(matchedService, request.from)) return null;
+    if (!matchedService && mapping.hasDivideAssociation === false) return null;
+
+    try {
+      const service = matchedService ?? await this.staffClient.getServiceDetailsByRid(rid);
+      return await resolveSplitGuidance({
+        service,
+        request,
+        getServiceDetails: (associatedRid) => this.staffClient.getServiceDetailsByRid(associatedRid),
+      });
+    } catch {
+      // Split guidance is optional and must never make live loading unavailable.
+      return null;
+    }
   }
 }

@@ -16,17 +16,30 @@ struct ContentView: View {
     // Navigation paths for each tab to enable programmatic pop-to-root
     @State private var favouritesPath = NavigationPath()
     @State private var myJourneysPath = NavigationPath()
-    @State private var addJourneyPath = NavigationPath()
     @State private var profilePath = NavigationPath()
     @State private var pageCommitFeedbackTrigger = 0
 
     private var pagingSelection: Binding<Tab> {
         Binding(
-            get: { router.selected },
+            get: {
+                router.selected == .addJourney
+                    ? router.lastNonAddTab
+                    : router.selected
+            },
             set: { newTab in
                 guard newTab != router.selected else { return }
                 router.selected = newTab
                 pageCommitFeedbackTrigger += 1
+            }
+        )
+    }
+
+    private var addJourneyPresented: Binding<Bool> {
+        Binding(
+            get: { router.selected == .addJourney },
+            set: { isPresented in
+                guard !isPresented, router.selected == .addJourney else { return }
+                router.selected = router.lastNonAddTab
             }
         )
     }
@@ -41,18 +54,19 @@ struct ContentView: View {
                 .modifier(JourneyUpdatesChrome(includeToast: true))
                 .tag(Tab.myJourneys)
 
-            NavigationStack(path: $addJourneyPath) { AddJourneyView() }
-                .modifier(JourneyUpdatesChrome(includeToast: true))
-                .tag(Tab.addJourney)
-
             NavigationStack(path: $profilePath) { ProfileView() }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
                 .tag(Tab.profile)
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            NativePagingTabBar(selection: $router.selected)
-                .frame(height: 49)
+            if router.selected != .addJourney {
+                NativePagingTabBar(selection: $router.selected)
+                    .frame(height: 49)
+            }
+        }
+        .fullScreenCover(isPresented: addJourneyPresented) {
+            NavigationStack { AddJourneyView() }
         }
         .sensoryFeedback(.selection, trigger: pageCommitFeedbackTrigger)
         .animation(.easeOut(duration: 0.25), value: toastStore.toast)
@@ -68,7 +82,6 @@ struct ContentView: View {
             // Pop all navigation stacks to root when triggered
             favouritesPath = NavigationPath()
             myJourneysPath = NavigationPath()
-            addJourneyPath = NavigationPath()
             profilePath = NavigationPath()
         }
     }

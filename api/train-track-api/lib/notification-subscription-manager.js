@@ -1,4 +1,5 @@
 import moment from 'moment';
+import { primaryPlace } from './departure-places.js';
 import crypto from 'crypto';
 import { getTrainTimes } from './realtime-trains-api.js';
 import { NotificationPushClient } from './notification-push-client.js';
@@ -1972,7 +1973,7 @@ function buildScheduledLiveActivityContentState(subscription, leg, snapshot, rou
         routeTitle,
         deepLinkFromCRS: String(leg?.from || '').toUpperCase(),
         deepLinkToCRS: String(leg?.to || '').toUpperCase(),
-        destinationTitle: sanitizeDisplayLabel(primary.destination?.locationName) || legToLabel(leg),
+        destinationTitle: sanitizeDisplayLabel(primaryPlace(primary.destination)?.locationName) || legToLabel(leg),
         arrivalLabel: null,
         scheduledDeparture: getValidDepartureTime(primary.scheduled),
         length: Number.isFinite(primary.length) && primary.length > 0 ? primary.length : null,

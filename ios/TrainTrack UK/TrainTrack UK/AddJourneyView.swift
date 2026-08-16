@@ -151,30 +151,35 @@ struct AddJourneyView: View {
 
     private func save() {
         guard let stations = resolvedStations else { return }
-        JourneyStore.shared.addJourneyGroup(stations: stations, favorite: markAsFavorite, saveReturn: true)
-        let targetTab: Tab = markAsFavorite ? .favourites : .myJourneys
-        leaveAddJourney(for: targetTab)
+        let favorite = markAsFavorite
+        let targetTab: Tab = favorite ? .favourites : .myJourneys
+        leaveAddJourney(for: targetTab) {
+            JourneyStore.shared.addJourneyGroup(
+                stations: stations,
+                favorite: favorite,
+                saveReturn: true
+            )
+        }
     }
 
     private func cancel() {
         leaveAddJourney(for: router.lastNonAddTab)
     }
 
-    private func leaveAddJourney(for targetTab: Tab) {
+    private func leaveAddJourney(
+        for targetTab: Tab,
+        afterTransition: (() -> Void)? = nil
+    ) {
         clearFocus()
-        fromInput = StationInput()
-        stopInputs = [StationInput()]
-        markAsFavorite = false
 
-        // Let the form and its navigation bar settle before changing pages. An
-        // animated page handoff can otherwise make UIKit temporarily attach the
-        // destination's navigation item to both navigation bars.
+        // Dismissing the standalone cover also reveals the requested destination.
         DispatchQueue.main.async {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
                 router.selected = targetTab
             }
+            afterTransition?()
         }
     }
 

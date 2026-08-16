@@ -75,6 +75,20 @@ struct RailwayRoutingTests {
         #expect(segmentLength(route, fromStation: 16, toStation: 17) < 4_000)
     }
 
+    @Test func openStreetMapCambridgeBrightonRouteIncludesCambridgeSouth() async throws {
+        let callingPoints = [
+            "CBG", "CMS", "RYS", "AWM", "BDK", "LET", "HIT", "SVG", "FPK", "STP",
+            "ZFD", "BFR", "ECR", "GTW", "TBD", "HHE", "BUG", "BTN",
+        ]
+        let route = try await RailwayRoutingService.shared.route(
+            forStationCRSs: callingPoints
+        )
+
+        #expect(route.stationCount == callingPoints.count)
+        #expect((165_000...190_000).contains(route.totalLength))
+        #expect(route.coordinate(atStation: 1) != nil)
+    }
+
     @Test @MainActor func railwayRouteSegmentsUseExistingDelayThresholds() {
         let onTime = callingPoint(crs: "AAA", scheduled: "12:00")
         let minorDelay = callingPoint(crs: "BBB", scheduled: "12:10", estimated: "12:13")
@@ -247,6 +261,65 @@ struct RailwayRoutingTests {
         #expect(station.st == "11:04")
         #expect(station.et == "11:06")
         #expect(station.platform == "3")
+    }
+
+    @Test func dividingServiceKeepsEachDestinationAsAnIndependentBranch() {
+        let details = ServiceDetails(
+            previousCallingPoints: [CallingPointList(
+                callingPoint: [
+                    callingPoint(name: "London Victoria", crs: "VIC", scheduled: "13:15"),
+                    callingPoint(name: "East Croydon", crs: "ECR", scheduled: "13:32"),
+                ],
+                serviceType: nil,
+                serviceChangeRequired: nil,
+                assocIsCancelled: nil
+            )],
+            subsequentCallingPoints: [
+                CallingPointList(
+                    callingPoint: [
+                        callingPoint(name: "Ford", crs: "FOD", scheduled: "15:04"),
+                        callingPoint(name: "Portsmouth Harbour", crs: "PMH", scheduled: "15:47"),
+                    ],
+                    serviceType: nil,
+                    serviceChangeRequired: nil,
+                    assocIsCancelled: nil
+                ),
+                CallingPointList(
+                    callingPoint: [
+                        callingPoint(name: "West Worthing", crs: "WWO", scheduled: "14:55"),
+                        callingPoint(name: "Littlehampton", crs: "LIT", scheduled: "15:13"),
+                    ],
+                    serviceType: nil,
+                    serviceChangeRequired: nil,
+                    assocIsCancelled: nil
+                ),
+            ],
+            generatedAt: "2026-08-16T13:00:00Z",
+            serviceType: "train",
+            locationName: "Worthing",
+            crs: "WRH",
+            operator: "Southern",
+            operatorCode: "SN",
+            isCancelled: false,
+            length: 12,
+            detachFront: false,
+            isReverseFormation: false,
+            platform: "3",
+            sta: "14:46",
+            eta: "14:46",
+            ata: nil,
+            std: "14:47",
+            etd: "14:47",
+            atd: nil,
+            delayReason: nil,
+            cancelReason: nil
+        )
+
+        #expect(details.stationBranches.map { $0.map(\.crs) } == [
+            ["VIC", "ECR", "WRH", "FOD", "PMH"],
+            ["VIC", "ECR", "WRH", "WWO", "LIT"],
+        ])
+        #expect(details.allStations.map(\.crs) == ["VIC", "ECR", "WRH", "FOD", "PMH"])
     }
 
     @Test func progressInterpolatesWithinTheCurrentCallingPointSegment() {

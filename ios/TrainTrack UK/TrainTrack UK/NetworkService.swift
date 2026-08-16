@@ -1,5 +1,37 @@
 import Foundation
 
+struct ServiceDetailsLookupContext: Equatable {
+    let fromCRS: String
+    let toCRS: String
+    let originCRS: String?
+    let `operator`: String?
+    let destinationCRSs: [String]
+    let length: Int?
+
+    var queryItems: [URLQueryItem] {
+        var items = [
+            URLQueryItem(name: "fromCRS", value: fromCRS),
+            URLQueryItem(name: "toCRS", value: toCRS),
+        ]
+        if let originCRS, !originCRS.isEmpty {
+            items.append(URLQueryItem(name: "originCRS", value: originCRS))
+        }
+        if let `operator`, !`operator`.isEmpty {
+            items.append(URLQueryItem(name: "operator", value: `operator`))
+        }
+        if !destinationCRSs.isEmpty {
+            items.append(URLQueryItem(
+                name: "destinationCRS",
+                value: destinationCRSs.joined(separator: ",")
+            ))
+        }
+        if let length, length > 0 {
+            items.append(URLQueryItem(name: "length", value: String(length)))
+        }
+        return items
+    }
+}
+
 enum ApiHost: String, CaseIterable, Identifiable {
     case prod
     case dev
@@ -250,10 +282,17 @@ final class NetworkServicePhone {
         try await Task.sleep(nanoseconds: delayMs * 1_000_000)
     }
 
-    func fetchServiceDetailsAggregated(ids: [String]) async throws -> [String: ServiceDetails] {
+    func fetchServiceDetailsAggregated(
+        ids: [String],
+        context: ServiceDetailsLookupContext? = nil
+    ) async throws -> [String: ServiceDetails] {
         guard !ids.isEmpty else { return [:] }
         let path = ids.joined(separator: "/")
-        guard let url = URL(string: "\(base)/service_details/\(path)") else { throw PhoneNetworkError.invalidURL }
+        guard var components = URLComponents(string: "\(base)/service_details/\(path)") else {
+            throw PhoneNetworkError.invalidURL
+        }
+        components.queryItems = context?.queryItems
+        guard let url = components.url else { throw PhoneNetworkError.invalidURL }
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
         request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
@@ -276,7 +315,10 @@ final class NetworkServicePhone {
     }
 
     // Chunk the service IDs and fetch in parallel, merging results.
-    func fetchServiceDetailsAggregatedChunked(ids: [String]) async throws -> [String: ServiceDetails] {
+    func fetchServiceDetailsAggregatedChunked(
+        ids: [String],
+        context: ServiceDetailsLookupContext? = nil
+    ) async throws -> [String: ServiceDetails] {
         guard !ids.isEmpty else { return [:] }
         let chunkSize = max(1, maxIdsPerRequest)
         var chunks: [[String]] = []
@@ -291,7 +333,10 @@ final class NetworkServicePhone {
         try await withThrowingTaskGroup(of: [String: ServiceDetails].self) { group in
             for chunk in chunks {
                 group.addTask { [chunk] in
-                    return try await self.fetchServiceDetailsAggregated(ids: chunk)
+                    return try await self.fetchServiceDetailsAggregated(
+                        ids: chunk,
+                        context: context
+                    )
                 }
             }
             for try await partial in group {

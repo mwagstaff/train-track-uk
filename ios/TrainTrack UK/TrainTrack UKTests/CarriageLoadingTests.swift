@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import TrainTrack_UK
 
@@ -28,6 +29,7 @@ struct CarriageLoadingTests {
             observedAt: nil,
             ageSeconds: 10,
             coaches: [coach],
+            splitGuidance: nil,
             reason: nil,
             error: nil
         )
@@ -39,11 +41,35 @@ struct CarriageLoadingTests {
             observedAt: nil,
             ageSeconds: 900,
             coaches: [coach],
+            splitGuidance: nil,
             reason: nil,
             error: nil
         )
 
         #expect(available.freshCoaches?.count == 1)
         #expect(stale.freshCoaches == nil)
+    }
+
+    @Test func splitGuidanceDecodesAndProducesPassengerCopy() throws {
+        let data = Data(#"""
+        {
+          "serviceID": "service",
+          "status": "waiting_for_update",
+          "splitGuidance": {
+            "splitAt": { "crs": "WRH", "locationName": "Worthing" },
+            "destinationCRS": "LIT",
+            "position": "rear",
+            "coachCount": 8,
+            "confidence": "validated_lengths"
+          }
+        }
+        """#.utf8)
+
+        let details = try JSONDecoder().decode(ServiceLoadingV1.self, from: data)
+        let guidance = try #require(details.splitGuidance)
+        #expect(JourneyCardPresentation.splitGuidanceLabel(
+            guidance,
+            destinationName: "Littlehampton"
+        ) == "Train divides at Worthing. Travel in the rear 8 coaches for Littlehampton.")
     }
 }

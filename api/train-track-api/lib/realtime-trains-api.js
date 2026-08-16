@@ -232,7 +232,7 @@ function getEstimatedDepartureTime(scheduled, estimated) {
 }
 
 // Parse the response data to strip out unnecessary fields
-async function parseResponseDataLiveDepartureBoard(data) {
+export async function parseResponseDataLiveDepartureBoard(data) {
 
     let departures = [];
 
@@ -252,11 +252,7 @@ async function parseResponseDataLiveDepartureBoard(data) {
                     platform: trainService.platform,
                     isCancelled: trainService.isCancelled,
                     length: trainService.length,
-                    destination: {
-                        crs: trainService.destination[0].crs,
-                        locationName: trainService.destination[0].locationName,
-                        via: trainService.destination[0].via
-                    },
+                    destination: normalizedDestinations(trainService.destination),
                     origin: {
                         crs: trainService.origin[0].crs,
                         locationName: trainService.origin[0].locationName
@@ -295,6 +291,17 @@ async function parseResponseDataLiveDepartureBoard(data) {
     }
 }
 
+function normalizedDestinations(destinations) {
+    const normalized = Array.isArray(destinations)
+        ? destinations.map((destination) => ({
+            crs: destination?.crs,
+            locationName: destination?.locationName,
+            via: destination?.via
+        }))
+        : [];
+    return normalized.length === 1 ? normalized[0] : normalized;
+}
+
 function shouldPreferDeparture(current, candidate) {
     const currentPlatform = normalizePlatform(current?.platform);
     const candidatePlatform = normalizePlatform(candidate?.platform);
@@ -323,11 +330,18 @@ function cloneJourneyResult(result) {
             ? result.departures.map((departure) => ({
                 ...departure,
                 departure_time: departure?.departure_time ? { ...departure.departure_time } : departure?.departure_time,
-                destination: departure?.destination ? { ...departure.destination } : departure?.destination,
+                destination: clonePlaces(departure?.destination),
                 origin: departure?.origin ? { ...departure.origin } : departure?.origin
             }))
             : result.departures
     };
+}
+
+function clonePlaces(value) {
+    if (Array.isArray(value)) {
+        return value.map((place) => ({ ...place }));
+    }
+    return value ? { ...value } : value;
 }
 
 function setRecentJourneyResult(key, result, nowMs = Date.now()) {

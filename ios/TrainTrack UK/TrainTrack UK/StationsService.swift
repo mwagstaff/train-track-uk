@@ -7,6 +7,15 @@ enum StationsServiceError: Error {
 
 final class StationsService {
     static let shared = StationsService()
+    private static let supplementalStations = [
+        Station(
+            crs: "CMS",
+            name: "Cambridge South",
+            longitude: "0.1312738",
+            latitude: "52.1740325"
+        )
+    ]
+
     private(set) var stations: [Station] = []
     private var lastLoadedBase: String? = nil
 
@@ -30,9 +39,17 @@ final class StationsService {
             request.setValue("true", forHTTPHeaderField: "X-Debug-Build")
             #endif
             let (data, _) = try await URLSession.shared.data(for: request)
-            stations = try JSONDecoder().decode([Station].self, from: data)
+            let decoded = try JSONDecoder().decode([Station].self, from: data)
+            stations = Self.includingSupplementalStations(in: decoded)
         } catch {
             throw StationsServiceError.decodeFailed
+        }
+    }
+
+    static func includingSupplementalStations(in stations: [Station]) -> [Station] {
+        let existingCRSs = Set(stations.map { $0.crs.uppercased() })
+        return stations + supplementalStations.filter {
+            !existingCRSs.contains($0.crs.uppercased())
         }
     }
 

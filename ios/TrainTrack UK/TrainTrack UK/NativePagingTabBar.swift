@@ -1,6 +1,8 @@
 import SwiftUI
 import UIKit
 
+private let visibleTabs: [Tab] = [.favourites, .myJourneys, .profile]
+
 /// Keeps the system tab-bar appearance and accessibility while the content uses
 /// SwiftUI's native horizontal page interaction.
 struct NativePagingTabBar: UIViewRepresentable {
@@ -13,7 +15,7 @@ struct NativePagingTabBar: UIViewRepresentable {
     func makeUIView(context: Context) -> UITabBar {
         let tabBar = UITabBar()
         tabBar.delegate = context.coordinator
-        tabBar.items = Tab.allCases.enumerated().map { index, tab in
+        tabBar.items = visibleTabs.enumerated().map { index, tab in
             let item = UITabBarItem(
                 title: tab.title,
                 image: UIImage(systemName: tab.systemImage),
@@ -32,7 +34,7 @@ struct NativePagingTabBar: UIViewRepresentable {
     }
 
     private func updateSelection(in tabBar: UITabBar) {
-        guard let index = Tab.allCases.firstIndex(of: selection),
+        guard let index = visibleTabs.firstIndex(of: selection),
               tabBar.items?.indices.contains(index) == true else {
             return
         }
@@ -47,8 +49,8 @@ struct NativePagingTabBar: UIViewRepresentable {
         }
 
         func tabBar(_ tabBar: UITabBar, didSelect item: UITabBarItem) {
-            guard Tab.allCases.indices.contains(item.tag) else { return }
-            selection.wrappedValue = Tab.allCases[item.tag]
+            guard visibleTabs.indices.contains(item.tag) else { return }
+            selection.wrappedValue = visibleTabs[item.tag]
         }
     }
 }

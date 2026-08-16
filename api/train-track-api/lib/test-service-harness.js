@@ -1,3 +1,5 @@
+import { primaryPlace } from './departure-places.js';
+
 const TEST_START_STATION = {
     crs: 'TTS',
     name: 'Test start station',
@@ -147,10 +149,10 @@ export const testServiceHarness = {
             return null;
         }
 
-        const originStation = departure.origin?.crs === TEST_END_STATION.crs
+        const originStation = primaryPlace(departure.origin)?.crs === TEST_END_STATION.crs
             ? TEST_END_STATION
             : TEST_START_STATION;
-        const destinationStation = departure.destination?.crs === TEST_START_STATION.crs
+        const destinationStation = primaryPlace(departure.destination)?.crs === TEST_START_STATION.crs
             ? TEST_START_STATION
             : TEST_END_STATION;
         const scheduled = departure.departure_time.scheduled;
