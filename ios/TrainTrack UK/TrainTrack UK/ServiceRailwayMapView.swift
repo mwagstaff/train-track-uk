@@ -262,23 +262,15 @@ struct ServiceRailwayMapView: View {
     }
 
     private var estimatedTrainMarker: some View {
-        VStack(spacing: 3) {
-            Text(estimatedLocationText)
-                .font(.caption2.weight(.semibold))
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
-                .foregroundStyle(.primary)
-                .background(.regularMaterial, in: Capsule())
-            Image(systemName: "train.side.front.car")
-                .font(.system(size: 17, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 34, height: 34)
-                .background(Color.accentColor, in: Circle())
-                .overlay(Circle().stroke(.white, lineWidth: 2))
-                .shadow(color: .black.opacity(0.25), radius: 3, y: 2)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(estimatedLocationText)
+        Image(systemName: "train.side.front.car")
+            .font(.system(size: 17, weight: .bold))
+            .foregroundStyle(.white)
+            .frame(width: 34, height: 34)
+            .background(Color.accentColor, in: Circle())
+            .overlay(Circle().stroke(.white, lineWidth: 2))
+            .shadow(color: .black.opacity(0.25), radius: 3, y: 2)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(estimatedLocationText)
     }
 
     private func stationAnnotation(for index: Int) -> some View {

@@ -10,7 +10,9 @@ struct ServiceMapView: View {
     let destinationName: String
 
     @EnvironmentObject var depStore: DeparturesStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
+    @Namespace private var trainInfoTransition
 
     @State private var timer = Timer.publish(every: 20, on: .main, in: .common).autoconnect()
     @State private var retryClock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -30,6 +32,21 @@ struct ServiceMapView: View {
 
     private var hasCallingPoints: Bool {
         !stations().isEmpty
+    }
+
+    private var isMapLoading: Bool {
+        !hasFinishedInitialLoad
+            || isLoadingRailwayRoute
+            || (
+                hasCallingPoints
+                    && !isBusService
+                    && railwayRoute == nil
+                    && railwayRouteError == nil
+            )
+    }
+
+    private var mapLoadAnimation: Animation? {
+        reduceMotion ? nil : .timingCurve(0.22, 1, 0.36, 1, duration: 0.38)
     }
 
     private var routeRequestKey: String {
@@ -96,7 +113,10 @@ struct ServiceMapView: View {
 
     var body: some View {
         Group {
-            if let railwayRoute {
+            if isMapLoading {
+                mapLoadingView
+                    .transition(.opacity)
+            } else if let railwayRoute {
                 ServiceRailwayMapView(
                     route: railwayRoute,
                     stations: railwayRouteStations,
@@ -106,16 +126,7 @@ struct ServiceMapView: View {
                     fromCRS: fromCRS,
                     toCRS: toCRS
                 )
-            } else if !hasFinishedInitialLoad || isLoadingRailwayRoute {
-                ZStack {
-                    Color(.systemBackground)
-                    VStack(spacing: 12) {
-                        ProgressView()
-                        Text(hasFinishedInitialLoad ? "Loading railway map…" : "Loading service information…")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                .transition(.opacity)
             } else {
                 ContentUnavailableView {
                     Label(
@@ -146,13 +157,23 @@ struct ServiceMapView: View {
         .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    isShowingTrainInfo = true
-                } label: {
-                    Label("Train info", systemImage: "info.circle")
+                if hasCallingPoints && !isMapLoading {
+                    Button {
+                        isShowingTrainInfo = true
+                    } label: {
+                        Label {
+                            Text("Train info")
+                        } icon: {
+                            Image(systemName: "info.circle")
+                                .matchedGeometryEffect(
+                                    id: "train-info-icon",
+                                    in: trainInfoTransition
+                                )
+                        }
+                    }
+                    .accessibilityHint("Shows service times, train length and live status")
+                    .transition(.opacity.combined(with: .scale(scale: 0.88)))
                 }
-                .disabled(!hasCallingPoints)
-                .accessibilityHint("Shows service times, train length and live status")
             }
         }
         .sheet(isPresented: $isShowingTrainInfo) {
@@ -160,6 +181,7 @@ struct ServiceMapView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
+        .animation(mapLoadAnimation, value: isMapLoading)
         .onReceive(timer) { _ in
             guard hasCallingPoints else { return }
             Task {
@@ -186,6 +208,70 @@ struct ServiceMapView: View {
         .task(id: routeRequestKey) {
             await loadRailwayRoute()
         }
+    }
+
+    private var mapLoadingView: some View {
+        ZStack {
+            Color(.systemBackground)
+
+            VStack {
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "info.circle")
+                        .font(.title2)
+                        .foregroundStyle(.tint)
+                        .matchedGeometryEffect(
+                            id: "train-info-icon",
+                            in: trainInfoTransition
+                        )
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Train location is estimated")
+                            .font(.headline)
+                        Text("It’s calculated from live service times and may differ from the train’s exact position.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+
+                        if let loadingTrainLengthText {
+                            Text(loadingTrainLengthText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.top, 2)
+                        }
+                        if let platform = platformInfo() {
+                            Text(platform)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text(hasFinishedInitialLoad ? "Loading route map…" : "Loading service information…")
+                        }
+                        .font(.caption.weight(.semibold))
+                        .padding(.top, 4)
+                    }
+                }
+                .padding(16)
+                .frame(maxWidth: 420, alignment: .leading)
+                .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16))
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+
+                Spacer()
+            }
+        }
+    }
+
+    private var loadingTrainLengthText: String? {
+        guard hasFinishedInitialLoad else { return nil }
+        if isBusService {
+            return "Service type: Bus"
+        }
+        guard let length = serviceLength(), length > 0 else {
+            return "Train length: Unknown"
+        }
+        return "Train length: \(length) car\(length == 1 ? "" : "s")"
     }
 
     private func loadRailwayRoute() async {
