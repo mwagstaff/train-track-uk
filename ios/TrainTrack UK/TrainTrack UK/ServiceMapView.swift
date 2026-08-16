@@ -167,7 +167,8 @@ struct ServiceMapView: View {
         }
         .sheet(isPresented: $isShowingTrainInfo) {
             trainInfoView
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.height(360)])
+                .presentationContentInteraction(.scrolls)
                 .presentationDragIndicator(.visible)
         }
         .overlay(alignment: .bottom) {
@@ -232,7 +233,7 @@ struct ServiceMapView: View {
             }
             .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
             .padding(.horizontal, 16)
-            .padding(.bottom, 12)
+            .padding(.bottom, 32)
             .accessibilityElement(children: .combine)
     }
 
@@ -428,13 +429,16 @@ struct ServiceMapView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 16)
             }
-            .navigationTitle("Train info")
+            .navigationTitle("\(departureTime) to \(destinationName)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
                         isShowingTrainInfo = false
+                    } label: {
+                        Image(systemName: "xmark")
                     }
+                    .accessibilityLabel("Close")
                 }
             }
         }
