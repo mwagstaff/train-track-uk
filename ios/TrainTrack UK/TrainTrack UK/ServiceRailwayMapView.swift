@@ -1,6 +1,52 @@
 import SwiftUI
 import MapKit
 
+enum RailwayRouteSegmentStatus: Equatable {
+    case onTime
+    case minorDelay
+    case majorDelayOrCancellation
+
+    static func between(_ start: CallingPoint, and end: CallingPoint) -> Self {
+        if start.isCancelledAtStation || end.isCancelledAtStation
+            || hasUnknownDelay(start) || hasUnknownDelay(end) {
+            return .majorDelayOrCancellation
+        }
+        let delay = max(delayMinutes(start), delayMinutes(end))
+        if delay >= 5 { return .majorDelayOrCancellation }
+        if delay > 0 { return .minorDelay }
+        return .onTime
+    }
+
+    private static func hasUnknownDelay(_ station: CallingPoint) -> Bool {
+        let actual = station.at?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let estimate = station.et?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let effectiveTime = actual?.isEmpty == false ? actual : estimate else { return false }
+        let normalized = effectiveTime.lowercased()
+        return normalized == "delayed" || normalized == "cancelled"
+    }
+
+    private static func delayMinutes(_ station: CallingPoint) -> Int {
+        let actual = station.at?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let estimate = station.et?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveTime = actual?.isEmpty == false ? actual : estimate
+        return departureDelayMinutes(estimated: effectiveTime, scheduled: station.st) ?? 0
+    }
+
+    var color: Color {
+        switch self {
+        case .onTime: Color.accentColor
+        case .minorDelay: .yellow
+        case .majorDelayOrCancellation: .red
+        }
+    }
+}
+
+private struct RailwayMapSegment: Identifiable {
+    let id: Int
+    let coordinates: [CLLocationCoordinate2D]
+    let status: RailwayRouteSegmentStatus
+}
+
 struct ServiceRailwayMapView: View {
     let route: ServiceRailwayRoute
     let stations: [CallingPoint]
@@ -8,6 +54,7 @@ struct ServiceRailwayMapView: View {
     let estimatedTrainCoordinate: CLLocationCoordinate2D?
     let fromCRS: String
     let toCRS: String
+    let dataSource: RailwayMapSource
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var hasCenteredOnTrain = false
@@ -15,11 +62,11 @@ struct ServiceRailwayMapView: View {
     var body: some View {
         Map(position: $cameraPosition, interactionModes: .all) {
             MapPolyline(coordinates: route.coordinates)
-                .stroke(.secondary.opacity(0.45), lineWidth: 6)
+                .stroke(.secondary.opacity(0.45), lineWidth: 8)
 
-            if selectedRouteCoordinates.count >= 2 {
-                MapPolyline(coordinates: selectedRouteCoordinates)
-                    .stroke(Color.accentColor, lineWidth: 6)
+            ForEach(routeSegments) { segment in
+                MapPolyline(coordinates: segment.coordinates)
+                    .stroke(segment.status.color, lineWidth: 6)
             }
 
             ForEach(stations.indices, id: \.self) { index in
@@ -28,7 +75,8 @@ struct ServiceRailwayMapView: View {
                         stationDot(for: index)
                             .accessibilityLabel(stationAccessibilityLabel(for: index))
                     }
-                    .annotationTitles(.hidden)
+                    .annotationTitles(.visible)
+                    .tag("station-\(index)-\(stations[index].crs)")
                 }
             }
 
@@ -37,7 +85,11 @@ struct ServiceRailwayMapView: View {
                     estimatedTrainMarker
                 }
                 .annotationTitles(.hidden)
+                .tag("estimated-train")
             }
+        }
+        .transaction { transaction in
+            transaction.animation = nil
         }
         .mapStyle(.standard(elevation: .flat, emphasis: .muted))
         .mapControls {
@@ -58,6 +110,20 @@ struct ServiceRailwayMapView: View {
             .padding(12)
             .accessibilityLabel("Center on estimated train position")
         }
+        .overlay(alignment: .bottomTrailing) {
+            if dataSource == .openStreetMap {
+                Link(
+                    "Rail data © OpenStreetMap contributors",
+                    destination: URL(string: "https://www.openstreetmap.org/copyright")!
+                )
+                .font(.caption2)
+                .padding(.horizontal, 7)
+                .padding(.vertical, 5)
+                .background(.regularMaterial, in: Capsule())
+                .padding(8)
+                .accessibilityLabel("OpenStreetMap railway data attribution")
+            }
+        }
         .onAppear {
             centerOnTrainOrFrameRoute()
         }
@@ -65,20 +131,23 @@ struct ServiceRailwayMapView: View {
             guard !hasCenteredOnTrain, trainCoordinate != nil else { return }
             centerOnTrainOrFrameRoute()
         }
+        .onChange(of: routeKey) { _, _ in
+            hasCenteredOnTrain = false
+            centerOnTrainOrFrameRoute()
+        }
     }
 
-    private var selectedRouteCoordinates: [CLLocationCoordinate2D] {
-        let normalizedFrom = fromCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        let normalizedTo = toCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        guard let start = stations.firstIndex(where: {
-            $0.crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == normalizedFrom
-        }), let end = stations.indices.first(where: { index in
-            index >= start
-                && stations[index].crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == normalizedTo
-        }) else {
-            return route.coordinates
+    private var routeSegments: [RailwayMapSegment] {
+        guard stations.count >= 2, route.stationCount == stations.count else { return [] }
+        return stations.indices.dropLast().compactMap { index in
+            let coordinates = route.coordinates(fromStation: index, throughStation: index + 1)
+            guard coordinates.count >= 2 else { return nil }
+            return RailwayMapSegment(
+                id: index,
+                coordinates: coordinates,
+                status: .between(stations[index], and: stations[index + 1])
+            )
         }
-        return route.coordinates(fromStation: start, throughStation: end)
     }
 
     private var trainCoordinate: CLLocationCoordinate2D? {
@@ -96,6 +165,10 @@ struct ServiceRailwayMapView: View {
     private var trainCoordinateKey: String {
         guard let trainCoordinate else { return "unavailable" }
         return "\(trainCoordinate.latitude),\(trainCoordinate.longitude)"
+    }
+
+    private var routeKey: String {
+        "\(dataSource.rawValue):\(route.coordinates.count):\(route.totalLength)"
     }
 
     private var estimatedTrainMarker: some View {
@@ -120,20 +193,12 @@ struct ServiceRailwayMapView: View {
 
     @ViewBuilder
     private func stationDot(for index: Int) -> some View {
-        if index == departureStationIndex {
-            VStack(spacing: 3) {
-                Text("Departure")
-                    .font(.caption2.weight(.semibold))
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .foregroundStyle(.primary)
-                    .background(.regularMaterial, in: Capsule())
-                Circle()
-                    .fill(.orange)
-                    .frame(width: 18, height: 18)
-                    .overlay(Circle().stroke(.white, lineWidth: 2))
-                    .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
-            }
+        if index == selectedOriginStationIndex {
+            Circle()
+                .fill(.orange)
+                .frame(width: 18, height: 18)
+                .overlay(Circle().stroke(.white, lineWidth: 2))
+                .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
         } else {
             let state = stationState(for: index)
             Circle()
@@ -144,10 +209,19 @@ struct ServiceRailwayMapView: View {
         }
     }
 
-    private var departureStationIndex: Int? {
+    private var selectedOriginStationIndex: Int? {
         let normalizedFrom = fromCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         return stations.firstIndex {
             $0.crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == normalizedFrom
+        }
+    }
+
+    private var selectedDestinationStationIndex: Int? {
+        let normalizedTo = toCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        return stations.indices.first {
+            $0 >= (selectedOriginStationIndex ?? 0)
+                && stations[$0].crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+                    == normalizedTo
         }
     }
 
@@ -165,8 +239,11 @@ struct ServiceRailwayMapView: View {
     }
 
     private func stationAccessibilityLabel(for index: Int) -> String {
-        if index == departureStationIndex {
-            return "\(stations[index].locationName), departure station"
+        if index == selectedOriginStationIndex {
+            return "\(stations[index].locationName), selected journey origin"
+        }
+        if index == selectedDestinationStationIndex {
+            return "\(stations[index].locationName), selected journey destination"
         }
         let status: String
         if progress.isAvailable,

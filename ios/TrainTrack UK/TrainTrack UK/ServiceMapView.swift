@@ -17,14 +17,16 @@ struct ServiceMapView: View {
     let destinationName: String
 
     @EnvironmentObject var depStore: DeparturesStore
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
+    @AppStorage("railwayMapSource") private var railwayMapSourceRaw = RailwayMapSource.ordnanceSurvey.rawValue
 
     @State private var timer = Timer.publish(every: 20, on: .main, in: .common).autoconnect()
     @State private var retryClock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    @State private var progressClock = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
     @State private var currentProgress: ServiceProgressEstimate = .unavailable
     @State private var railwayRoute: ServiceRailwayRoute?
     @State private var railwayRouteStationRange: ClosedRange<Int>?
+    @State private var railwayRouteError: String?
     @State private var isLoadingRailwayRoute = false
     @State private var selectedPresentation: ServiceMapPresentation = .map
     @State private var hasFinishedInitialLoad = false
@@ -44,7 +46,14 @@ struct ServiceMapView: View {
     }
 
     private var routeRequestKey: String {
-        stations().map(\.crs).joined(separator: "|")
+        let normalizedFrom = fromCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        let normalizedTo = toCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        return ([railwayMapSource.rawValue, normalizedFrom, normalizedTo] + stations().map(\.crs))
+            .joined(separator: "|")
+    }
+
+    private var railwayMapSource: RailwayMapSource {
+        RailwayMapSource(rawValue: railwayMapSourceRaw) ?? .ordnanceSurvey
     }
 
     private var railwayRouteStations: [CallingPoint] {
@@ -111,6 +120,19 @@ struct ServiceMapView: View {
                             .background(.ultraThinMaterial)
                         Divider()
 
+                        if !isBusService {
+                            railwaySourcePicker
+                        }
+
+                        if let railwayRouteError {
+                            Label(railwayRouteError, systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal)
+                                .padding(.top, 6)
+                        }
+
                         if let railwayRoute {
                             Picker("Service view", selection: $selectedPresentation) {
                                 ForEach(ServiceMapPresentation.allCases) { presentation in
@@ -128,7 +150,8 @@ struct ServiceMapView: View {
                                     progress: railwayMapProgress,
                                     estimatedTrainCoordinate: estimatedTrainCoordinateOutsideRailwayRoute,
                                     fromCRS: fromCRS,
-                                    toCRS: toCRS
+                                    toCRS: toCRS,
+                                    dataSource: railwayMapSource
                                 )
                             } else {
                                 callingPointsView(using: proxy)
@@ -183,7 +206,10 @@ struct ServiceMapView: View {
                 }
             }
             .onReceive(retryClock) { now in
+                guard isRetrying else { return }
                 currentTime = now
+            }
+            .onReceive(progressClock) { now in
                 guard hasCallingPoints else { return }
                 recalcCurrentIndex(at: now)
             }
@@ -216,39 +242,47 @@ struct ServiceMapView: View {
         guard !isBusService, callingPoints.count >= 2 else {
             railwayRoute = nil
             railwayRouteStationRange = nil
+            railwayRouteError = nil
             return
         }
 
+        let requestedSource = railwayMapSource
+        let routingService = RailwayRoutingService.service(for: requestedSource)
+        let fullRange = 0...(callingPoints.count - 1)
+        let selectedRange = selectedCallingPointRange(in: callingPoints)
+        railwayRoute = nil
+        railwayRouteStationRange = nil
+        railwayRouteError = nil
         isLoadingRailwayRoute = true
         defer { isLoadingRailwayRoute = false }
         do {
-            let route = try await RailwayRoutingService.shared.route(
+            let route = try await routingService.route(
                 forStationCRSs: callingPoints.map(\.crs)
             )
             guard !Task.isCancelled else { return }
             railwayRoute = route
-            railwayRouteStationRange = 0...(callingPoints.count - 1)
+            railwayRouteStationRange = fullRange
+            selectedPresentation = .map
         } catch let fullRouteError {
             guard !Task.isCancelled else { return }
-            guard let selectedRange = selectedCallingPointRange(in: callingPoints),
+            guard let selectedRange,
                   selectedRange.count >= 2,
-                  selectedRange != 0...(callingPoints.count - 1) else {
-                handleRailwayRouteFailure(fullRouteError)
+                  selectedRange != fullRange else {
+                handleRailwayRouteFailure(fullRouteError, source: requestedSource)
                 return
             }
             do {
                 let selectedCallingPoints = Array(callingPoints[selectedRange])
-                let route = try await RailwayRoutingService.shared.route(
+                let route = try await routingService.route(
                     forStationCRSs: selectedCallingPoints.map(\.crs)
                 )
                 guard !Task.isCancelled else { return }
                 railwayRoute = route
                 railwayRouteStationRange = selectedRange
-                #if DEBUG
-                print("🗺️ [ServiceMapView] Full route unavailable; showing selected journey leg")
-                #endif
+                selectedPresentation = .map
             } catch {
-                handleRailwayRouteFailure(error)
+                guard !Task.isCancelled else { return }
+                handleRailwayRouteFailure(error, source: requestedSource)
             }
         }
     }
@@ -267,13 +301,38 @@ struct ServiceMapView: View {
         return start...end
     }
 
-    private func handleRailwayRouteFailure(_ error: Error) {
+    private func handleRailwayRouteFailure(_ error: Error, source: RailwayMapSource) {
         railwayRoute = nil
         railwayRouteStationRange = nil
+        railwayRouteError = "\(source.shortName) map unavailable: \(error.localizedDescription)"
         selectedPresentation = .callingPoints
         #if DEBUG
-        print("🗺️ [ServiceMapView] Geographic railway route unavailable: \(error.localizedDescription)")
+        print(
+            "🗺️ [ServiceMapView] \(source.shortName) railway route unavailable: "
+            + error.localizedDescription
+        )
         #endif
+    }
+
+    private var railwaySourcePicker: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Railway map data")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker("Railway map data", selection: $railwayMapSourceRaw) {
+                ForEach(RailwayMapSource.allCases) { source in
+                    Text(source.shortName)
+                        .tag(source.rawValue)
+                        .accessibilityLabel(source.displayName)
+                }
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: railwayMapSourceRaw) { _, _ in
+                selectedPresentation = .map
+            }
+        }
+        .padding(.horizontal)
+        .padding(.top, 8)
     }
 
     private func loadServiceDetails() async {
@@ -488,14 +547,7 @@ struct ServiceMapView: View {
     }
 
     private func recalcCurrentIndex(at now: Date = Date()) {
-        let estimate = ServiceProgressEstimator.estimate(for: stations(), at: now)
-        if reduceMotion {
-            currentProgress = estimate
-        } else {
-            withAnimation(.linear(duration: 0.9)) {
-                currentProgress = estimate
-            }
-        }
+        currentProgress = ServiceProgressEstimator.estimate(for: stations(), at: now)
     }
 
     // MARK: - Helpers for header

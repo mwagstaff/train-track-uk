@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TrainTrack UK OSM route preview</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIINfQ3ynhtFPEImPrQGja7tfpUdj3Z4C0Y="
+    crossorigin=""
+  >
+  <style>
+    html, body, #map { height: 100%; margin: 0; }
+    #status {
+      position: absolute;
+      z-index: 1000;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 8px 12px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.94);
+      box-shadow: 0 1px 5px rgba(0, 0, 0, 0.28);
+      font: 14px system-ui, sans-serif;
+    }
+  </style>
+</head>
+<body>
+  <div id="status">Loading route…</div>
+  <div id="map" aria-label="OSM railway route preview"></div>
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script>
+    const status = document.querySelector("#status");
+    const map = L.map("map");
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap contributors"
+    }).addTo(map);
+
+    fetch("./.osm-routing-cache/route-kth-vic.geojson")
+      .then(response => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.json();
+      })
+      .then(document => {
+        const layer = L.geoJSON(document, {
+          style: { color: "#0875e1", weight: 5, opacity: 0.9 },
+          pointToLayer: (feature, latlng) => L.circleMarker(latlng, {
+            radius: 6,
+            color: "#ffffff",
+            weight: 2,
+            fillColor: "#0875e1",
+            fillOpacity: 1
+          }),
+          onEachFeature: (feature, item) => {
+            if (feature.geometry.type !== "Point") return;
+            const properties = feature.properties;
+            item.bindTooltip(`${properties.name} (${properties.crs})`, {
+              permanent: true,
+              direction: "right"
+            });
+          }
+        }).addTo(map);
+        map.fitBounds(layer.getBounds(), { padding: [32, 32] });
+        const route = document.features.find(feature => feature.id === "route");
+        const kilometres = route.properties.totalDistanceMetres / 1000;
+        status.textContent = `${route.properties.callingPattern.join(" → ")} · ${kilometres.toFixed(3)} km`;
+      })
+      .catch(error => {
+        map.setView([51.5, -0.1], 11);
+        status.textContent = `Route preview failed: ${error.message}`;
+      });
+  </script>
+</body>
+</html>

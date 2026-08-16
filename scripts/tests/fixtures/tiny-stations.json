@@ -1,0 +1,14 @@
+[
+  {
+    "crs": "BBB",
+    "name": "Beta",
+    "longitude": "-0.1000",
+    "latitude": "51.5000"
+  },
+  {
+    "crs": "AAA",
+    "name": "Alpha",
+    "longitude": "-0.1000",
+    "latitude": "51.5020"
+  }
+]

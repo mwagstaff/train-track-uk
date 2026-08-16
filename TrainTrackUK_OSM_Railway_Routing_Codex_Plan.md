@@ -2,7 +2,7 @@
 
 ## Objective
 
-Prototype a UK railway route-mapping system for TrainTrack UK using **OpenStreetMap railway data** instead of OS NGD.
+Prototype a Great Britain railway route-mapping system for TrainTrack UK using **OpenStreetMap railway data** instead of OS NGD. Northern Ireland and Ireland are out of scope for the current implementation.
 
 The goal is to prove that we can:
 
@@ -250,8 +250,8 @@ KTH -> PNE
 PNE -> SYH
 SYH -> WDU
 WDU -> HNH
-HNH -> BRI
-BRI -> VIC
+HNH -> BRX
+BRX -> VIC
 ```
 
 Then concatenate. This constrains route-finding and greatly reduces the chance of choosing a plausible but operationally incorrect railway path.
@@ -351,7 +351,7 @@ Cache generated geometry using the complete calling pattern, not just origin/des
 Example key:
 
 ```text
-KTH>PNE>SYH>WDU>HNH>BRI>VIC
+KTH>PNE>SYH>WDU>HNH>BRX>VIC
 ```
 
 Cache segment edge IDs, merged geometry, total distance, station distances along route, generated timestamp, and OSM extract version.
@@ -369,7 +369,7 @@ Example:
   "SYH": 4139.7,
   "WDU": 5788.3,
   "HNH": 7611.9,
-  "BRI": 9050.2,
+  "BRX": 9050.2,
   "VIC": 11364.7
 }
 ```
@@ -439,7 +439,7 @@ Suggested response:
     "SYH",
     "WDU",
     "HNH",
-    "BRI",
+    "BRX",
     "VIC"
   ],
   "route": {
@@ -533,7 +533,7 @@ For the first pass:
 - no live OSM updates
 - no daily diffs
 - no GraphHopper deployment unless clearly beneficial
-- no whole-country client-side graph
+- no raw PBF parsing or graph construction on the client; the app may consume a compact, prebuilt Great Britain graph after app-size and runtime validation
 - no timetable-based pathfinding
 - no platform-level track assignment
 - no attempt to infer exact physical track in multi-track corridors
@@ -579,7 +579,7 @@ PNE coordinates
 SYH coordinates
 WDU coordinates
 HNH coordinates
-BRI coordinates
+BRX coordinates
 VIC coordinates
 ```
 

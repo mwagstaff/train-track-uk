@@ -282,3 +282,7 @@ logs.*
 
 # Incremental OS NGD download cache (Premium licensed data)
 scripts/.railway-data-cache/
+
+# Local OpenStreetMap railway preprocessing artifacts and Python environment
+scripts/.osm-routing-cache/
+scripts/.osm-routing-venv/

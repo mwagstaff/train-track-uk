@@ -1,6 +1,34 @@
 import Foundation
 import CoreLocation
 
+nonisolated enum RailwayMapSource: String, CaseIterable, Identifiable, Sendable {
+    case ordnanceSurvey = "os"
+    case openStreetMap = "osm"
+
+    var id: Self { self }
+
+    var shortName: String {
+        switch self {
+        case .ordnanceSurvey: "OS"
+        case .openStreetMap: "OSM"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .ordnanceSurvey: "Ordnance Survey"
+        case .openStreetMap: "OpenStreetMap"
+        }
+    }
+
+    fileprivate var resourceName: String {
+        switch self {
+        case .ordnanceSurvey: "railway-routing-london"
+        case .openStreetMap: "railway-routing-great-britain-osm"
+        }
+    }
+}
+
 nonisolated struct ServiceRailwayRoute: Sendable {
     let coordinates: [CLLocationCoordinate2D]
     let cumulativeDistances: [CLLocationDistance]
@@ -101,13 +129,13 @@ nonisolated enum RailwayRoutingError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .resourceMissing:
-            return "The London railway map data is unavailable."
+            return "The railway map data is unavailable."
         case .invalidResource:
-            return "The London railway map data couldn't be loaded."
+            return "The railway map data couldn't be loaded."
         case .insufficientCallingPoints:
             return "At least two calling points are needed to map this service."
         case .stationOutsideCoverage(let crs):
-            return "Station \(crs) is outside the London railway map coverage."
+            return "Station \(crs) is outside the selected railway map coverage."
         case .routeUnavailable(let start, let end):
             return "No mainline route could be found between \(start) and \(end)."
         }
@@ -115,15 +143,29 @@ nonisolated enum RailwayRoutingError: LocalizedError {
 }
 
 actor RailwayRoutingService {
-    static let shared = RailwayRoutingService()
+    static let ordnanceSurvey = RailwayRoutingService(source: .ordnanceSurvey)
+    static let openStreetMap = RailwayRoutingService(source: .openStreetMap)
 
+    private let source: RailwayMapSource
     private let bundle: Bundle
     private var graph: RailwayGraph?
     private var pathCache: [PathKey: GraphPath] = [:]
     private var unreachablePaths: Set<PathKey> = []
+    private let adjacentBacktrackFactor = 4.0
 
-    init(bundle: Bundle = Bundle(for: RailwayRoutingBundleToken.self)) {
+    init(
+        source: RailwayMapSource = .ordnanceSurvey,
+        bundle: Bundle = Bundle(for: RailwayRoutingBundleToken.self)
+    ) {
+        self.source = source
         self.bundle = bundle
+    }
+
+    nonisolated static func service(for source: RailwayMapSource) -> RailwayRoutingService {
+        switch source {
+        case .ordnanceSurvey: ordnanceSurvey
+        case .openStreetMap: openStreetMap
+        }
     }
 
     func route(forStationCRSs stationCRSs: [String]) throws -> ServiceRailwayRoute {
@@ -165,7 +207,15 @@ actor RailwayRoutingService {
                         continue
                     }
 
-                    let score = previousChoice.score + path.length + (nextCandidate.distance * 2)
+                    let backtrackLength = sharedPathLength(
+                        previousChoice.incomingPath,
+                        path,
+                        graph: graph
+                    )
+                    let score = previousChoice.score
+                        + path.cost
+                        + (nextCandidate.distance * 2)
+                        + (backtrackLength * adjacentBacktrackFactor)
                     if bestChoice == nil || score < bestChoice!.score {
                         bestChoice = RouteChoice(
                             score: score,
@@ -207,13 +257,26 @@ actor RailwayRoutingService {
         return try merge(segmentPaths.compactMap { $0 }, graph: graph)
     }
 
+    private func sharedPathLength(
+        _ first: GraphPath?,
+        _ second: GraphPath,
+        graph: RailwayGraph
+    ) -> CLLocationDistance {
+        guard let first else { return 0 }
+        let firstEdges = Set(first.traversals.map(\.edge))
+        let secondEdges = Set(second.traversals.map(\.edge))
+        return firstEdges.intersection(secondEdges).reduce(0) { result, edge in
+            result + graph.edges[edge].length
+        }
+    }
+
     private func loadGraph() throws -> RailwayGraph {
         if let graph { return graph }
         let resourceURL = bundle.url(
-            forResource: "railway-routing-london",
+            forResource: source.resourceName,
             withExtension: "json",
             subdirectory: "Resources"
-        ) ?? bundle.url(forResource: "railway-routing-london", withExtension: "json")
+        ) ?? bundle.url(forResource: source.resourceName, withExtension: "json")
         guard let resourceURL else { throw RailwayRoutingError.resourceMissing }
 
         let data = try Data(contentsOf: resourceURL)
@@ -241,9 +304,13 @@ actor RailwayRoutingService {
         var edges = [RailwayGraphEdge]()
         var adjacency = Array(repeating: [RailwayAdjacency](), count: nodes.count)
         for sourceEdge in asset.edges {
+            let cost = sourceEdge.cost ?? sourceEdge.length
             guard nodes.indices.contains(sourceEdge.start),
                   nodes.indices.contains(sourceEdge.end),
                   sourceEdge.length > 0,
+                  sourceEdge.length.isFinite,
+                  cost > 0,
+                  cost.isFinite,
                   sourceEdge.coordinates.count >= 2 else {
                 throw RailwayRoutingError.invalidResource
             }
@@ -258,6 +325,7 @@ actor RailwayRoutingService {
                 start: sourceEdge.start,
                 end: sourceEdge.end,
                 length: sourceEdge.length,
+                cost: cost,
                 coordinates: coordinates
             ))
             adjacency[sourceEdge.start].append(RailwayAdjacency(
@@ -280,17 +348,53 @@ actor RailwayRoutingService {
             nodes: nodes,
             edges: edges,
             adjacency: adjacency,
-            stationAnchors: anchors
+            stationAnchors: anchors,
+            components: railwayConnectedComponents(adjacency: adjacency)
         )
         graph = loaded
         return loaded
     }
 
     private func shortestPath(in graph: RailwayGraph, from start: Int, to end: Int) throws -> GraphPath? {
-        if start == end { return GraphPath(length: 0, traversals: []) }
+        if start == end { return GraphPath(length: 0, cost: 0, traversals: []) }
         let key = PathKey(start: start, end: end)
         if let cached = pathCache[key] { return cached }
         if unreachablePaths.contains(key) { return nil }
+
+        guard graph.components[start] == graph.components[end] else {
+            unreachablePaths.insert(key)
+            return nil
+        }
+
+        let heuristicPath = try search(in: graph, from: start, to: end, usesHeuristic: true)
+        let path = try heuristicPath
+            ?? search(in: graph, from: start, to: end, usesHeuristic: false)
+        guard let path else {
+            unreachablePaths.insert(key)
+            return nil
+        }
+
+        pathCache[key] = path
+        let reverseKey = PathKey(start: end, end: start)
+        pathCache[reverseKey] = GraphPath(
+            length: path.length,
+            cost: path.cost,
+            traversals: path.traversals.reversed().map {
+                RailwayTraversal(edge: $0.edge, from: $0.to, to: $0.from)
+            }
+        )
+        return path
+    }
+
+    private func search(
+        in graph: RailwayGraph,
+        from start: Int,
+        to end: Int,
+        usesHeuristic: Bool
+    ) throws -> GraphPath? {
+        func heuristic(for node: Int) -> CLLocationDistance {
+            usesHeuristic ? straightLineDistance(graph.nodes[node], graph.nodes[end]) : 0
+        }
 
         var distances = Array(repeating: Double.infinity, count: graph.nodes.count)
         var previousNodes = Array(repeating: -1, count: graph.nodes.count)
@@ -299,7 +403,8 @@ actor RailwayRoutingService {
         distances[start] = 0
         queue.push(RailwayHeapItem(
             node: start,
-            priority: straightLineDistance(graph.nodes[start], graph.nodes[end])
+            cost: 0,
+            priority: heuristic(for: start)
         ))
 
         var visitedCount = 0
@@ -310,34 +415,25 @@ actor RailwayRoutingService {
             }
             let current = item.node
             if current == end { break }
-            let expectedPriority = distances[current] + straightLineDistance(
-                graph.nodes[current],
-                graph.nodes[end]
-            )
-            if item.priority > expectedPriority + 0.001 { continue }
+            if item.cost > distances[current] + 0.001 { continue }
 
             for adjacency in graph.adjacency[current] {
                 let edge = graph.edges[adjacency.edge]
-                let candidateDistance = distances[current] + edge.length
+                let candidateDistance = distances[current] + edge.cost
                 if candidateDistance < distances[adjacency.neighbour] {
                     distances[adjacency.neighbour] = candidateDistance
                     previousNodes[adjacency.neighbour] = current
                     previousEdges[adjacency.neighbour] = adjacency.edge
                     queue.push(RailwayHeapItem(
                         node: adjacency.neighbour,
-                        priority: candidateDistance + straightLineDistance(
-                            graph.nodes[adjacency.neighbour],
-                            graph.nodes[end]
-                        )
+                        cost: candidateDistance,
+                        priority: candidateDistance + heuristic(for: adjacency.neighbour)
                     ))
                 }
             }
         }
 
-        guard distances[end].isFinite else {
-            unreachablePaths.insert(key)
-            return nil
-        }
+        guard distances[end].isFinite else { return nil }
 
         var traversals = [RailwayTraversal]()
         var current = end
@@ -349,17 +445,10 @@ actor RailwayRoutingService {
             current = previous
         }
         traversals.reverse()
-        let path = GraphPath(length: distances[end], traversals: traversals)
-        pathCache[key] = path
-
-        let reverseKey = PathKey(start: end, end: start)
-        pathCache[reverseKey] = GraphPath(
-            length: path.length,
-            traversals: path.traversals.reversed().map {
-                RailwayTraversal(edge: $0.edge, from: $0.to, to: $0.from)
-            }
-        )
-        return path
+        let length = traversals.reduce(0.0) { partialResult, traversal in
+            partialResult + graph.edges[traversal.edge].length
+        }
+        return GraphPath(length: length, cost: distances[end], traversals: traversals)
     }
 
     private func merge(_ paths: [GraphPath], graph: RailwayGraph) throws -> ServiceRailwayRoute {
@@ -427,12 +516,14 @@ private nonisolated struct RailwayRoutingEdge: Decodable {
     let start: Int
     let end: Int
     let length: Double
+    let cost: Double?
     let coordinates: [[Double]]
 
     enum CodingKeys: String, CodingKey {
         case start = "s"
         case end = "e"
         case length = "l"
+        case cost = "c"
         case coordinates = "p"
     }
 }
@@ -452,12 +543,14 @@ private nonisolated struct RailwayGraph {
     let edges: [RailwayGraphEdge]
     let adjacency: [[RailwayAdjacency]]
     let stationAnchors: [String: [RailwayAnchor]]
+    let components: [Int]
 }
 
 private nonisolated struct RailwayGraphEdge {
     let start: Int
     let end: Int
     let length: Double
+    let cost: Double
     let coordinates: [CLLocationCoordinate2D]
 }
 
@@ -479,6 +572,7 @@ private nonisolated struct RailwayTraversal {
 
 private nonisolated struct GraphPath {
     let length: Double
+    let cost: Double
     let traversals: [RailwayTraversal]
 }
 
@@ -495,6 +589,7 @@ private nonisolated struct PathKey: Hashable {
 
 private nonisolated struct RailwayHeapItem {
     let node: Int
+    let cost: Double
     let priority: Double
 }
 
@@ -543,4 +638,23 @@ private nonisolated func straightLineDistance(
     CLLocation(latitude: first.latitude, longitude: first.longitude).distance(
         from: CLLocation(latitude: second.latitude, longitude: second.longitude)
     )
+}
+
+private nonisolated func railwayConnectedComponents(
+    adjacency: [[RailwayAdjacency]]
+) -> [Int] {
+    var components = Array(repeating: -1, count: adjacency.count)
+    var component = 0
+    for start in adjacency.indices where components[start] == -1 {
+        var pending = [start]
+        components[start] = component
+        while let node = pending.popLast() {
+            for edge in adjacency[node] where components[edge.neighbour] == -1 {
+                components[edge.neighbour] = component
+                pending.append(edge.neighbour)
+            }
+        }
+        component += 1
+    }
+    return components
 }

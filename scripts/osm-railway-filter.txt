@@ -1,0 +1,9 @@
+# Routable full-size railway tracks.
+w/railway=rail
+
+# Station, stop and platform features used for matching and diagnostics.
+nwr/railway=station,halt,stop,platform
+nwr/public_transport=station,platform,stop_position,stop_area
+
+# Infrastructure and passenger-service relations. These are optional routing signals.
+r/route=train,railway,tracks

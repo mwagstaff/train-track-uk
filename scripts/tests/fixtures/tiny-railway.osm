@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="TrainTrackUK tests">
+  <node id="1" lat="51.5000" lon="-0.1000" version="1" />
+  <node id="2" lat="51.5010" lon="-0.1000" version="1" />
+  <node id="3" lat="51.5020" lon="-0.1000" version="1">
+    <tag k="railway" v="station" />
+    <tag k="ref:crs" v="AAA" />
+    <tag k="name" v="Alpha" />
+  </node>
+  <node id="4" lat="51.5030" lon="-0.1000" version="1" />
+  <way id="10" version="1">
+    <nd ref="1" />
+    <nd ref="2" />
+    <nd ref="3" />
+    <tag k="railway" v="rail" />
+    <tag k="usage" v="main" />
+  </way>
+  <way id="11" version="1">
+    <nd ref="3" />
+    <nd ref="4" />
+    <tag k="railway" v="tram" />
+  </way>
+  <relation id="20" version="1">
+    <member type="way" ref="10" role="" />
+    <tag k="type" v="route" />
+    <tag k="route" v="train" />
+  </relation>
+</osm>
