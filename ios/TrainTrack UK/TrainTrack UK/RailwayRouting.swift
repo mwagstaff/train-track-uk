@@ -1,34 +1,6 @@
 import Foundation
 import CoreLocation
 
-nonisolated enum RailwayMapSource: String, CaseIterable, Identifiable, Sendable {
-    case ordnanceSurvey = "os"
-    case openStreetMap = "osm"
-
-    var id: Self { self }
-
-    var shortName: String {
-        switch self {
-        case .ordnanceSurvey: "OS"
-        case .openStreetMap: "OSM"
-        }
-    }
-
-    var displayName: String {
-        switch self {
-        case .ordnanceSurvey: "Ordnance Survey"
-        case .openStreetMap: "OpenStreetMap"
-        }
-    }
-
-    fileprivate var resourceName: String {
-        switch self {
-        case .ordnanceSurvey: "railway-routing-london"
-        case .openStreetMap: "railway-routing-great-britain-osm"
-        }
-    }
-}
-
 nonisolated struct ServiceRailwayRoute: Sendable {
     let coordinates: [CLLocationCoordinate2D]
     let cumulativeDistances: [CLLocationDistance]
@@ -143,10 +115,8 @@ nonisolated enum RailwayRoutingError: LocalizedError {
 }
 
 actor RailwayRoutingService {
-    static let ordnanceSurvey = RailwayRoutingService(source: .ordnanceSurvey)
-    static let openStreetMap = RailwayRoutingService(source: .openStreetMap)
+    static let shared = RailwayRoutingService()
 
-    private let source: RailwayMapSource
     private let bundle: Bundle
     private var graph: RailwayGraph?
     private var pathCache: [PathKey: GraphPath] = [:]
@@ -154,18 +124,9 @@ actor RailwayRoutingService {
     private let adjacentBacktrackFactor = 4.0
 
     init(
-        source: RailwayMapSource = .ordnanceSurvey,
         bundle: Bundle = Bundle(for: RailwayRoutingBundleToken.self)
     ) {
-        self.source = source
         self.bundle = bundle
-    }
-
-    nonisolated static func service(for source: RailwayMapSource) -> RailwayRoutingService {
-        switch source {
-        case .ordnanceSurvey: ordnanceSurvey
-        case .openStreetMap: openStreetMap
-        }
     }
 
     func route(forStationCRSs stationCRSs: [String]) throws -> ServiceRailwayRoute {
@@ -273,10 +234,13 @@ actor RailwayRoutingService {
     private func loadGraph() throws -> RailwayGraph {
         if let graph { return graph }
         let resourceURL = bundle.url(
-            forResource: source.resourceName,
+            forResource: "railway-routing-great-britain-osm",
             withExtension: "json",
             subdirectory: "Resources"
-        ) ?? bundle.url(forResource: source.resourceName, withExtension: "json")
+        ) ?? bundle.url(
+            forResource: "railway-routing-great-britain-osm",
+            withExtension: "json"
+        )
         guard let resourceURL else { throw RailwayRoutingError.resourceMissing }
 
         let data = try Data(contentsOf: resourceURL)

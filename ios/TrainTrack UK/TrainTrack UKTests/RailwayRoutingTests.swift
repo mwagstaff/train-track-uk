@@ -5,72 +5,28 @@ import Testing
 
 struct RailwayRoutingTests {
     @Test func kentHouseToVictoriaUsesTheMainlineAlignment() async throws {
-        let route = try await RailwayRoutingService.ordnanceSurvey.route(forStationCRSs: [
-            "KTH", "PNE", "SYH", "WDU", "HNH", "BRX", "VIC"
-        ])
-
-        #expect(route.stationCount == 7)
-        #expect((12_000...13_000).contains(route.totalLength))
-        #expect(route.coordinates.count > 80)
-        #expect(route.coordinate(atStation: 0) != nil)
-        #expect(route.coordinate(atStation: 6) != nil)
-    }
-
-    @Test func openStreetMapRouteUsesTheMainlineAlignment() async throws {
-        let route = try await RailwayRoutingService.openStreetMap.route(forStationCRSs: [
+        let route = try await RailwayRoutingService.shared.route(forStationCRSs: [
             "KTH", "PNE", "SYH", "WDU", "HNH", "BRX", "VIC"
         ])
 
         #expect(route.stationCount == 7)
         #expect((12_000...13_000).contains(route.totalLength))
         #expect(route.coordinates.count > 100)
-    }
-
-    @Test func mapSourcesProduceComparableRoutes() async throws {
-        let callingPattern = ["KTH", "PNE", "SYH", "WDU", "HNH", "BRX", "VIC"]
-        let osRoute = try await RailwayRoutingService.ordnanceSurvey.route(
-            forStationCRSs: callingPattern
-        )
-        let osmRoute = try await RailwayRoutingService.openStreetMap.route(
-            forStationCRSs: callingPattern
-        )
-
-        #expect(abs(osRoute.totalLength - osmRoute.totalLength) < 500)
-        for stationIndex in callingPattern.indices {
-            let osCoordinate = try #require(osRoute.coordinate(atStation: stationIndex))
-            let osmCoordinate = try #require(osmRoute.coordinate(atStation: stationIndex))
-            let separation = CLLocation(
-                latitude: osCoordinate.latitude,
-                longitude: osCoordinate.longitude
-            ).distance(from: CLLocation(
-                latitude: osmCoordinate.latitude,
-                longitude: osmCoordinate.longitude
-            ))
-            #expect(separation < 150)
-        }
+        #expect(route.coordinate(atStation: 0) != nil)
+        #expect(route.coordinate(atStation: 6) != nil)
     }
 
     @Test func reverseRouteKeepsContinuousOrientedGeometry() async throws {
-        let outbound = try await RailwayRoutingService.ordnanceSurvey.route(forStationCRSs: [
+        let outbound = try await RailwayRoutingService.shared.route(forStationCRSs: [
             "KTH", "PNE", "SYH", "WDU", "HNH", "BRX", "VIC"
         ])
-        let reverse = try await RailwayRoutingService.ordnanceSurvey.route(forStationCRSs: [
+        let reverse = try await RailwayRoutingService.shared.route(forStationCRSs: [
             "VIC", "BRX", "HNH", "WDU", "SYH", "PNE", "KTH"
         ])
 
         #expect(abs(outbound.totalLength - reverse.totalLength) < 1)
         #expect(reverse.stationCount == 7)
         #expect(reverse.coordinates.count == outbound.coordinates.count)
-    }
-
-    @Test func reverseOpenStreetMapRouteIsAvailable() async throws {
-        let route = try await RailwayRoutingService.openStreetMap.route(forStationCRSs: [
-            "VIC", "BRX", "HNH", "WDU", "SYH", "PNE", "KTH"
-        ])
-
-        #expect(route.stationCount == 7)
-        #expect((12_000...13_000).contains(route.totalLength))
-        #expect(route.coordinates.count > 100)
     }
 
     @Test func openStreetMapCoversRepresentativeGreatBritainRoutes() async throws {
@@ -86,7 +42,7 @@ struct RailwayRoutingTests {
         ]
 
         for fixture in fixtures {
-            let route = try await RailwayRoutingService.openStreetMap.route(
+            let route = try await RailwayRoutingService.shared.route(
                 forStationCRSs: fixture.callingPoints
             )
             #expect(route.stationCount == fixture.callingPoints.count)
@@ -96,7 +52,7 @@ struct RailwayRoutingTests {
     }
 
     @Test func openStreetMapSouthernRouteUsesClaphamBrightonMainLinePlatforms() async throws {
-        let route = try await RailwayRoutingService.openStreetMap.route(forStationCRSs: [
+        let route = try await RailwayRoutingService.shared.route(forStationCRSs: [
             "VIC", "CLJ", "SRS", "ECR", "PUR", "HOR", "GTW", "TBD", "HHE", "BTN"
         ])
 
@@ -106,7 +62,7 @@ struct RailwayRoutingTests {
     }
 
     @Test func openStreetMapThameslinkRouteUsesStPancrasLowLevelPlatforms() async throws {
-        let route = try await RailwayRoutingService.openStreetMap.route(forStationCRSs: [
+        let route = try await RailwayRoutingService.shared.route(forStationCRSs: [
             "BDM", "FLT", "HLN", "LEA", "LUT", "LTN", "HPD", "SAC", "RDT", "ELS",
             "MIL", "HEN", "BCZ", "CRI", "WHP", "KTN", "STP", "BFR", "ECR", "PUR",
             "HOR", "GTW", "TBD", "HHE", "BTN"
@@ -132,6 +88,33 @@ struct RailwayRoutingTests {
         #expect(
             RailwayRouteSegmentStatus.between(onTime, and: cancelled)
                 == .majorDelayOrCancellation
+        )
+    }
+
+    @Test @MainActor func mapLabelsIncludeExpectedTimesAndLiveDelay() {
+        let onTime = callingPoint(
+            name: "East Croydon",
+            crs: "ECR",
+            scheduled: "01:47"
+        )
+        let oneMinuteLate = callingPoint(
+            name: "East Croydon",
+            crs: "ECR",
+            scheduled: "01:47",
+            estimated: "01:48"
+        )
+
+        #expect(
+            RailwayStationAnnotationLabel.text(for: onTime)
+                == "East Croydon (expected 01:47)"
+        )
+        #expect(
+            RailwayStationAnnotationLabel.text(for: oneMinuteLate)
+                == "East Croydon (expected 01:48, 1 min late)"
+        )
+        #expect(
+            RailwayEstimatedLocationLabel.text(delayMinutes: 26)
+                == "Estimated location (26 mins late)"
         )
     }
 
@@ -216,13 +199,14 @@ struct RailwayRoutingTests {
     }
 
     private func callingPoint(
+        name: String? = nil,
         crs: String,
         scheduled: String,
         estimated: String? = "On time",
         actual: String? = nil
     ) -> CallingPoint {
         CallingPoint(
-            locationName: crs,
+            locationName: name ?? crs,
             crs: crs,
             st: scheduled,
             et: estimated,

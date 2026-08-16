@@ -41,6 +41,59 @@ enum RailwayRouteSegmentStatus: Equatable {
     }
 }
 
+enum RailwayStationAnnotationLabel {
+    static func text(for station: CallingPoint) -> String {
+        if station.isCancelledAtStation {
+            return "\(station.locationName) (cancelled)"
+        }
+
+        let actual = clockTime(station.at)
+        let estimate = clockTime(station.et)
+        let expectedTime = actual ?? estimate ?? station.st
+        if actual == nil,
+           station.et?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare("Delayed") == .orderedSame {
+            return "\(station.locationName) (delayed; expected time unavailable)"
+        }
+
+        let delay = departureDelayMinutes(
+            estimated: expectedTime,
+            scheduled: station.st
+        ) ?? 0
+        if delay > 0 {
+            return "\(station.locationName) (expected \(expectedTime), \(minuteText(delay)) late)"
+        }
+        return "\(station.locationName) (expected \(expectedTime))"
+    }
+
+    private static func clockTime(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let components = trimmed.split(separator: ":")
+        guard components.count == 2,
+              let hour = Int(components[0]),
+              let minute = Int(components[1]),
+              (0..<24).contains(hour),
+              (0..<60).contains(minute) else {
+            return nil
+        }
+        return String(format: "%02d:%02d", hour, minute)
+    }
+
+    private static func minuteText(_ minutes: Int) -> String {
+        "\(minutes) min\(minutes == 1 ? "" : "s")"
+    }
+}
+
+enum RailwayEstimatedLocationLabel {
+    static func text(delayMinutes: Int?) -> String {
+        guard let delayMinutes, delayMinutes > 0 else {
+            return "Estimated location"
+        }
+        return "Estimated location (\(delayMinutes) min\(delayMinutes == 1 ? "" : "s") late)"
+    }
+}
+
 private struct RailwayMapSegment: Identifiable {
     let id: Int
     let coordinates: [CLLocationCoordinate2D]
@@ -52,9 +105,9 @@ struct ServiceRailwayMapView: View {
     let stations: [CallingPoint]
     let progress: ServiceProgressEstimate
     let estimatedTrainCoordinate: CLLocationCoordinate2D?
+    let currentDelayMinutes: Int?
     let fromCRS: String
     let toCRS: String
-    let dataSource: RailwayMapSource
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var hasCenteredOnTrain = false
@@ -71,7 +124,7 @@ struct ServiceRailwayMapView: View {
 
             ForEach(stations.indices, id: \.self) { index in
                 if let coordinate = route.coordinate(atStation: index) {
-                    Annotation(stations[index].locationName, coordinate: coordinate) {
+                    Annotation(stationLabel(for: index), coordinate: coordinate) {
                         stationDot(for: index)
                             .accessibilityLabel(stationAccessibilityLabel(for: index))
                     }
@@ -81,7 +134,7 @@ struct ServiceRailwayMapView: View {
             }
 
             if let trainCoordinate {
-                Annotation("Estimated train position", coordinate: trainCoordinate) {
+                Annotation(estimatedLocationText, coordinate: trainCoordinate) {
                     estimatedTrainMarker
                 }
                 .annotationTitles(.hidden)
@@ -108,21 +161,19 @@ struct ServiceRailwayMapView: View {
             .buttonBorderShape(.circle)
             .background(.regularMaterial, in: Circle())
             .padding(12)
-            .accessibilityLabel("Center on estimated train position")
+            .accessibilityLabel("Center on estimated train location")
         }
         .overlay(alignment: .bottomTrailing) {
-            if dataSource == .openStreetMap {
-                Link(
-                    "Rail data © OpenStreetMap contributors",
-                    destination: URL(string: "https://www.openstreetmap.org/copyright")!
-                )
-                .font(.caption2)
-                .padding(.horizontal, 7)
-                .padding(.vertical, 5)
-                .background(.regularMaterial, in: Capsule())
-                .padding(8)
-                .accessibilityLabel("OpenStreetMap railway data attribution")
-            }
+            Link(
+                "Rail data © OpenStreetMap contributors",
+                destination: URL(string: "https://www.openstreetmap.org/copyright")!
+            )
+            .font(.caption2)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 5)
+            .background(.regularMaterial, in: Capsule())
+            .padding(8)
+            .accessibilityLabel("OpenStreetMap railway data attribution")
         }
         .onAppear {
             centerOnTrainOrFrameRoute()
@@ -168,12 +219,16 @@ struct ServiceRailwayMapView: View {
     }
 
     private var routeKey: String {
-        "\(dataSource.rawValue):\(route.coordinates.count):\(route.totalLength)"
+        "\(route.coordinates.count):\(route.totalLength)"
+    }
+
+    private var estimatedLocationText: String {
+        RailwayEstimatedLocationLabel.text(delayMinutes: currentDelayMinutes)
     }
 
     private var estimatedTrainMarker: some View {
         VStack(spacing: 3) {
-            Text("Estimated position")
+            Text(estimatedLocationText)
                 .font(.caption2.weight(.semibold))
                 .padding(.horizontal, 7)
                 .padding(.vertical, 4)
@@ -188,7 +243,7 @@ struct ServiceRailwayMapView: View {
                 .shadow(color: .black.opacity(0.25), radius: 3, y: 2)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Estimated train position")
+        .accessibilityLabel(estimatedLocationText)
     }
 
     @ViewBuilder
@@ -239,11 +294,12 @@ struct ServiceRailwayMapView: View {
     }
 
     private func stationAccessibilityLabel(for index: Int) -> String {
+        let label = stationLabel(for: index)
         if index == selectedOriginStationIndex {
-            return "\(stations[index].locationName), selected journey origin"
+            return "\(label), selected journey origin"
         }
         if index == selectedDestinationStationIndex {
-            return "\(stations[index].locationName), selected journey destination"
+            return "\(label), selected journey destination"
         }
         let status: String
         if progress.isAvailable,
@@ -255,7 +311,11 @@ struct ServiceRailwayMapView: View {
         } else {
             status = "upcoming"
         }
-        return "\(stations[index].locationName), \(status)"
+        return "\(label), \(status)"
+    }
+
+    private func stationLabel(for index: Int) -> String {
+        RailwayStationAnnotationLabel.text(for: stations[index])
     }
 
     private func centerOnTrainOrFrameRoute() {
