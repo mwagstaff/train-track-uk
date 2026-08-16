@@ -47,23 +47,33 @@ enum RailwayStationAnnotationLabel {
             return "\(station.locationName) (cancelled)"
         }
 
+        let scheduledTime = railwayClockTime(station.st) ?? station.st
         let actual = railwayClockTime(station.at)
-        let estimate = railwayClockTime(station.et)
-        let expectedTime = actual ?? estimate ?? station.st
-        if actual == nil,
-           station.et?.trimmingCharacters(in: .whitespacesAndNewlines)
-            .caseInsensitiveCompare("Delayed") == .orderedSame {
-            return "\(station.locationName) (delayed; expected time unavailable)"
+        let normalizedActual = station.at?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if let actual {
+            let punctuality = punctualityText(time: actual, scheduled: scheduledTime)
+            return "\(station.locationName) (departed \(actual), \(punctuality))"
+        }
+        if normalizedActual == "on time" {
+            return "\(station.locationName) (departed \(scheduledTime), on time)"
         }
 
-        let delay = departureDelayMinutes(
-            estimated: expectedTime,
-            scheduled: station.st
-        ) ?? 0
-        if delay > 0 {
-            return "\(station.locationName) (expected \(expectedTime), \(minuteText(delay)) late)"
+        let estimate = railwayClockTime(station.et)
+        if station.et?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare("Delayed") == .orderedSame {
+            return "\(station.locationName) (due time unavailable, delayed)"
         }
-        return "\(station.locationName) (expected \(expectedTime))"
+
+        let dueTime = estimate ?? scheduledTime
+        let punctuality = punctualityText(time: dueTime, scheduled: scheduledTime)
+        return "\(station.locationName) (due \(dueTime), \(punctuality))"
+    }
+
+    private static func punctualityText(time: String, scheduled: String) -> String {
+        let delay = departureDelayMinutes(estimated: time, scheduled: scheduled) ?? 0
+        return delay > 0 ? "\(minuteText(delay)) late" : "on time"
     }
 
     private static func minuteText(_ minutes: Int) -> String {
@@ -356,7 +366,7 @@ struct ServiceRailwayMapView: View {
             Circle()
                 .fill(state.fill)
                 .frame(width: state.isCurrent ? 16 : 12, height: state.isCurrent ? 16 : 12)
-                .overlay(Circle().stroke(state.stroke, lineWidth: 2))
+                .overlay(Circle().stroke(.black, lineWidth: 2))
                 .shadow(color: .black.opacity(0.18), radius: 1, y: 1)
         }
     }
@@ -377,17 +387,11 @@ struct ServiceRailwayMapView: View {
         }
     }
 
-    private func stationState(for index: Int) -> (fill: Color, stroke: Color, isCurrent: Bool) {
+    private func stationState(for index: Int) -> (fill: Color, isCurrent: Bool) {
         let isCurrent = progress.isAvailable
             && progress.previousStationIndex == progress.nextStationIndex
             && index == progress.previousStationIndex
-        if isCurrent {
-            return (.white, Color.accentColor, true)
-        }
-        if progress.isAvailable && index <= progress.previousStationIndex {
-            return (Color.accentColor, .white, false)
-        }
-        return (.white, .secondary, false)
+        return (.white, isCurrent)
     }
 
     private func stationAccessibilityLabel(for index: Int) -> String {

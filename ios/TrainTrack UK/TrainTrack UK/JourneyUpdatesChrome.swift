@@ -63,7 +63,7 @@ struct JourneyUpdatesChrome: ViewModifier {
                         }
                     }
                     .padding(.top, 8)
-                    .padding(.bottom, 8)
+                    .padding(.bottom, 24)
                 }
             }
             .animation(.easeOut(duration: 0.25), value: holidayMode.isEnabled)

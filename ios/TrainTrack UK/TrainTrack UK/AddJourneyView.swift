@@ -152,26 +152,30 @@ struct AddJourneyView: View {
     private func save() {
         guard let stations = resolvedStations else { return }
         JourneyStore.shared.addJourneyGroup(stations: stations, favorite: markAsFavorite, saveReturn: true)
-        // Switch tab after save based on favourite before we reset state
         let targetTab: Tab = markAsFavorite ? .favourites : .myJourneys
-        router.selected = targetTab
-
-        // Reset inputs
-        fromInput = StationInput()
-        stopInputs = [StationInput()]
-        markAsFavorite = false
+        leaveAddJourney(for: targetTab)
     }
 
     private func cancel() {
-        // Dismiss any keyboard focus
-        focusedField = nil
-        // Reset inputs to avoid stale state if user returns later
+        leaveAddJourney(for: router.lastNonAddTab)
+    }
+
+    private func leaveAddJourney(for targetTab: Tab) {
+        clearFocus()
         fromInput = StationInput()
         stopInputs = [StationInput()]
         markAsFavorite = false
-        scrollTarget = nil
-        // Return to previously selected tab (e.g., Favourites/My Journeys)
-        router.selected = router.lastNonAddTab
+
+        // Let the form and its navigation bar settle before changing pages. An
+        // animated page handoff can otherwise make UIKit temporarily attach the
+        // destination's navigation item to both navigation bars.
+        DispatchQueue.main.async {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                router.selected = targetTab
+            }
+        }
     }
 
     private func resolveInput(_ input: StationInput) -> Station? {
@@ -265,6 +269,7 @@ struct AddJourneyView: View {
     ) -> some View {
         Section(title) {
             TextField("Search station", text: input.query)
+                .accessibilityIdentifier(stationFieldAccessibilityIdentifier(for: focus))
                 .textInputAutocapitalization(.never)
                 .disableAutocorrection(true)
                 .textContentType(.none)
@@ -296,6 +301,15 @@ struct AddJourneyView: View {
                     Label("Remove stop", systemImage: "minus.circle")
                 }
             }
+        }
+    }
+
+    private func stationFieldAccessibilityIdentifier(for field: Field) -> String {
+        switch field {
+        case .from:
+            return "add-journey.from"
+        case .stop(let id):
+            return id == stopInputs.last?.id ? "add-journey.destination" : "add-journey.stop.\(id)"
         }
     }
 }

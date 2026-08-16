@@ -91,7 +91,7 @@ struct RailwayRoutingTests {
         )
     }
 
-    @Test @MainActor func mapLabelsIncludeExpectedTimesAndLiveDelay() {
+    @Test @MainActor func mapLabelsIncludeDueOrDepartedTimesAndPunctuality() {
         let onTime = callingPoint(
             name: "East Croydon",
             crs: "ECR",
@@ -103,14 +103,34 @@ struct RailwayRoutingTests {
             scheduled: "01:47",
             estimated: "01:48"
         )
+        let departedOnTime = callingPoint(
+            name: "Orpington",
+            crs: "ORP",
+            scheduled: "08:20",
+            actual: "On time"
+        )
+        let departedLate = callingPoint(
+            name: "Orpington",
+            crs: "ORP",
+            scheduled: "08:20",
+            actual: "08:21"
+        )
 
         #expect(
             RailwayStationAnnotationLabel.text(for: onTime)
-                == "East Croydon (expected 01:47)"
+                == "East Croydon (due 01:47, on time)"
         )
         #expect(
             RailwayStationAnnotationLabel.text(for: oneMinuteLate)
-                == "East Croydon (expected 01:48, 1 min late)"
+                == "East Croydon (due 01:48, 1 min late)"
+        )
+        #expect(
+            RailwayStationAnnotationLabel.text(for: departedOnTime)
+                == "Orpington (departed 08:20, on time)"
+        )
+        #expect(
+            RailwayStationAnnotationLabel.text(for: departedLate)
+                == "Orpington (departed 08:21, 1 min late)"
         )
         #expect(
             RailwayEstimatedLocationLabel.text(delayMinutes: 26)

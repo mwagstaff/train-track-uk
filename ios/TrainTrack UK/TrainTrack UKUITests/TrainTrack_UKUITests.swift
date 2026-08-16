@@ -78,6 +78,49 @@ final class TrainTrack_UKUITests: XCTestCase {
     }
 
     @MainActor
+    func testSavingJourneyReturnsToMyJourneysWithoutCrashing() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["UI_TEST_RESET_JOURNEYS"] = "1"
+        app.launch()
+
+        XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
+
+        app.tabBars.buttons["Add Journey"].tap()
+
+        XCTAssertTrue(app.navigationBars["Add Journey"].waitForExistence(timeout: 2))
+
+        let fromField = app.textFields["add-journey.from"]
+        XCTAssertTrue(fromField.waitForExistence(timeout: 2))
+
+        fromField.tap()
+        fromField.typeText("EDB")
+
+        let fromSuggestion = app.staticTexts["Edinburgh Waverley"]
+        XCTAssertTrue(fromSuggestion.waitForExistence(timeout: 5))
+        fromSuggestion.tap()
+
+        let destinationField = app.textFields["add-journey.destination"]
+        XCTAssertTrue(destinationField.waitForExistence(timeout: 5))
+        destinationField.tap()
+        destinationField.typeText("Thurso")
+
+        let destinationSuggestion = app.staticTexts["Thurso"]
+        XCTAssertTrue(destinationSuggestion.waitForExistence(timeout: 5))
+        destinationSuggestion.tap()
+
+        app.swipeUp()
+
+        let saveButton = app.buttons["Save"]
+        let saveEnabled = NSPredicate(format: "isEnabled == true")
+        expectation(for: saveEnabled, evaluatedWith: saveButton)
+        waitForExpectations(timeout: 5)
+        saveButton.tap()
+
+        XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.state, .runningForeground)
+    }
+
+    @MainActor
     func testLaunchPerformance() throws {
         // This measures how long it takes to launch your application.
         measure(metrics: [XCTApplicationLaunchMetric()]) {

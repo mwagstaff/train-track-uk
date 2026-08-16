@@ -21,6 +21,13 @@ final class JourneyStore: ObservableObject {
         } else {
             userDefaults = .standard
         }
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["UI_TEST_RESET_JOURNEYS"] == "1" {
+            userDefaults.removeObject(forKey: journeysKey)
+            userDefaults.removeObject(forKey: favouriteManualOrderKey)
+            userDefaults.removeObject(forKey: myJourneysManualOrderKey)
+        }
+        #endif
         loadJourneys()
         loadManualOrders()
     }

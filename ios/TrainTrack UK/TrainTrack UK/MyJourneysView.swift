@@ -145,6 +145,7 @@ struct MyJourneysView: View {
         baseListView
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle("My Journeys")
+            .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(item: $cardDestination) { destination in
                 cardDestinationView(destination)
             }

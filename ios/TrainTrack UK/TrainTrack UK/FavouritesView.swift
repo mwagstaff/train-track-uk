@@ -84,6 +84,7 @@ struct FavouritesView: View {
         baseListView
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle("Favourites")
+            .navigationBarTitleDisplayMode(.inline)
             .navigationDestination(item: $cardDestination) { destination in
                 cardDestinationView(destination)
             }

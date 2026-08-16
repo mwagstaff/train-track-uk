@@ -12,6 +12,8 @@ struct ServiceMapView: View {
     let destinationName: String
 
     @EnvironmentObject var depStore: DeparturesStore
+    @EnvironmentObject private var notificationStore: NotificationSubscriptionStore
+    @EnvironmentObject private var holidayMode: HolidayModeStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
 
@@ -45,6 +47,13 @@ struct ServiceMapView: View {
                     && railwayRoute == nil
                     && railwayRouteError == nil
             )
+    }
+
+    private var estimateNoticeBottomPadding: CGFloat {
+        let visibleBottomBannerCount = (notificationStore.liveSessions.isEmpty ? 0 : 1)
+            + (holidayMode.isEnabled ? 1 : 0)
+        guard visibleBottomBannerCount > 0 else { return 32 }
+        return 120 + (CGFloat(visibleBottomBannerCount - 1) * 68)
     }
 
     private var routeRequestKey: String {
@@ -233,7 +242,7 @@ struct ServiceMapView: View {
             }
             .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
             .padding(.horizontal, 16)
-            .padding(.bottom, 32)
+            .padding(.bottom, estimateNoticeBottomPadding)
             .accessibilityElement(children: .combine)
     }
 
