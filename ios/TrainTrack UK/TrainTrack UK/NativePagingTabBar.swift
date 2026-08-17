@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-private let visibleTabs: [Tab] = [.favourites, .myJourneys, .profile]
+private let visibleTabs: [Tab] = [.favourites, .myJourneys, .history, .profile]
 
 /// Keeps the system tab-bar appearance and accessibility while the content uses
 /// SwiftUI's native horizontal page interaction.
@@ -61,6 +61,7 @@ private extension Tab {
         case .favourites: "favourites"
         case .myJourneys: "my-journeys"
         case .addJourney: "add-journey"
+        case .history: "history"
         case .profile: "profile"
         }
     }

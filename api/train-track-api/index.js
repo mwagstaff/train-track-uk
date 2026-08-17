@@ -15,10 +15,12 @@ import {
 } from './lib/metrics.js';
 import { liveActivityManager } from './lib/live-activity-manager.js';
 import { notificationSubscriptionManager } from './lib/notification-subscription-manager.js';
+import { journeyTrackingManager } from './lib/journey-tracking-manager.js';
 import { registerAdminRoutes } from './lib/admin-portal.js';
 import { listSubscriptionAuditEvents, recordDevicePreferences, recordGeofenceEvent } from './lib/admin-data-store.js';
 import { pushToStartTokenStore } from './lib/push-to-start-token-store.js';
 import { testServiceHarness } from './lib/test-service-harness.js';
+import { formatDepartureJourneyResult, shouldIncludeDepartureStatus } from './lib/departure-response.js';
 import { ensureMongoIndexes } from './lib/mongo-client.js';
 import path from 'path';
 
@@ -696,6 +698,7 @@ app.post('/api/v2/notifications/live_sessions', async (req, res) => {
         subscription_id,
         use_sandbox,
         mute_on_arrival,
+        live_session_origin,
         active_until
     } = req.body || {};
 
@@ -706,6 +709,7 @@ app.post('/api/v2/notifications/live_sessions', async (req, res) => {
         notification_types,
         use_sandbox: Boolean(use_sandbox),
         mute_on_arrival: Boolean(mute_on_arrival),
+        live_session_origin,
         active_until,
         legs_count: Array.isArray(legs) ? legs.length : 0,
         push_token: maskToken(push_token)
@@ -723,6 +727,7 @@ app.post('/api/v2/notifications/live_sessions', async (req, res) => {
             useSandbox: Boolean(use_sandbox),
             muteOnArrival: Boolean(mute_on_arrival),
             source: 'live_session',
+            liveSessionOrigin: live_session_origin,
             activeUntil: active_until,
             auditContext: buildRequestAuditContext(req)
         });
@@ -839,7 +844,8 @@ app.post('/api/v2/notifications/terminate', async (req, res) => {
         date,
         reason,
         transition,
-        detection_source
+        detection_source,
+        journey_notification_body
     } = req.body || {};
     logNotificationRequest('terminate', req, {
         device_id,
@@ -849,7 +855,8 @@ app.post('/api/v2/notifications/terminate', async (req, res) => {
         date,
         reason,
         transition,
-        detection_source
+        detection_source,
+        journey_notification_body
     });
     if (!device_id || !subscription_id || !from || !to) {
         return res.status(400).json({
@@ -864,7 +871,8 @@ app.post('/api/v2/notifications/terminate', async (req, res) => {
         date,
         reason,
         transition,
-        detectionSource: detection_source
+        detectionSource: detection_source,
+        journeyNotificationBody: journey_notification_body
     });
     if (!result) {
         return res.status(404).json({ error: 'Subscription or leg not found' });
@@ -884,6 +892,68 @@ app.post('/api/v2/notifications/geofence-event', async (req, res) => {
     logNotificationRequest('geofence_event', req, { device_id, event, from, to });
     await recordGeofenceEvent({ deviceId: device_id, clientTimestamp: timestamp, event, regionId: region_id, from, to, ip });
     res.json({ status: 'ok' });
+});
+
+// Ephemeral service monitoring for an in-progress journey. Journey history remains
+// local to the device; this state exists only to deliver official timing updates.
+app.post('/api/v2/journey_tracking/sessions', (req, res) => {
+    const {
+        journey_id,
+        subscription_id,
+        device_id,
+        push_token,
+        service_id,
+        from,
+        to,
+        destination_crs,
+        use_sandbox
+    } = req.body || {};
+    const { canonicalDeviceId } = resolveRequestDeviceIds(req, device_id);
+    if (!canonicalDeviceId) {
+        return res.status(400).json({ error: 'device_id is required' });
+    }
+    try {
+        const session = journeyTrackingManager.upsertSession({
+            journeyId: journey_id,
+            subscriptionId: subscription_id,
+            deviceId: canonicalDeviceId,
+            pushToken: push_token,
+            serviceId: service_id,
+            from,
+            to,
+            destinationCRS: destination_crs,
+            useSandbox: Boolean(use_sandbox)
+        });
+        res.json({
+            status: 'registered',
+            poll_interval_seconds: Math.round(journeyTrackingManager.pollIntervalMs / 1000),
+            session
+        });
+    } catch (error) {
+        res.status(400).json({ error: error?.message || error });
+    }
+});
+
+app.get('/api/v2/journey_tracking/sessions', (req, res) => {
+    const { device_id } = req.query || {};
+    const { canonicalDeviceId } = resolveRequestDeviceIds(req, device_id);
+    if (!canonicalDeviceId) {
+        return res.status(400).json({ error: 'device_id is required' });
+    }
+    res.json({ sessions: journeyTrackingManager.listSessions(canonicalDeviceId) });
+});
+
+app.delete('/api/v2/journey_tracking/sessions/:id', (req, res) => {
+    const { device_id } = req.query || {};
+    const { canonicalDeviceId } = resolveRequestDeviceIds(req, device_id);
+    if (!canonicalDeviceId) {
+        return res.status(400).json({ error: 'device_id is required' });
+    }
+    const removed = journeyTrackingManager.deleteSession({
+        id: req.params.id,
+        deviceId: canonicalDeviceId
+    });
+    res.json({ status: removed ? 'deleted' : 'not_found' });
 });
 
 // Debug notification endpoints
@@ -1038,6 +1108,7 @@ app.get('/api/v2/departures/from/:fromStation/to/:toStation/at/:departureTime', 
 app.get('/api/v2/departures/from/:fromStation/to/:toStation*', async (req, res) => {
     const path = req.path;
     const deviceId = normalizeDeviceId(req.get('X-Device-Token')) || null;
+    const includeStatus = shouldIncludeDepartureStatus(req.query.includeStatus);
 
     // Parse the path to extract multiple from/to pairs
     // Example: /api/v2/departures/from/ECR/to/VIC/from/EUS/to/WFJ
@@ -1080,7 +1151,7 @@ app.get('/api/v2/departures/from/:fromStation/to/:toStation*', async (req, res) 
             journeyPairs.map(async (pair) => {
                 const data = await getTrainTimes(pair.from, pair.to);
                 const key = `${pair.from}_${pair.to}`;
-                return { [key]: data.departures || [] };
+                return formatDepartureJourneyResult(key, data, includeStatus);
             })
         );
 
@@ -1246,6 +1317,7 @@ app.get('/api/v1/xbar/from/:fromStation/to/:toStation/max_departures/:maxDepartu
 await ensureMongoIndexes();
 await liveActivityManager.init();
 await notificationSubscriptionManager.init();
+journeyTrackingManager.startPollingLoop();
 
 const port = process.env.PORT || 3012;
 app.listen(port, () => {

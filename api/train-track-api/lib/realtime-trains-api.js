@@ -18,6 +18,12 @@ const JOURNEY_RESULT_FRESH_TTL_MS = Number(
 );
 const JOURNEY_RESULT_STALE_TTL_MS = Number(process.env.DEPARTURE_BOARD_JOURNEY_STALE_CACHE_TTL_MS || '300000');
 const JOURNEY_REFRESH_CONCURRENCY = Number(process.env.DEPARTURE_BOARD_ROUTE_REFRESH_CONCURRENCY || '4');
+const JOURNEY_DATA_STATUS = Object.freeze({
+    LIVE: 'live',
+    PARTIAL: 'partial',
+    STALE: 'stale',
+    UNAVAILABLE: 'unavailable'
+});
 
 const inFlightJourneyRequests = new Map();
 const recentJourneyResults = new Map();
@@ -39,7 +45,11 @@ export async function getTrainTimes(from, to) {
 
     const testResult = testServiceHarness.getTrainTimes(from, to);
     if (testResult) {
-        return testResult;
+        return {
+            ...testResult,
+            dataStatus: JOURNEY_DATA_STATUS.LIVE,
+            lastSuccessfulUpdate: new Date().toISOString()
+        };
     }
 
     const key = journeyRequestKey(from, to);
@@ -114,8 +124,10 @@ function startJourneyRefresh(key, from, to) {
 
     const promise = enqueueJourneyRefresh(async () => {
         const result = await fetchJourneyResult(from, to);
-        if (Array.isArray(result?.departures) && result.departures.length > 0) {
+        if (isSuccessfulJourneyResult(result)) {
             setRecentJourneyResult(key, result);
+        } else {
+            markJourneyRefreshFailed(key);
         }
         return result;
     }).finally(() => {
@@ -166,14 +178,12 @@ async function fetchJourneyResult(from, to) {
         getLiveDepartureBoard(from, to, 119)
     ]);
 
-    // Gracefully handle partial failures: merge whichever arrays are available
-    const nowList = Array.isArray(departuresNow.departures) ? departuresNow.departures : [];
-    const futureList = Array.isArray(departuresFuture.departures) ? departuresFuture.departures : [];
-    if (nowList.length === 0 && futureList.length === 0) {
-        return { error: 'Failed to get data from API' };
+    const result = mergeJourneyDepartureResponses(departuresNow, departuresFuture);
+    if (result.dataStatus === JOURNEY_DATA_STATUS.UNAVAILABLE) {
+        return result;
     }
 
-    const departures = nowList.concat(futureList);
+    const departures = result.departures;
     // Dedupe by serviceID and prefer entries that still have a platform.
     const uniqueByService = new Map();
     departures.forEach((departure) => {
@@ -187,7 +197,37 @@ async function fetchJourneyResult(from, to) {
     applyPlatformFallbackCache(uniqueDepartures, from, to);
 
     return {
+        ...result,
         departures: uniqueDepartures
+    };
+}
+
+export function mergeJourneyDepartureResponses(
+    departuresNow,
+    departuresFuture,
+    lastSuccessfulUpdate = new Date().toISOString()
+) {
+    const nowSucceeded = Array.isArray(departuresNow?.departures) && !departuresNow?.error;
+    const futureSucceeded = Array.isArray(departuresFuture?.departures) && !departuresFuture?.error;
+
+    if (!nowSucceeded && !futureSucceeded) {
+        return {
+            departures: [],
+            dataStatus: JOURNEY_DATA_STATUS.UNAVAILABLE,
+            lastSuccessfulUpdate: null,
+            error: 'Failed to get data from API'
+        };
+    }
+
+    return {
+        departures: [
+            ...(nowSucceeded ? departuresNow.departures : []),
+            ...(futureSucceeded ? departuresFuture.departures : [])
+        ],
+        dataStatus: nowSucceeded && futureSucceeded
+            ? JOURNEY_DATA_STATUS.LIVE
+            : JOURNEY_DATA_STATUS.PARTIAL,
+        lastSuccessfulUpdate
     };
 }
 
@@ -351,8 +391,23 @@ function setRecentJourneyResult(key, result, nowMs = Date.now()) {
 
     recentJourneyResults.set(key, {
         result: cloneJourneyResult(result),
-        cachedAtMs: nowMs
+        cachedAtMs: nowMs,
+        lastRefreshFailedAtMs: null
     });
+}
+
+function markJourneyRefreshFailed(key, nowMs = Date.now()) {
+    const cached = recentJourneyResults.get(key);
+    if (!cached) {
+        return;
+    }
+    cached.lastRefreshFailedAtMs = nowMs;
+}
+
+function isSuccessfulJourneyResult(result) {
+    return Array.isArray(result?.departures)
+        && (result.dataStatus === JOURNEY_DATA_STATUS.LIVE
+            || result.dataStatus === JOURNEY_DATA_STATUS.PARTIAL);
 }
 
 function getFreshJourneyResult(key, nowMs = Date.now()) {
@@ -360,7 +415,19 @@ function getFreshJourneyResult(key, nowMs = Date.now()) {
 }
 
 function getStaleJourneyResult(key, nowMs = Date.now()) {
-    return getJourneyResultWithinTtl(key, JOURNEY_RESULT_STALE_TTL_MS, nowMs);
+    const result = getJourneyResultWithinTtl(key, JOURNEY_RESULT_STALE_TTL_MS, nowMs);
+    if (!result) {
+        return null;
+    }
+
+    const cached = recentJourneyResults.get(key);
+    if (cached?.lastRefreshFailedAtMs && cached.lastRefreshFailedAtMs > cached.cachedAtMs) {
+        return {
+            ...result,
+            dataStatus: JOURNEY_DATA_STATUS.STALE
+        };
+    }
+    return result;
 }
 
 function getJourneyResultWithinTtl(key, ttlMs, nowMs = Date.now()) {

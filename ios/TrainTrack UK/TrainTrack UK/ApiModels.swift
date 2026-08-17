@@ -117,6 +117,79 @@ struct DepartureV2: Codable, Identifiable, Hashable {
     }
 }
 
+enum JourneyDataStatus: String, Codable, Hashable {
+    case live
+    case partial
+    case stale
+    case unavailable
+
+    var severity: Int {
+        switch self {
+        case .live: return 0
+        case .partial: return 1
+        case .stale: return 2
+        case .unavailable: return 3
+        }
+    }
+}
+
+struct JourneyDeparturesSnapshot: Decodable, Hashable {
+    let departures: [DepartureV2]
+    let dataStatus: JourneyDataStatus
+    let lastSuccessfulUpdate: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case departures
+        case dataStatus = "data_status"
+        case lastSuccessfulUpdate = "last_successful_update"
+    }
+
+    init(
+        departures: [DepartureV2],
+        dataStatus: JourneyDataStatus,
+        lastSuccessfulUpdate: Date?
+    ) {
+        self.departures = departures
+        self.dataStatus = dataStatus
+        self.lastSuccessfulUpdate = lastSuccessfulUpdate
+    }
+
+    init(from decoder: Decoder) throws {
+        let singleValue = try decoder.singleValueContainer()
+        if let legacyDepartures = try? singleValue.decode([DepartureV2].self) {
+            departures = legacyDepartures
+            dataStatus = .live
+            lastSuccessfulUpdate = nil
+            return
+        }
+
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        departures = try container.decode([DepartureV2].self, forKey: .departures)
+        dataStatus = try container.decode(JourneyDataStatus.self, forKey: .dataStatus)
+        if let value = try container.decodeIfPresent(String.self, forKey: .lastSuccessfulUpdate) {
+            lastSuccessfulUpdate = Self.parseISO8601Date(value)
+        } else {
+            lastSuccessfulUpdate = nil
+        }
+    }
+
+    private static func parseISO8601Date(_ value: String) -> Date? {
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractionalFormatter.date(from: value) {
+            return date
+        }
+        return ISO8601DateFormatter().date(from: value)
+    }
+}
+
+struct JourneyDataAvailability: Hashable {
+    let status: JourneyDataStatus
+    let lastSuccessfulUpdate: Date?
+
+    static let live = JourneyDataAvailability(status: .live, lastSuccessfulUpdate: nil)
+}
+
 // MARK: - Independent train-loading service
 struct CoachLoadingV1: Codable, Identifiable, Hashable {
     let number: String

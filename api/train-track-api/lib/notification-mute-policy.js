@@ -30,11 +30,19 @@ export function resolveDetectionSource({ detectionSource = null, reason = 'mute_
     }
 }
 
-export function buildMuteNotificationPlan({ stationName, transition = null, reason = 'mute_on_arrival' } = {}) {
+export function buildMuteNotificationPlan({
+    stationName,
+    transition = null,
+    reason = 'mute_on_arrival',
+    journeyNotificationBody = null
+} = {}) {
     const resolvedTransition = resolveMuteTransition({ transition, reason });
     const stationLabel = formatStationGreetingName(stationName);
+    const journeyBody = typeof journeyNotificationBody === 'string'
+        ? journeyNotificationBody.trim()
+        : '';
     const greetingBody = resolvedTransition === 'station_exit'
-        ? `You've left ${stationLabel}. Enjoy your journey!`
+        ? (journeyBody || `You've left ${stationLabel}. Enjoy your journey!`)
         : `Welcome to ${stationLabel}`;
     const plan = [{
         type: 'muted_greeting',

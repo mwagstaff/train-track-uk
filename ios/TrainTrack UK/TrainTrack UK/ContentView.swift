@@ -16,6 +16,7 @@ struct ContentView: View {
     // Navigation paths for each tab to enable programmatic pop-to-root
     @State private var favouritesPath = NavigationPath()
     @State private var myJourneysPath = NavigationPath()
+    @State private var historyPath = NavigationPath()
     @State private var profilePath = NavigationPath()
     @State private var pageCommitFeedbackTrigger = 0
 
@@ -54,6 +55,10 @@ struct ContentView: View {
                 .modifier(JourneyUpdatesChrome(includeToast: true))
                 .tag(Tab.myJourneys)
 
+            NavigationStack(path: $historyPath) { MyJourneyHistoryView() }
+                .modifier(JourneyUpdatesChrome(includeToast: true))
+                .tag(Tab.history)
+
             NavigationStack(path: $profilePath) { ProfileView() }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
                 .tag(Tab.profile)
@@ -74,6 +79,19 @@ struct ContentView: View {
             // Ensure polling starts even if App.onAppear wasn't fired
             depStore.startPolling(journeyStore: journeyStore)
         }
+        .task(id: depStore.isInitialLoadInProgress, priority: .utility) {
+            guard !depStore.isInitialLoadInProgress,
+                  !journeyStore.journeys.isEmpty,
+                  !ProcessInfo.processInfo.isLowPowerModeEnabled else {
+                return
+            }
+            do {
+                try await Task.sleep(for: .seconds(1))
+                try await RailwayRoutingService.shared.prepare()
+            } catch {
+                // Pre-warming is opportunistic; route loading reports real failures on demand.
+            }
+        }
         .onChange(of: router.selected) { newTab in
             // Remember the last tab that isn't Add Journey so we can return there
             if newTab != .addJourney { router.lastNonAddTab = newTab }
@@ -82,6 +100,7 @@ struct ContentView: View {
             // Pop all navigation stacks to root when triggered
             favouritesPath = NavigationPath()
             myJourneysPath = NavigationPath()
+            historyPath = NavigationPath()
             profilePath = NavigationPath()
         }
     }

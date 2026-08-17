@@ -4,12 +4,16 @@ import CoreLocation
 
 struct ServiceMapView: View {
     private static let trainLocationEstimateMessage = "Train locations are estimates only"
+    private static let initialServiceDetailsFreshness: TimeInterval = 15
 
     let serviceID: String
     let fromCRS: String
     let toCRS: String
     let departureTime: String
     let destinationName: String
+    let isHistorical: Bool
+    let fallbackCallingPoints: [CallingPoint]
+    let historicalArrivalTime: String?
 
     @EnvironmentObject var depStore: DeparturesStore
     @EnvironmentObject private var notificationStore: NotificationSubscriptionStore
@@ -34,6 +38,26 @@ struct ServiceMapView: View {
     @State private var nextRetryAt: Date?
     @State private var currentTime = Date()
     @State private var loadRequestID = UUID()
+
+    init(
+        serviceID: String,
+        fromCRS: String,
+        toCRS: String,
+        departureTime: String,
+        destinationName: String,
+        isHistorical: Bool = false,
+        fallbackCallingPoints: [CallingPoint] = [],
+        historicalArrivalTime: String? = nil
+    ) {
+        self.serviceID = serviceID
+        self.fromCRS = fromCRS
+        self.toCRS = toCRS
+        self.departureTime = departureTime
+        self.destinationName = destinationName
+        self.isHistorical = isHistorical
+        self.fallbackCallingPoints = fallbackCallingPoints
+        self.historicalArrivalTime = historicalArrivalTime
+    }
 
     private var hasCallingPoints: Bool {
         !stations().isEmpty
@@ -97,6 +121,11 @@ struct ServiceMapView: View {
         )
     }
 
+    private var highlightedTravelRange: ClosedRange<Int>? {
+        guard isHistorical else { return nil }
+        return selectedCallingPointRange(in: railwayRouteStations)
+    }
+
     private var estimatedTrainCoordinateOutsideRailwayRoute: CLLocationCoordinate2D? {
         guard let range = railwayRouteStationRange,
               currentProgress.isAvailable,
@@ -136,7 +165,9 @@ struct ServiceMapView: View {
                     estimatedTrainCoordinate: estimatedTrainCoordinateOutsideRailwayRoute,
                     currentDelayMinutes: currentDelayMinutes,
                     fromCRS: fromCRS,
-                    toCRS: toCRS
+                    toCRS: toCRS,
+                    highlightedTravelRange: highlightedTravelRange,
+                    historicalArrivalTime: historicalArrivalTime
                 )
                 .transition(.opacity)
             } else {
@@ -186,13 +217,13 @@ struct ServiceMapView: View {
                 .presentationDragIndicator(.visible)
         }
         .overlay(alignment: .bottom) {
-            if isShowingEstimateNotice {
+            if isShowingEstimateNotice && !isHistorical {
                 estimateNoticeBanner
                     .transition(.opacity)
             }
         }
         .onReceive(timer) { _ in
-            guard hasCallingPoints else { return }
+            guard hasCallingPoints, !isHistorical else { return }
             Task {
                 await depStore.ensureServiceDetails(
                     for: [serviceID],
@@ -207,22 +238,18 @@ struct ServiceMapView: View {
             currentTime = now
         }
         .onReceive(progressClock) { now in
-            guard hasCallingPoints else { return }
+            guard hasCallingPoints, !isHistorical else { return }
             recalcCurrentIndex(at: now)
         }
         .task(id: loadRequestID) {
             await loadServiceDetails()
         }
         .task(id: serviceID) {
-            guard StationsService.shared.stations.isEmpty else { return }
-            try? await StationsService.shared.loadStations()
-            recalcCurrentIndex()
-        }
-        .task(id: serviceID) {
             await displayEstimateNotice()
         }
         .task(id: routeRequestKey) {
-            await loadRailwayRoute()
+            let requestKey = routeRequestKey
+            await loadRailwayRoute(requestKey: requestKey)
         }
     }
 
@@ -257,6 +284,10 @@ struct ServiceMapView: View {
 
     @MainActor
     private func displayEstimateNotice() async {
+        guard !isHistorical else {
+            isShowingEstimateNotice = false
+            return
+        }
         isShowingEstimateNotice = true
         do {
             try await Task.sleep(for: .seconds(5))
@@ -273,7 +304,8 @@ struct ServiceMapView: View {
         }
     }
 
-    private func loadRailwayRoute() async {
+    private func loadRailwayRoute(requestKey: String) async {
+        guard requestKey == routeRequestKey else { return }
         let callingPoints = stations()
         guard !isBusService, callingPoints.count >= 2 else {
             railwayRoute = nil
@@ -291,20 +323,27 @@ struct ServiceMapView: View {
         railwayRouteStationRange = nil
         railwayRouteError = nil
         isLoadingRailwayRoute = true
-        defer { isLoadingRailwayRoute = false }
+        defer {
+            if requestKey == routeRequestKey {
+                isLoadingRailwayRoute = false
+            }
+        }
         do {
             let route = try await routingService.route(
                 forStationCRSs: callingPoints.map(\.crs)
             )
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, requestKey == routeRequestKey else { return }
             railwayRoute = route
             railwayRouteStationRange = fullRange
-            additionalRailwayRoutes = await loadAdditionalRailwayRoutes(
+            isLoadingRailwayRoute = false
+            let branches = await loadAdditionalRailwayRoutes(
                 routingService: routingService,
                 primaryCallingPoints: callingPoints
             )
+            guard !Task.isCancelled, requestKey == routeRequestKey else { return }
+            additionalRailwayRoutes = branches
         } catch let fullRouteError {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, requestKey == routeRequestKey else { return }
             guard let selectedRange,
                   selectedRange.count >= 2,
                   selectedRange != fullRange else {
@@ -316,15 +355,18 @@ struct ServiceMapView: View {
                 let route = try await routingService.route(
                     forStationCRSs: selectedCallingPoints.map(\.crs)
                 )
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, requestKey == routeRequestKey else { return }
                 railwayRoute = route
                 railwayRouteStationRange = selectedRange
-                additionalRailwayRoutes = await loadAdditionalRailwayRoutes(
+                isLoadingRailwayRoute = false
+                let branches = await loadAdditionalRailwayRoutes(
                     routingService: routingService,
                     primaryCallingPoints: callingPoints
                 )
+                guard !Task.isCancelled, requestKey == routeRequestKey else { return }
+                additionalRailwayRoutes = branches
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, requestKey == routeRequestKey else { return }
                 handleRailwayRouteFailure(error)
             }
         }
@@ -411,6 +453,12 @@ struct ServiceMapView: View {
     }
 
     private func loadServiceDetails() async {
+        if hasCallingPoints {
+            recalcCurrentIndex()
+            hasFinishedInitialLoad = true
+            isRetrying = false
+        }
+
         var attempt = 0
         repeat {
             attempt += 1
@@ -418,11 +466,17 @@ struct ServiceMapView: View {
             nextRetryAt = nil
             let receivedCallingPoints = await depStore.ensureServiceDetails(
                 for: [serviceID],
-                force: true,
+                freshFor: attempt == 1 ? Self.initialServiceDetailsFreshness : 0,
                 context: serviceDetailsLookupContext
             )
             recalcCurrentIndex()
             hasFinishedInitialLoad = true
+
+            if isHistorical {
+                isRetrying = false
+                nextRetryAt = nil
+                return
+            }
 
             if receivedCallingPoints && hasCallingPoints {
                 isRetrying = false
@@ -506,10 +560,12 @@ struct ServiceMapView: View {
 
                     Divider()
 
-                    Label(Self.trainLocationEstimateMessage, systemImage: "info.circle")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if !isHistorical {
+                        Label(Self.trainLocationEstimateMessage, systemImage: "info.circle")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 20)
@@ -532,12 +588,39 @@ struct ServiceMapView: View {
 
     // Build stations list using the combined previous/current/subsequent points
     private func stations() -> [CallingPoint] {
-        guard let details = depStore.serviceDetailsById[serviceID] else { return [] }
-        return details.allStations
+        stationBranches().first ?? fallbackCallingPoints
     }
 
     private func stationBranches() -> [[CallingPoint]] {
-        depStore.serviceDetailsById[serviceID]?.stationBranches ?? []
+        guard let branches = depStore.serviceDetailsById[serviceID]?.stationBranches else {
+            return fallbackCallingPoints.isEmpty ? [] : [fallbackCallingPoints]
+        }
+        let reordered: [[CallingPoint]]
+        if let selectedIndex = branches.firstIndex(where: branchContainsSelectedJourney) {
+            reordered = [branches[selectedIndex]] + branches.enumerated().compactMap { index, branch in
+                index == selectedIndex ? nil : branch
+            }
+        } else {
+            reordered = branches
+        }
+        guard isHistorical,
+              !fallbackCallingPoints.isEmpty,
+              let fetchedPrimary = reordered.first,
+              fallbackCallingPoints.count >= fetchedPrimary.count else {
+            return reordered
+        }
+        return [fallbackCallingPoints] + reordered.dropFirst()
+    }
+
+    private func branchContainsSelectedJourney(_ branch: [CallingPoint]) -> Bool {
+        guard let start = branch.firstIndex(where: {
+            normalizedCRS($0.crs) == normalizedCRS(fromCRS)
+        }) else {
+            return false
+        }
+        return branch.indices.contains { index in
+            index >= start && normalizedCRS(branch[index].crs) == normalizedCRS(toCRS)
+        }
     }
 
     private var serviceDetailsLookupContext: ServiceDetailsLookupContext? {
@@ -546,7 +629,14 @@ struct ServiceMapView: View {
             fromCRS: fromCRS,
             toCRS: toCRS
         ) else {
-            return nil
+            return ServiceDetailsLookupContext(
+                fromCRS: fromCRS,
+                toCRS: toCRS,
+                originCRS: nil,
+                operator: nil,
+                destinationCRSs: [toCRS],
+                length: nil
+            )
         }
         return ServiceDetailsLookupContext(
             fromCRS: fromCRS,
@@ -573,7 +663,9 @@ struct ServiceMapView: View {
     }
 
     private func recalcCurrentIndex(at now: Date = Date()) {
-        currentProgress = ServiceProgressEstimator.estimate(for: stations(), at: now)
+        currentProgress = isHistorical
+            ? .unavailable
+            : ServiceProgressEstimator.estimate(for: stations(), at: now)
     }
 
     private func serviceOperator() -> String? {

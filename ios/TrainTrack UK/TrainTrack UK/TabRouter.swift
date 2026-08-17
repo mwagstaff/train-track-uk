@@ -5,6 +5,7 @@ enum Tab: Hashable, CaseIterable {
     case favourites
     case myJourneys
     case addJourney
+    case history
     case profile
 
     var title: String {
@@ -12,6 +13,7 @@ enum Tab: Hashable, CaseIterable {
         case .favourites: "Favourites"
         case .myJourneys: "My Journeys"
         case .addJourney: "Add Journey"
+        case .history: "History"
         case .profile: "Profile"
         }
     }
@@ -21,6 +23,7 @@ enum Tab: Hashable, CaseIterable {
         case .favourites: "heart.fill"
         case .myJourneys: "list.bullet"
         case .addJourney: "plus.circle"
+        case .history: "clock.arrow.circlepath"
         case .profile: "person.circle"
         }
     }

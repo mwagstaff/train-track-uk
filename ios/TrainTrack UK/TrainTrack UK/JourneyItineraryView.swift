@@ -33,6 +33,17 @@ struct JourneyConnectionSelection {
     let disruptionNotes: [String]
 }
 
+struct JourneyCancellation: Hashable {
+    let reason: String?
+    let cancelledFrom: String?
+    let destinationName: String?
+    let serviceContinuesBeyondDestination: Bool
+
+    var isPartial: Bool {
+        cancelledFrom != nil && destinationName != nil
+    }
+}
+
 enum JourneyItineraryBuilder {
     static func build(
         group: JourneyGroup,
@@ -235,6 +246,57 @@ enum JourneyItineraryBuilder {
         departure.isCancelled || normalizedEstimate(departure) == "cancelled"
     }
 
+    static func cancellation(
+        for departure: DepartureV2,
+        at destinationCRS: String,
+        serviceDetailsByID: [String: ServiceDetails]
+    ) -> JourneyCancellation? {
+        let targetCRS = destinationCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if let details = serviceDetailsByID[departure.serviceID],
+           let branch = details.stationBranches.first(where: { branch in
+               branch.contains {
+                   $0.crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == targetCRS
+               }
+           }),
+           let targetIndex = branch.firstIndex(where: {
+               $0.crs.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == targetCRS
+           }) {
+            let destination = branch[targetIndex]
+            if destination.isCancelledAtStation {
+                guard branch.contains(where: { !$0.isCancelledAtStation }) else {
+                    return JourneyCancellation(
+                        reason: departure.cancelReason ?? destination.cancelReason ?? details.cancelReason,
+                        cancelledFrom: nil,
+                        destinationName: nil,
+                        serviceContinuesBeyondDestination: false
+                    )
+                }
+
+                var cancelledFromIndex = targetIndex
+                while cancelledFromIndex > branch.startIndex,
+                      branch[branch.index(before: cancelledFromIndex)].isCancelledAtStation {
+                    cancelledFromIndex = branch.index(before: cancelledFromIndex)
+                }
+
+                return JourneyCancellation(
+                    reason: destination.cancelReason ?? details.cancelReason ?? departure.cancelReason,
+                    cancelledFrom: branch[cancelledFromIndex].locationName,
+                    destinationName: destination.locationName,
+                    serviceContinuesBeyondDestination: branch.suffix(from: branch.index(after: targetIndex))
+                        .contains { !$0.isCancelledAtStation }
+                )
+            }
+        }
+
+        guard isCancelled(departure) else { return nil }
+        return JourneyCancellation(
+            reason: departure.cancelReason,
+            cancelledFrom: nil,
+            destinationName: nil,
+            serviceContinuesBeyondDestination: false
+        )
+    }
+
     private static func normalizedEstimate(_ departure: DepartureV2) -> String {
         departure.departureTime.estimated
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -261,6 +323,13 @@ enum JourneyItineraryBuilder {
         serviceDetailsByID: [String: ServiceDetails],
         now: Date
     ) -> (time: String?, date: Date?, scheduledDate: Date?) {
+        guard cancellation(
+            for: departure,
+            at: destinationCRS,
+            serviceDetailsByID: serviceDetailsByID
+        ) == nil else {
+            return (nil, nil, nil)
+        }
         guard let details = serviceDetailsByID[departure.serviceID] else { return (nil, nil, nil) }
         let targetCRS = destinationCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
 

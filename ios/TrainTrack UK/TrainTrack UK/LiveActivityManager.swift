@@ -221,6 +221,13 @@ final class LiveActivityManager: ObservableObject {
         return systemActivities(forFromCRS: fromCRS, toCRS: toCRS).first?.id
     }
 
+    func preferredServiceID(fromCRS: String, toCRS: String) -> String? {
+        trackedActivities.values.first {
+            $0.fromCRS.caseInsensitiveCompare(fromCRS) == .orderedSame
+                && $0.toCRS.caseInsensitiveCompare(toCRS) == .orderedSame
+        }?.preferredServiceID
+    }
+
     /// Get the count of currently active Live Activities
     var activeCount: Int {
         return Set(

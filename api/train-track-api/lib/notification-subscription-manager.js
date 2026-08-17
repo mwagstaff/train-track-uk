@@ -46,7 +46,7 @@ const DAY_MAP = {
     sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6
 };
 
-class NotificationSubscriptionManager {
+export class NotificationSubscriptionManager {
     constructor() {
         this.subscriptions = new Map();
         this.pushClient = new NotificationPushClient();
@@ -210,6 +210,7 @@ class NotificationSubscriptionManager {
             useSandbox,
             muteOnArrival,
             source: sourceInput,
+            liveSessionOrigin: liveSessionOriginInput,
             activeUntil,
             auditContext = null
         } = payload || {};
@@ -304,6 +305,9 @@ class NotificationSubscriptionManager {
         const resolvedActiveUntil = source === LIVE_SESSION_SOURCE
             ? resolveLiveSessionActiveUntil(activeUntil, existing?.activeUntil)
             : null;
+        const resolvedLiveSessionOrigin = source === LIVE_SESSION_SOURCE
+            ? normalizeLiveSessionOrigin(liveSessionOriginInput ?? existing?.liveSessionOrigin)
+            : null;
         const resetScheduledDeliveryState = source === SCHEDULED_SOURCE && Boolean(existing);
 
         const subscription = {
@@ -317,6 +321,7 @@ class NotificationSubscriptionManager {
             useSandbox: Boolean(useSandbox),
             muteOnArrival: resolvedMuteOnArrival,
             source,
+            liveSessionOrigin: resolvedLiveSessionOrigin,
             activeUntil: resolvedActiveUntil,
             createdAt: existing?.createdAt || nowIso,
             updatedAt: nowIso,
@@ -1282,6 +1287,7 @@ class NotificationSubscriptionManager {
             use_sandbox: subscription.useSandbox,
             mute_on_arrival: subscription.muteOnArrival,
             source: this.subscriptionSource(subscription),
+            live_session_origin: subscription.liveSessionOrigin || null,
             active_until: subscription.activeUntil || null,
             push_token_invalid_at: subscription.pushTokenInvalidAt || null,
             last_bad_token_reason: subscription.lastBadTokenReason || null,
@@ -1309,7 +1315,8 @@ class NotificationSubscriptionManager {
         date,
         reason = 'mute_on_arrival',
         transition = null,
-        detectionSource = null
+        detectionSource = null,
+        journeyNotificationBody = null
     }) {
         const fromCode = typeof from === 'string' ? from.trim().toUpperCase() : '';
         const toCode = typeof to === 'string' ? to.trim().toUpperCase() : '';
@@ -1359,7 +1366,8 @@ class NotificationSubscriptionManager {
 
             const mutedNotifications = buildMutedMessages(subscription, leg, snapshot, {
                 reason: muteReason,
-                transition: muteTransition
+                transition: muteTransition,
+                journeyNotificationBody
             });
             const pushResults = [];
 
@@ -1676,6 +1684,11 @@ function normalizeTypes(typesInput, source = SCHEDULED_SOURCE) {
 function normalizeSource(value) {
     const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
     return raw === LIVE_SESSION_SOURCE ? LIVE_SESSION_SOURCE : SCHEDULED_SOURCE;
+}
+
+function normalizeLiveSessionOrigin(value) {
+    const raw = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    return raw === 'scheduled' ? 'scheduled' : 'manual';
 }
 
 function buildRouteKey(legs) {

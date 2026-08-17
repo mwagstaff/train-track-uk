@@ -11,10 +11,60 @@ import Testing
 
 struct TrainTrack_UKTests {
 
+    @Test @MainActor func scheduledLiveSessionsAreNotShownAsAdHocJourneyUpdates() throws {
+        let scheduled = try notificationSubscription(id: "schedule", origin: nil, source: "scheduled")
+        let scheduledLiveSession = try notificationSubscription(id: "scheduled-live", origin: "scheduled")
+        let manualLiveSession = try notificationSubscription(id: "manual-live", origin: "manual")
+
+        let visible = NotificationSubscriptionStore.subscriptionsForJourneyUpdates(
+            scheduled: [scheduled],
+            liveSessions: [scheduledLiveSession, manualLiveSession]
+        )
+
+        #expect(visible.map(\.id) == ["schedule", "manual-live"])
+    }
+
+    @Test func legacyLiveSessionsStillDecodeAsVisibleManualSessions() throws {
+        let legacyLiveSession = try notificationSubscription(id: "legacy-live", origin: nil)
+
+        #expect(legacyLiveSession.liveSessionOrigin == nil)
+    }
+
+    @Test @MainActor func journeyDepartureSnapshotDecodesFreshnessMetadata() throws {
+        let data = Data("""
+        {
+          "departures": [],
+          "data_status": "stale",
+          "last_successful_update": "2026-08-16T15:53:37.123Z"
+        }
+        """.utf8)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        let snapshot = try decoder.decode(JourneyDeparturesSnapshot.self, from: data)
+
+        #expect(snapshot.departures.isEmpty)
+        #expect(snapshot.dataStatus == .stale)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions.insert(.withFractionalSeconds)
+        #expect(snapshot.lastSuccessfulUpdate == formatter.date(from: "2026-08-16T15:53:37.123Z"))
+    }
+
+    @Test @MainActor func journeyDepartureSnapshotStillDecodesTheLegacyArray() throws {
+        let snapshot = try JSONDecoder().decode(
+            JourneyDeparturesSnapshot.self,
+            from: Data("[]".utf8)
+        )
+
+        #expect(snapshot.departures.isEmpty)
+        #expect(snapshot.dataStatus == .live)
+        #expect(snapshot.lastSuccessfulUpdate == nil)
+    }
+
     @Test func tabsHaveAStablePagingOrderAndPresentation() {
-        #expect(Tab.allCases == [.favourites, .myJourneys, .addJourney, .profile])
-        #expect(Tab.allCases.map(\.title) == ["Favourites", "My Journeys", "Add Journey", "Profile"])
-        #expect(Tab.allCases.map(\.systemImage) == ["heart.fill", "list.bullet", "plus.circle", "person.circle"])
+        #expect(Tab.allCases == [.favourites, .myJourneys, .addJourney, .history, .profile])
+        #expect(Tab.allCases.map(\.title) == ["Favourites", "My Journeys", "Add Journey", "History", "Profile"])
+        #expect(Tab.allCases.map(\.systemImage) == ["heart.fill", "list.bullet", "plus.circle", "clock.arrow.circlepath", "person.circle"])
     }
 
     @Test func journeyStopPlacementPreservesTheCurrentDestination() {
@@ -140,6 +190,138 @@ struct TrainTrack_UKTests {
             departure: now.addingTimeInterval(60 * 61),
             now: now
         ) == "in 1h 01m")
+    }
+
+    @Test func journeyCardShowsCancellationReasonWhenAvailable() {
+        #expect(JourneyCardPresentation.cancellationStatusText(
+            "This service has been cancelled because of damage to the overhead electric wires"
+        ) == "This service has been cancelled because of damage to the overhead electric wires")
+    }
+
+    @Test func journeyCardFallsBackToCancelledWhenCancellationReasonIsMissing() {
+        #expect(JourneyCardPresentation.cancellationStatusText(nil) == "Cancelled")
+        #expect(JourneyCardPresentation.cancellationStatusText("  \n") == "Cancelled")
+    }
+
+    @Test func journeyCardTreatsACancelledDestinationAsAPartialCancellation() throws {
+        let serviceID = "cambridge-east-croydon"
+        let runningDeparture = departure(
+            at: "19:23",
+            serviceID: serviceID,
+            isCancelled: true,
+            cancelReason: "This service has been cancelled because of damage to the overhead electric wires"
+        )
+        let details = serviceDetails(
+            callingPoints: [
+                callingPoint(name: "Finsbury Park", crs: "FPK", time: "20:23"),
+                callingPoint(
+                    name: "London St Pancras International",
+                    crs: "STP",
+                    time: "20:31",
+                    isCancelled: true
+                ),
+                callingPoint(name: "Farringdon", crs: "ZFD", time: "20:36", isCancelled: true),
+                callingPoint(name: "London Blackfriars", crs: "BFR", time: "20:41", isCancelled: true),
+                callingPoint(name: "East Croydon", crs: "ECR", time: "21:10", isCancelled: true)
+            ]
+        )
+
+        let cancellation = try #require(JourneyItineraryBuilder.cancellation(
+            for: runningDeparture,
+            at: "ECR",
+            serviceDetailsByID: [serviceID: details]
+        ))
+
+        #expect(JourneyCardPresentation.cancellationStatusText(cancellation) ==
+            "Partial cancellation · Not running from London St Pancras International to East Croydon")
+
+        let groupID = UUID()
+        let directJourney = journey(
+            groupID: groupID,
+            index: 0,
+            from: station(crs: "CBG", name: "Cambridge"),
+            to: station(crs: "ECR", name: "East Croydon")
+        )
+        let itinerary = JourneyItineraryBuilder.build(
+            group: JourneyGroup(id: groupID, legs: [directJourney]),
+            firstDeparture: runningDeparture,
+            departuresForJourney: { _ in [runningDeparture] },
+            serviceDetailsByID: [serviceID: details]
+        )
+
+        #expect(itinerary.finalArrivalTime == nil)
+    }
+
+    @Test func journeyCardDoesNotCancelTheStillRunningPartOfAPartiallyCancelledService() {
+        let serviceID = "cambridge-east-croydon"
+        let runningDeparture = departure(at: "19:23", serviceID: serviceID)
+        let details = serviceDetails(
+            callingPoints: [
+                callingPoint(name: "Finsbury Park", crs: "FPK", time: "20:23"),
+                callingPoint(name: "East Croydon", crs: "ECR", time: "21:10", isCancelled: true)
+            ]
+        )
+
+        #expect(JourneyItineraryBuilder.cancellation(
+            for: runningDeparture,
+            at: "FPK",
+            serviceDetailsByID: [serviceID: details]
+        ) == nil)
+    }
+
+    @Test func journeyCardKeepsTheDefaultReasonWhenEveryStopIsCancelled() throws {
+        let serviceID = "fully-cancelled-service"
+        let reason = "This service has been cancelled because of damage to the overhead electric wires"
+        let cancelledDeparture = departure(
+            at: "19:23",
+            serviceID: serviceID,
+            isCancelled: true,
+            cancelReason: reason
+        )
+        let details = serviceDetails(
+            currentIsCancelled: true,
+            callingPoints: [
+                callingPoint(name: "Finsbury Park", crs: "FPK", time: "20:23", isCancelled: true),
+                callingPoint(name: "East Croydon", crs: "ECR", time: "21:10", isCancelled: true)
+            ]
+        )
+
+        let cancellation = try #require(JourneyItineraryBuilder.cancellation(
+            for: cancelledDeparture,
+            at: "ECR",
+            serviceDetailsByID: [serviceID: details]
+        ))
+
+        #expect(!cancellation.isPartial)
+        #expect(JourneyCardPresentation.cancellationStatusText(cancellation) == reason)
+    }
+
+    @Test func journeyCardExplainsWhenAnIntermediateDestinationStopIsCancelled() throws {
+        let serviceID = "cambridge-brighton-skipping-east-croydon"
+        let runningDeparture = departure(
+            at: "19:23",
+            serviceID: serviceID,
+            isCancelled: true,
+            cancelReason: "This service has been cancelled because of congestion"
+        )
+        let details = serviceDetails(
+            callingPoints: [
+                callingPoint(name: "Finsbury Park", crs: "FPK", time: "20:23"),
+                callingPoint(name: "East Croydon", crs: "ECR", time: "21:10", isCancelled: true),
+                callingPoint(name: "Gatwick Airport", crs: "GTW", time: "21:25"),
+                callingPoint(name: "Brighton", crs: "BTN", time: "22:02")
+            ]
+        )
+
+        let cancellation = try #require(JourneyItineraryBuilder.cancellation(
+            for: runningDeparture,
+            at: "ECR",
+            serviceDetailsByID: [serviceID: details]
+        ))
+
+        #expect(JourneyCardPresentation.cancellationStatusText(cancellation) ==
+            "Service no longer stopping at East Croydon")
+        #expect(cancellation.serviceContinuesBeyondDestination)
     }
 
     @Test func journeyCardArrivalLabelNamesTheDestination() {
@@ -355,7 +537,8 @@ struct TrainTrack_UKTests {
         at time: String,
         estimated: String = "On time",
         serviceID: String,
-        isCancelled: Bool = false
+        isCancelled: Bool = false,
+        cancelReason: String? = nil
     ) -> DepartureV2 {
         DepartureV2(
             departureTime: DepartureTimeV2(scheduled: time, estimated: estimated),
@@ -367,13 +550,69 @@ struct TrainTrack_UKTests {
             origin: nil,
             serviceID: serviceID,
             delayReason: nil,
-            cancelReason: nil,
+            cancelReason: cancelReason,
             timestamp: nil
         )
     }
 
     private func station(crs: String, name: String) -> Station {
         Station(crs: crs, name: name, longitude: "0", latitude: "0")
+    }
+
+    private func serviceDetails(
+        currentIsCancelled: Bool = false,
+        callingPoints: [CallingPoint]
+    ) -> ServiceDetails {
+        ServiceDetails(
+            previousCallingPoints: nil,
+            subsequentCallingPoints: [CallingPointList(
+                callingPoint: callingPoints,
+                serviceType: "train",
+                serviceChangeRequired: false,
+                assocIsCancelled: false
+            )],
+            generatedAt: "2026-08-16T18:34:00Z",
+            serviceType: "train",
+            locationName: "Cambridge",
+            crs: "CBG",
+            operator: "Thameslink",
+            operatorCode: "TL",
+            isCancelled: currentIsCancelled,
+            length: 8,
+            detachFront: false,
+            isReverseFormation: false,
+            platform: "7",
+            sta: nil,
+            eta: nil,
+            ata: nil,
+            std: "19:23",
+            etd: "On time",
+            atd: nil,
+            delayReason: nil,
+            cancelReason: nil
+        )
+    }
+
+    private func callingPoint(
+        name: String,
+        crs: String,
+        time: String,
+        isCancelled: Bool = false
+    ) -> CallingPoint {
+        CallingPoint(
+            locationName: name,
+            crs: crs,
+            st: time,
+            et: isCancelled ? "Cancelled" : "On time",
+            at: nil,
+            isCancelled: isCancelled,
+            cancelReason: nil,
+            platform: nil,
+            length: 8,
+            detachFront: false,
+            affectedByDiversion: false,
+            rerouteDelay: 0
+        )
     }
 
     private func journey(
@@ -393,4 +632,32 @@ struct TrainTrack_UKTests {
         )
     }
 
+}
+
+private func notificationSubscription(
+    id: String,
+    origin: String?,
+    source: String = "live_session"
+) throws -> NotificationSubscription {
+    let originProperty = origin.map { ", \"live_session_origin\": \"\($0)\"" } ?? ""
+    let data = Data("""
+    {
+      "id": "\(id)",
+      "device_id": "device-1",
+      "route_key": "KTH-VIC",
+      "days_of_week": ["mon"],
+      "notification_types": ["delays", "platform"],
+      "source": "\(source)"\(originProperty),
+      "legs": [{
+        "from": "KTH",
+        "to": "VIC",
+        "from_name": "Kent House",
+        "to_name": "London Victoria",
+        "enabled": true,
+        "window_start": "00:00",
+        "window_end": "23:59"
+      }]
+    }
+    """.utf8)
+    return try JSONDecoder().decode(NotificationSubscription.self, from: data)
 }

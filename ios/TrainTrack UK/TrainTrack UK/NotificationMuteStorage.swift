@@ -21,6 +21,7 @@ nonisolated enum NotificationMuteStorage {
         let reason: String
         let transition: String?
         let detectionSource: String?
+        var journeyNotificationBody: String?
         let createdAt: Date
         var attempts: Int
         var lastAttemptAt: Date?
@@ -187,7 +188,7 @@ nonisolated enum NotificationMuteStorage {
     // MARK: - Pending mute requests
     //
     // Station-exit mute requests are the authoritative server call that sends the
-    // "left station" confirmation and mutes the scheduled leg. Persist them before
+    // boarding confirmation and mutes the scheduled leg. Persist them before
     // upload so a transient mobile-network drop cannot lose that server transition.
 
     @discardableResult
@@ -199,7 +200,8 @@ nonisolated enum NotificationMuteStorage {
         delayMinutes: Int,
         reason: String,
         transition: String? = nil,
-        detectionSource: String? = nil
+        detectionSource: String? = nil,
+        journeyNotificationBody: String? = nil
     ) -> PendingMuteRequest? {
         guard let sharedDefaults = UserDefaults(suiteName: suiteName) else { return nil }
         let id = pendingMuteRequestId(
@@ -212,6 +214,9 @@ nonisolated enum NotificationMuteStorage {
         var requests = loadPendingMuteRequests(defaults: sharedDefaults)
         if let index = requests.firstIndex(where: { $0.id == id }) {
             requests[index].lastError = nil
+            if let journeyNotificationBody {
+                requests[index].journeyNotificationBody = journeyNotificationBody
+            }
             savePendingMuteRequests(requests, defaults: sharedDefaults)
             return requests[index]
         }
@@ -226,6 +231,7 @@ nonisolated enum NotificationMuteStorage {
             reason: reason,
             transition: transition,
             detectionSource: detectionSource,
+            journeyNotificationBody: journeyNotificationBody,
             createdAt: Date(),
             attempts: 0,
             lastAttemptAt: nil,

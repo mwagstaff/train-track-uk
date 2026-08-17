@@ -5,7 +5,7 @@
 	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
 	<dict>
 		<key>StationArrivalMonitoring</key>
-		<string>TrainTrack uses your precise location for a short time while journey updates are active so it can detect when you have reached your starting station and mute further alerts.</string>
+		<string>TrainTrack uses your precise location while journey updates are active to detect station arrivals, notify you as you approach your destination, and record your journey history.</string>
 	</dict>
 	<key>UIBackgroundModes</key>
 	<array>

@@ -220,10 +220,10 @@ final class NetworkServicePhone {
     func fetchDeparturesAggregated(
         pairs: [(from: String, to: String)],
         delayBeforeEachBatch: Bool = true
-    ) async throws -> [String: [DepartureV2]] {
+    ) async throws -> [String: JourneyDeparturesSnapshot] {
         guard !pairs.isEmpty else { return [:] }
         let chunkSize = max(1, maxDeparturePairsPerRequest)
-        var combined: [String: [DepartureV2]] = [:]
+        var combined: [String: JourneyDeparturesSnapshot] = [:]
         var startIndex = 0
 
         while startIndex < pairs.count {
@@ -242,36 +242,29 @@ final class NetworkServicePhone {
         return combined
     }
 
-    private func fetchDeparturesBatch(pairs: [(from: String, to: String)]) async throws -> [String: [DepartureV2]] {
+    private func fetchDeparturesBatch(pairs: [(from: String, to: String)]) async throws -> [String: JourneyDeparturesSnapshot] {
         guard !pairs.isEmpty else { return [:] }
         let path = pairs.map { "from/\($0.from)/to/\($0.to)" }.joined(separator: "/")
-        guard let url = URL(string: "\(base)/departures/\(path)") else { throw PhoneNetworkError.invalidURL }
+        guard var components = URLComponents(string: "\(base)/departures/\(path)") else {
+            throw PhoneNetworkError.invalidURL
+        }
+        components.queryItems = [URLQueryItem(name: "includeStatus", value: "true")]
+        guard let url = components.url else { throw PhoneNetworkError.invalidURL }
         var request = URLRequest(url: url)
         request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
-        let (data, _) = try await URLSession.shared.data(for: request)
-        // Response shape: [ { "EUS_WFJ": [ ... ] }, { "ECR_VIC": [ ... ] } ]
-        var arrAny: Any
-        arrAny = try JSONSerialization.jsonObject(with: data, options: [])
-        var result: [String: [DepartureV2]] = [:]
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw PhoneNetworkError.noData
+        }
 
-        if let dict = arrAny as? [String: Any] {
-            // Top-level object: { "ECR_GTW": [ ... ], ... }
-            for (key, val) in dict {
-                let valData = try JSONSerialization.data(withJSONObject: val, options: [])
-                let deps = try jsonDecoder.decode([DepartureV2].self, from: valData)
-                result[key] = deps
-            }
-        } else if let arr = arrAny as? [[String: Any]] {
-            // Array of single-key objects: [ {"ECR_GTW": [...]}, ... ]
-            for item in arr {
-                if let key = item.keys.first, let val = item[key] {
-                    let valData = try JSONSerialization.data(withJSONObject: val, options: [])
-                    let deps = try jsonDecoder.decode([DepartureV2].self, from: valData)
-                    result[key] = deps
+        if let items = try? jsonDecoder.decode([[String: JourneyDeparturesSnapshot]].self, from: data) {
+            return items.reduce(into: [:]) { result, item in
+                for (key, snapshot) in item {
+                    result[key] = snapshot
                 }
             }
         }
-        return result
+        return try jsonDecoder.decode([String: JourneyDeparturesSnapshot].self, from: data)
     }
 
     private func sleepBeforeDepartureBatch() async throws {

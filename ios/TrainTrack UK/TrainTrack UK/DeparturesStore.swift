@@ -9,6 +9,7 @@ final class DeparturesStore: ObservableObject {
     static let shared = DeparturesStore()
 
     @Published private(set) var departuresByPair: [String: [DepartureV2]] = [:]
+    @Published private(set) var dataAvailabilityByPair: [String: JourneyDataAvailability] = [:]
     @Published private(set) var serviceDetailsById: [String: ServiceDetails] = [:]
     @Published private(set) var loadingDetailsByServiceId: [String: ServiceLoadingV1] = [:]
     @Published private(set) var isInitialLoadInProgress = true
@@ -18,6 +19,13 @@ final class DeparturesStore: ObservableObject {
     private var initialRefreshTask: Task<Void, Never>?
     private var lastWidgetReloadAt: Date? = nil
     private var loadingRefreshInProgress = false
+    private var serviceDetailsFetchedAt: [String: Date] = [:]
+    private var serviceDetailsRequestsByID: [String: ServiceDetailsRequest] = [:]
+
+    private struct ServiceDetailsRequest {
+        let token: UUID
+        let task: Task<Void, Never>
+    }
 
     private init() {
         // Remove data created by the retired pinned-journey feature.
@@ -71,17 +79,11 @@ final class DeparturesStore: ObservableObject {
     func refreshSpecificJourney(fromCRS: String, toCRS: String) async {
         let pairs = [(fromCRS, toCRS)]
         do {
-            let map = try await NetworkServicePhone.shared.fetchDeparturesAggregated(pairs: pairs)
-            // Merge the fresh data into our store
-            for (key, value) in map {
-                self.departuresByPair[key] = departuresRetainingLastKnownPlatforms(
-                    value,
-                    existing: departuresByPair[key] ?? []
-                )
-            }
-            await refreshLoading(for: map)
+            let snapshots = try await NetworkServicePhone.shared.fetchDeparturesAggregated(pairs: pairs)
+            let departures = applyDepartureSnapshots(snapshots, replacingExistingDepartures: false)
+            await refreshLoading(for: departures)
         } catch {
-            // swallow errors for now
+            markDepartureRefreshFailed(for: pairs)
         }
     }
 
@@ -147,27 +149,24 @@ final class DeparturesStore: ObservableObject {
         if pairs.isEmpty {
             if replacingExistingDepartures {
                 departuresByPair = [:]
+                dataAvailabilityByPair = [:]
                 loadingDetailsByServiceId = [:]
             }
             return
         }
         do {
-            let map = try await NetworkServicePhone.shared.fetchDeparturesAggregated(
+            let snapshots = try await NetworkServicePhone.shared.fetchDeparturesAggregated(
                 pairs: pairs,
                 delayBeforeEachBatch: delayBeforeEachBatch
             )
-            let mergedMap = mergeDeparturesRetainingLastKnownPlatforms(map)
-            if replacingExistingDepartures {
-                departuresByPair = mergedMap
-            } else {
-                for (key, value) in mergedMap {
-                    departuresByPair[key] = value
-                }
-            }
+            let departures = applyDepartureSnapshots(
+                snapshots,
+                replacingExistingDepartures: replacingExistingDepartures
+            )
             reloadClosestFavouriteWidgetIfNeeded()
-            await refreshLoading(for: mergedMap)
+            await refreshLoading(for: departures)
         } catch {
-            // swallow errors for now
+            markDepartureRefreshFailed(for: pairs)
         }
     }
 
@@ -183,15 +182,55 @@ final class DeparturesStore: ObservableObject {
         }
     }
 
-    private func mergeDeparturesRetainingLastKnownPlatforms(_ fetched: [String: [DepartureV2]]) -> [String: [DepartureV2]] {
-        var merged: [String: [DepartureV2]] = [:]
-        for (key, departures) in fetched {
-            merged[key] = departuresRetainingLastKnownPlatforms(
-                departures,
-                existing: departuresByPair[key] ?? []
+    private func applyDepartureSnapshots(
+        _ snapshots: [String: JourneyDeparturesSnapshot],
+        replacingExistingDepartures: Bool
+    ) -> [String: [DepartureV2]] {
+        var nextDepartures = replacingExistingDepartures ? [:] : departuresByPair
+        var nextAvailability = replacingExistingDepartures ? [:] : dataAvailabilityByPair
+
+        for (key, snapshot) in snapshots {
+            let existingDepartures = departuresByPair[key] ?? []
+            let fetchedDepartures = snapshot.dataStatus == .unavailable && snapshot.departures.isEmpty
+                ? existingDepartures
+                : snapshot.departures
+            nextDepartures[key] = departuresRetainingLastKnownPlatforms(
+                fetchedDepartures,
+                existing: existingDepartures
+            )
+            nextAvailability[key] = JourneyDataAvailability(
+                status: snapshot.dataStatus,
+                lastSuccessfulUpdate: snapshot.lastSuccessfulUpdate
+                    ?? successfulResponseFallbackDate(for: snapshot)
+                    ?? dataAvailabilityByPair[key]?.lastSuccessfulUpdate
             )
         }
-        return merged
+
+        departuresByPair = nextDepartures
+        dataAvailabilityByPair = nextAvailability
+        return nextDepartures
+    }
+
+    private func successfulResponseFallbackDate(for snapshot: JourneyDeparturesSnapshot) -> Date? {
+        switch snapshot.dataStatus {
+        case .live, .partial:
+            return Date()
+        case .stale, .unavailable:
+            return nil
+        }
+    }
+
+    private func markDepartureRefreshFailed(for pairs: [(String, String)]) {
+        for pair in pairs {
+            let key = pairKey(from: pair.0, to: pair.1)
+            let previous = dataAvailabilityByPair[key]
+            let hasLastKnownData = !(departuresByPair[key] ?? []).isEmpty
+                || previous?.lastSuccessfulUpdate != nil
+            dataAvailabilityByPair[key] = JourneyDataAvailability(
+                status: hasLastKnownData ? .stale : .unavailable,
+                lastSuccessfulUpdate: previous?.lastSuccessfulUpdate
+            )
+        }
     }
 
     private func departuresRetainingLastKnownPlatforms(
@@ -228,26 +267,95 @@ final class DeparturesStore: ObservableObject {
     func ensureServiceDetails(
         for ids: [String],
         force: Bool = false,
+        freshFor freshnessInterval: TimeInterval? = nil,
         context: ServiceDetailsLookupContext? = nil
     ) async -> Bool {
-        let targets = force ? ids : ids.filter { serviceDetailsById[$0] == nil }
+        let requestedIDs = Array(Set(ids.filter { !$0.isEmpty }))
+        let now = Date()
+        let targets = requestedIDs.filter { id in
+            if force { return true }
+            guard serviceDetailsById[id] != nil else { return true }
+            guard let freshnessInterval else { return false }
+            guard let fetchedAt = serviceDetailsFetchedAt[id] else { return true }
+            return now.timeIntervalSince(fetchedAt) >= freshnessInterval
+        }
         guard !targets.isEmpty else { return true }
-        do {
-            let map = try await NetworkServicePhone.shared.fetchServiceDetailsAggregatedChunked(
-                ids: targets,
-                context: context
-            )
-            for (k, v) in map { serviceDetailsById[k] = v }
-            objectWillChange.send()
-            return targets.allSatisfy { map[$0] != nil }
-        } catch {
-            return false
+
+        var pendingRequests: [UUID: Task<Void, Never>] = [:]
+        var newTargets: [String] = []
+        for id in targets {
+            if let request = serviceDetailsRequestsByID[id] {
+                pendingRequests[request.token] = request.task
+            } else {
+                newTargets.append(id)
+            }
+        }
+
+        if !newTargets.isEmpty {
+            let token = UUID()
+            let task = Task { [weak self, newTargets, context] in
+                let details: [String: ServiceDetails]
+                do {
+                    details = try await NetworkServicePhone.shared.fetchServiceDetailsAggregatedChunked(
+                        ids: newTargets,
+                        context: context
+                    )
+                } catch {
+                    details = [:]
+                }
+                self?.finishServiceDetailsRequest(
+                    token: token,
+                    requestedIDs: newTargets,
+                    details: details
+                )
+            }
+            let request = ServiceDetailsRequest(token: token, task: task)
+            for id in newTargets {
+                serviceDetailsRequestsByID[id] = request
+            }
+            pendingRequests[token] = task
+        }
+
+        for task in pendingRequests.values {
+            await task.value
+        }
+        return requestedIDs.allSatisfy { serviceDetailsById[$0] != nil }
+    }
+
+    private func finishServiceDetailsRequest(
+        token: UUID,
+        requestedIDs: [String],
+        details: [String: ServiceDetails]
+    ) {
+        let ownedIDs = requestedIDs.filter {
+            serviceDetailsRequestsByID[$0]?.token == token
+        }
+        guard !ownedIDs.isEmpty else { return }
+
+        let fetchedAt = Date()
+        var updatedDetails = serviceDetailsById
+        var didUpdateDetails = false
+        for id in ownedIDs {
+            if let detail = details[id] {
+                updatedDetails[id] = detail
+                serviceDetailsFetchedAt[id] = fetchedAt
+                didUpdateDetails = true
+            }
+            serviceDetailsRequestsByID[id] = nil
+        }
+        if didUpdateDetails {
+            serviceDetailsById = updatedDetails
         }
     }
 
     func departures(for journey: Journey) -> [DepartureV2] {
         let key = pairKey(from: journey.fromStation.crs, to: journey.toStation.crs)
         return sortDepartures(departuresByPair[key] ?? [])
+    }
+
+    func dataAvailability(for journey: Journey) -> JourneyDataAvailability {
+        let key = pairKey(from: journey.fromStation.crs, to: journey.toStation.crs)
+        return dataAvailabilityByPair[key] ?? .live
     }
 
     func departure(serviceID: String, fromCRS: String, toCRS: String) -> DepartureV2? {

@@ -35,6 +35,12 @@ struct DebugLogView: View {
                         }
                         .disabled(store.isFetchingServerLogs)
 
+                        Button("Journey") {
+                            Task {
+                                await JourneyTrackingCoordinator.shared.logDiagnosticSnapshot(reason: "manual")
+                            }
+                        }
+
                         Button("Share") {
                             showShareSheet = true
                         }
@@ -58,6 +64,7 @@ struct LogEntryRow: View {
         case "Mute": return .orange
         case "Network": return .green
         case "Scheduled": return .purple
+        case "JourneyHistory": return .indigo
         case "Server": return .teal
         case "Error": return .red
         default: return .gray

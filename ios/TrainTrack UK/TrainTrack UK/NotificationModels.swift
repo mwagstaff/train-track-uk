@@ -5,6 +5,11 @@ enum NotificationSubscriptionSource: String, Codable {
     case liveSession = "live_session"
 }
 
+enum NotificationLiveSessionOrigin: String, Codable {
+    case manual
+    case scheduled
+}
+
 enum NotificationType: String, CaseIterable, Codable, Identifiable {
     case summary
     case delays
@@ -112,6 +117,7 @@ struct NotificationSubscription: Codable, Identifiable, Hashable {
     let legs: [NotificationLeg]
     let muteOnArrival: Bool?
     let source: NotificationSubscriptionSource?
+    let liveSessionOrigin: NotificationLiveSessionOrigin?
     let activeUntil: Date?
     let mutedByLegDay: [String: String]?
     let mutedAtByLegDay: [String: String]?
@@ -127,6 +133,7 @@ struct NotificationSubscription: Codable, Identifiable, Hashable {
         case legs
         case muteOnArrival = "mute_on_arrival"
         case source
+        case liveSessionOrigin = "live_session_origin"
         case activeUntil = "active_until"
         case mutedByLegDay = "muted_by_leg_day"
         case mutedAtByLegDay = "muted_at_by_leg_day"
@@ -189,6 +196,7 @@ struct NotificationSubscriptionRequest: Codable {
     let toName: String?
     let useSandbox: Bool?
     let muteOnArrival: Bool?
+    let liveSessionOrigin: NotificationLiveSessionOrigin?
     let activeUntil: Date?
 
     enum CodingKeys: String, CodingKey {
@@ -207,6 +215,7 @@ struct NotificationSubscriptionRequest: Codable {
         case toName = "to_name"
         case useSandbox = "use_sandbox"
         case muteOnArrival = "mute_on_arrival"
+        case liveSessionOrigin = "live_session_origin"
         case activeUntil = "active_until"
     }
 }

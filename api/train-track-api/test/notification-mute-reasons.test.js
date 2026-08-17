@@ -38,6 +38,19 @@ test('structured station exit is independent of its detection source', () => {
     assert.equal(plan.some((notification) => notification.type === 'muted_status'), false);
 });
 
+test('tracked station exit uses the matched service boarding confirmation', () => {
+    const body = "You’re on the delayed 17:27 to Kent House, currently 5 minutes late. Enjoy your journey!";
+    const plan = buildMuteNotificationPlan({
+        stationName: 'London Victoria',
+        reason: 'station_exit',
+        transition: 'station_exit',
+        journeyNotificationBody: body
+    });
+
+    assert.equal(plan.length, 1);
+    assert.equal(plan[0].body, body);
+});
+
 test('arrival mute retains the welcome and status pair', () => {
     const plan = buildMuteNotificationPlan({
         stationName: 'London Victoria',

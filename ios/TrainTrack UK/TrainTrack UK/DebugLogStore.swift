@@ -88,7 +88,7 @@ final class DebugLogStore: ObservableObject {
             }
 
             log("Fetched \(events.count) server audit event(s) for device \(deviceId)", category: "Server")
-            for event in events.prefix(12).reversed() {
+            for event in events.prefix(30).reversed() {
                 log(serverAuditSummary(event), category: "Server")
             }
         } catch {
@@ -106,6 +106,11 @@ final class DebugLogStore: ObservableObject {
         let metadata = event["metadata"] as? [String: Any]
         let leg = metadata?["leg"] as? String
         let scheduleKey = metadata?["schedule_key"] as? String
+        let journeyId = metadata?["journey_id"] as? String
+        let serviceId = metadata?["service_id"] as? String
+        let stationCRS = metadata?["station_crs"] as? String
+        let pushStatus = metadata?["push_status"]
+        let actualArrival = metadata?["actual_arrival"] as? String
 
         return [
             "\(recordedAt) \(action)",
@@ -114,6 +119,11 @@ final class DebugLogStore: ObservableObject {
             "Route: \(routeKey)",
             "Leg: \(leg ?? "nil")",
             "Schedule: \(scheduleKey ?? "nil")",
+            "Journey: \(journeyId ?? "nil")",
+            "Service: \(serviceId ?? "nil")",
+            "Station: \(stationCRS ?? "nil")",
+            "Push status: \(pushStatus.map(String.init(describing:)) ?? "nil")",
+            "Actual arrival: \(actualArrival ?? "nil")",
             "Subscription: \(subscriptionId)"
         ].joined(separator: "\n")
     }

@@ -155,6 +155,7 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
                 "schedule_key": userInfo["schedule_key"] as? String,
                 "keys": userInfo.keys.map { String(describing: $0) }.sorted()
             ])
+            let journeyTrackingUpdated = await JourneyTrackingCoordinator.shared.handleRemoteNotification(userInfo)
             let started = await ScheduledLiveActivityAutoStartManager.shared.handleRemoteNotification(userInfo: userInfo)
 
             // For push-to-start notifications (content-available: 1 is included in the
@@ -174,9 +175,10 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
 
             ClientDiagnosticsLogger.log("notifications", "remote_notification_handled", metadata: [
                 "started_scheduled_live_activity": started,
-                "completion": started ? "newData" : "noData"
+                "journey_tracking_updated": journeyTrackingUpdated,
+                "completion": (started || journeyTrackingUpdated) ? "newData" : "noData"
             ])
-            completionHandler(started ? .newData : .noData)
+            completionHandler((started || journeyTrackingUpdated) ? .newData : .noData)
         }
     }
 
@@ -342,6 +344,7 @@ enum ScheduledNotificationLiveSessionRegistrar {
             toName: toName,
             useSandbox: notificationAPNsSandboxEnabled(),
             muteOnArrival: true,
+            liveSessionOrigin: .scheduled,
             activeUntil: activeUntil
         )
 
@@ -359,7 +362,10 @@ enum ScheduledNotificationLiveSessionRegistrar {
         )
 
         do {
-            let subscription = try await NotificationSubscriptionStore.shared.upsertLiveSession(request)
+            let subscription = try await NotificationSubscriptionStore.shared.upsertLiveSession(
+                request,
+                historySource: .scheduled
+            )
             ClientDiagnosticsLogger.log("scheduled_live_activity", "live_session_registered", metadata: logMetadata.merging([
                 "subscription_id": subscription.id,
                 "active_until": subscription.activeUntil ?? activeUntil,

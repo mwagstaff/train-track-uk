@@ -129,6 +129,11 @@ actor RailwayRoutingService {
         self.bundle = bundle
     }
 
+    func prepare() throws {
+        try Task.checkCancellation()
+        _ = try loadGraph()
+    }
+
     func route(forStationCRSs stationCRSs: [String]) throws -> ServiceRailwayRoute {
         let normalizedCRSs = stationCRSs.map {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
@@ -243,13 +248,16 @@ actor RailwayRoutingService {
         )
         guard let resourceURL else { throw RailwayRoutingError.resourceMissing }
 
-        let data = try Data(contentsOf: resourceURL)
+        try Task.checkCancellation()
+        let data = try Data(contentsOf: resourceURL, options: .mappedIfSafe)
+        try Task.checkCancellation()
         let asset: RailwayRoutingAsset
         do {
             asset = try JSONDecoder().decode(RailwayRoutingAsset.self, from: data)
         } catch {
             throw RailwayRoutingError.invalidResource
         }
+        try Task.checkCancellation()
         guard asset.metadata.schemaVersion == 1 else {
             throw RailwayRoutingError.invalidResource
         }
@@ -264,10 +272,14 @@ actor RailwayRoutingService {
             }
             return CLLocationCoordinate2D(latitude: values[1], longitude: values[0])
         }
+        try Task.checkCancellation()
 
         var edges = [RailwayGraphEdge]()
         var adjacency = Array(repeating: [RailwayAdjacency](), count: nodes.count)
-        for sourceEdge in asset.edges {
+        for (sourceEdgeIndex, sourceEdge) in asset.edges.enumerated() {
+            if sourceEdgeIndex.isMultiple(of: 2_048) {
+                try Task.checkCancellation()
+            }
             let cost = sourceEdge.cost ?? sourceEdge.length
             guard nodes.indices.contains(sourceEdge.start),
                   nodes.indices.contains(sourceEdge.end),
@@ -301,6 +313,7 @@ actor RailwayRoutingService {
                 edge: edgeIndex
             ))
         }
+        try Task.checkCancellation()
 
         let anchors: [String: [RailwayAnchor]] = asset.stationAnchors.mapValues { values -> [RailwayAnchor] in
             values.compactMap { anchor -> RailwayAnchor? in

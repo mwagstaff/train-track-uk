@@ -406,6 +406,7 @@ struct NotificationScheduleView: View {
                 toName: primaryLeg?.toName,
                 useSandbox: useSandbox,
                 muteOnArrival: autoMuteOnArrival,
+                liveSessionOrigin: nil,
                 activeUntil: nil
             )
 

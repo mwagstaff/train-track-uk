@@ -247,6 +247,7 @@ enum JourneyUpdateActions {
             toName: group.endStation.name,
             useSandbox: useSandbox,
             muteOnArrival: true,
+            liveSessionOrigin: .manual,
             activeUntil: Date().addingTimeInterval(Double(durationMinutes * 60))
         )
     }

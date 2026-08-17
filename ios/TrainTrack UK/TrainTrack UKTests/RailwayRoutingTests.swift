@@ -6,6 +6,18 @@ import Testing
 @testable import TrainTrack_UK
 
 struct RailwayRoutingTests {
+    @Test func preparingTheRailwayGraphIsIdempotent() async throws {
+        try await RailwayRoutingService.shared.prepare()
+        try await RailwayRoutingService.shared.prepare()
+
+        let route = try await RailwayRoutingService.shared.route(forStationCRSs: [
+            "KTH", "PNE", "SYH", "WDU", "HNH", "BRX", "VIC"
+        ])
+
+        #expect(route.stationCount == 7)
+        #expect((12_000...13_000).contains(route.totalLength))
+    }
+
     @Test func kentHouseToVictoriaUsesTheMainlineAlignment() async throws {
         let route = try await RailwayRoutingService.shared.route(forStationCRSs: [
             "KTH", "PNE", "SYH", "WDU", "HNH", "BRX", "VIC"
@@ -107,6 +119,11 @@ struct RailwayRoutingTests {
         )
     }
 
+    @Test func historicalMapHighlightsOnlySegmentsWithinTheTravelledStationRange() {
+        #expect(RailwayTravelHighlight.segmentIndices(for: 2...5) == Set([2, 3, 4]))
+        #expect(RailwayTravelHighlight.segmentIndices(for: nil) == nil)
+    }
+
     @Test @MainActor func mapLabelsIncludeDueOrDepartedTimesAndPunctuality() {
         let onTime = callingPoint(
             name: "East Croydon",
@@ -149,6 +166,12 @@ struct RailwayRoutingTests {
                 == "Orpington (departed 08:21, 1 min late)"
         )
         #expect(
+            RailwayStationAnnotationLabel.text(
+                for: onTime,
+                historicalArrivalTime: "01:47"
+            ) == "East Croydon (arrived 01:47, on time)"
+        )
+        #expect(
             RailwayEstimatedLocationLabel.text(delayMinutes: 26)
                 == "Estimated location (26 mins late)"
         )
@@ -179,6 +202,12 @@ struct RailwayRoutingTests {
                 == "Expected 11:06 (originally scheduled 11:04)"
         )
         #expect(delayedPresentation.platformText == "Expected platform: Not available")
+
+        let arrivalPresentation = RailwayStationInfoPresentation(
+            station: onTime,
+            historicalArrivalTime: "11:04"
+        )
+        #expect(arrivalPresentation.timingText == "Arrived 11:04 (on time)")
     }
 
     @Test @MainActor func stationAnnotationsRenderAboveEstimatedTrain() async throws {

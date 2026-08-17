@@ -40,6 +40,29 @@ enum JourneyCardPresentation {
         return "\(scheduledDeparture) • \(arrival)"
     }
 
+    static func cancellationStatusText(_ reason: String?) -> String {
+        guard let reason = reason?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !reason.isEmpty else {
+            return "Cancelled"
+        }
+        return reason
+    }
+
+    static func cancellationStatusText(_ cancellation: JourneyCancellation) -> String {
+        guard cancellation.isPartial,
+              let cancelledFrom = cancellation.cancelledFrom,
+              let destinationName = cancellation.destinationName else {
+            return cancellationStatusText(cancellation.reason)
+        }
+        if cancellation.serviceContinuesBeyondDestination {
+            return "Service no longer stopping at \(destinationName)"
+        }
+        if cancelledFrom == destinationName {
+            return "Partial cancellation · Not calling at \(destinationName)"
+        }
+        return "Partial cancellation · Not running from \(cancelledFrom) to \(destinationName)"
+    }
+
     static func splitGuidanceLabel(_ guidance: SplitGuidanceV1, destinationName: String) -> String? {
         let position = guidance.position.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard (position == "front" || position == "rear"), guidance.coachCount > 0 else { return nil }
@@ -98,6 +121,7 @@ struct JourneyCard: View {
         let firstLeg: Journey
         let firstDeparture: DepartureV2
         let finalArrivalTime: String?
+        let cancellation: JourneyCancellation?
 
         var id: String { firstDeparture.serviceID }
     }
@@ -125,6 +149,13 @@ struct JourneyCard: View {
 
     private var firstSummary: Summary? { summaries.first }
 
+    private var dataAvailability: JourneyDataAvailability {
+        group.legs
+            .map(depStore.dataAvailability(for:))
+            .max { $0.status.severity < $1.status.severity }
+            ?? .live
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
@@ -132,6 +163,11 @@ struct JourneyCard: View {
 
             Divider()
                 .padding(.horizontal, 16)
+
+            if dataAvailability.status != .live {
+                dataAvailabilityNotice
+                Divider().padding(.horizontal, 16)
+            }
 
             VStack(alignment: .leading, spacing: 0) {
                 if displayedSummaries.isEmpty {
@@ -147,13 +183,15 @@ struct JourneyCard: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 16)
-                    } else {
+                    } else if dataAvailability.status == .live {
                         Text("No upcoming departures found")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 16)
+                    } else {
+                        EmptyView()
                     }
                 } else {
                     ForEach(Array(displayedSummaries.enumerated()), id: \.element.id) { index, summary in
@@ -199,8 +237,41 @@ struct JourneyCard: View {
         }
     }
 
+    private var dataAvailabilityNotice: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            dataAvailabilityText
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var dataAvailabilityText: Text {
+        switch dataAvailability.status {
+        case .live:
+            return Text("")
+        case .partial:
+            return Text("Some live departures may be missing")
+        case .stale:
+            if let updatedAt = dataAvailability.lastSuccessfulUpdate {
+                return Text("Live updates unavailable · Updated \(updatedAt, style: .relative)")
+            }
+            return Text("Live updates unavailable · Showing earlier data")
+        case .unavailable:
+            return Text("Live departure data is temporarily unavailable. We get our data from National Rail, who might be having issues with this journey right now. Please try again later.")
+        }
+    }
+
     private var header: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {
             favouriteControl
 
             VStack(alignment: .leading, spacing: 6) {
@@ -337,8 +408,8 @@ struct JourneyCard: View {
                 VStack(alignment: .leading, spacing: 8) {
                     departureIdentity(summary)
                     HStack(spacing: 12) {
-                        platform(for: summary.firstDeparture)
-                        departureStatus(summary.firstDeparture)
+                        platform(for: summary.firstDeparture, cancellation: summary.cancellation)
+                        departureStatus(summary)
                         Spacer(minLength: 0)
                         Image(systemName: "chevron.right").foregroundStyle(.tertiary)
                     }
@@ -347,8 +418,8 @@ struct JourneyCard: View {
                 HStack(alignment: .center, spacing: 12) {
                     departureIdentity(summary)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    platform(for: summary.firstDeparture)
-                    departureStatus(summary.firstDeparture)
+                    platform(for: summary.firstDeparture, cancellation: summary.cancellation)
+                    departureStatus(summary)
                         .frame(minWidth: 86, alignment: .leading)
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.bold))
@@ -357,7 +428,7 @@ struct JourneyCard: View {
             }
 
             if summary.id == firstSummary?.id,
-               let status = detailedStatus(for: summary.firstDeparture) {
+               let status = detailedStatus(for: summary) {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Circle()
                         .fill(status.color)
@@ -377,16 +448,16 @@ struct JourneyCard: View {
             Text(departureDisplayTime(summary.firstDeparture))
                 .font(.title3)
                 .monospacedDigit()
-                .strikethrough(summary.firstDeparture.isCancelled)
-                .foregroundStyle(summary.firstDeparture.isCancelled ? Color.secondary : Color.primary)
-            if !summary.firstDeparture.isCancelled {
+                .strikethrough(summary.cancellation != nil)
+                .foregroundStyle(summary.cancellation != nil ? Color.secondary : Color.primary)
+            if summary.cancellation == nil {
                 TrainLengthIndicator(
                     cars: summary.firstDeparture.length,
                     warningThreshold: minShortTrainCars,
                     carriageLoading: depStore.loadingDetailsByServiceId[summary.firstDeparture.serviceID]?.freshCoaches
                 )
             }
-            if !summary.firstDeparture.isCancelled {
+            if summary.cancellation == nil {
                 Group {
                     if let arrival = summary.finalArrivalTime {
                         Text(JourneyCardPresentation.arrivalLabel(
@@ -428,8 +499,8 @@ struct JourneyCard: View {
     }
 
     @ViewBuilder
-    private func platform(for departure: DepartureV2) -> some View {
-        if !departure.isCancelled {
+    private func platform(for departure: DepartureV2, cancellation: JourneyCancellation?) -> some View {
+        if cancellation == nil {
             PlatformBadge(
                 platform: departure.platform?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
                     ? (departure.platform ?? "TBC")
@@ -439,13 +510,13 @@ struct JourneyCard: View {
         }
     }
 
-    private func departureStatus(_ departure: DepartureV2) -> some View {
-        let status = compactStatus(for: departure)
+    private func departureStatus(_ summary: Summary) -> some View {
+        let status = compactStatus(for: summary.firstDeparture, cancellation: summary.cancellation)
         return VStack(alignment: .leading, spacing: 2) {
             Text(status.text)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(status.color)
-            if !departure.isCancelled, let date = departureDate(departure) {
+            if summary.cancellation == nil, let date = departureDate(summary.firstDeparture) {
                 Text(JourneyCardPresentation.relativeDepartureLabel(departure: date))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -469,12 +540,20 @@ struct JourneyCard: View {
         return Summary(
             firstLeg: firstLeg,
             firstDeparture: firstDeparture,
-            finalArrivalTime: itinerary.finalArrivalTime
+            finalArrivalTime: itinerary.finalArrivalTime,
+            cancellation: JourneyItineraryBuilder.cancellation(
+                for: firstDeparture,
+                at: firstLeg.toStation.crs,
+                serviceDetailsByID: depStore.serviceDetailsById
+            )
         )
     }
 
-    private func detailedStatus(for departure: DepartureV2) -> (text: String, color: Color)? {
-        if departure.isCancelled { return ("Cancelled", .red) }
+    private func detailedStatus(for summary: Summary) -> (text: String, color: Color)? {
+        let departure = summary.firstDeparture
+        if let cancellation = summary.cancellation {
+            return (JourneyCardPresentation.cancellationStatusText(cancellation), .red)
+        }
         if let minutes = departureDelayMinutes(
             estimated: departure.departureTime.estimated,
             scheduled: departure.departureTime.scheduled
@@ -492,8 +571,11 @@ struct JourneyCard: View {
         return ("Scheduled to depart on time", .green)
     }
 
-    private func compactStatus(for departure: DepartureV2) -> (text: String, color: Color) {
-        if departure.isCancelled { return ("Cancelled", .red) }
+    private func compactStatus(
+        for departure: DepartureV2,
+        cancellation: JourneyCancellation?
+    ) -> (text: String, color: Color) {
+        if cancellation != nil { return ("Cancelled", .red) }
         if let minutes = departureDelayMinutes(
             estimated: departure.departureTime.estimated,
             scheduled: departure.departureTime.scheduled

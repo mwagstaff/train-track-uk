@@ -247,7 +247,10 @@ final class NotificationSubscriptionStore: ObservableObject {
         subscriptions.first { $0.routeKey == routeKey }
     }
 
-    func upsertLiveSession(_ requestBody: NotificationSubscriptionRequest) async throws -> NotificationSubscription {
+    func upsertLiveSession(
+        _ requestBody: NotificationSubscriptionRequest,
+        historySource: JourneyHistorySource = .adhoc
+    ) async throws -> NotificationSubscription {
         let requestURL = "\(ApiHostPreference.currentBaseURL)/notifications/live_sessions"
         let legSummary = requestBody.legs.map { "\($0.from.uppercased())→\($0.to.uppercased())[\($0.enabled ? "on" : "off")]" }.joined(separator: ", ")
         DebugLogStore.shared.log(
@@ -282,6 +285,7 @@ final class NotificationSubscriptionStore: ObservableObject {
             category: "Mute"
         )
         hasLoadedRemoteState = true
+        await JourneyTrackingCoordinator.shared.arm(subscription: subscription, source: historySource)
         await syncGeofences()
         return subscription
     }
@@ -289,6 +293,7 @@ final class NotificationSubscriptionStore: ObservableObject {
     func deleteLiveSession(id: String) async throws {
         try await service.deleteLiveSession(id: id)
         liveSessions.removeAll { $0.id == id }
+        JourneyTrackingCoordinator.shared.disarm(subscriptionID: id)
         hasLoadedRemoteState = true
         await syncGeofences()
     }
@@ -339,7 +344,17 @@ final class NotificationSubscriptionStore: ObservableObject {
     }
 
     var combinedSubscriptions: [NotificationSubscription] {
-        subscriptions + liveSessions
+        Self.subscriptionsForJourneyUpdates(
+            scheduled: subscriptions,
+            liveSessions: liveSessions
+        )
+    }
+
+    static func subscriptionsForJourneyUpdates(
+        scheduled: [NotificationSubscription],
+        liveSessions: [NotificationSubscription]
+    ) -> [NotificationSubscription] {
+        scheduled + liveSessions.filter { $0.liveSessionOrigin != .scheduled }
     }
 
     var hasAuthoritativeRemoteState: Bool {
@@ -391,6 +406,7 @@ final class NotificationSubscriptionStore: ObservableObject {
                 toName: subscription.legs.last?.toName,
                 useSandbox: useSandbox,
                 muteOnArrival: subscription.muteOnArrival,
+                liveSessionOrigin: nil,
                 activeUntil: nil
             )
             _ = try await service.upsertSubscription(request)
@@ -413,6 +429,7 @@ final class NotificationSubscriptionStore: ObservableObject {
                 toName: session.legs.last?.toName,
                 useSandbox: useSandbox,
                 muteOnArrival: session.muteOnArrival,
+                liveSessionOrigin: session.liveSessionOrigin ?? .manual,
                 activeUntil: session.activeUntil
             )
             _ = try await service.upsertLiveSession(request)
@@ -446,6 +463,7 @@ final class NotificationSubscriptionStore: ObservableObject {
                 legs: activeLegs,
                 muteOnArrival: session.muteOnArrival,
                 source: session.source,
+                liveSessionOrigin: session.liveSessionOrigin,
                 activeUntil: session.activeUntil,
                 mutedByLegDay: session.mutedByLegDay,
                 mutedAtByLegDay: session.mutedAtByLegDay,
