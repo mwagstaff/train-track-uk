@@ -1,0 +1,180 @@
+{
+  "version": "2026-08-17",
+  "source_url": "https://www.nationalrail.co.uk/help-and-assistance/compensation-and-refunds/",
+  "operators": [
+    {
+      "name": "Avanti West Coast",
+      "operator_codes": ["VT"],
+      "aliases": ["Avanti", "First Trenitalia West Coast Rail"],
+      "claim_url": "https://delayrepay.avantiwestcoast.co.uk/"
+    },
+    {
+      "name": "c2c",
+      "operator_codes": ["CC"],
+      "aliases": ["C2C"],
+      "claim_url": "https://www.c2c-online.co.uk/help-feedback/delay-repay/"
+    },
+    {
+      "name": "Caledonian Sleeper",
+      "operator_codes": ["CS"],
+      "aliases": ["Sleeper"],
+      "claim_url": "https://www.sleeper.scot/help-support/after-your-trip/"
+    },
+    {
+      "name": "Chiltern Railways",
+      "operator_codes": ["CH"],
+      "aliases": ["Chiltern"],
+      "claim_url": "https://chilternrailways.delayrepaycompensation.com/"
+    },
+    {
+      "name": "CrossCountry",
+      "operator_codes": ["XC"],
+      "aliases": ["Cross Country"],
+      "claim_url": "https://www.crosscountrytrains.co.uk/help-support/delay-repay"
+    },
+    {
+      "name": "East Midlands Railway",
+      "operator_codes": ["EM"],
+      "aliases": ["EMR", "East Midlands Trains"],
+      "claim_url": "https://www.eastmidlandsrailway.co.uk/help-manage/manage/make-a-delay-repay-claim"
+    },
+    {
+      "name": "Elizabeth line",
+      "operator_codes": ["XR"],
+      "aliases": ["Elizabeth Line", "Crossrail"],
+      "claim_url": "https://tfl.gov.uk/fares/refunds/"
+    },
+    {
+      "name": "Gatwick Express",
+      "operator_codes": ["GX"],
+      "aliases": [],
+      "claim_url": "https://www.gatwickexpress.com/help-and-support/delay-repay-compensation"
+    },
+    {
+      "name": "Grand Central",
+      "operator_codes": ["GC"],
+      "aliases": ["Grand Central Railway"],
+      "claim_url": "https://compensation.grandcentralrail.com/"
+    },
+    {
+      "name": "Great Northern",
+      "operator_codes": ["GN"],
+      "aliases": [],
+      "claim_url": "https://delayrepay.greatnorthernrail.com/"
+    },
+    {
+      "name": "GWR",
+      "operator_codes": ["GW"],
+      "aliases": ["Great Western Railway", "First Great Western"],
+      "claim_url": "https://www.gwr.com/help-and-support/refunds-and-compensation/delay-repay"
+    },
+    {
+      "name": "Greater Anglia",
+      "operator_codes": ["LE", "GA"],
+      "aliases": ["Abellio Greater Anglia"],
+      "claim_url": "https://greateranglia.delayrepaycompensation.com/"
+    },
+    {
+      "name": "Heathrow Express",
+      "operator_codes": ["HX"],
+      "aliases": [],
+      "claim_url": "https://www.heathrowexpress.com/contact-us"
+    },
+    {
+      "name": "Hull Trains",
+      "operator_codes": ["HT"],
+      "aliases": ["First Hull Trains"],
+      "claim_url": "https://delayrepay.hulltrains.co.uk/"
+    },
+    {
+      "name": "LNER",
+      "operator_codes": ["GR"],
+      "aliases": ["London North Eastern Railway"],
+      "claim_url": "https://www.lner.co.uk/support/delay-repay/"
+    },
+    {
+      "name": "London Northwestern Railway",
+      "operator_codes": ["LM", "LN"],
+      "aliases": ["London North Western Railway", "LNR"],
+      "claim_url": "https://londonnorthwesternrailway.delayrepaycompensation.com/"
+    },
+    {
+      "name": "London Overground",
+      "operator_codes": ["LO"],
+      "aliases": ["Overground"],
+      "claim_url": "https://tfl.gov.uk/fares/refunds/"
+    },
+    {
+      "name": "Lumo",
+      "operator_codes": ["LD"],
+      "aliases": ["East Coast Trains"],
+      "claim_url": "https://delayrepay.lumo.co.uk/"
+    },
+    {
+      "name": "Merseyrail",
+      "operator_codes": ["ME"],
+      "aliases": [],
+      "claim_url": "https://www.merseyrail.org/help-support/refunds-and-compensation/delay-compensation-for-single-and-return-tickets/"
+    },
+    {
+      "name": "Northern",
+      "operator_codes": ["NT"],
+      "aliases": ["Northern Trains", "Northern Rail"],
+      "claim_url": "https://delayrepay.northernrailway.co.uk/"
+    },
+    {
+      "name": "ScotRail",
+      "operator_codes": ["SR"],
+      "aliases": ["Scotrail"],
+      "claim_url": "https://delayrepay.scotrail.co.uk/"
+    },
+    {
+      "name": "South Western Railway",
+      "operator_codes": ["SW"],
+      "aliases": ["SWR", "Island Line"],
+      "claim_url": "https://www.southwesternrailway.com/contact-and-help/delay-repay"
+    },
+    {
+      "name": "Southeastern",
+      "operator_codes": ["SE"],
+      "aliases": ["South Eastern"],
+      "claim_url": "https://delayrepay.southeasternrailway.co.uk/"
+    },
+    {
+      "name": "Southern",
+      "operator_codes": ["SN"],
+      "aliases": ["Southern Railway"],
+      "claim_url": "https://delayrepay.southernrailway.com/"
+    },
+    {
+      "name": "Stansted Express",
+      "operator_codes": ["LE", "SX"],
+      "aliases": [],
+      "claim_url": "https://www.stanstedexpress.com/help/delay-repay"
+    },
+    {
+      "name": "Thameslink",
+      "operator_codes": ["TL"],
+      "aliases": ["Thameslink Railway"],
+      "claim_url": "https://delayrepay.thameslinkrailway.com/"
+    },
+    {
+      "name": "TransPennine Express",
+      "operator_codes": ["TP"],
+      "aliases": ["Transpennine Express", "TPE"],
+      "claim_url": "https://www.tpexpress.co.uk/help/delay-repay-compensation"
+    },
+    {
+      "name": "Transport for Wales",
+      "operator_codes": ["AW"],
+      "aliases": ["TfW Rail", "Trafnidiaeth Cymru"],
+      "claim_url": "https://delayrepay.trc.cymru/"
+    },
+    {
+      "name": "West Midlands Railway",
+      "operator_codes": ["LM", "WM"],
+      "aliases": ["WMR", "West Midlands Trains"],
+      "claim_url": "https://westmidlandsrailway.delayrepaycompensation.com/"
+    }
+  ]
+}

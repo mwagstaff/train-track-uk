@@ -22,6 +22,7 @@ import { pushToStartTokenStore } from './lib/push-to-start-token-store.js';
 import { testServiceHarness } from './lib/test-service-harness.js';
 import { formatDepartureJourneyResult, shouldIncludeDepartureStatus } from './lib/departure-response.js';
 import { ensureMongoIndexes } from './lib/mongo-client.js';
+import { resolveDelayRepayOperator } from './lib/delay-repay-config.js';
 import path from 'path';
 
 function isLiveActivityLoggingEnabled() {
@@ -1307,6 +1308,26 @@ app.get('/api/v2/config', (req, res) => {
         max_subscriptions_per_device: maxPerDevice,
         max_live_sessions_per_device: maxPerDevice,
     });
+});
+
+app.get('/api/v2/delay-repay/operator', (req, res) => {
+    const operatorCode = typeof req.query.operator_code === 'string' ? req.query.operator_code : '';
+    const operatorName = typeof req.query.operator_name === 'string' ? req.query.operator_name : '';
+    if (!operatorCode.trim() && !operatorName.trim()) {
+        return res.status(400).json({ error: 'operator_code or operator_name is required' });
+    }
+
+    try {
+        const operator = resolveDelayRepayOperator({ operatorCode, operatorName });
+        if (!operator) {
+            return res.status(404).json({ error: 'Delay Repay URL unavailable for this operator' });
+        }
+        res.set('Cache-Control', 'public, max-age=3600');
+        return res.json(operator);
+    } catch (error) {
+        console.error('[delay-repay] Failed to resolve operator:', error?.message || error);
+        return res.status(500).json({ error: 'Delay Repay configuration unavailable' });
+    }
 });
 
 app.get('/api/v1/xbar/from/:fromStation/to/:toStation/max_departures/:maxDepartures/return_after/:returnAfter?', async (req, res) => {

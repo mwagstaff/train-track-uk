@@ -112,6 +112,21 @@ final class JourneyHistoryStore: ObservableObject {
         }
     }
 
+    func setDelayRepayClaimStatus(
+        _ status: JourneyHistoryDelayRepayClaimStatus?,
+        for record: JourneyHistoryRecord
+    ) {
+        record.delayRepayClaimStatus = status
+        saveAndReload(
+            event: "delay_repay_claim_status_updated",
+            message: "Updated Delay Repay claim status for journey \(record.id.uuidString)",
+            metadata: [
+                "journey_id": record.id.uuidString,
+                "claim_status": status?.rawValue
+            ]
+        )
+    }
+
     @discardableResult
     func refreshOfficialArrival(for record: JourneyHistoryRecord) async -> JourneyHistoryRecord? {
         #if DEBUG
@@ -244,6 +259,33 @@ final class JourneyHistoryStore: ObservableObject {
     }
 
     #if DEBUG
+    func generateDebugHistoryToCapacity() async throws -> Int {
+        let requestedCount = max(0, Self.maximumRecordCount - records.count)
+        guard requestedCount > 0 else { return 0 }
+        let generatedRecords = try await JourneyHistoryDebugDataGenerator.records(count: requestedCount)
+        for record in generatedRecords {
+            container.mainContext.insert(record)
+        }
+        do {
+            try container.mainContext.save()
+            reload()
+            log("debug_history_generated", "Generated \(generatedRecords.count) journey history test records", metadata: [
+                "generated_count": generatedRecords.count,
+                "record_count": records.count
+            ])
+            return generatedRecords.count
+        } catch {
+            persistenceError = error.localizedDescription
+            throw error
+        }
+    }
+
+    func generateRandomDebugMultiLegJourney() async throws -> JourneyHistoryRecord {
+        let record = try await JourneyHistoryDebugDataGenerator.randomMultiLegRecord()
+        add(record)
+        return record
+    }
+
     private func applyVICToKTHDebugFixtureIfPresent() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Europe/London") ?? .current
@@ -280,7 +322,7 @@ final class JourneyHistoryStore: ObservableObject {
 
     private static let vicToOrpingtonDebugCallingPoints: [JourneyHistoryCallingPoint] = [
         debugCallingPoint("London Victoria", "VIC", "17:27", departed: true),
-        debugCallingPoint("Brixton", "BRI", "17:34", departed: true),
+        debugCallingPoint("Brixton", "BRX", "17:34", departed: true),
         debugCallingPoint("Herne Hill", "HNH", "17:36", departed: true),
         debugCallingPoint("West Dulwich", "WDU", "17:39", departed: true),
         debugCallingPoint("Sydenham Hill", "SYH", "17:42", departed: true),

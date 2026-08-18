@@ -120,6 +120,18 @@ struct DevicePreferencesPayload: Codable, Sendable {
     let notificationPlatform: Bool
 }
 
+private struct DelayRepayOperatorResponse: Decodable {
+    let name: String
+    let operatorCode: String?
+    let claimURL: URL
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case operatorCode = "operator_code"
+        case claimURL = "claim_url"
+    }
+}
+
 private struct DevicePreferencesUpload: Encodable {
     let deviceId: String
     let preferences: DevicePreferencesPayload
@@ -215,6 +227,29 @@ final class NetworkServicePhone {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw PhoneNetworkError.noData
         }
+    }
+
+    func fetchDelayRepayClaimURL(
+        operatorCode: String?,
+        operatorName: String?
+    ) async throws -> URL {
+        guard var components = URLComponents(string: "\(base)/delay-repay/operator") else {
+            throw PhoneNetworkError.invalidURL
+        }
+        components.queryItems = [
+            operatorCode.map { URLQueryItem(name: "operator_code", value: $0) },
+            operatorName.map { URLQueryItem(name: "operator_name", value: $0) }
+        ].compactMap { $0 }
+        guard let url = components.url else { throw PhoneNetworkError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 8
+        request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw PhoneNetworkError.noData
+        }
+        return try jsonDecoder.decode(DelayRepayOperatorResponse.self, from: data).claimURL
     }
 
     func fetchDeparturesAggregated(

@@ -43,6 +43,42 @@ enum JourneyHistoryLegOutcome: String, Codable {
     case uncertain
 }
 
+enum JourneyHistoryDelayRepayClaimStatus: String, Codable, CaseIterable, Identifiable {
+    case processing
+    case successful
+    case rejected
+    case hidden
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .processing: return "Claim processing"
+        case .successful: return "Claim successful"
+        case .rejected: return "Claim rejected"
+        case .hidden: return "Claim action hidden"
+        }
+    }
+
+    var actionName: String {
+        switch self {
+        case .processing: return "Mark claim as processing"
+        case .successful: return "Mark claim as successful"
+        case .rejected: return "Mark claim as rejected"
+        case .hidden: return "Hide claim action"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .processing: return "hourglass"
+        case .successful: return "checkmark.circle"
+        case .rejected: return "xmark.circle"
+        case .hidden: return "eye.slash"
+        }
+    }
+}
+
 struct JourneyHistoryCallingPoint: Codable, Hashable, Identifiable {
     let locationName: String
     let crs: String
@@ -217,6 +253,7 @@ final class JourneyHistoryRecord {
     var scheduledArrivalAt: Date?
     var actualArrivalAt: Date?
     var delayMinutes: Int?
+    var delayRepayClaimStatusRawValue: String?
     var operatorSearchText: String
     var serviceMatchConfidence: Double
     var legsData: Data
@@ -248,6 +285,7 @@ final class JourneyHistoryRecord {
             scheduledArrival: finalLeg?.scheduledArrivalAt,
             actualArrival: finalLeg?.actualArrivalAt
         )
+        delayRepayClaimStatusRawValue = nil
         operatorSearchText = checkpoint.legs.compactMap(\.operatorName).joined(separator: " ")
         serviceMatchConfidence = checkpoint.serviceMatchConfidence
         legsData = (try? JSONEncoder().encode(checkpoint.legs)) ?? Data()
@@ -277,9 +315,22 @@ extension JourneyHistoryRecord {
         return delayMinutes >= JourneyHistoryDelayPolicy.delayRepayThresholdMinutes
     }
 
+    var delayRepayClaimStatus: JourneyHistoryDelayRepayClaimStatus? {
+        get {
+            delayRepayClaimStatusRawValue.flatMap(JourneyHistoryDelayRepayClaimStatus.init(rawValue:))
+        }
+        set {
+            delayRepayClaimStatusRawValue = newValue?.rawValue
+        }
+    }
+
     var routeTitle: String {
         let destination = outcome == .completed ? plannedDestinationName : recordedDestinationName
         return "\(plannedOriginName) → \(destination)"
+    }
+
+    var operatorDisplayText: String {
+        JourneyHistoryOperatorSummary.text(for: legs.map(\.operatorName))
     }
 
     func matchesSearch(_ rawTerm: String) -> Bool {
@@ -298,6 +349,28 @@ extension JourneyHistoryRecord {
             recordedDestinationCRS,
             operatorSearchText
         ] + stationText + legText).contains { $0.lowercased().contains(term) }
+    }
+}
+
+enum JourneyHistoryOperatorSummary {
+    static func text(for operatorNames: [String?]) -> String {
+        var seen = Set<String>()
+        let uniqueNames = operatorNames.compactMap { rawName -> String? in
+            guard let rawName else { return nil }
+            let name = rawName
+                .components(separatedBy: .whitespacesAndNewlines)
+                .filter { !$0.isEmpty }
+                .joined(separator: " ")
+            guard !name.isEmpty else { return nil }
+
+            let deduplicationKey = name.lowercased()
+            guard seen.insert(deduplicationKey).inserted else { return nil }
+            return name
+        }
+
+        guard let firstName = uniqueNames.first else { return "" }
+        let additionalCount = uniqueNames.count - 1
+        return additionalCount == 0 ? firstName : "\(firstName) +\(additionalCount) more"
     }
 }
 
@@ -321,6 +394,18 @@ enum JourneyHistoryDelayPolicy {
             to: now
         ) ?? now.addingTimeInterval(-Double(submissionDeadlineDays) * 24 * 60 * 60)
         return completedAt >= cutoff
+    }
+
+    static func responsibleOperatorLeg(in record: JourneyHistoryRecord) -> JourneyHistoryLeg? {
+        record.legs.first { leg in
+            guard let delay = confirmedDelayMinutes(
+                scheduledArrival: leg.scheduledArrivalAt,
+                actualArrival: leg.actualArrivalAt
+            ) else {
+                return false
+            }
+            return delay >= delayRepayThresholdMinutes
+        } ?? record.legs.last
     }
 }
 

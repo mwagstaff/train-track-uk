@@ -47,17 +47,45 @@ nonisolated enum RailwayTravelHighlight {
     }
 }
 
+struct RailwayHistoricalStationEvent: Equatable {
+    enum Kind: Equatable {
+        case departed
+        case arrived
+    }
+
+    let kind: Kind
+    let time: String
+}
+
+enum RailwayHistoricalStationSemantics {
+    static func eventKind(
+        stationIndex: Int,
+        userDestinationIndex: Int,
+        finalStationIndex: Int
+    ) -> RailwayHistoricalStationEvent.Kind? {
+        guard stationIndex >= userDestinationIndex else { return nil }
+        if stationIndex == userDestinationIndex || stationIndex == finalStationIndex {
+            return .arrived
+        }
+        return .departed
+    }
+}
+
 enum RailwayStationAnnotationLabel {
-    static func text(for station: CallingPoint, historicalArrivalTime: String? = nil) -> String {
+    static func text(
+        for station: CallingPoint,
+        historicalEvent: RailwayHistoricalStationEvent? = nil
+    ) -> String {
         if station.isCancelledAtStation {
             return "\(station.locationName) (cancelled)"
         }
 
         let scheduledTime = railwayClockTime(station.st) ?? station.st
-        if let historicalArrivalTime,
-           let arrivalTime = railwayClockTime(historicalArrivalTime) {
-            let punctuality = punctualityText(time: arrivalTime, scheduled: scheduledTime)
-            return "\(station.locationName) (arrived \(arrivalTime), \(punctuality))"
+        if let historicalEvent,
+           let eventTime = railwayClockTime(historicalEvent.time) {
+            let punctuality = punctualityText(time: eventTime, scheduled: scheduledTime)
+            let verb = historicalEvent.kind == .arrived ? "arrived" : "departed"
+            return "\(station.locationName) (\(verb) \(eventTime), \(punctuality))"
         }
         let actual = railwayClockTime(station.at)
         let normalizedActual = station.at?
@@ -96,19 +124,23 @@ struct RailwayStationInfoPresentation: Equatable {
     let timingText: String
     let platformText: String
 
-    init(station: CallingPoint, historicalArrivalTime: String? = nil) {
+    init(
+        station: CallingPoint,
+        historicalEvent: RailwayHistoricalStationEvent? = nil
+    ) {
         let scheduledTime = railwayClockTime(station.st) ?? station.st
         let expectedTime = railwayClockTime(station.et)
         let normalizedEstimate = station.et?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
 
-        if let historicalArrivalTime,
-           let arrivalTime = railwayClockTime(historicalArrivalTime) {
-            let delay = departureDelayMinutes(estimated: arrivalTime, scheduled: scheduledTime) ?? 0
+        if let historicalEvent,
+           let eventTime = railwayClockTime(historicalEvent.time) {
+            let delay = departureDelayMinutes(estimated: eventTime, scheduled: scheduledTime) ?? 0
+            let verb = historicalEvent.kind == .arrived ? "Arrived" : "Departed"
             timingText = delay > 0
-                ? "Arrived \(arrivalTime) (\(delay) min\(delay == 1 ? "" : "s") late)"
-                : "Arrived \(arrivalTime) (on time)"
+                ? "\(verb) \(eventTime) (\(delay) min\(delay == 1 ? "" : "s") late)"
+                : "\(verb) \(eventTime) (on time)"
         } else if station.isCancelledAtStation {
             timingText = "Call cancelled (originally scheduled \(scheduledTime))"
         } else if normalizedEstimate == "on time" || expectedTime == scheduledTime {
@@ -164,6 +196,25 @@ struct ServiceRailwayMapBranch: Identifiable {
     let id: String
     let route: ServiceRailwayRoute
     let stations: [CallingPoint]
+    let highlightedTravelRange: ClosedRange<Int>?
+    let historicalArrivalTime: String?
+    let omitsFirstStationAnnotation: Bool
+
+    init(
+        id: String,
+        route: ServiceRailwayRoute,
+        stations: [CallingPoint],
+        highlightedTravelRange: ClosedRange<Int>? = nil,
+        historicalArrivalTime: String? = nil,
+        omitsFirstStationAnnotation: Bool = true
+    ) {
+        self.id = id
+        self.route = route
+        self.stations = stations
+        self.highlightedTravelRange = highlightedTravelRange
+        self.historicalArrivalTime = historicalArrivalTime
+        self.omitsFirstStationAnnotation = omitsFirstStationAnnotation
+    }
 }
 
 private struct RailwayMapStationItem: Identifiable {
@@ -171,6 +222,10 @@ private struct RailwayMapStationItem: Identifiable {
     let station: CallingPoint
     let coordinate: CLLocationCoordinate2D
     let primaryIndex: Int?
+    let stationIndex: Int
+    let historicalTravelRange: ClosedRange<Int>?
+    let historicalArrivalTime: String?
+    let finalStationIndex: Int
 }
 
 private enum RailwayMapAnnotationIdentifier {
@@ -182,20 +237,25 @@ private enum RailwayMapAnnotationIdentifier {
 }
 
 private struct RailwayMapAnnotationZOrderConfigurator: UIViewRepresentable {
+    let onMapViewResolved: (MKMapView) -> Void
+
     func makeUIView(context: Context) -> RailwayMapAnnotationZOrderView {
-        RailwayMapAnnotationZOrderView()
+        RailwayMapAnnotationZOrderView(onMapViewResolved: onMapViewResolved)
     }
 
     func updateUIView(_ uiView: RailwayMapAnnotationZOrderView, context: Context) {
+        uiView.onMapViewResolved = onMapViewResolved
         uiView.refreshAnnotationPriorities()
     }
 }
 
 private final class RailwayMapAnnotationZOrderView: UIView {
     private weak var mapView: MKMapView?
+    var onMapViewResolved: (MKMapView) -> Void
 
-    override init(frame: CGRect) {
-        super.init(frame: frame)
+    init(onMapViewResolved: @escaping (MKMapView) -> Void) {
+        self.onMapViewResolved = onMapViewResolved
+        super.init(frame: .zero)
         isUserInteractionEnabled = false
         backgroundColor = .clear
     }
@@ -227,7 +287,10 @@ private final class RailwayMapAnnotationZOrderView: UIView {
 
     @objc private func applyAnnotationPriorities() {
         guard let mapView = mapView ?? enclosingMapView() else { return }
-        self.mapView = mapView
+        if self.mapView !== mapView {
+            self.mapView = mapView
+            onMapViewResolved(mapView)
+        }
 
         for annotation in mapView.annotations {
             guard let identifier = annotation.title ?? nil,
@@ -253,6 +316,76 @@ private final class RailwayMapAnnotationZOrderView: UIView {
         }
         return nil
     }
+}
+
+enum RailwayMapShareRenderer {
+    static let attributionFooterHeight: CGFloat = 28
+
+    @MainActor
+    static func image(for view: UIView) -> UIImage? {
+        view.layoutIfNeeded()
+        let viewSize = view.bounds.size
+        guard viewSize.width > 0, viewSize.height > 0 else { return nil }
+
+        let outputSize = CGSize(
+            width: viewSize.width,
+            height: viewSize.height + attributionFooterHeight
+        )
+        let format = UIGraphicsImageRendererFormat.preferred()
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: outputSize, format: format)
+
+        return renderer.image { context in
+            UIColor.systemBackground.setFill()
+            context.fill(CGRect(origin: .zero, size: outputSize))
+
+            let mapRect = CGRect(origin: .zero, size: viewSize)
+            if !view.drawHierarchy(in: mapRect, afterScreenUpdates: true) {
+                view.layer.render(in: context.cgContext)
+            }
+
+            let footerRect = CGRect(
+                x: 0,
+                y: viewSize.height,
+                width: outputSize.width,
+                height: attributionFooterHeight
+            )
+            UIColor.secondarySystemBackground.setFill()
+            context.fill(footerRect)
+
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .center
+            paragraph.lineBreakMode = .byTruncatingTail
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.preferredFont(forTextStyle: .caption2),
+                .foregroundColor: UIColor.secondaryLabel,
+                .paragraphStyle: paragraph,
+            ]
+            let textRect = footerRect.insetBy(dx: 8, dy: 6)
+            NSString(string: "Train Track UK • Rail data © OpenStreetMap contributors")
+                .draw(in: textRect, withAttributes: attributes)
+        }
+    }
+}
+
+private struct RailwayMapShareItem: Identifiable {
+    let id = UUID()
+    let image: UIImage
+}
+
+@MainActor
+private final class RailwayMapViewReference {
+    weak var value: MKMapView?
+}
+
+private struct RailwayMapShareSheet: UIViewControllerRepresentable {
+    let image: UIImage
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: [image], applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) { }
 }
 
 private extension UIView {
@@ -284,6 +417,11 @@ struct ServiceRailwayMapView: View {
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var hasCenteredOnTrain = false
     @State private var selectedStationID: String?
+    @State private var mapViewReference = RailwayMapViewReference()
+    @State private var isMapViewResolved = false
+    @State private var isPreparingShare = false
+    @State private var shareItem: RailwayMapShareItem?
+    @State private var shareError: String?
 
     init(
         route: ServiceRailwayRoute,
@@ -352,7 +490,12 @@ struct ServiceRailwayMapView: View {
             MapCompass()
             MapScaleView()
         }
-        .background(RailwayMapAnnotationZOrderConfigurator())
+        .background(RailwayMapAnnotationZOrderConfigurator { mapView in
+            if mapViewReference.value !== mapView {
+                mapViewReference.value = mapView
+                isMapViewResolved = true
+            }
+        })
         .overlay(alignment: .topTrailing) {
             Button {
                 centerOnTrainOrFrameRoute()
@@ -392,6 +535,50 @@ struct ServiceRailwayMapView: View {
             hasCenteredOnTrain = false
             centerOnTrainOrFrameRoute()
         }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    shareCurrentMapView()
+                } label: {
+                    if isPreparingShare {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label("Share route map", systemImage: "square.and.arrow.up")
+                    }
+                }
+                .disabled(isPreparingShare || !isMapViewResolved)
+                .accessibilityHint("Shares an image of the currently visible route map")
+            }
+        }
+        .sheet(item: $shareItem) { item in
+            RailwayMapShareSheet(image: item.image)
+        }
+        .alert("Unable to share route map", isPresented: Binding(
+            get: { shareError != nil },
+            set: { if !$0 { shareError = nil } }
+        )) {
+            Button("OK", role: .cancel) { shareError = nil }
+        } message: {
+            Text(shareError ?? "The route map image could not be created.")
+        }
+    }
+
+    private func shareCurrentMapView() {
+        guard !isPreparingShare else { return }
+        guard let resolvedMapView = mapViewReference.value else {
+            isMapViewResolved = false
+            shareError = "The route map is still loading. Please try again."
+            return
+        }
+
+        isPreparingShare = true
+        defer { isPreparingShare = false }
+        guard let image = RailwayMapShareRenderer.image(for: resolvedMapView) else {
+            shareError = "The route map image could not be created."
+            return
+        }
+        shareItem = RailwayMapShareItem(image: image)
     }
 
     private var routeSegments: [RailwayMapSegment] {
@@ -409,9 +596,18 @@ struct ServiceRailwayMapView: View {
                     for: branch.route,
                     stations: branch.stations,
                     idPrefix: branch.id,
-                    highlightedIndices: highlightedTravelRange == nil ? nil : []
+                    highlightedIndices: highlightedIndices(for: branch)
                 )
             }
+    }
+
+    private func highlightedIndices(for branch: ServiceRailwayMapBranch) -> Set<Int>? {
+        if let range = branch.highlightedTravelRange {
+            return RailwayTravelHighlight.segmentIndices(for: range)
+        }
+        let hasHistoricalHighlight = highlightedTravelRange != nil
+            || additionalRoutes.contains { $0.highlightedTravelRange != nil }
+        return hasHistoricalHighlight ? [] : nil
     }
 
     private func segments(
@@ -440,17 +636,28 @@ struct ServiceRailwayMapView: View {
                 id: "primary-\(index)-\(stations[index].crs)",
                 station: stations[index],
                 coordinate: coordinate,
-                primaryIndex: index
+                primaryIndex: index,
+                stationIndex: index,
+                historicalTravelRange: highlightedTravelRange,
+                historicalArrivalTime: historicalArrivalTime,
+                finalStationIndex: stations.count - 1
             )
         }
         let additional = additionalRoutes.flatMap { branch in
-            branch.stations.indices.dropFirst().compactMap { index -> RailwayMapStationItem? in
+            branch.stations.indices.compactMap { index -> RailwayMapStationItem? in
+                if branch.omitsFirstStationAnnotation && index == branch.stations.startIndex {
+                    return nil
+                }
                 guard let coordinate = branch.route.coordinate(atStation: index) else { return nil }
                 return RailwayMapStationItem(
                     id: "\(branch.id)-\(index)-\(branch.stations[index].crs)",
                     station: branch.stations[index],
                     coordinate: coordinate,
-                    primaryIndex: nil
+                    primaryIndex: nil,
+                    stationIndex: index,
+                    historicalTravelRange: branch.highlightedTravelRange,
+                    historicalArrivalTime: branch.historicalArrivalTime,
+                    finalStationIndex: branch.stations.count - 1
                 )
             }
         }
@@ -522,7 +729,7 @@ struct ServiceRailwayMapView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(stationAccessibilityLabel(for: item))
-        .accessibilityHint("Shows expected time and platform")
+        .accessibilityHint("Shows timing and platform")
         .popover(
             isPresented: stationPopoverBinding(for: item),
             attachmentAnchor: .rect(.bounds),
@@ -550,7 +757,7 @@ struct ServiceRailwayMapView: View {
         let station = item.station
         let presentation = RailwayStationInfoPresentation(
             station: station,
-            historicalArrivalTime: arrivalTime(for: item)
+            historicalEvent: historicalEvent(for: item)
         )
         return VStack(alignment: .leading, spacing: 10) {
             Text(station.locationName)
@@ -620,16 +827,37 @@ struct ServiceRailwayMapView: View {
     private func stationLabel(for item: RailwayMapStationItem) -> String {
         RailwayStationAnnotationLabel.text(
             for: item.station,
-            historicalArrivalTime: arrivalTime(for: item)
+            historicalEvent: historicalEvent(for: item)
         )
     }
 
-    private func arrivalTime(for item: RailwayMapStationItem) -> String? {
-        guard highlightedTravelRange != nil,
-              normalizedCRS(item.station.crs) == normalizedCRS(toCRS) else {
+    private func historicalEvent(for item: RailwayMapStationItem) -> RailwayHistoricalStationEvent? {
+        guard let highlightedTravelRange = item.historicalTravelRange,
+              let kind = RailwayHistoricalStationSemantics.eventKind(
+                stationIndex: item.stationIndex,
+                userDestinationIndex: highlightedTravelRange.upperBound,
+                finalStationIndex: item.finalStationIndex
+              ) else {
             return nil
         }
-        return historicalArrivalTime
+        let time = item.stationIndex == highlightedTravelRange.upperBound
+            ? item.historicalArrivalTime ?? historicalEventTime(for: item.station)
+            : historicalEventTime(for: item.station)
+        return RailwayHistoricalStationEvent(kind: kind, time: time)
+    }
+
+    private func historicalEventTime(for station: CallingPoint) -> String {
+        if let actual = railwayClockTime(station.at) {
+            return actual
+        }
+        if station.at?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .caseInsensitiveCompare("On time") == .orderedSame {
+            return railwayClockTime(station.st) ?? station.st
+        }
+        if let estimate = railwayClockTime(station.et) {
+            return estimate
+        }
+        return railwayClockTime(station.st) ?? station.st
     }
 
     private func normalizedCRS(_ value: String) -> String {

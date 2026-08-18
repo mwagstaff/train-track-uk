@@ -124,6 +124,56 @@ struct RailwayRoutingTests {
         #expect(RailwayTravelHighlight.segmentIndices(for: nil) == nil)
     }
 
+    @Test func journeyMapLegFindsItsTravelledRangeWithinTheFullService() {
+        let leg = JourneyHistoryRouteMapLeg(
+            id: UUID(),
+            stations: [
+                callingPoint(crs: "AAA", scheduled: "12:00"),
+                callingPoint(crs: "BBB", scheduled: "12:10"),
+                callingPoint(crs: "CCC", scheduled: "12:20"),
+                callingPoint(crs: "DDD", scheduled: "12:30"),
+            ],
+            fromCRS: " bbb ",
+            toCRS: "CCC",
+            historicalArrivalTime: "12:20"
+        )
+
+        #expect(leg.highlightedTravelRange == 1...2)
+    }
+
+    @Test @MainActor func routeMapShareRendererIncludesAttributionFooter() throws {
+        let view = UIView(frame: CGRect(x: 0, y: 0, width: 320, height: 480))
+        view.backgroundColor = .systemBlue
+
+        let image = try #require(RailwayMapShareRenderer.image(for: view))
+
+        #expect(image.size.width == 320)
+        #expect(image.size.height == 480 + RailwayMapShareRenderer.attributionFooterHeight)
+    }
+
+    @Test @MainActor func historicalMapUsesCompletedServiceSemanticsAfterTheUserDestination() {
+        #expect(RailwayHistoricalStationSemantics.eventKind(
+            stationIndex: 4,
+            userDestinationIndex: 5,
+            finalStationIndex: 9
+        ) == nil)
+        #expect(RailwayHistoricalStationSemantics.eventKind(
+            stationIndex: 5,
+            userDestinationIndex: 5,
+            finalStationIndex: 9
+        ) == .arrived)
+        #expect(RailwayHistoricalStationSemantics.eventKind(
+            stationIndex: 6,
+            userDestinationIndex: 5,
+            finalStationIndex: 9
+        ) == .departed)
+        #expect(RailwayHistoricalStationSemantics.eventKind(
+            stationIndex: 9,
+            userDestinationIndex: 5,
+            finalStationIndex: 9
+        ) == .arrived)
+    }
+
     @Test @MainActor func mapLabelsIncludeDueOrDepartedTimesAndPunctuality() {
         let onTime = callingPoint(
             name: "East Croydon",
@@ -168,8 +218,14 @@ struct RailwayRoutingTests {
         #expect(
             RailwayStationAnnotationLabel.text(
                 for: onTime,
-                historicalArrivalTime: "01:47"
+                historicalEvent: RailwayHistoricalStationEvent(kind: .arrived, time: "01:47")
             ) == "East Croydon (arrived 01:47, on time)"
+        )
+        #expect(
+            RailwayStationAnnotationLabel.text(
+                for: onTime,
+                historicalEvent: RailwayHistoricalStationEvent(kind: .departed, time: "01:47")
+            ) == "East Croydon (departed 01:47, on time)"
         )
         #expect(
             RailwayEstimatedLocationLabel.text(delayMinutes: 26)
@@ -205,7 +261,7 @@ struct RailwayRoutingTests {
 
         let arrivalPresentation = RailwayStationInfoPresentation(
             station: onTime,
-            historicalArrivalTime: "11:04"
+            historicalEvent: RailwayHistoricalStationEvent(kind: .arrived, time: "11:04")
         )
         #expect(arrivalPresentation.timingText == "Arrived 11:04 (on time)")
     }
