@@ -14,8 +14,8 @@ struct Live_ActivityLiveActivity: Widget {
     private func deepLinkURL(for context: ActivityViewContext<JourneyActivityAttributes>) -> URL? {
         var components = URLComponents()
         components.scheme = "traintrack"
-        components.host = "journey"
-        var queryItems = [
+        components.host = deepLinkHost(for: context.state.journeyPhase)
+        let queryItems = [
             URLQueryItem(name: "from", value: context.state.deepLinkFromCRS ?? context.state.fromCRS),
             URLQueryItem(name: "to", value: context.state.deepLinkToCRS ?? context.state.toCRS)
         ]
@@ -41,7 +41,7 @@ struct Live_ActivityLiveActivity: Widget {
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     VStack(alignment: .trailing, spacing: 2) {
-                        Text("Departs")
+                        Text(primaryTimeLabel(for: context.state))
                             .font(.caption2)
                             .foregroundColor(.secondary)
                         PrimaryDepartureTimeText(
@@ -74,9 +74,14 @@ struct Live_ActivityLiveActivity: Widget {
 
                         if let status = primaryStatusText(for: context.state) {
                             HStack(spacing: 6) {
-                                Circle()
-                                    .fill(statusColor(context.state.delayMinutes))
-                                    .frame(width: 6, height: 6)
+                                if context.state.delayRepayMessage != nil {
+                                    Image(systemName: "info.circle.fill")
+                                        .foregroundStyle(appIconBlue)
+                                } else {
+                                    Circle()
+                                        .fill(statusColor(context.state.delayMinutes))
+                                        .frame(width: 6, height: 6)
+                                }
                                 Text(status)
                                     .font(.caption2)
                                     .foregroundColor(.secondary)
@@ -85,7 +90,12 @@ struct Live_ActivityLiveActivity: Widget {
                             }
                         }
 
-                        if !context.state.upcomingDepartures.isEmpty {
+                        if context.state.journeyPhase.showsInProgressService {
+                            JourneyCallToAction(
+                                title: callToActionTitle(for: context.state),
+                                raisesLabel: primaryStatusText(for: context.state) != nil
+                            )
+                        } else if !context.state.upcomingDepartures.isEmpty {
                             UpcomingDeparturesStrip(departures: context.state.upcomingDepartures)
                         }
                     }
@@ -116,8 +126,8 @@ struct LiveActivityLockScreenView: View {
     private var deepLinkURL: URL? {
         var components = URLComponents()
         components.scheme = "traintrack"
-        components.host = "journey"
-        var queryItems = [
+        components.host = deepLinkHost(for: state.journeyPhase)
+        let queryItems = [
             URLQueryItem(name: "from", value: state.deepLinkFromCRS ?? state.fromCRS),
             URLQueryItem(name: "to", value: state.deepLinkToCRS ?? state.toCRS)
         ]
@@ -144,7 +154,7 @@ struct LiveActivityLockScreenView: View {
 
                 // Departure time
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Departs")
+                    Text(primaryTimeLabel(for: state))
                         .font(.caption)
                         .foregroundColor(.secondary)
                     PrimaryDepartureTimeText(
@@ -199,9 +209,14 @@ struct LiveActivityLockScreenView: View {
             // Live status
             if let status = primaryStatusText(for: state) {
                 HStack(spacing: 6) {
-                    Circle()
-                        .fill(statusColor(state.delayMinutes))
-                        .frame(width: 10, height: 10)
+                    if state.delayRepayMessage != nil {
+                        Image(systemName: "info.circle.fill")
+                            .foregroundStyle(appIconBlue)
+                    } else {
+                        Circle()
+                            .fill(statusColor(state.delayMinutes))
+                            .frame(width: 10, height: 10)
+                    }
                     Text(status)
                         .font(.caption2)
                         .foregroundColor(.secondary)
@@ -212,12 +227,38 @@ struct LiveActivityLockScreenView: View {
             }
 
             // Upcoming departures
-            if !state.upcomingDepartures.isEmpty {
+            if state.journeyPhase.showsInProgressService {
+                JourneyCallToAction(
+                    title: callToActionTitle(for: state),
+                    raisesLabel: primaryStatusText(for: state) != nil
+                )
+                .padding(.horizontal, -16)
+                .padding(.bottom, -16)
+            } else if !state.upcomingDepartures.isEmpty {
                 UpcomingDeparturesStrip(departures: state.upcomingDepartures)
             }
         }
         .padding(16)
         .widgetURL(deepLinkURL)
+    }
+}
+
+private struct JourneyCallToAction: View {
+    let title: String
+    let raisesLabel: Bool
+
+    var body: some View {
+        Text(title)
+            .font(.caption)
+            .fontWeight(.bold)
+            .foregroundStyle(.white)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .offset(y: raisesLabel ? -4 : 0)
+            .frame(maxWidth: .infinity, minHeight: 36, maxHeight: 36, alignment: .center)
+            .multilineTextAlignment(.center)
+            .background(appIconBlue)
+            .accessibilityAddTraits(.isButton)
     }
 }
 
@@ -431,7 +472,40 @@ private func primaryAccentColor(for state: JourneyActivityAttributes.ContentStat
     return estimatedTimeColor(state.delayMinutes)
 }
 
+private let appIconBlue = colorFromHex("#0047F8")
+
+private func deepLinkHost(for phase: JourneyActivityAttributes.JourneyPhase) -> String {
+    switch phase {
+    case .enRoute:
+        return "journey-route"
+    case .arrived:
+        return "history"
+    case .pendingStart, .atStart:
+        return "journey"
+    }
+}
+
+private func callToActionTitle(for state: JourneyActivityAttributes.ContentState) -> String {
+    state.journeyPhase == .arrived
+        ? "Tap to view journey history"
+        : "Tap to view route"
+}
+
+private func primaryTimeLabel(for state: JourneyActivityAttributes.ContentState) -> String {
+    switch state.journeyPhase {
+    case .enRoute:
+        return "Est. arrival"
+    case .arrived:
+        return "Arrived"
+    case .pendingStart, .atStart:
+        return "Departs"
+    }
+}
+
 private func primaryStatusText(for state: JourneyActivityAttributes.ContentState) -> String? {
+    if state.journeyPhase == .arrived {
+        return state.delayRepayMessage
+    }
     guard let status = state.statusText?.trimmingCharacters(in: .whitespacesAndNewlines),
           !status.isEmpty else {
         return nil

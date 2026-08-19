@@ -26,7 +26,6 @@ struct PreferencesView: View {
     @AppStorage("autoReturnToFavouritesMinutes") private var autoReturnMinutes: Int = 0
     @AppStorage("autoMuteOnArrival") private var autoMuteOnArrival: Bool = true
     @AppStorage("muteDelayMinutes") private var muteDelayMinutes: Int = 3
-    @AppStorage("autoEndLiveActivity") private var autoEndLiveActivity: Bool = true
     @AppStorage("showClosestJourneyLegOnly") private var showClosestJourneyLegOnly: Bool = true
     @AppStorage("showTransferWarnings") private var showTransferWarnings: Bool = true
     @AppStorage("transferWarningThresholdMinutes") private var transferWarningThresholdMinutes: Int = 3
@@ -74,7 +73,6 @@ struct PreferencesView: View {
             autoReturnMinutes,
             autoMuteOnArrival,
             muteDelayMinutes,
-            autoEndLiveActivity,
             showClosestJourneyLegOnly,
             showTransferWarnings,
             transferWarningThresholdMinutes,
@@ -95,7 +93,7 @@ struct PreferencesView: View {
             autoReturnToFavouritesMinutes: autoReturnMinutes,
             autoMuteOnArrival: autoMuteOnArrival,
             muteDelayMinutes: muteDelayMinutes,
-            autoEndLiveActivity: autoEndLiveActivity,
+            autoEndLiveActivity: false,
             showClosestJourneyLegOnly: showClosestJourneyLegOnly,
             showTransferWarnings: showTransferWarnings,
             transferWarningThresholdMinutes: transferWarningThresholdMinutes,
@@ -118,13 +116,6 @@ struct PreferencesView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                if autoMuteOnArrival {
-                    Toggle("End Live Activity after leaving station", isOn: $autoEndLiveActivity)
-                    Text("Automatically dismiss the Live Activity widget after you leave the departure station area.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
                 Picker("Live Activity duration", selection: $liveActivityDurationMinutes) {
                     Text("30 min").tag(30)
                     Text("1 hr").tag(60)
@@ -132,7 +123,7 @@ struct PreferencesView: View {
                     Text("2 hr").tag(120)
                 }
                 .pickerStyle(.segmented)
-                Text("How long a Live Activity stays visible (unless dismissed manually or after leaving a departure station). Default is 1 hour.")
+                Text("How long a Live Activity stays visible unless dismissed manually. Default is 1 hour.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -273,6 +264,12 @@ struct PreferencesView: View {
 
             #if DEBUG
             Section("Debug") {
+                NavigationLink {
+                    JourneySimulationHarnessView()
+                } label: {
+                    Label("Journey Simulator", systemImage: "tram.fill")
+                }
+
                 Picker("API Host", selection: apiHostBinding) {
                     ForEach(ApiHost.allCases) { host in
                         Text(host.displayName).tag(host)

@@ -289,6 +289,99 @@ struct JourneyHistoryTests {
         #expect(responsibleLeg.operatorCode == "SE")
     }
 
+    @Test func delayRepayOperatorChoicesAreDeduplicatedAndOrderedByFirstLeg() throws {
+        let start = Date(timeIntervalSince1970: 2_100_000_000)
+        let kentHouse = station(crs: "KTH", name: "Kent House")
+        let herneHill = station(crs: "HNH", name: "Herne Hill")
+        let farringdon = station(crs: "ZFD", name: "Farringdon")
+        let stPancras = station(crs: "STP", name: "London St Pancras International")
+        let legs = [
+            JourneyHistoryLeg(
+                plannedLegIndex: 0,
+                fromStation: kentHouse,
+                toStation: herneHill,
+                operatorName: "Southeastern",
+                operatorCode: "SE",
+                detectedDepartureAt: start,
+                scheduledDepartureAt: start,
+                scheduledArrivalAt: start.addingTimeInterval(10 * 60),
+                actualArrivalAt: start.addingTimeInterval(15 * 60),
+                outcome: .completed
+            ),
+            JourneyHistoryLeg(
+                plannedLegIndex: 1,
+                fromStation: herneHill,
+                toStation: farringdon,
+                operatorName: "Thameslink",
+                operatorCode: "TL",
+                detectedDepartureAt: start.addingTimeInterval(40 * 60),
+                scheduledDepartureAt: start.addingTimeInterval(20 * 60),
+                scheduledArrivalAt: start.addingTimeInterval(40 * 60),
+                actualArrivalAt: start.addingTimeInterval(65 * 60),
+                outcome: .completed
+            ),
+            JourneyHistoryLeg(
+                plannedLegIndex: 2,
+                fromStation: farringdon,
+                toStation: stPancras,
+                operatorName: " southeastern ",
+                operatorCode: "SE",
+                detectedDepartureAt: start.addingTimeInterval(95 * 60),
+                scheduledDepartureAt: start.addingTimeInterval(70 * 60),
+                scheduledArrivalAt: start.addingTimeInterval(80 * 60),
+                actualArrivalAt: start.addingTimeInterval(105 * 60),
+                outcome: .completed
+            )
+        ]
+
+        let options = JourneyHistoryDelayPolicy.operatorOptions(for: legs)
+
+        #expect(options.map(\.operatorName) == ["Southeastern", "Thameslink"])
+        #expect(options[0].legAssessments.map(\.legNumber) == [1, 3])
+        #expect(options[1].legAssessments.map(\.arrivalDelayMinutes) == [25])
+        #expect(options[1].isRecommended)
+    }
+
+    @Test func delayRepayRecommendationAttributesAClearlyMissedConnectionToThePreviousLeg() throws {
+        let start = Date(timeIntervalSince1970: 2_200_000_000)
+        let kentHouse = station(crs: "KTH", name: "Kent House")
+        let herneHill = station(crs: "HNH", name: "Herne Hill")
+        let farringdon = station(crs: "ZFD", name: "Farringdon")
+        let legs = [
+            JourneyHistoryLeg(
+                plannedLegIndex: 0,
+                fromStation: kentHouse,
+                toStation: herneHill,
+                operatorName: "Southeastern",
+                operatorCode: "SE",
+                detectedDepartureAt: start,
+                scheduledDepartureAt: start,
+                scheduledArrivalAt: start.addingTimeInterval(10 * 60),
+                actualArrivalAt: start.addingTimeInterval(20 * 60),
+                outcome: .completed
+            ),
+            JourneyHistoryLeg(
+                plannedLegIndex: 1,
+                fromStation: herneHill,
+                toStation: farringdon,
+                operatorName: "Thameslink",
+                operatorCode: "TL",
+                detectedDepartureAt: start.addingTimeInterval(40 * 60),
+                scheduledDepartureAt: start.addingTimeInterval(15 * 60),
+                scheduledArrivalAt: start.addingTimeInterval(35 * 60),
+                actualArrivalAt: start.addingTimeInterval(60 * 60),
+                outcome: .completed
+            )
+        ]
+
+        let options = JourneyHistoryDelayPolicy.operatorOptions(for: legs)
+        let recommendedOption = options.first(where: \.isRecommended)
+        let recommended = try #require(recommendedOption)
+
+        #expect(recommended.operatorName == "Southeastern")
+        #expect(recommended.recommendationReason?.contains("after Leg 2") == true)
+    }
+
     private func station(crs: String, name: String) -> Station {
         Station(crs: crs, name: name, longitude: "0", latitude: "0")
     }

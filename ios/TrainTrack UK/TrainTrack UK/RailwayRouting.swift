@@ -119,6 +119,7 @@ actor RailwayRoutingService {
 
     private let bundle: Bundle
     private var graph: RailwayGraph?
+    private var graphLoadTask: Task<RailwayGraph, Error>?
     private var pathCache: [PathKey: GraphPath] = [:]
     private var unreachablePaths: Set<PathKey> = []
     private let adjacentBacktrackFactor = 4.0
@@ -129,12 +130,12 @@ actor RailwayRoutingService {
         self.bundle = bundle
     }
 
-    func prepare() throws {
+    func prepare() async throws {
         try Task.checkCancellation()
-        _ = try loadGraph()
+        _ = try await loadGraph()
     }
 
-    func route(forStationCRSs stationCRSs: [String]) throws -> ServiceRailwayRoute {
+    func route(forStationCRSs stationCRSs: [String]) async throws -> ServiceRailwayRoute {
         let normalizedCRSs = stationCRSs.map {
             $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         }
@@ -143,7 +144,8 @@ actor RailwayRoutingService {
         }
         try Task.checkCancellation()
 
-        let graph = try loadGraph()
+        let graph = try await loadGraph()
+        try Task.checkCancellation()
         let candidates = try normalizedCRSs.map { crs -> [RailwayAnchor] in
             guard let anchors = graph.stationAnchors[crs], !anchors.isEmpty else {
                 throw RailwayRoutingError.stationOutsideCoverage(crs)
@@ -236,99 +238,25 @@ actor RailwayRoutingService {
         }
     }
 
-    private func loadGraph() throws -> RailwayGraph {
+    private func loadGraph() async throws -> RailwayGraph {
         if let graph { return graph }
-        let resourceURL = bundle.url(
-            forResource: "railway-routing-great-britain-osm",
-            withExtension: "json",
-            subdirectory: "Resources"
-        ) ?? bundle.url(
-            forResource: "railway-routing-great-britain-osm",
-            withExtension: "json"
-        )
-        guard let resourceURL else { throw RailwayRoutingError.resourceMissing }
-
-        try Task.checkCancellation()
-        let data = try Data(contentsOf: resourceURL, options: .mappedIfSafe)
-        try Task.checkCancellation()
-        let asset: RailwayRoutingAsset
-        do {
-            asset = try JSONDecoder().decode(RailwayRoutingAsset.self, from: data)
-        } catch {
-            throw RailwayRoutingError.invalidResource
-        }
-        try Task.checkCancellation()
-        guard asset.metadata.schemaVersion == 1 else {
-            throw RailwayRoutingError.invalidResource
+        if let graphLoadTask {
+            let loaded = try await graphLoadTask.value
+            graph = loaded
+            self.graphLoadTask = nil
+            return loaded
         }
 
-        let nodes = try asset.nodes.map { values -> CLLocationCoordinate2D in
-            guard values.count == 2,
-                  values[0].isFinite,
-                  values[1].isFinite,
-                  (-180...180).contains(values[0]),
-                  (-90...90).contains(values[1]) else {
-                throw RailwayRoutingError.invalidResource
-            }
-            return CLLocationCoordinate2D(latitude: values[1], longitude: values[0])
+        let bundle = bundle
+        // A refreshed service can cancel and replace its route request while the graph is
+        // loading. Keep that reusable work independent so the replacement awaits the same load.
+        let loadTask = Task.detached {
+            try RailwayGraphLoader.load(bundle: bundle)
         }
-        try Task.checkCancellation()
-
-        var edges = [RailwayGraphEdge]()
-        var adjacency = Array(repeating: [RailwayAdjacency](), count: nodes.count)
-        for (sourceEdgeIndex, sourceEdge) in asset.edges.enumerated() {
-            if sourceEdgeIndex.isMultiple(of: 2_048) {
-                try Task.checkCancellation()
-            }
-            let cost = sourceEdge.cost ?? sourceEdge.length
-            guard nodes.indices.contains(sourceEdge.start),
-                  nodes.indices.contains(sourceEdge.end),
-                  sourceEdge.length > 0,
-                  sourceEdge.length.isFinite,
-                  cost > 0,
-                  cost.isFinite,
-                  sourceEdge.coordinates.count >= 2 else {
-                throw RailwayRoutingError.invalidResource
-            }
-            let coordinates = try sourceEdge.coordinates.map { values -> CLLocationCoordinate2D in
-                guard values.count == 2, values[0].isFinite, values[1].isFinite else {
-                    throw RailwayRoutingError.invalidResource
-                }
-                return CLLocationCoordinate2D(latitude: values[1], longitude: values[0])
-            }
-            let edgeIndex = edges.count
-            edges.append(RailwayGraphEdge(
-                start: sourceEdge.start,
-                end: sourceEdge.end,
-                length: sourceEdge.length,
-                cost: cost,
-                coordinates: coordinates
-            ))
-            adjacency[sourceEdge.start].append(RailwayAdjacency(
-                neighbour: sourceEdge.end,
-                edge: edgeIndex
-            ))
-            adjacency[sourceEdge.end].append(RailwayAdjacency(
-                neighbour: sourceEdge.start,
-                edge: edgeIndex
-            ))
-        }
-        try Task.checkCancellation()
-
-        let anchors: [String: [RailwayAnchor]] = asset.stationAnchors.mapValues { values -> [RailwayAnchor] in
-            values.compactMap { anchor -> RailwayAnchor? in
-                guard nodes.indices.contains(anchor.node), anchor.distance >= 0 else { return nil }
-                return RailwayAnchor(node: anchor.node, distance: anchor.distance)
-            }
-        }
-        let loaded = RailwayGraph(
-            nodes: nodes,
-            edges: edges,
-            adjacency: adjacency,
-            stationAnchors: anchors,
-            components: railwayConnectedComponents(adjacency: adjacency)
-        )
+        graphLoadTask = loadTask
+        let loaded = try await loadTask.value
         graph = loaded
+        graphLoadTask = nil
         return loaded
     }
 
@@ -476,26 +404,133 @@ actor RailwayRoutingService {
     }
 }
 
+private nonisolated enum RailwayGraphLoader {
+    static func load(bundle: Bundle) throws -> RailwayGraph {
+        let resourceURL = bundle.url(
+            forResource: "railway-routing-great-britain-osm",
+            withExtension: "json",
+            subdirectory: "Resources"
+        ) ?? bundle.url(
+            forResource: "railway-routing-great-britain-osm",
+            withExtension: "json"
+        )
+        guard let resourceURL else { throw RailwayRoutingError.resourceMissing }
+
+        try Task.checkCancellation()
+        let data = try Data(contentsOf: resourceURL, options: .mappedIfSafe)
+        try Task.checkCancellation()
+        let asset: RailwayRoutingAsset
+        do {
+            asset = try JSONDecoder().decode(RailwayRoutingAsset.self, from: data)
+        } catch {
+            throw RailwayRoutingError.invalidResource
+        }
+        try Task.checkCancellation()
+        guard asset.metadata.schemaVersion == 1 else {
+            throw RailwayRoutingError.invalidResource
+        }
+
+        let nodes = asset.nodes
+        try Task.checkCancellation()
+
+        let edges = asset.edges
+        var adjacency = Array(repeating: [RailwayAdjacency](), count: nodes.count)
+        for (edgeIndex, edge) in edges.enumerated() {
+            if edgeIndex.isMultiple(of: 2_048) {
+                try Task.checkCancellation()
+            }
+            guard nodes.indices.contains(edge.start),
+                  nodes.indices.contains(edge.end),
+                  edge.length > 0,
+                  edge.length.isFinite,
+                  edge.cost > 0,
+                  edge.cost.isFinite,
+                  edge.coordinates.count >= 2 else {
+                throw RailwayRoutingError.invalidResource
+            }
+            adjacency[edge.start].append(RailwayAdjacency(
+                neighbour: edge.end,
+                edge: edgeIndex
+            ))
+            adjacency[edge.end].append(RailwayAdjacency(
+                neighbour: edge.start,
+                edge: edgeIndex
+            ))
+        }
+        try Task.checkCancellation()
+
+        let anchors: [String: [RailwayAnchor]] = asset.stationAnchors.mapValues { values -> [RailwayAnchor] in
+            values.compactMap { anchor -> RailwayAnchor? in
+                guard nodes.indices.contains(anchor.node), anchor.distance >= 0 else { return nil }
+                return RailwayAnchor(node: anchor.node, distance: anchor.distance)
+            }
+        }
+        let loaded = RailwayGraph(
+            nodes: nodes,
+            edges: edges,
+            adjacency: adjacency,
+            stationAnchors: anchors,
+            components: railwayConnectedComponents(adjacency: adjacency)
+        )
+        return loaded
+    }
+}
+
 private nonisolated final class RailwayRoutingBundleToken {}
 
 private nonisolated struct RailwayRoutingAsset: Decodable {
     let metadata: RailwayRoutingMetadata
-    let nodes: [[Double]]
-    let edges: [RailwayRoutingEdge]
-    let stationAnchors: [String: [RailwayRoutingAnchor]]
+    let nodes: [CLLocationCoordinate2D]
+    let edges: [RailwayGraphEdge]
+    let stationAnchors: [String: [RailwayAnchor]]
+
+    private enum CodingKeys: String, CodingKey {
+        case metadata
+        case nodes
+        case edges
+        case stationAnchors
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        metadata = try container.decode(RailwayRoutingMetadata.self, forKey: .metadata)
+        // Decode coordinate pairs straight into their runtime representation. Retaining the
+        // JSON's hundreds of thousands of tiny [Double] arrays caused a large cold-load spike.
+        nodes = try container.decode([RailwayCoordinate].self, forKey: .nodes).map(\.value)
+        edges = try container.decode([RailwayGraphEdge].self, forKey: .edges)
+        stationAnchors = try container.decode(
+            [String: [RailwayAnchor]].self,
+            forKey: .stationAnchors
+        )
+    }
 }
 
 private nonisolated struct RailwayRoutingMetadata: Decodable {
     let schemaVersion: Int
 }
 
-private nonisolated struct RailwayRoutingEdge: Decodable {
-    let start: Int
-    let end: Int
-    let length: Double
-    let cost: Double?
-    let coordinates: [[Double]]
+private nonisolated struct RailwayCoordinate: Decodable {
+    let value: CLLocationCoordinate2D
 
+    init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        let longitude = try container.decode(Double.self)
+        let latitude = try container.decode(Double.self)
+        guard container.isAtEnd,
+              longitude.isFinite,
+              latitude.isFinite,
+              (-180...180).contains(longitude),
+              (-90...90).contains(latitude) else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "Expected a valid longitude/latitude pair."
+            )
+        }
+        value = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+}
+
+extension RailwayGraphEdge: Decodable {
     enum CodingKeys: String, CodingKey {
         case start = "s"
         case end = "e"
@@ -503,15 +538,17 @@ private nonisolated struct RailwayRoutingEdge: Decodable {
         case cost = "c"
         case coordinates = "p"
     }
-}
 
-private nonisolated struct RailwayRoutingAnchor: Decodable {
-    let node: Int
-    let distance: Double
-
-    enum CodingKeys: String, CodingKey {
-        case node = "n"
-        case distance = "d"
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        start = try container.decode(Int.self, forKey: .start)
+        end = try container.decode(Int.self, forKey: .end)
+        length = try container.decode(Double.self, forKey: .length)
+        cost = try container.decodeIfPresent(Double.self, forKey: .cost) ?? length
+        coordinates = try container.decode(
+            [RailwayCoordinate].self,
+            forKey: .coordinates
+        ).map(\.value)
     }
 }
 
@@ -539,6 +576,13 @@ private nonisolated struct RailwayAdjacency {
 private nonisolated struct RailwayAnchor {
     let node: Int
     let distance: Double
+}
+
+extension RailwayAnchor: Decodable {
+    enum CodingKeys: String, CodingKey {
+        case node = "n"
+        case distance = "d"
+    }
 }
 
 private nonisolated struct RailwayTraversal {

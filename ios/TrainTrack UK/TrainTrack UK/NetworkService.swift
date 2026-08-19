@@ -155,7 +155,7 @@ enum DevicePreferencesSync {
             autoReturnToFavouritesMinutes: defaults.object(forKey: "autoReturnToFavouritesMinutes") as? Int ?? 0,
             autoMuteOnArrival: defaults.object(forKey: "autoMuteOnArrival") as? Bool ?? true,
             muteDelayMinutes: defaults.object(forKey: "muteDelayMinutes") as? Int ?? 3,
-            autoEndLiveActivity: defaults.object(forKey: "autoEndLiveActivity") as? Bool ?? true,
+            autoEndLiveActivity: false,
             showClosestJourneyLegOnly: defaults.object(forKey: "showClosestJourneyLegOnly") as? Bool ?? true,
             showTransferWarnings: defaults.object(forKey: "showTransferWarnings") as? Bool ?? true,
             transferWarningThresholdMinutes: defaults.object(forKey: "transferWarningThresholdMinutes") as? Int ?? 3,

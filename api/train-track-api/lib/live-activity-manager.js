@@ -78,6 +78,7 @@ class LiveActivityManager {
         muteDelayMinutes,
         autoEndOnArrival,
         autoEndOnDeparture,
+        journeyPhase,
         scheduleKey,
         journeyUpdatesEnabled,
         windowStart,
@@ -127,11 +128,15 @@ class LiveActivityManager {
             autoEndOnDeparture: autoEndOnDeparture !== undefined ? Boolean(autoEndOnDeparture) : (existing?.autoEndOnDeparture ?? false),
             createdAt: existing?.createdAt || new Date().toISOString(),
             lastSnapshot: existing?.lastSnapshot || null,
+            preferredDepartureSnapshot: existing?.preferredDepartureSnapshot || null,
             lastPushAt: existing?.lastPushAt || null,
             revision: existing?.revision || 0,
             tokenUpdatedAt: new Date().toISOString(),
             appIsActive: existing?.appIsActive ?? false,
             cancelledDepartureAlertsSent: existing?.cancelledDepartureAlertsSent || {},
+            journeyPhase: ['pending_start', 'at_start', 'en_route', 'arrived'].includes(journeyPhase)
+                ? journeyPhase
+                : (existing?.journeyPhase || 'pending_start'),
             journeyUpdatesEnabled: journeyUpdatesEnabled !== undefined
                 ? Boolean(journeyUpdatesEnabled)
                 : (existing?.journeyUpdatesEnabled ?? !(scheduleKey || existing?.scheduleKey)),
@@ -309,7 +314,12 @@ class LiveActivityManager {
                 await this.getDeparturesSnapshot(
                     subscription.fromStation,
                     subscription.toStation,
-                    subscription.preferredServiceId
+                    subscription.preferredServiceId,
+                    {
+                        journeyPhase: subscription.journeyPhase,
+                        previousSnapshot: subscription.lastSnapshot,
+                        preferredDepartureSnapshot: subscription.preferredDepartureSnapshot
+                    }
                 ),
                 subscription.lastSnapshot
             );
@@ -366,6 +376,10 @@ class LiveActivityManager {
             }
 
             subscription.lastSnapshot = snapshot;
+            const preferredDeparture = snapshot.departures.find(
+                (departure) => departure.serviceID === subscription.preferredServiceId
+            );
+            if (preferredDeparture) subscription.preferredDepartureSnapshot = preferredDeparture;
             subscription.lastPushAt = snapshot.fetchedAt;
             subscription.revision = (subscription.revision || 0) + 1;
             subscription.appIsActive = appIsActive;
@@ -415,7 +429,12 @@ class LiveActivityManager {
             await this.getDeparturesSnapshot(
                 subscription.fromStation,
                 subscription.toStation,
-                subscription.preferredServiceId
+                subscription.preferredServiceId,
+                {
+                    journeyPhase: subscription.journeyPhase,
+                    previousSnapshot: subscription.lastSnapshot,
+                    preferredDepartureSnapshot: subscription.preferredDepartureSnapshot
+                }
             )
         );
         const payload = this.buildPayload(subscription, snapshot, {
@@ -526,7 +545,16 @@ class LiveActivityManager {
         };
     }
 
-    async getDeparturesSnapshot(fromStation, toStation, preferredServiceId = null) {
+    async getDeparturesSnapshot(
+        fromStation,
+        toStation,
+        preferredServiceId = null,
+        {
+            journeyPhase = 'pending_start',
+            previousSnapshot = null,
+            preferredDepartureSnapshot = null
+        } = {}
+    ) {
         const result = await getTrainTimes(fromStation, toStation);
         const rawDepartures = Array.isArray(result?.departures) ? result.departures : [];
 
@@ -544,12 +572,23 @@ class LiveActivityManager {
             cancelReason: dep.cancelReason
         }));
 
+        const isInProgress = journeyPhase === 'en_route' || journeyPhase === 'arrived';
+        if (isInProgress && preferredServiceId && !normalizedAll.some((dep) => dep.serviceID === preferredServiceId)) {
+            const previousService = previousSnapshot?.departures?.find((dep) => dep.serviceID === preferredServiceId);
+            const retainedService = previousService?.serviceID === preferredServiceId
+                ? previousService
+                : (preferredDepartureSnapshot?.serviceID === preferredServiceId ? preferredDepartureSnapshot : null);
+            if (retainedService) normalizedAll.push(retainedService);
+        }
+
         const sortedUpcoming = this.sortDepartures(normalizedAll);
-        const departures = this.selectDeparturesForActivity(
-            normalizedAll,
-            sortedUpcoming,
-            preferredServiceId
-        ).slice(0, 3);
+        const departures = isInProgress
+            ? normalizedAll.filter((dep) => dep.serviceID === preferredServiceId).slice(0, 1)
+            : this.selectDeparturesForActivity(
+                normalizedAll,
+                sortedUpcoming,
+                preferredServiceId
+            ).slice(0, 3);
 
         // Fetch service details only for selected departures to keep polling lightweight.
         const serviceDetailsPromises = departures.map(dep =>
@@ -567,6 +606,10 @@ class LiveActivityManager {
             return {
                 ...dep,
                 arrivalTime: dep.isCancelled ? null : this.arrivalTimeForDestination(details, toStation),
+                actualArrivalTime: dep.isCancelled ? null : this.actualArrivalTimeForDestination(details, toStation),
+                arrivalDelayMinutes: dep.isCancelled ? null : this.confirmedArrivalDelayForDestination(details, toStation),
+                arrivalPlatform: this.platformForStation(details, toStation),
+                departedTime: this.departureTimeForStation(details, fromStation, dep.scheduled),
                 statusText: richStatus // Include rich status for comparison
             };
         });
@@ -805,15 +848,27 @@ class LiveActivityManager {
 
     buildContentState(subscription, snapshot, appIsActive = false) {
         const primary = snapshot.departures[0] || {};
-        const estimated = this.getDisplayTime(primary.estimated, primary.scheduled);
-        const delayMinutes = this.calculateDelay(primary.scheduled, primary.estimated);
+        const isInProgress = subscription.journeyPhase === 'en_route' || subscription.journeyPhase === 'arrived';
+        const isArrived = subscription.journeyPhase === 'arrived';
+        const estimated = isArrived
+            ? this.ensureString(primary.actualArrivalTime, this.ensureString(primary.arrivalTime, this.getDisplayTime(primary.estimated, primary.scheduled)))
+            : isInProgress
+            ? this.ensureString(primary.arrivalTime, this.getDisplayTime(primary.estimated, primary.scheduled))
+            : this.getDisplayTime(primary.estimated, primary.scheduled);
+        const arrivalDelayMinutes = isArrived && Number.isFinite(primary.arrivalDelayMinutes)
+            ? Math.max(0, primary.arrivalDelayMinutes)
+            : null;
+        const delayMinutes = arrivalDelayMinutes ?? this.calculateDelay(primary.scheduled, primary.estimated);
 
-        const platform = this.ensureString(primary.platform);
-        const destinationTitle = this.ensureString(primaryPlace(primary.destination)?.locationName);
+        const platform = this.ensureString(isInProgress ? primary.arrivalPlatform : primary.platform);
+        const journeyStationNames = this.journeyStationNames(subscription);
+        const destinationTitle = isArrived
+            ? journeyStationNames.destination
+            : this.ensureString(primaryPlace(primary.destination)?.locationName);
         const routeTitle = this.ensureOptionalString(subscription.displayName);
         const deepLinkFromCRS = this.ensureOptionalString(subscription.deepLinkFromStation) || this.ensureString(subscription.fromStation);
         const deepLinkToCRS = this.ensureOptionalString(subscription.deepLinkToStation) || this.ensureString(subscription.toStation);
-        const upcomingDepartures = snapshot.departures.slice(1).map((dep) => ({
+        const upcomingDepartures = (isInProgress ? [] : snapshot.departures.slice(1)).map((dep) => ({
             time: this.getDisplayTime(dep.estimated, dep.scheduled),
             arrivalTime: dep.isCancelled ? null : this.ensureOptionalString(dep.arrivalTime),
             delayMinutes: this.calculateDelay(dep.scheduled, dep.estimated),
@@ -829,14 +884,17 @@ class LiveActivityManager {
             deepLinkFromCRS,
             deepLinkToCRS,
             destinationTitle,
-            arrivalLabel: primary.isCancelled || !primary.arrivalTime ? null : `Arr ${primary.arrivalTime}`,
+            arrivalLabel: isInProgress
+                ? (primary.departedTime ? `Departed ${primary.departedTime}` : null)
+                : (primary.isCancelled || !primary.arrivalTime ? null : `Arr ${primary.arrivalTime}`),
             scheduledDeparture: this.ensureOptionalString(primary.scheduled),
             length: Number.isFinite(primary.length) && primary.length > 0 ? primary.length : null,
             platform,
             estimated,
             isCancelled: Boolean(primary.isCancelled),
-            statusText: this.buildStatusText(primary),
+            statusText: isArrived ? null : this.buildStatusText(primary),
             delayMinutes,
+            arrivalDelayMinutes,
             upcomingDepartures,
             lastUpdated: moment(snapshot.fetchedAt).unix(), // Convert to Unix timestamp for iOS Date decoding
             activityID: subscription.activityId, // Include activity ID for iOS ContentState
@@ -845,7 +903,20 @@ class LiveActivityManager {
             journeyUpdatesEnabled: Boolean(subscription.journeyUpdatesEnabled),
             scheduleKey: this.ensureOptionalString(subscription.scheduleKey),
             windowStart: this.ensureOptionalString(subscription.windowStart),
-            windowEnd: this.ensureOptionalString(subscription.windowEnd)
+            windowEnd: this.ensureOptionalString(subscription.windowEnd),
+            journeyPhase: subscription.journeyPhase || 'pending_start',
+            journeyStartName: journeyStationNames.start,
+            journeyDestinationName: journeyStationNames.destination
+        };
+    }
+
+    journeyStationNames(subscription) {
+        const routeTitle = this.ensureOptionalString(subscription?.displayName) || '';
+        const names = routeTitle.split(/\s*(?:→|->)\s*/).filter(Boolean);
+        const destination = names.at(-1)?.split(/\s+via\s+/i)[0]?.trim();
+        return {
+            start: names[0] || this.ensureString(subscription?.deepLinkFromStation || subscription?.fromStation),
+            destination: destination || this.ensureString(subscription?.deepLinkToStation || subscription?.toStation)
         };
     }
 
@@ -1034,7 +1105,8 @@ class LiveActivityManager {
                 crs: serviceDetails.crs,
                 st: serviceDetails.std || serviceDetails.sta,
                 et: serviceDetails.etd || serviceDetails.eta,
-                at: serviceDetails.atd || serviceDetails.ata
+                at: serviceDetails.atd || serviceDetails.ata,
+                platform: serviceDetails.platform
             });
         }
 
@@ -1050,23 +1122,67 @@ class LiveActivityManager {
     arrivalTimeForDestination(serviceDetails, toStation) {
         if (!serviceDetails || !toStation) return null;
 
-        const targetCRS = String(toStation).trim().toUpperCase();
-        const allStations = this.getAllStations(serviceDetails);
-        const match = allStations.find((station) => String(station.crs || '').trim().toUpperCase() === targetCRS);
-        if (match) {
-            return this.stationDisplayTime(match);
-        }
+        return this.stationDisplayTime(this.arrivalStationForDestination(serviceDetails, toStation));
+    }
 
+    actualArrivalTimeForDestination(serviceDetails, toStation) {
+        const station = this.arrivalStationForDestination(serviceDetails, toStation);
+        if (!station?.at || station.at === 'Cancelled') return null;
+        return station.at === 'On time' ? station.st : station.at;
+    }
+
+    confirmedArrivalDelayForDestination(serviceDetails, toStation) {
+        const station = this.arrivalStationForDestination(serviceDetails, toStation);
+        if (!station?.at || station.at === 'Cancelled') return null;
+        return this.calculateStationDelay(station);
+    }
+
+    arrivalStationForDestination(serviceDetails, toStation) {
+        if (!serviceDetails || !toStation) return null;
+        const targetCRS = String(toStation).trim().toUpperCase();
         if (String(serviceDetails.crs || '').trim().toUpperCase() === targetCRS) {
-            const currentStationDisplay = this.stationDisplayTime({
+            return {
+                crs: serviceDetails.crs,
                 st: serviceDetails.sta || serviceDetails.std,
                 et: serviceDetails.eta || serviceDetails.etd,
-                at: serviceDetails.ata || serviceDetails.atd
-            });
-            return currentStationDisplay;
+                at: serviceDetails.ata || serviceDetails.atd,
+                platform: serviceDetails.platform
+            };
         }
+        return this.getAllStations(serviceDetails).find(
+            (station) => String(station.crs || '').trim().toUpperCase() === targetCRS
+        ) || null;
+    }
 
+    platformForStation(serviceDetails, stationCRS) {
+        if (!serviceDetails || !stationCRS) return null;
+        const targetCRS = String(stationCRS).trim().toUpperCase();
+        const match = this.getAllStations(serviceDetails).find(
+            (station) => String(station.crs || '').trim().toUpperCase() === targetCRS
+        );
+        if (match?.platform) return match.platform;
+        if (String(serviceDetails.crs || '').trim().toUpperCase() === targetCRS) {
+            return serviceDetails.platform || null;
+        }
         return null;
+    }
+
+    departureTimeForStation(serviceDetails, stationCRS, scheduledFallback = null) {
+        if (!serviceDetails || !stationCRS) return scheduledFallback;
+        const targetCRS = String(stationCRS).trim().toUpperCase();
+        const match = this.getAllStations(serviceDetails).find(
+            (station) => String(station.crs || '').trim().toUpperCase() === targetCRS
+        );
+        if (match?.at && match.at !== 'Cancelled') {
+            return match.at === 'On time' ? (match.st || scheduledFallback) : match.at;
+        }
+        if (String(serviceDetails.crs || '').trim().toUpperCase() === targetCRS
+            && serviceDetails.atd && serviceDetails.atd !== 'Cancelled') {
+            return serviceDetails.atd === 'On time'
+                ? (serviceDetails.std || scheduledFallback)
+                : serviceDetails.atd;
+        }
+        return match?.st || serviceDetails.std || scheduledFallback;
     }
 
     stationDisplayTime(station) {
@@ -1470,74 +1586,72 @@ class LiveActivityManager {
         return ageMs <= (APP_CHECKIN_WARNING_AFTER_SECONDS * 1000);
     }
 
-    /**
-     * Called when the iOS app detects the user has arrived at a departure station.
-     * Ends any matching Live Activity subscriptions that have autoEndOnArrival enabled.
-     */
-    async handleArrival(deviceId, { fromStation = null, toStation = null, fallbackDeviceIds = [] } = {}) {
-        const candidateDeviceIds = this.uniqueDeviceIds([deviceId, ...fallbackDeviceIds]);
-        if (candidateDeviceIds.length === 0) return { ended: 0 };
+    async handleJourneyPhase(deviceId, {
+        fromStation = null,
+        toStation = null,
+        phase,
+        fallbackDeviceIds = []
+    } = {}) {
+        const validPhases = new Set(['pending_start', 'at_start', 'en_route', 'arrived']);
+        if (!validPhases.has(phase)) return { updated: 0 };
 
-        const subs = this.findSubscriptionsByDeviceIds(candidateDeviceIds).filter((sub) => {
-            if (!sub.autoEndOnArrival) return false;
-            if (fromStation && sub.fromStation?.toUpperCase() !== fromStation.toUpperCase()) return false;
-            if (toStation && sub.toStation?.toUpperCase() !== toStation.toUpperCase()) return false;
-            return true;
+        const candidateDeviceIds = this.uniqueDeviceIds([deviceId, ...fallbackDeviceIds]);
+        const fromCode = typeof fromStation === 'string' ? fromStation.trim().toUpperCase() : null;
+        const toCode = typeof toStation === 'string' ? toStation.trim().toUpperCase() : null;
+        const subscriptions = this.findSubscriptionsByDeviceIds(candidateDeviceIds).filter((subscription) => {
+            const subscriptionFrom = String(
+                subscription.deepLinkFromStation || subscription.fromStation || ''
+            ).toUpperCase();
+            const subscriptionTo = String(
+                subscription.deepLinkToStation || subscription.toStation || ''
+            ).toUpperCase();
+            return (!fromCode || subscriptionFrom === fromCode)
+                && (!toCode || subscriptionTo === toCode);
         });
 
-        if (subs.length === 0) {
-            this.log(`[live-activity] arrival_no_subscriptions ${candidateDeviceIds.join(',')} (autoEndOnArrival=false or no match)`);
-            return { ended: 0 };
-        }
-
-        const results = await Promise.all(subs.map(async (sub) => {
-            try {
-                await this.sendEndUpdate(sub, { reason: 'arrival_geofence', trigger: 'arrival' });
-                this.log(`[live-activity] ended_on_arrival ${sub.deviceId}/${sub.activityId}`);
-                return 1;
-            } catch (error) {
-                const key = this.buildKey(sub.deviceId, sub.activityId);
-                console.error(`[live-activity] arrival end failed for ${key}: ${error?.message || error}`);
-                return 0;
+        const results = await Promise.all(subscriptions.map(async (subscription) => {
+            subscription.journeyPhase = phase;
+            subscription.autoEndOnDeparture = false;
+            if (phase === 'en_route' || phase === 'arrived') {
+                subscription.preferredServiceId = subscription.preferredServiceId
+                    || subscription.lastSnapshot?.departures?.[0]?.serviceID
+                    || null;
             }
+            await this.saveSubscriptionToMongo(subscription);
+            const result = await this.pollSubscription(subscription, { force: true });
+            return result?.sent ? 1 : 0;
         }));
 
-        return { ended: results.reduce((sum, v) => sum + v, 0) };
+        return {
+            updated: subscriptions.length,
+            pushed: results.reduce((sum, value) => sum + value, 0)
+        };
+    }
+
+    /**
+     * Called when the iOS app detects the user has arrived at a departure station.
+     * Retained for older clients; current clients use the journey-status endpoint.
+     */
+    async handleArrival(deviceId, { fromStation = null, toStation = null, fallbackDeviceIds = [] } = {}) {
+        return this.handleJourneyPhase(deviceId, {
+            fromStation,
+            toStation,
+            phase: 'at_start',
+            fallbackDeviceIds
+        });
     }
 
     /**
      * Called when the iOS app detects the user has left the departure station geofence.
-     * Ends any matching Live Activity subscriptions that have autoEndOnDeparture enabled.
+     * Retained for older clients; current clients use the journey-status endpoint.
      */
     async handleDeparture(deviceId, { fromStation = null, toStation = null, fallbackDeviceIds = [] } = {}) {
-        const candidateDeviceIds = this.uniqueDeviceIds([deviceId, ...fallbackDeviceIds]);
-        if (candidateDeviceIds.length === 0) return { ended: 0 };
-
-        const subs = this.findSubscriptionsByDeviceIds(candidateDeviceIds).filter((sub) => {
-            if (!sub.autoEndOnDeparture) return false;
-            if (fromStation && sub.fromStation?.toUpperCase() !== fromStation.toUpperCase()) return false;
-            if (toStation && sub.toStation?.toUpperCase() !== toStation.toUpperCase()) return false;
-            return true;
+        return this.handleJourneyPhase(deviceId, {
+            fromStation,
+            toStation,
+            phase: 'en_route',
+            fallbackDeviceIds
         });
-
-        if (subs.length === 0) {
-            this.log(`[live-activity] departure_no_subscriptions ${candidateDeviceIds.join(',')} (autoEndOnDeparture=false or no match)`);
-            return { ended: 0 };
-        }
-
-        const results = await Promise.all(subs.map(async (sub) => {
-            try {
-                await this.sendEndUpdate(sub, { reason: 'departure_geofence', trigger: 'departure' });
-                this.log(`[live-activity] ended_on_departure ${sub.deviceId}/${sub.activityId}`);
-                return 1;
-            } catch (error) {
-                const key = this.buildKey(sub.deviceId, sub.activityId);
-                console.error(`[live-activity] departure end failed for ${key}: ${error?.message || error}`);
-                return 0;
-            }
-        }));
-
-        return { ended: results.reduce((sum, v) => sum + v, 0) };
     }
 
     maskToken(token) {
@@ -1649,6 +1763,7 @@ class LiveActivityManager {
             muteDelayMinutes: sub.muteDelayMinutes ?? 5,
             autoEndOnArrival: Boolean(sub.autoEndOnArrival),
             autoEndOnDeparture: Boolean(sub.autoEndOnDeparture),
+            journeyPhase: sub.journeyPhase || 'pending_start',
             journeyUpdatesEnabled: Boolean(sub.journeyUpdatesEnabled),
             scheduleKey: sub.scheduleKey || null,
             windowStart: sub.windowStart || null,

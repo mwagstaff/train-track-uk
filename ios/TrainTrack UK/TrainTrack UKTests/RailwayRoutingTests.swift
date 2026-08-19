@@ -124,6 +124,70 @@ struct RailwayRoutingTests {
         #expect(RailwayTravelHighlight.segmentIndices(for: nil) == nil)
     }
 
+    @Test func stationLabelCollisionDetectionUsesScreenGeometry() {
+        let visibleBounds = CGRect(x: 0, y: 0, width: 390, height: 700)
+        let denseLabels = [
+            CGRect(x: 80, y: 100, width: 160, height: 40),
+            CGRect(x: 150, y: 110, width: 160, height: 40),
+        ]
+        let slightlyOverlappingLabels = [
+            CGRect(x: 80, y: 100, width: 160, height: 40),
+            CGRect(x: 220, y: 100, width: 160, height: 40),
+        ]
+        let spacedLabels = [
+            CGRect(x: 20, y: 100, width: 130, height: 40),
+            CGRect(x: 240, y: 500, width: 130, height: 40),
+        ]
+        let offscreenStationLabels = [
+            CGRect(x: -100, y: 100, width: 160, height: 40),
+            CGRect(x: -80, y: 110, width: 160, height: 40),
+        ]
+
+        #expect(RailwayStationLabelCollisionDetector.hasOverlap(
+            labelFrames: denseLabels,
+            visibleBounds: visibleBounds
+        ))
+        #expect(!RailwayStationLabelCollisionDetector.hasOverlap(
+            labelFrames: slightlyOverlappingLabels,
+            visibleBounds: visibleBounds
+        ))
+        #expect(!RailwayStationLabelCollisionDetector.hasOverlap(
+            labelFrames: spacedLabels,
+            visibleBounds: visibleBounds
+        ))
+        #expect(!RailwayStationLabelCollisionDetector.hasOverlap(
+            labelFrames: offscreenStationLabels,
+            visibleBounds: visibleBounds
+        ))
+    }
+
+    @Test func eachLegRetainsServiceEndpointsAndUserDepartureLabel() {
+        #expect(RailwayStationLabelPriority.shouldRemainVisible(
+            stationIndex: 0,
+            finalStationIndex: 8,
+            stationCRS: "VIC",
+            userDepartureCRS: "KTH"
+        ))
+        #expect(RailwayStationLabelPriority.shouldRemainVisible(
+            stationIndex: 3,
+            finalStationIndex: 8,
+            stationCRS: " kth ",
+            userDepartureCRS: "KTH"
+        ))
+        #expect(RailwayStationLabelPriority.shouldRemainVisible(
+            stationIndex: 8,
+            finalStationIndex: 8,
+            stationCRS: "ORP",
+            userDepartureCRS: "KTH"
+        ))
+        #expect(!RailwayStationLabelPriority.shouldRemainVisible(
+            stationIndex: 2,
+            finalStationIndex: 8,
+            stationCRS: "PNE",
+            userDepartureCRS: "KTH"
+        ))
+    }
+
     @Test func journeyMapLegFindsItsTravelledRangeWithinTheFullService() {
         let leg = JourneyHistoryRouteMapLeg(
             id: UUID(),
@@ -135,6 +199,7 @@ struct RailwayRoutingTests {
             ],
             fromCRS: " bbb ",
             toCRS: "CCC",
+            historicalDepartureTime: "12:10",
             historicalArrivalTime: "12:20"
         )
 
@@ -149,6 +214,7 @@ struct RailwayRoutingTests {
 
         #expect(image.size.width == 320)
         #expect(image.size.height == 480 + RailwayMapShareRenderer.attributionFooterHeight)
+        #expect(image.scale <= RailwayMapShareRenderer.maximumRenderScale)
     }
 
     @Test @MainActor func historicalMapUsesCompletedServiceSemanticsAfterTheUserDestination() {
@@ -230,6 +296,23 @@ struct RailwayRoutingTests {
         #expect(
             RailwayEstimatedLocationLabel.text(delayMinutes: 26)
                 == "Estimated location (26 mins late)"
+        )
+    }
+
+    @Test func interchangeAnnotationCombinesArrivalChangeAndDeparture() {
+        #expect(
+            RailwayStationTransferLabel.text(
+                stationName: "Herne Hill",
+                arrivalTime: "02:21",
+                departureTime: "02:27"
+            ) == "Herne Hill (arrived 02:21, 6 minute change, departed 02:27)"
+        )
+        #expect(
+            RailwayStationTransferLabel.text(
+                stationName: "York",
+                arrivalTime: "23:58",
+                departureTime: "00:06"
+            ) == "York (arrived 23:58, 8 minute change, departed 00:06)"
         )
     }
 
@@ -315,6 +398,60 @@ struct RailwayRoutingTests {
         #expect(
             stationView.selectedZPriority.rawValue > trainView.selectedZPriority.rawValue
         )
+    }
+
+    @Test @MainActor func denseMapCollapsesOnlySecondaryStationLabels() async throws {
+        let coordinates = [
+            CLLocationCoordinate2D(latitude: 51.50, longitude: -0.20),
+            CLLocationCoordinate2D(latitude: 51.50, longitude: -0.001),
+            CLLocationCoordinate2D(latitude: 51.50, longitude: 0.001),
+            CLLocationCoordinate2D(latitude: 51.50, longitude: 0.20),
+        ]
+        let route = ServiceRailwayRoute(
+            coordinates: coordinates,
+            cumulativeDistances: [0, 10_000, 10_100, 20_000],
+            stationCoordinateIndices: [0, 1, 2, 3]
+        )
+        let map = ServiceRailwayMapView(
+            route: route,
+            stations: [
+                callingPoint(name: "Service Starting Station", crs: "AAA", scheduled: "09:00"),
+                callingPoint(name: "User Departure Station", crs: "BBB", scheduled: "09:10"),
+                callingPoint(name: "Closely Spaced Intermediate", crs: "CCC", scheduled: "09:11"),
+                callingPoint(name: "Service Final Destination", crs: "DDD", scheduled: "09:30"),
+            ],
+            progress: .unavailable,
+            estimatedTrainCoordinate: nil,
+            currentDelayMinutes: nil,
+            fromCRS: "BBB",
+            toCRS: "CCC"
+        )
+        let host = UIHostingController(rootView: map)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+
+        host.view.frame = window.bounds
+        host.view.layoutIfNeeded()
+        try await Task.sleep(for: .seconds(1))
+        host.view.layoutIfNeeded()
+
+        let mapView = try #require(firstDescendant(of: MKMapView.self, in: host.view))
+        let departureAnnotation = try #require(mapView.annotations.first {
+            ($0.title ?? nil) == "railway-station-primary-1-BBB"
+        })
+        let secondaryAnnotation = try #require(mapView.annotations.first {
+            ($0.title ?? nil) == "railway-station-primary-2-CCC"
+        })
+        let departureView = try #require(mapView.view(for: departureAnnotation))
+        let secondaryView = try #require(mapView.view(for: secondaryAnnotation))
+
+        #expect(departureView.bounds.width > secondaryView.bounds.width)
+        #expect(secondaryView.bounds.width < 60)
     }
 
     @Test func finalCurrentStationUsesArrivalFields() throws {

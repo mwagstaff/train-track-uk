@@ -1,6 +1,7 @@
 import CoreLocation
 import Combine
 import Foundation
+import JourneyActivityShared
 import UserNotifications
 
 @MainActor
@@ -15,6 +16,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
 
     @Published private(set) var armedCandidates: [ArmedJourneyHistoryCandidate] = []
     @Published private(set) var activeJourney: ActiveJourneyHistoryCheckpoint?
+    @Published private(set) var recentlyCompletedJourney: ActiveJourneyHistoryCheckpoint?
 
     private let defaults = UserDefaults(suiteName: "group.dev.skynolimit.traintrack") ?? .standard
     private let checkpointKey = "journeyHistoryTrackingCheckpointV1"
@@ -24,6 +26,144 @@ final class JourneyTrackingCoordinator: ObservableObject {
     }
 
     var hasActiveJourney: Bool { activeJourney != nil }
+
+    #if DEBUG
+    private static let debugSimulationSubscriptionID = "debug-journey-simulation"
+
+    var hasDebugJourneySimulation: Bool {
+        armedCandidates.contains { $0.subscriptionId == Self.debugSimulationSubscriptionID }
+            || activeJourney?.subscriptionId == Self.debugSimulationSubscriptionID
+            || recentlyCompletedJourney?.subscriptionId == Self.debugSimulationSubscriptionID
+    }
+
+    var debugJourneySimulationCandidate: ArmedJourneyHistoryCandidate? {
+        armedCandidates.first { $0.subscriptionId == Self.debugSimulationSubscriptionID }
+    }
+
+    var hasNonDebugJourneyTracking: Bool {
+        armedCandidates.contains { $0.subscriptionId != Self.debugSimulationSubscriptionID }
+            || (activeJourney != nil && activeJourney?.subscriptionId != Self.debugSimulationSubscriptionID)
+            || (recentlyCompletedJourney != nil && recentlyCompletedJourney?.subscriptionId != Self.debugSimulationSubscriptionID)
+    }
+
+    func setDebugJourneySimulationPhase(
+        _ phase: JourneyActivityAttributes.JourneyPhase,
+        group: JourneyGroup,
+        departure: DepartureV2?,
+        arrivalDelayMinutes: Int = 0
+    ) {
+        stopDebugJourneySimulation()
+
+        let now = Date()
+        switch phase {
+        case .pendingStart, .atStart:
+            armedCandidates.append(ArmedJourneyHistoryCandidate(
+                subscriptionId: Self.debugSimulationSubscriptionID,
+                source: .adhoc,
+                stations: group.stationSequence,
+                createdAt: now,
+                activeUntil: now.addingTimeInterval(2 * 60 * 60),
+                originArrivedAt: phase == .atStart ? now : nil,
+                candidateDepartures: departure.map { [$0] } ?? []
+            ))
+        case .enRoute:
+            activeJourney = debugSimulationCheckpoint(
+                group: group,
+                departure: departure,
+                arrived: false,
+                arrivalDelayMinutes: arrivalDelayMinutes,
+                now: now
+            )
+        case .arrived:
+            recentlyCompletedJourney = debugSimulationCheckpoint(
+                group: group,
+                departure: departure,
+                arrived: true,
+                arrivalDelayMinutes: arrivalDelayMinutes,
+                now: now
+            )
+        }
+    }
+
+    func stopDebugJourneySimulation() {
+        armedCandidates.removeAll { $0.subscriptionId == Self.debugSimulationSubscriptionID }
+        if activeJourney?.subscriptionId == Self.debugSimulationSubscriptionID {
+            activeJourney = nil
+        }
+        if recentlyCompletedJourney?.subscriptionId == Self.debugSimulationSubscriptionID {
+            recentlyCompletedJourney = nil
+        }
+    }
+
+    private func debugSimulationCheckpoint(
+        group: JourneyGroup,
+        departure: DepartureV2?,
+        arrived: Bool,
+        arrivalDelayMinutes: Int,
+        now: Date
+    ) -> ActiveJourneyHistoryCheckpoint {
+        let simulatedJourney = arrived ? group.legs.last : group.legs.first
+        let origin = simulatedJourney?.fromStation ?? group.startStation
+        let destination = simulatedJourney?.toStation ?? group.endStation
+        let scheduledDeparture = departure.flatMap {
+            JourneyHistoryTime.date(for: $0.departureTime.scheduled, near: now)
+        }
+        let scheduledArrival = arrived
+            ? now.addingTimeInterval(-Double(arrivalDelayMinutes) * 60)
+            : nil
+        let leg = JourneyHistoryLeg(
+            plannedLegIndex: simulatedJourney?.legIndex ?? 0,
+            fromStation: origin,
+            toStation: destination,
+            serviceID: arrived && group.legs.count > 1 ? nil : departure?.serviceID,
+            detectedDepartureAt: now,
+            detectedArrivalAt: arrived ? now : nil,
+            scheduledDepartureAt: scheduledDeparture,
+            estimatedDepartureTime: departure?.departureTime.estimated,
+            actualDepartureAt: now,
+            scheduledArrivalAt: scheduledArrival,
+            actualArrivalAt: arrived ? now : nil,
+            outcome: arrived ? .completed : .active
+        )
+
+        return ActiveJourneyHistoryCheckpoint(
+            id: UUID(),
+            subscriptionId: Self.debugSimulationSubscriptionID,
+            source: .adhoc,
+            plannedStations: group.stationSequence,
+            createdAt: now,
+            phase: arrived ? .arriving : .inTransit,
+            plannedLegIndex: simulatedJourney?.legIndex ?? 0,
+            originArrivedAt: now.addingTimeInterval(-60),
+            detectedDepartureAt: now,
+            detectedArrivalAt: arrived ? now : nil,
+            lastConfirmedOnRouteStation: arrived ? group.endStation : group.startStation,
+            nextExpectedCallingPointIndex: arrived ? group.stationSequence.count : 1,
+            legs: [leg],
+            stationEvents: [
+                JourneyHistoryStationEvent(station: origin, kind: .arrival, detectedAt: now.addingTimeInterval(-60)),
+                JourneyHistoryStationEvent(station: origin, kind: .departure, detectedAt: now)
+            ] + (arrived ? [JourneyHistoryStationEvent(station: destination, kind: .arrival, detectedAt: now)] : []),
+            approachNotificationSent: arrived,
+            backendSessionID: nil,
+            serviceMatchConfidence: departure == nil ? 0 : 1,
+            unexpectedStation: nil,
+            unexpectedStationObservedAt: nil,
+            serviceDepartedStationCRS: group.startStation.crs,
+            serviceDepartedStationAt: now,
+            updatedAt: now
+        )
+    }
+    #endif
+
+    func endActiveJourney() async {
+        guard activeJourney != nil else { return }
+        await finishJourney(outcome: .endedEarly, completedAt: Date())
+    }
+
+    func clearRecentlyCompletedJourney() {
+        recentlyCompletedJourney = nil
+    }
 
     func boardingNotificationBody(from: String, to: String) -> String? {
         guard let leg = activeJourney?.currentLeg,
@@ -122,6 +262,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
         armedCandidates.removeAll { $0.subscriptionId == subscription.id }
         armedCandidates.append(candidate)
         armedCandidates = Array(armedCandidates.filter(\.isCurrent).suffix(5))
+        recentlyCompletedJourney = nil
         persistCheckpoint()
         log("candidate_armed", "Armed \(source.displayName.lowercased()) journey history for \(stations.map(\.crs).joined(separator: "→"))", metadata: [
             "subscription_id": subscription.id,
@@ -130,6 +271,14 @@ final class JourneyTrackingCoordinator: ObservableObject {
             "active_until": subscription.activeUntil,
             "armed_candidate_count": armedCandidates.count
         ])
+        if let startStation = candidate.stations.first,
+           let destinationStation = candidate.stations.last {
+            await LiveActivityManager.shared.updateJourneyPhase(
+                .pendingStart,
+                startStation: startStation,
+                destinationStation: destinationStation
+            )
+        }
     }
 
     func disarm(subscriptionID: String) {
@@ -183,6 +332,17 @@ final class JourneyTrackingCoordinator: ObservableObject {
             ])
         }
         persistCheckpoint()
+        let destination = armedCandidates.first { $0.subscriptionId == subscriptionID }?.stations.last ?? second
+        await LiveActivityManager.shared.updateJourneyPhase(
+            .atStart,
+            startStation: first,
+            destinationStation: destination
+        )
+        LiveActivityJourneyStatusSender.shared.send(
+            phase: .atStart,
+            from: first.crs,
+            to: destination.crs
+        )
     }
 
     func handleOriginDeparture(
@@ -256,6 +416,19 @@ final class JourneyTrackingCoordinator: ObservableObject {
             detectedAt: detectedAt,
             reboundFromServiceID: nil
         )
+        if let activeJourney {
+            await LiveActivityManager.shared.updateJourneyPhase(
+                .enRoute,
+                startStation: activeJourney.plannedOrigin,
+                destinationStation: activeJourney.plannedDestination,
+                checkpoint: activeJourney
+            )
+            LiveActivityJourneyStatusSender.shared.send(
+                phase: .enRoute,
+                from: activeJourney.plannedOrigin.crs,
+                to: activeJourney.plannedDestination.crs
+            )
+        }
         await refreshMonitoringConditions()
     }
 
@@ -852,6 +1025,17 @@ final class JourneyTrackingCoordinator: ObservableObject {
         }
         active.updatedAt = detectedAt
         activeJourney = active
+        await LiveActivityManager.shared.updateJourneyPhase(
+            .arrived,
+            startStation: active.plannedOrigin,
+            destinationStation: active.plannedDestination,
+            checkpoint: active
+        )
+        LiveActivityJourneyStatusSender.shared.send(
+            phase: .arrived,
+            from: active.plannedOrigin.crs,
+            to: active.plannedDestination.crs
+        )
         log("destination_arrival_correlated", "Final arrival correlated with official timing data", metadata: [
             "journey_id": active.id.uuidString,
             "station_crs": station.crs,
@@ -898,6 +1082,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 "destination_crs": active.plannedDestination.crs
             ])
         }
+        recentlyCompletedJourney = outcome == .completed ? active : nil
         activeJourney = nil
         persistCheckpoint()
         await refreshMonitoringConditions()

@@ -280,6 +280,7 @@ struct JourneyCard: View {
 
             Spacer(minLength: 0)
             HStack(spacing: 4) {
+                journeyUpdatesControl
                 reverseJourneyControl
                 journeyMenu
             }
@@ -306,6 +307,45 @@ struct JourneyCard: View {
         Image(systemName: isFavourite ? "heart.fill" : "heart")
             .font(.body.weight(.semibold))
             .foregroundStyle(Color.accentColor)
+    }
+
+    @ViewBuilder
+    private var journeyUpdatesControl: some View {
+        if isInteractive {
+            Button(action: onToggleJourneyUpdates) {
+                Group {
+                    if isBusy {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        journeyUpdatesImage
+                    }
+                }
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(isBusy)
+            .accessibilityLabel(isLiveActive ? "Stop journey updates" : "Start journey updates")
+            .accessibilityValue(isLiveActive ? "Active" : "Inactive")
+            .accessibilityHint(isLiveActive
+                ? "Stops live updates for this journey."
+                : "Starts live updates for this journey.")
+        } else {
+            journeyUpdatesImage
+        }
+    }
+
+    private var journeyUpdatesImage: some View {
+        Image(systemName: isLiveActive ? "stop.fill" : "play.fill")
+            .font(.body.weight(.semibold))
+            .foregroundStyle(isLiveActive ? Color.white : Color.accentColor)
+            .frame(width: 30, height: 30)
+            .background {
+                Circle()
+                    .fill(isLiveActive ? Color.accentColor : Color.clear)
+            }
+            .contentShape(Rectangle())
     }
 
     private var routeTitle: some View {
@@ -349,13 +389,14 @@ struct JourneyCard: View {
     private var journeyMenu: some View {
         if isInteractive {
             Menu {
-                Button(role: isLiveActive ? .destructive : nil, action: onToggleJourneyUpdates) {
-                    Label(
-                        isLiveActive ? "Stop journey updates" : "Start journey updates",
-                        systemImage: isLiveActive ? "stop.fill" : "play.fill"
-                    )
+                if isLiveActive {
+                    Button(role: .destructive, action: onToggleJourneyUpdates) {
+                        Label("Stop journey updates", systemImage: "stop.fill")
+                    }
+                    .disabled(isBusy)
+
+                    Divider()
                 }
-                .disabled(isBusy)
 
                 Button(action: onScheduleJourneyUpdates) {
                     Label(
@@ -370,17 +411,11 @@ struct JourneyCard: View {
                     Label("Remove journey", systemImage: "trash")
                 }
             } label: {
-                Group {
-                    if isBusy {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "ellipsis")
-                            .font(.body.weight(.semibold))
-                    }
-                }
-                .foregroundStyle(.secondary)
-                .frame(width: 30, height: 30)
-                .contentShape(Rectangle())
+                Image(systemName: "ellipsis")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Journey actions")
         }

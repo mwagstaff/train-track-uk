@@ -374,6 +374,26 @@ enum JourneyHistoryOperatorSummary {
     }
 }
 
+struct JourneyHistoryDelayRepayLegAssessment: Hashable, Identifiable {
+    let leg: JourneyHistoryLeg
+    let departureDelayMinutes: Int?
+    let arrivalDelayMinutes: Int?
+
+    var id: UUID { leg.id }
+    var legNumber: Int { leg.plannedLegIndex + 1 }
+}
+
+struct JourneyHistoryDelayRepayOperatorOption: Hashable, Identifiable {
+    let id: String
+    let operatorName: String
+    let operatorCode: String?
+    let legAssessments: [JourneyHistoryDelayRepayLegAssessment]
+    let isRecommended: Bool
+    let recommendationReason: String?
+
+    var claimLeg: JourneyHistoryLeg? { legAssessments.first?.leg }
+}
+
 enum JourneyHistoryDelayPolicy {
     static let delayRepayThresholdMinutes = 15
     static let submissionDeadlineDays = 28
@@ -397,15 +417,137 @@ enum JourneyHistoryDelayPolicy {
     }
 
     static func responsibleOperatorLeg(in record: JourneyHistoryRecord) -> JourneyHistoryLeg? {
-        record.legs.first { leg in
-            guard let delay = confirmedDelayMinutes(
-                scheduledArrival: leg.scheduledArrivalAt,
-                actualArrival: leg.actualArrivalAt
-            ) else {
-                return false
+        operatorOptions(in: record).first(where: \.isRecommended)?.claimLeg
+            ?? record.legs.sorted { $0.plannedLegIndex < $1.plannedLegIndex }.last
+    }
+
+    static func operatorOptions(in record: JourneyHistoryRecord) -> [JourneyHistoryDelayRepayOperatorOption] {
+        operatorOptions(for: record.legs)
+    }
+
+    static func operatorOptions(for legs: [JourneyHistoryLeg]) -> [JourneyHistoryDelayRepayOperatorOption] {
+        let sortedLegs = legs.sorted { lhs, rhs in
+            if lhs.plannedLegIndex == rhs.plannedLegIndex {
+                return lhs.id.uuidString < rhs.id.uuidString
             }
-            return delay >= delayRepayThresholdMinutes
-        } ?? record.legs.last
+            return lhs.plannedLegIndex < rhs.plannedLegIndex
+        }
+        let assessments = sortedLegs.map { leg in
+            JourneyHistoryDelayRepayLegAssessment(
+                leg: leg,
+                departureDelayMinutes: confirmedDelayMinutes(
+                    scheduledArrival: leg.scheduledDepartureAt,
+                    actualArrival: leg.actualDepartureAt ?? leg.detectedDepartureAt
+                ),
+                arrivalDelayMinutes: confirmedDelayMinutes(
+                    scheduledArrival: leg.scheduledArrivalAt,
+                    actualArrival: leg.actualArrivalAt
+                )
+            )
+        }
+        let recommendation = recommendation(for: assessments)
+
+        struct OperatorGroup {
+            var name: String
+            var nameKey: String
+            var code: String?
+            var codeKey: String?
+            var assessments: [JourneyHistoryDelayRepayLegAssessment]
+        }
+
+        var groups: [OperatorGroup] = []
+        for assessment in assessments {
+            let name = normalizedOperatorValue(assessment.leg.operatorName)
+            let code = normalizedOperatorValue(assessment.leg.operatorCode)
+            guard name != nil || code != nil else { continue }
+
+            let displayName = name ?? code ?? "Unknown operator"
+            let nameKey = name?.lowercased() ?? ""
+            let codeKey = code?.lowercased()
+            if let groupIndex = groups.firstIndex(where: { group in
+                (!nameKey.isEmpty && group.nameKey == nameKey)
+                    || (codeKey != nil && group.codeKey == codeKey)
+            }) {
+                groups[groupIndex].assessments.append(assessment)
+                if groups[groupIndex].code == nil {
+                    groups[groupIndex].code = code
+                    groups[groupIndex].codeKey = codeKey
+                }
+            } else {
+                groups.append(OperatorGroup(
+                    name: displayName,
+                    nameKey: nameKey,
+                    code: code,
+                    codeKey: codeKey,
+                    assessments: [assessment]
+                ))
+            }
+        }
+
+        return groups.map { group in
+            let isRecommended = group.assessments.contains { $0.leg.id == recommendation.legID }
+            let stableKey = group.codeKey ?? group.nameKey
+            return JourneyHistoryDelayRepayOperatorOption(
+                id: stableKey,
+                operatorName: group.name,
+                operatorCode: group.code,
+                legAssessments: group.assessments,
+                isRecommended: isRecommended,
+                recommendationReason: isRecommended ? recommendation.reason : nil
+            )
+        }
+    }
+
+    private static func recommendation(
+        for assessments: [JourneyHistoryDelayRepayLegAssessment]
+    ) -> (legID: UUID?, reason: String?) {
+        guard !assessments.isEmpty else { return (nil, nil) }
+
+        var contributionByLegID: [UUID: Int] = [:]
+        var missedConnectionLegIDs = Set<UUID>()
+        for (index, assessment) in assessments.enumerated() {
+            let previousDelay = index > 0 ? assessments[index - 1].arrivalDelayMinutes ?? 0 : 0
+            let currentDelay = assessment.arrivalDelayMinutes ?? assessment.departureDelayMinutes ?? previousDelay
+            let increase = max(0, currentDelay - previousDelay)
+
+            if index > 0,
+               let previousArrival = assessments[index - 1].leg.actualArrivalAt
+                    ?? assessments[index - 1].leg.detectedArrivalAt,
+               let scheduledDeparture = assessment.leg.scheduledDepartureAt,
+               previousArrival >= scheduledDeparture {
+                let precedingLegID = assessments[index - 1].leg.id
+                contributionByLegID[precedingLegID, default: 0] += increase
+                missedConnectionLegIDs.insert(precedingLegID)
+            } else {
+                contributionByLegID[assessment.leg.id, default: 0] += increase
+            }
+        }
+
+        let recommended = assessments.enumerated().max { lhs, rhs in
+            let lhsScore = contributionByLegID[lhs.element.leg.id, default: 0]
+            let rhsScore = contributionByLegID[rhs.element.leg.id, default: 0]
+            if lhsScore == rhsScore {
+                return lhs.offset > rhs.offset
+            }
+            return lhsScore < rhsScore
+        }?.element ?? assessments[0]
+        let legNumber = recommended.legNumber
+        let reason: String
+        if missedConnectionLegIDs.contains(recommended.leg.id) {
+            reason = "Leg \(legNumber) arrived after Leg \(legNumber + 1) was scheduled to depart."
+        } else {
+            reason = "Leg \(legNumber) shows the largest increase in recorded delay."
+        }
+        return (recommended.leg.id, reason)
+    }
+
+    private static func normalizedOperatorValue(_ rawValue: String?) -> String? {
+        guard let rawValue else { return nil }
+        let value = rawValue
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return value.isEmpty ? nil : value
     }
 }
 

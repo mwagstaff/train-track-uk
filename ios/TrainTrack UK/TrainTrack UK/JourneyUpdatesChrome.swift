@@ -1,41 +1,110 @@
 import SwiftUI
+import JourneyActivityShared
 
 struct JourneyUpdatesChrome: ViewModifier {
     let includeToast: Bool
 
     @EnvironmentObject private var activityMgr: LiveActivityManager
     @EnvironmentObject private var notificationStore: NotificationSubscriptionStore
-    @EnvironmentObject private var deepLink: DeepLinkRouter
     @EnvironmentObject private var toastStore: ToastStore
     @EnvironmentObject private var holidayMode: HolidayModeStore
+    @ObservedObject private var trackingCoordinator = JourneyTrackingCoordinator.shared
     @State private var stoppingJourneyUpdates = false
+    @State private var showingEndConfirmation = false
+    @State private var bottomBannerHeight: CGFloat = 0
 
     private var activeJourneyUpdatesBanner: ActiveJourneyUpdatesBanner? {
+        if let active = trackingCoordinator.activeJourney {
+            return ActiveJourneyUpdatesBanner(
+                title: "Journey in progress",
+                subtitle: JourneyActivityAttributes.JourneyPhase.enRoute.statusMessage(
+                    startStation: active.plannedOrigin.name,
+                    destinationStation: active.plannedDestination.name
+                ),
+                buttonTitle: "End"
+            )
+        }
+
+        if activityMgr.isActive, let completed = trackingCoordinator.recentlyCompletedJourney {
+            return ActiveJourneyUpdatesBanner(
+                title: "Journey in progress",
+                subtitle: JourneyActivityAttributes.JourneyPhase.arrived.statusMessage(
+                    startStation: completed.plannedOrigin.name,
+                    destinationStation: completed.plannedDestination.name
+                ),
+                buttonTitle: "End"
+            )
+        }
+
+        #if DEBUG
+        if activityMgr.isActive,
+           let candidate = trackingCoordinator.debugJourneySimulationCandidate,
+           let start = candidate.stations.first,
+           let destination = candidate.stations.last {
+            let phase: JourneyActivityAttributes.JourneyPhase = candidate.originArrivedAt == nil
+                ? .pendingStart
+                : .atStart
+            return ActiveJourneyUpdatesBanner(
+                title: "Journey in progress",
+                subtitle: phase.statusMessage(
+                    startStation: start.name,
+                    destinationStation: destination.name
+                ),
+                buttonTitle: "End"
+            )
+        }
+        #endif
+
         let sessions = notificationStore.liveSessions
         guard !sessions.isEmpty else { return nil }
         if sessions.count == 1, let session = sessions.first {
-            let route = session.primaryRoute
+            let candidate = trackingCoordinator.armedCandidates.first { $0.subscriptionId == session.id }
+            let phase: JourneyActivityAttributes.JourneyPhase = candidate?.originArrivedAt == nil
+                ? .pendingStart
+                : .atStart
+            let startName = candidate?.stations.first?.name
+                ?? session.legs.first?.fromName
+                ?? session.legs.first?.from
+                ?? "your start station"
+            let destinationName = candidate?.stations.last?.name
+                ?? session.legs.last?.toName
+                ?? session.legs.last?.to
+                ?? "your destination"
             return ActiveJourneyUpdatesBanner(
-                title: "Live updates active",
-                subtitle: session.routeTitle,
-                buttonTitle: "Stop",
-                viewRoute: route
+                title: "Journey in progress",
+                subtitle: phase.statusMessage(
+                    startStation: startName,
+                    destinationStation: destinationName
+                ),
+                buttonTitle: "End"
             )
         }
         return ActiveJourneyUpdatesBanner(
-            title: "Live updates active",
+            title: "Journey in progress",
             subtitle: "\(sessions.count) journeys currently active",
-            buttonTitle: "Stop all",
-            viewRoute: nil
+            buttonTitle: "End all"
         )
     }
 
-    private var bottomBannerSpacing: CGFloat {
-        holidayMode.isEnabled || activeJourneyUpdatesBanner != nil ? 16 : 0
+    private var bottomContentClearance: CGFloat {
+        holidayMode.isEnabled || activeJourneyUpdatesBanner != nil
+            ? bottomBannerHeight + 16
+            : 0
+    }
+
+    private var endConfirmationTitle: String {
+        notificationStore.liveSessions.count <= 1 ? "End journey?" : "End all journeys?"
+    }
+
+    private var endConfirmationMessage: String {
+        notificationStore.liveSessions.count <= 1
+            ? "Are you sure you want to end this journey? Live updates will stop."
+            : "Are you sure you want to end all journeys? Live updates will stop."
     }
 
     func body(content: Content) -> some View {
         content
+            .contentMargins(.bottom, bottomContentClearance, for: .scrollContent)
             .safeAreaInset(edge: .top, spacing: 0) {
                 if includeToast, let toast = toastStore.toast {
                     ToastView(toast: toast)
@@ -45,7 +114,7 @@ struct JourneyUpdatesChrome: ViewModifier {
                         .padding(.horizontal, 16)
                 }
             }
-            .safeAreaInset(edge: .bottom, spacing: bottomBannerSpacing) {
+            .safeAreaInset(edge: .bottom, spacing: 0) {
                 if holidayMode.isEnabled || activeJourneyUpdatesBanner != nil {
                     VStack(spacing: 8) {
                         if holidayMode.isEnabled {
@@ -56,26 +125,31 @@ struct JourneyUpdatesChrome: ViewModifier {
                             JourneyUpdatesBannerView(
                                 banner: banner,
                                 isStopping: stoppingJourneyUpdates,
-                                onView: banner.viewRoute == nil ? nil : { openJourney(for: banner) },
-                                onStop: { stopActiveJourneyUpdates() }
+                                onEnd: { showingEndConfirmation = true }
                             )
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
                     }
                     .padding(.top, 8)
                     .padding(.bottom, 24)
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.height
+                    } action: { height in
+                        bottomBannerHeight = height
+                    }
                 }
+            }
+            .alert(endConfirmationTitle, isPresented: $showingEndConfirmation) {
+                Button(activeJourneyUpdatesBanner?.buttonTitle ?? "End", role: .destructive) {
+                    stopActiveJourneyUpdates()
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text(endConfirmationMessage)
             }
             .animation(.easeOut(duration: 0.25), value: holidayMode.isEnabled)
             .animation(.easeOut(duration: 0.25), value: notificationStore.liveSessions)
             .animation(.easeOut(duration: 0.25), value: toastStore.toast)
-    }
-
-    private func openJourney(for banner: ActiveJourneyUpdatesBanner) {
-        guard let route = banner.viewRoute else { return }
-        Task {
-            await deepLink.openJourney(from: route.fromCRS, to: route.toCRS)
-        }
     }
 
     private func stopActiveJourneyUpdates() {
@@ -83,8 +157,18 @@ struct JourneyUpdatesChrome: ViewModifier {
         stoppingJourneyUpdates = true
         Task {
             defer { stoppingJourneyUpdates = false }
+            #if DEBUG
+            if trackingCoordinator.hasDebugJourneySimulation || activityMgr.hasDebugJourneySimulation {
+                await activityMgr.stopDebugJourneySimulation()
+                trackingCoordinator.stopDebugJourneySimulation()
+                ToastStore.shared.show("Journey simulation ended", icon: "stop.fill")
+                return
+            }
+            #endif
             let sessions = notificationStore.liveSessions
-            guard !sessions.isEmpty else { return }
+            let trackedJourney = trackingCoordinator.activeJourney
+                ?? trackingCoordinator.recentlyCompletedJourney
+            guard !sessions.isEmpty || trackedJourney != nil else { return }
 
             if StationsService.shared.stations.isEmpty {
                 try? await StationsService.shared.loadStations()
@@ -110,6 +194,15 @@ struct JourneyUpdatesChrome: ViewModifier {
                     await activityMgr.stop(for: Journey(fromStation: fromStation, toStation: toStation, favorite: false))
                 }
             }
+
+            if let trackedJourney {
+                await activityMgr.stopJourneyActivities(
+                    deepLinkFromCRS: trackedJourney.plannedOrigin.crs,
+                    deepLinkToCRS: trackedJourney.plannedDestination.crs
+                )
+            }
+            await trackingCoordinator.endActiveJourney()
+            trackingCoordinator.clearRecentlyCompletedJourney()
 
             ToastStore.shared.show("Journey updates stopped", icon: "stop.fill")
         }
@@ -155,14 +248,12 @@ private struct ActiveJourneyUpdatesBanner {
     let title: String
     let subtitle: String
     let buttonTitle: String
-    let viewRoute: JourneyRouteIdentity?
 }
 
 private struct JourneyUpdatesBannerView: View {
     let banner: ActiveJourneyUpdatesBanner
     let isStopping: Bool
-    let onView: (() -> Void)?
-    let onStop: () -> Void
+    let onEnd: () -> Void
 
     var body: some View {
         HStack(spacing: 12) {
@@ -176,16 +267,7 @@ private struct JourneyUpdatesBannerView: View {
                     .lineLimit(2)
             }
             Spacer(minLength: 8)
-            if let onView {
-                Button(action: onView) {
-                    Text("View")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-            Button(role: .destructive, action: onStop) {
+            Button(role: .destructive, action: onEnd) {
                 if isStopping {
                     ProgressView()
                         .frame(minWidth: 44)
@@ -209,12 +291,5 @@ private struct JourneyUpdatesBannerView: View {
         )
         .shadow(color: Color.black.opacity(0.12), radius: 8, x: 0, y: 4)
         .padding(.horizontal, 16)
-    }
-}
-
-private extension NotificationSubscription {
-    var primaryRoute: JourneyRouteIdentity? {
-        guard let first = legs.first, let last = legs.last else { return nil }
-        return JourneyRouteIdentity(from: first.from, to: last.to)
     }
 }

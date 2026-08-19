@@ -6,6 +6,30 @@ import ActivityKit
 // JourneyActivityAttributes with built-in ActivityKit conformance
 // This ensures proper type registration with the ActivityKit runtime
 public struct JourneyActivityAttributes: Codable, Hashable {
+    public enum JourneyPhase: String, Codable, Hashable {
+        case pendingStart = "pending_start"
+        case atStart = "at_start"
+        case enRoute = "en_route"
+        case arrived
+
+        public func statusMessage(startStation: String, destinationStation: String) -> String {
+            switch self {
+            case .pendingStart:
+                return "Watching for arrival at \(startStation)"
+            case .atStart:
+                return "At \(startStation)"
+            case .enRoute:
+                return "Tracking train journey"
+            case .arrived:
+                return "Arrived at \(destinationStation)"
+            }
+        }
+
+        public var showsInProgressService: Bool {
+            self == .enRoute || self == .arrived
+        }
+    }
+
     public struct UpcomingDeparture: Codable, Hashable {
         public var time: String
         public var arrivalTime: String?
@@ -53,6 +77,7 @@ public struct JourneyActivityAttributes: Codable, Hashable {
         public var isCancelled: Bool
         public var statusText: String?
         public var delayMinutes: Int
+        public var arrivalDelayMinutes: Int?
         public var upcomingDepartures: [UpcomingDeparture]
         public var lastUpdated: Date
         public var activityID: String?
@@ -66,6 +91,25 @@ public struct JourneyActivityAttributes: Codable, Hashable {
         public var scheduleKey: String?
         public var windowStart: String?
         public var windowEnd: String?
+        public var journeyPhase: JourneyPhase
+        public var journeyStartName: String?
+        public var journeyDestinationName: String?
+
+        public var journeyStatusMessage: String {
+            journeyPhase.statusMessage(
+                startStation: journeyStartName ?? fromCRS,
+                destinationStation: journeyDestinationName ?? toCRS
+            )
+        }
+
+        public var delayRepayMessage: String? {
+            guard journeyPhase == .arrived,
+                  let arrivalDelayMinutes,
+                  arrivalDelayMinutes >= 15 else {
+                return nil
+            }
+            return "Eligible for a Delay Repay claim — \(arrivalDelayMinutes) min late"
+        }
 
         public init(
             fromCRS: String,
@@ -82,6 +126,7 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             isCancelled: Bool = false,
             statusText: String?,
             delayMinutes: Int,
+            arrivalDelayMinutes: Int? = nil,
             upcomingDepartures: [UpcomingDeparture] = [],
             lastUpdated: Date = Date(),
             activityID: String? = nil,
@@ -90,7 +135,10 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             journeyUpdatesEnabled: Bool = true,
             scheduleKey: String? = nil,
             windowStart: String? = nil,
-            windowEnd: String? = nil
+            windowEnd: String? = nil,
+            journeyPhase: JourneyPhase = .pendingStart,
+            journeyStartName: String? = nil,
+            journeyDestinationName: String? = nil
         ) {
             self.fromCRS = fromCRS
             self.toCRS = toCRS
@@ -106,6 +154,7 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             self.isCancelled = isCancelled
             self.statusText = statusText
             self.delayMinutes = delayMinutes
+            self.arrivalDelayMinutes = arrivalDelayMinutes
             self.upcomingDepartures = upcomingDepartures
             self.lastUpdated = lastUpdated
             self.activityID = activityID
@@ -115,10 +164,13 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             self.scheduleKey = scheduleKey
             self.windowStart = windowStart
             self.windowEnd = windowEnd
+            self.journeyPhase = journeyPhase
+            self.journeyStartName = journeyStartName
+            self.journeyDestinationName = journeyDestinationName
         }
 
         private enum CodingKeys: String, CodingKey {
-            case fromCRS, toCRS, routeTitle, deepLinkFromCRS, deepLinkToCRS, destinationTitle, arrivalLabel, scheduledDeparture, length, platform, estimated, isCancelled, statusText, delayMinutes, upcomingDepartures, lastUpdated, activityID, revision, appIsActive, journeyUpdatesEnabled, scheduleKey, windowStart, windowEnd
+            case fromCRS, toCRS, routeTitle, deepLinkFromCRS, deepLinkToCRS, destinationTitle, arrivalLabel, scheduledDeparture, length, platform, estimated, isCancelled, statusText, delayMinutes, arrivalDelayMinutes, upcomingDepartures, lastUpdated, activityID, revision, appIsActive, journeyUpdatesEnabled, scheduleKey, windowStart, windowEnd, journeyPhase, journeyStartName, journeyDestinationName
         }
 
         public init(from decoder: Decoder) throws {
@@ -137,6 +189,7 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             isCancelled = try container.decodeIfPresent(Bool.self, forKey: .isCancelled) ?? false
             statusText = try container.decodeIfPresent(String.self, forKey: .statusText)
             delayMinutes = try container.decode(Int.self, forKey: .delayMinutes)
+            arrivalDelayMinutes = try container.decodeIfPresent(Int.self, forKey: .arrivalDelayMinutes)
             upcomingDepartures = try container.decodeIfPresent([UpcomingDeparture].self, forKey: .upcomingDepartures) ?? []
             activityID = try container.decodeIfPresent(String.self, forKey: .activityID)
             revision = try container.decodeIfPresent(Int.self, forKey: .revision)
@@ -145,6 +198,9 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             scheduleKey = try container.decodeIfPresent(String.self, forKey: .scheduleKey)
             windowStart = try container.decodeIfPresent(String.self, forKey: .windowStart)
             windowEnd = try container.decodeIfPresent(String.self, forKey: .windowEnd)
+            journeyPhase = try container.decodeIfPresent(JourneyPhase.self, forKey: .journeyPhase) ?? .pendingStart
+            journeyStartName = try container.decodeIfPresent(String.self, forKey: .journeyStartName)
+            journeyDestinationName = try container.decodeIfPresent(String.self, forKey: .journeyDestinationName)
 
             // Handle lastUpdated as Unix timestamp (server sends integer seconds since epoch)
             if let timestamp = try? container.decode(Double.self, forKey: .lastUpdated) {

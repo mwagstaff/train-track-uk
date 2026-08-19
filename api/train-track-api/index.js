@@ -301,6 +301,7 @@ app.post('/api/v2/live_activities', async (req, res) => {
         mute_delay_minutes,
         auto_end_on_arrival,
         auto_end_on_departure,
+        journey_phase,
         schedule_key,
         journey_updates_enabled,
         window_start,
@@ -352,6 +353,7 @@ app.post('/api/v2/live_activities', async (req, res) => {
         muteDelayMinutes: mute_delay_minutes !== undefined ? Number(mute_delay_minutes) : undefined,
         autoEndOnArrival: auto_end_on_arrival === true || auto_end_on_arrival === 'true',
         autoEndOnDeparture: auto_end_on_departure === true || auto_end_on_departure === 'true',
+        journeyPhase: typeof journey_phase === 'string' ? journey_phase : null,
         scheduleKey: typeof schedule_key === 'string' ? schedule_key : null,
         journeyUpdatesEnabled: journey_updates_enabled === undefined ? undefined : (journey_updates_enabled === true || journey_updates_enabled === 'true'),
         windowStart: typeof window_start === 'string' ? window_start : null,
@@ -955,6 +957,34 @@ app.delete('/api/v2/journey_tracking/sessions/:id', (req, res) => {
         deviceId: canonicalDeviceId
     });
     res.json({ status: removed ? 'deleted' : 'not_found' });
+});
+
+app.post('/api/v2/live_activities/status', async (req, res) => {
+    const { device_id, from, to, phase } = req.body || {};
+    const { canonicalDeviceId, fallbackDeviceIds } = resolveRequestDeviceIds(req, device_id);
+    const validPhases = new Set(['pending_start', 'at_start', 'en_route', 'arrived']);
+    if (!canonicalDeviceId || !validPhases.has(phase)) {
+        return res.status(400).json({ error: 'device_id and a valid phase are required' });
+    }
+
+    try {
+        const result = await liveActivityManager.handleJourneyPhase(canonicalDeviceId, {
+            fromStation: from || null,
+            toStation: to || null,
+            phase,
+            fallbackDeviceIds
+        });
+        res.json({
+            status: 'ok',
+            device_id: canonicalDeviceId,
+            phase,
+            ...result
+        });
+    } catch (error) {
+        const message = error?.message || error;
+        console.error(`[live-activity] status update failed for ${canonicalDeviceId}: ${message}`);
+        res.status(500).json({ error: message });
+    }
 });
 
 // Debug notification endpoints

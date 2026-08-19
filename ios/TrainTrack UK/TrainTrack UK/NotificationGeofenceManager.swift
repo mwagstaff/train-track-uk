@@ -1105,7 +1105,6 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             "dwell_seconds": dwell,
             "source": source
         ])
-        let autoEndEnabled = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? true
         Task { @MainActor in
             await JourneyTrackingCoordinator.shared.handleOriginDeparture(
                 subscriptionID: target.subscriptionId,
@@ -1118,16 +1117,13 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 from: target.from,
                 to: target.to,
                 simulate: false,
-                endLiveActivity: autoEndEnabled,
+                endLiveActivity: false,
                 detectionSource: "location_fallback",
                 journeyNotificationBody: JourneyTrackingCoordinator.shared.boardingNotificationBody(
                     from: target.from,
                     to: target.to
                 )
             )
-            if autoEndEnabled {
-                LiveActivityDepartureSender.shared.sendDeparture(from: target.from, to: target.to)
-            }
         }
     }
 
@@ -1617,10 +1613,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 to: parsed.to
             )
 
-            let autoEndEnabled = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? true
-            let endMsg = autoEndEnabled
-                ? "Geofence exit for \(parsed.from)→\(parsed.to) — muting notifications and ending Live Activity"
-                : "Geofence exit for \(parsed.from)→\(parsed.to) — muting notifications; Live Activity auto-end disabled"
+            let endMsg = "Geofence exit for \(parsed.from)→\(parsed.to) — muting notifications and tracking the train journey"
             DebugLogStore.shared.log(endMsg, category: "Geofence")
             print("🏁 \(endMsg)")
             await self.triggerMuteFlow(
@@ -1628,13 +1621,10 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 from: parsed.from,
                 to: parsed.to,
                 simulate: false,
-                endLiveActivity: autoEndEnabled,
+                endLiveActivity: false,
                 detectionSource: "geofence",
                 journeyNotificationBody: journeyNotificationBody
             )
-            if autoEndEnabled {
-                LiveActivityDepartureSender.shared.sendDeparture(from: parsed.from, to: parsed.to)
-            }
         }
         print("📍 \(message)")
     }
@@ -1868,7 +1858,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     func triggerMuteFlow(subscriptionId: String, from: String, to: String,
                          sendNotification _: Bool = true,
                          simulate: Bool = false,
-                         endLiveActivity: Bool = true,
+                         endLiveActivity: Bool = false,
                          detectionSource: String = "geofence",
                          journeyNotificationBody: String? = nil) async {
         // Guard against duplicate calls — both didEnterRegion and didDetermineState can fire
@@ -2577,7 +2567,7 @@ final class BackgroundSessionCoordinator {
     }
 }
 
-private final class AppBackgroundTaskToken: @unchecked Sendable {
+final class AppBackgroundTaskToken: @unchecked Sendable {
     nonisolated(unsafe) private var identifier: UIBackgroundTaskIdentifier = .invalid
 
     nonisolated init(name: String) {

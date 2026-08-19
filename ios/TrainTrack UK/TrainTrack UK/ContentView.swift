@@ -12,15 +12,19 @@ struct ContentView: View {
     @EnvironmentObject var journeyStore: JourneyStore
     @EnvironmentObject var depStore: DeparturesStore
     @EnvironmentObject var toastStore: ToastStore
+    @EnvironmentObject var deepLink: DeepLinkRouter
 
     // Navigation paths for each tab to enable programmatic pop-to-root
     @State private var favouritesPath = NavigationPath()
     @State private var myJourneysPath = NavigationPath()
     @State private var historyPath = NavigationPath()
     @State private var profilePath = NavigationPath()
-    @State private var pageCommitFeedbackTrigger = 0
+    @State private var tabSelectionFeedbackTrigger = 0
+    @State private var horizontalSwipeDisabledTabs: Set<Tab> = []
 
-    private var pagingSelection: Binding<Tab> {
+    private let visibleTabs: [Tab] = [.favourites, .myJourneys, .history, .profile]
+
+    private var tabSelection: Binding<Tab> {
         Binding(
             get: {
                 router.selected == .addJourney
@@ -30,7 +34,7 @@ struct ContentView: View {
             set: { newTab in
                 guard newTab != router.selected else { return }
                 router.selected = newTab
-                pageCommitFeedbackTrigger += 1
+                tabSelectionFeedbackTrigger += 1
             }
         )
     }
@@ -45,48 +49,74 @@ struct ContentView: View {
         )
     }
 
+    private var isHorizontalTabSwipeEnabled: Bool {
+        let selectedTab = router.selected == .addJourney
+            ? router.lastNonAddTab
+            : router.selected
+        return !horizontalSwipeDisabledTabs.contains(selectedTab)
+    }
+
+    private func horizontalSwipeDisabledBinding(for tab: Tab) -> Binding<Bool> {
+        Binding(
+            get: { horizontalSwipeDisabledTabs.contains(tab) },
+            set: { isDisabled in
+                if isDisabled {
+                    horizontalSwipeDisabledTabs.insert(tab)
+                } else {
+                    horizontalSwipeDisabledTabs.remove(tab)
+                }
+            }
+        )
+    }
+
     var body: some View {
-        TabView(selection: pagingSelection) {
+        TabView(selection: tabSelection) {
             NavigationStack(path: $favouritesPath) { FavouritesView() }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
+                .horizontalTabSwipeDisabled(horizontalSwipeDisabledBinding(for: .favourites))
+                .tabItem { Label("Favourites", systemImage: "heart.fill") }
                 .tag(Tab.favourites)
 
             NavigationStack(path: $myJourneysPath) { MyJourneysView() }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
+                .horizontalTabSwipeDisabled(horizontalSwipeDisabledBinding(for: .myJourneys))
+                .tabItem { Label("My Journeys", systemImage: "list.bullet") }
                 .tag(Tab.myJourneys)
 
             NavigationStack(path: $historyPath) { MyJourneyHistoryView() }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
+                .horizontalTabSwipeDisabled(horizontalSwipeDisabledBinding(for: .history))
+                .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
                 .tag(Tab.history)
 
             NavigationStack(path: $profilePath) { ProfileView() }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
+                .horizontalTabSwipeDisabled(horizontalSwipeDisabledBinding(for: .profile))
+                .tabItem { Label("Profile", systemImage: "person.circle") }
                 .tag(Tab.profile)
         }
-        .tabViewStyle(.page(indexDisplayMode: .never))
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if router.selected != .addJourney {
-                NativePagingTabBar(selection: $router.selected)
-                    .frame(height: 49)
-            }
-        }
+        .horizontalTabSwipe(
+            selection: tabSelection,
+            tabs: visibleTabs,
+            isEnabled: isHorizontalTabSwipeEnabled
+        )
         .fullScreenCover(isPresented: addJourneyPresented) {
             NavigationStack { AddJourneyView() }
         }
-        .sensoryFeedback(.selection, trigger: pageCommitFeedbackTrigger)
+        .fullScreenCover(item: $deepLink.routeMapDestination) { destination in
+            JourneyRouteMapDeepLinkView(destination: destination)
+        }
+        .sensoryFeedback(.selection, trigger: tabSelectionFeedbackTrigger)
         .animation(.easeOut(duration: 0.25), value: toastStore.toast)
         .onAppear {
             // Ensure polling starts even if App.onAppear wasn't fired
             depStore.startPolling(journeyStore: journeyStore)
         }
-        .task(id: depStore.isInitialLoadInProgress, priority: .utility) {
-            guard !depStore.isInitialLoadInProgress,
-                  !journeyStore.journeys.isEmpty,
-                  !ProcessInfo.processInfo.isLowPowerModeEnabled else {
-                return
-            }
+        .task(priority: .utility) {
             do {
-                try await Task.sleep(for: .seconds(1))
+                // Warm the bundled routing graph as soon as the first UI frame is available.
+                // Route maps can be opened from favourites even when no journeys are saved.
+                await Task.yield()
                 try await RailwayRoutingService.shared.prepare()
             } catch {
                 // Pre-warming is opportunistic; route loading reports real failures on demand.
@@ -102,6 +132,29 @@ struct ContentView: View {
             myJourneysPath = NavigationPath()
             historyPath = NavigationPath()
             profilePath = NavigationPath()
+        }
+    }
+}
+
+private struct JourneyRouteMapDeepLinkView: View {
+    let destination: JourneyRouteMapDestination
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ServiceMapView(
+                serviceID: destination.serviceID,
+                fromCRS: destination.fromCRS,
+                toCRS: destination.toCRS,
+                departureTime: destination.departureTime,
+                destinationName: destination.destinationName,
+                fallbackCallingPoints: destination.fallbackCallingPoints
+            )
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Done") { dismiss() }
+                }
+            }
         }
     }
 }

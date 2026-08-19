@@ -7,6 +7,7 @@ import UIKit
 final class DeepLinkRouter: ObservableObject {
     static let shared = DeepLinkRouter()
 
+    @Published var routeMapDestination: JourneyRouteMapDestination?
 
     func handle(url: URL) {
         guard url.scheme == "traintrack" else { return }
@@ -31,8 +32,15 @@ final class DeepLinkRouter: ObservableObject {
             return
         }
 
+        if host == "history" {
+            openHistory()
+            return
+        }
+
         // Supported: traintrack://journey?from=VIC&to=KTH
-        guard host == "journey" else { return }
+        //            traintrack://journey-route?from=VIC&to=KTH
+        //            traintrack://history
+        guard host == "journey" || host == "journey-route" else { return }
 
         let comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
         let from = comps?.queryItems?.first(where: { $0.name == "from" })?.value
@@ -40,7 +48,20 @@ final class DeepLinkRouter: ObservableObject {
         let activateUpdates = comps?.queryItems?.first(where: { $0.name == "activate_updates" })?.value == "1"
         guard let from, let to else { return }
 
-        Task { await openJourney(from: from, to: to, activateUpdates: activateUpdates) }
+        Task {
+            await openJourney(
+                from: from,
+                to: to,
+                activateUpdates: activateUpdates,
+                showRouteMap: host == "journey-route"
+            )
+        }
+    }
+
+    func openHistory() {
+        routeMapDestination = nil
+        TabRouter.shared.selected = .history
+        TabRouter.shared.navigationResetTrigger += 1
     }
 
     private func station(for crs: String) -> Station? {
@@ -60,8 +81,23 @@ final class DeepLinkRouter: ObservableObject {
         do { try await StationsService.shared.loadStations() } catch { }
     }
 
-    func openJourney(from: String, to: String, activateUpdates: Bool = false) async {
+    func openJourney(
+        from: String,
+        to: String,
+        activateUpdates: Bool = false,
+        showRouteMap: Bool = false
+    ) async {
         if StationsService.shared.stations.isEmpty { await ensureStations() }
+        if showRouteMap,
+           let destination = JourneyRouteMapDestination(
+               checkpoint: JourneyTrackingCoordinator.shared.activeJourney,
+               fromCRS: from,
+               toCRS: to
+           ) {
+            TabRouter.shared.selected = .myJourneys
+            routeMapDestination = destination
+            return
+        }
         if let group = findOrCreateJourneyGroup(from: from, to: to) {
             TabRouter.shared.selected = group.favorite ? .favourites : .myJourneys
             if activateUpdates {
@@ -85,6 +121,51 @@ final class DeepLinkRouter: ObservableObject {
         }
     }
 
+}
+
+struct JourneyRouteMapDestination: Identifiable {
+    let id = UUID()
+    let serviceID: String
+    let fromCRS: String
+    let toCRS: String
+    let departureTime: String
+    let destinationName: String
+    let fallbackCallingPoints: [CallingPoint]
+
+    init?(checkpoint: ActiveJourneyHistoryCheckpoint?, fromCRS: String, toCRS: String) {
+        guard let checkpoint,
+              checkpoint.plannedOrigin.crs.caseInsensitiveCompare(fromCRS) == .orderedSame,
+              checkpoint.plannedDestination.crs.caseInsensitiveCompare(toCRS) == .orderedSame,
+              let leg = checkpoint.currentLeg,
+              let serviceID = leg.serviceID else {
+            return nil
+        }
+        self.serviceID = serviceID
+        self.fromCRS = leg.fromStation.crs
+        self.toCRS = leg.toStation.crs
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = "HH:mm"
+        let departureDate = leg.scheduledDepartureAt ?? leg.detectedDepartureAt ?? Date()
+        self.departureTime = formatter.string(from: departureDate)
+        self.destinationName = leg.toStation.name
+        self.fallbackCallingPoints = leg.callingPoints.map {
+            CallingPoint(
+                locationName: $0.locationName,
+                crs: $0.crs,
+                st: $0.scheduledTime,
+                et: $0.estimatedTime,
+                at: $0.actualTime,
+                isCancelled: nil,
+                cancelReason: nil,
+                platform: nil,
+                length: nil,
+                detachFront: nil,
+                affectedByDiversion: nil,
+                rerouteDelay: nil
+            )
+        }
+    }
 }
 
 struct JourneyRouteIdentity: Equatable {

@@ -10,6 +10,28 @@ import UIKit
 // Type alias for convenience - ActivityAttributes conformance is now in the shared package
 typealias JourneyActivityAttributes = JourneyActivityShared.JourneyActivityAttributes
 
+#if DEBUG
+enum DebugJourneySimulationError: LocalizedError {
+    case liveActivitiesDisabled
+    case noJourney
+    case journeyAlreadyActive
+    case activityCreationFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .liveActivitiesDisabled:
+            return "Live Activities are disabled for Train Track UK in Settings."
+        case .noJourney:
+            return "Choose a saved journey to run the simulation."
+        case .journeyAlreadyActive:
+            return "This route already has a Live Activity. End it or choose another route before starting the simulation."
+        case .activityCreationFailed(let message):
+            return "Could not create the simulated Live Activity: \(message)"
+        }
+    }
+}
+#endif
+
 @MainActor
 final class LiveActivityManager: ObservableObject {
     static let shared = LiveActivityManager()
@@ -52,6 +74,11 @@ final class LiveActivityManager: ObservableObject {
     private let backendCheckInMinIntervalSeconds: TimeInterval = 5
     private var lastRegisteredPushToStartToken: String? = nil
     private var notificationLiveSessionEnsuredActivityIDs: Set<String> = []
+
+    #if DEBUG
+    private static let debugJourneySimulationScheduleKey = "__debug_journey_simulation__"
+    private var debugJourneySimulationActivityID: String?
+    #endif
 
     // Live Activity lifetime; set to nil to disable auto-expiry and rely on manual dismissal.
     private let activityExpiryInterval: TimeInterval? = nil
@@ -175,6 +202,241 @@ final class LiveActivityManager: ObservableObject {
     // Legacy properties for backward compatibility
     var currentFromCRS: String? { activeJourneys.first?.fromCRS }
     var currentToCRS: String? { activeJourneys.first?.toCRS }
+
+    #if DEBUG
+    var hasDebugJourneySimulation: Bool {
+        currentDebugJourneySimulationActivity() != nil
+    }
+
+    func startDebugJourneySimulation(
+        group: JourneyGroup,
+        depStore: DeparturesStore
+    ) async throws -> DepartureV2? {
+        guard let journey = group.legs.first else {
+            throw DebugJourneySimulationError.noJourney
+        }
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+            throw DebugJourneySimulationError.liveActivitiesDisabled
+        }
+
+        await stopDebugJourneySimulation()
+
+        let route = routePresentation(for: journey)
+        let hasRouteConflict = currentSystemActivities().contains { activity in
+            let state = activity.content.state
+            let from = (state.deepLinkFromCRS ?? state.fromCRS).uppercased()
+            let to = (state.deepLinkToCRS ?? state.toCRS).uppercased()
+            return from == route.deepLinkFromCRS && to == route.deepLinkToCRS
+        }
+        guard !hasRouteConflict else {
+            throw DebugJourneySimulationError.journeyAlreadyActive
+        }
+
+        await depStore.refreshSpecificJourney(
+            fromCRS: journey.fromStation.crs,
+            toCRS: journey.toStation.crs
+        )
+        let departures = depStore.departures(for: journey)
+        let departure = departures.first(where: { !$0.isCancelled }) ?? departures.first
+        if let departure {
+            _ = await depStore.ensureServiceDetails(for: [departure.serviceID], force: true)
+        }
+
+        var state = await contentState(
+            for: journey,
+            depStore: depStore,
+            preferredServiceID: departure?.serviceID,
+            journeyUpdatesEnabled: false,
+            scheduleKey: Self.debugJourneySimulationScheduleKey
+        )
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = "HH:mm"
+        let fallbackDeparture = formatter.string(from: Date().addingTimeInterval(2 * 60))
+        let fallbackArrival = formatter.string(from: Date().addingTimeInterval(32 * 60))
+        if departure == nil {
+            state.destinationTitle = group.endStation.name
+            state.scheduledDeparture = fallbackDeparture
+            state.estimated = fallbackDeparture
+            state.platform = "2"
+            state.length = 8
+            state.statusText = "Currently on time, at or near \(group.startStation.name)"
+        }
+        if state.arrivalLabel == nil {
+            state.arrivalLabel = "Arr \(fallbackArrival)"
+        }
+        state.journeyPhase = .pendingStart
+        state.journeyStartName = group.startStation.name
+        state.journeyDestinationName = group.endStation.name
+        state.lastUpdated = Date()
+
+        do {
+            let activity = try Activity<JourneyActivityAttributes>.request(
+                attributes: JourneyActivityAttributes(displayName: route.title),
+                content: ActivityContent(state: state, staleDate: nil),
+                pushType: nil
+            )
+            debugJourneySimulationActivityID = activity.id
+            updatePublishedState()
+            return departure
+        } catch {
+            throw DebugJourneySimulationError.activityCreationFailed(error.localizedDescription)
+        }
+    }
+
+    func updateDebugJourneySimulation(
+        phase: JourneyActivityAttributes.JourneyPhase,
+        group: JourneyGroup,
+        checkpoint: ActiveJourneyHistoryCheckpoint?
+    ) async {
+        guard hasDebugJourneySimulation else { return }
+        await updateJourneyPhase(
+            phase,
+            startStation: group.startStation,
+            destinationStation: group.endStation,
+            checkpoint: checkpoint
+        )
+        updatePublishedState()
+    }
+
+    func stopDebugJourneySimulation() async {
+        if let activity = currentDebugJourneySimulationActivity() {
+            await activity.end(nil, dismissalPolicy: .immediate)
+        }
+        debugJourneySimulationActivityID = nil
+        updatePublishedState()
+    }
+
+    private func isDebugJourneySimulationActivity(
+        _ activity: Activity<JourneyActivityAttributes>
+    ) -> Bool {
+        activity.content.state.scheduleKey == Self.debugJourneySimulationScheduleKey
+    }
+
+    private func currentDebugJourneySimulationActivity() -> Activity<JourneyActivityAttributes>? {
+        let activities = currentSystemActivities()
+        if let debugJourneySimulationActivityID,
+           let activity = activities.first(where: { $0.id == debugJourneySimulationActivityID }) {
+            return activity
+        }
+        return activities.first(where: isDebugJourneySimulationActivity)
+    }
+    #endif
+
+    func updateJourneyPhase(
+        _ phase: JourneyActivityAttributes.JourneyPhase,
+        startStation: Station,
+        destinationStation: Station,
+        checkpoint: ActiveJourneyHistoryCheckpoint? = nil
+    ) async {
+        let startCRS = startStation.crs.uppercased()
+        let destinationCRS = destinationStation.crs.uppercased()
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.dateFormat = "HH:mm"
+
+        for activity in currentSystemActivities() {
+            var state = activity.content.state
+            let deepLinkFrom = (state.deepLinkFromCRS ?? state.fromCRS).uppercased()
+            let deepLinkTo = (state.deepLinkToCRS ?? state.toCRS).uppercased()
+            guard deepLinkFrom == startCRS, deepLinkTo == destinationCRS else { continue }
+
+            state.journeyPhase = phase
+            state.journeyStartName = startStation.name
+            state.journeyDestinationName = destinationStation.name
+            state.arrivalDelayMinutes = nil
+
+            if phase.showsInProgressService {
+                let previouslyDisplayedDeparture = state.estimated
+                if let previousArrivalLabel = state.arrivalLabel,
+                   previousArrivalLabel.hasPrefix("Arr ") {
+                    state.estimated = String(previousArrivalLabel.dropFirst(4))
+                }
+                state.arrivalLabel = "Departed \(state.scheduledDeparture ?? previouslyDisplayedDeparture)"
+                state.upcomingDepartures = []
+
+                if phase == .arrived {
+                    state.destinationTitle = destinationStation.name
+                    state.statusText = nil
+                    let finalLeg = checkpoint?.legs.last
+                    let arrival = finalLeg?.actualArrivalAt
+                        ?? finalLeg?.detectedArrivalAt
+                        ?? checkpoint?.detectedArrivalAt
+                    if let arrival {
+                        state.estimated = formatter.string(from: arrival)
+                    }
+                    state.arrivalDelayMinutes = JourneyHistoryDelayPolicy.confirmedDelayMinutes(
+                        scheduledArrival: finalLeg?.scheduledArrivalAt,
+                        actualArrival: finalLeg?.actualArrivalAt
+                    )
+                    if let arrivalDelayMinutes = state.arrivalDelayMinutes {
+                        state.delayMinutes = arrivalDelayMinutes
+                    }
+                }
+
+                guard let leg = checkpoint?.currentLeg else {
+                    await activity.update(ActivityContent(state: state, staleDate: nil))
+                    continue
+                }
+                if let serviceID = leg.serviceID {
+                    _ = await DeparturesStore.shared.ensureServiceDetails(
+                        for: [serviceID],
+                        force: true,
+                        context: ServiceDetailsLookupContext(
+                            fromCRS: leg.fromStation.crs,
+                            toCRS: leg.toStation.crs,
+                            originCRS: nil,
+                            operator: leg.operatorCode,
+                            destinationCRSs: [destinationCRS],
+                            length: nil
+                        )
+                    )
+                }
+                if let serviceID = leg.serviceID,
+                   let details = DeparturesStore.shared.serviceDetailsById[serviceID] {
+                    let destinationCallingPoint = details.allStations.first {
+                        $0.crs.caseInsensitiveCompare(destinationCRS) == .orderedSame
+                    }
+                    if let destinationCallingPoint {
+                        state.estimated = callingPointDisplayTime(destinationCallingPoint)
+                        if let arrivalPlatform = destinationCallingPoint.platform,
+                           !arrivalPlatform.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            state.platform = arrivalPlatform
+                        }
+                    } else if details.crs.caseInsensitiveCompare(destinationCRS) == .orderedSame {
+                        state.estimated = details.ata
+                            ?? details.eta
+                            ?? details.sta
+                            ?? state.estimated
+                        if let arrivalPlatform = details.platform,
+                           !arrivalPlatform.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            state.platform = arrivalPlatform
+                        }
+                    }
+                    if let live = computeLiveStatus(
+                        from: details,
+                        within: leg.fromStation.crs,
+                        toCRS: destinationCRS
+                    ) {
+                        state.statusText = live.text
+                        state.delayMinutes = live.delayMinutes
+                    }
+                    if state.length == nil, let length = details.length, length > 0 {
+                        state.length = length
+                    }
+                }
+
+                let departure = leg.actualDepartureAt
+                    ?? leg.scheduledDepartureAt
+                    ?? leg.detectedDepartureAt
+                if let departure {
+                    state.arrivalLabel = "Departed \(formatter.string(from: departure))"
+                }
+            }
+
+            await activity.update(ActivityContent(state: state, staleDate: nil))
+        }
+    }
 
     private init() {
         startActivityLifecycleLogging()
@@ -728,6 +990,26 @@ final class LiveActivityManager: ObservableObject {
         }
     }
 
+    func stopJourneyActivities(deepLinkFromCRS: String, deepLinkToCRS: String) async {
+        let fromCRS = deepLinkFromCRS.uppercased()
+        let toCRS = deepLinkToCRS.uppercased()
+        let matches = currentSystemActivities().filter { activity in
+            let state = activity.content.state
+            return (state.deepLinkFromCRS ?? state.fromCRS).uppercased() == fromCRS
+                && (state.deepLinkToCRS ?? state.toCRS).uppercased() == toCRS
+        }
+
+        for activity in matches {
+            if trackedActivities[activity.id] != nil {
+                await stopActivity(activityID: activity.id)
+            } else {
+                await activity.end(nil, dismissalPolicy: .immediate)
+                await sendLiveActivityUnregistration(activityID: activity.id)
+            }
+        }
+        updatePublishedState()
+    }
+
     func setJourneyUpdatesEnabled(for journeys: [Journey], enabled: Bool, depStore: DeparturesStore) async {
         for journey in journeys {
             await setJourneyUpdatesEnabled(for: journey, enabled: enabled, depStore: depStore)
@@ -997,6 +1279,23 @@ final class LiveActivityManager: ObservableObject {
                 $0.value.fromCRS == journey.fromStation.crs && $0.value.toCRS == journey.toStation.crs
             }?.value.preferredServiceID
         }()
+        let route = routePresentation(for: journey)
+        let trackedJourney = JourneyTrackingCoordinator.shared.activeJourney
+            ?? JourneyTrackingCoordinator.shared.recentlyCompletedJourney
+        if let trackedJourney,
+           trackedJourney.plannedOrigin.crs.caseInsensitiveCompare(route.deepLinkFromCRS) == .orderedSame,
+           trackedJourney.plannedDestination.crs.caseInsensitiveCompare(route.deepLinkToCRS) == .orderedSame {
+            if let serviceID = trackedJourney.currentLeg?.serviceID {
+                _ = await depStore.ensureServiceDetails(for: [serviceID], force: true)
+            }
+            await updateJourneyPhase(
+                JourneyTrackingCoordinator.shared.activeJourney == nil ? .arrived : .enRoute,
+                startStation: trackedJourney.plannedOrigin,
+                destinationStation: trackedJourney.plannedDestination,
+                checkpoint: trackedJourney
+            )
+            return
+        }
         let relevantDeps = relevantDepartures(from: deps)
         let effectivePreferredServiceID = preferredServiceID.flatMap { preferredServiceID in
             relevantDeps.contains(where: { $0.serviceID == preferredServiceID }) ? preferredServiceID : nil
@@ -1195,7 +1494,13 @@ final class LiveActivityManager: ObservableObject {
             journeyUpdatesEnabled: journeyUpdatesEnabled,
             scheduleKey: scheduleKey,
             windowStart: windowStart,
-            windowEnd: windowEnd
+            windowEnd: windowEnd,
+            journeyStartName: journey.fromStation.name,
+            journeyDestinationName: route.deepLinkToCRS.caseInsensitiveCompare(journey.toStation.crs) == .orderedSame
+                ? journey.toStation.name
+                : StationsService.shared.stations.first {
+                    $0.crs.caseInsensitiveCompare(route.deepLinkToCRS) == .orderedSame
+                }?.name
         )
         return state
     }
@@ -1473,6 +1778,25 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func handleActivityUpdate(_ activity: Activity<JourneyActivityAttributes>) async {
+        #if DEBUG
+        if isDebugJourneySimulationActivity(activity) {
+            debugJourneySimulationActivityID = activity.id
+            updatePublishedState()
+            stateMonitorTasks[activity.id]?.cancel()
+            stateMonitorTasks[activity.id] = Task { [weak self] in
+                guard let self else { return }
+                for await state in activity.activityStateUpdates {
+                    if state == .ended || state == .dismissed {
+                        self.debugJourneySimulationActivityID = nil
+                        self.updatePublishedState()
+                        break
+                    }
+                }
+                self.stateMonitorTasks[activity.id] = nil
+            }
+            return
+        }
+        #endif
         await registerRemoteStartedActivityIfNeeded(activity)
         self.logger.info("[ActivityMonitor] Activity emitted id=\(activity.id, privacy: .public) state=\(self.describe(state: activity.activityState), privacy: .public)")
         logActivitySnapshot(activity, context: "activityUpdates emit")
@@ -1725,8 +2049,22 @@ final class LiveActivityManager: ObservableObject {
     /// to foreground the app.
     func registerAnyUnregisteredActivities() async {
         let systemActivities = currentSystemActivities()
-        let unregistered = systemActivities.filter { trackedActivities[$0.id] == nil }
-        let scheduledSystemActivities = systemActivities.filter { scheduledActivityKey(for: $0) != nil }
+        let unregistered = systemActivities.filter { activity in
+            guard trackedActivities[activity.id] == nil else { return false }
+            #if DEBUG
+            return !isDebugJourneySimulationActivity(activity)
+            #else
+            return true
+            #endif
+        }
+        let scheduledSystemActivities = systemActivities.filter { activity in
+            guard scheduledActivityKey(for: activity) != nil else { return false }
+            #if DEBUG
+            return !isDebugJourneySimulationActivity(activity)
+            #else
+            return true
+            #endif
+        }
         ClientDiagnosticsLogger.log("live_activity", "register_any_unregistered_activities", metadata: [
             "tracked_count": trackedActivities.count,
             "unregistered_count": unregistered.count,
@@ -1746,6 +2084,9 @@ final class LiveActivityManager: ObservableObject {
 
         let refreshedSystemActivities = currentSystemActivities()
         for activity in refreshedSystemActivities where scheduledActivityKey(for: activity) != nil {
+            #if DEBUG
+            if isDebugJourneySimulationActivity(activity) { continue }
+            #endif
             let fromCRS = activity.contentState.fromCRS.uppercased()
             let toCRS = activity.contentState.toCRS.uppercased()
             await ensureScheduledJourneyUpdatesActiveIfNeeded(activity, fromCRS: fromCRS, toCRS: toCRS)
@@ -2058,7 +2399,6 @@ final class LiveActivityManager: ObservableObject {
         #endif
 
         let muteDelayMinutes = (UserDefaults.standard.object(forKey: "muteDelayMinutes") as? Int) ?? 3
-        let autoEndLiveActivity = (UserDefaults.standard.object(forKey: "autoEndLiveActivity") as? Bool) ?? true
         var payload: [String: Any] = [
             "device_id": deviceID,
             "activity_id": activityID,
@@ -2069,9 +2409,28 @@ final class LiveActivityManager: ObservableObject {
             "mute_on_arrival": true,
             "mute_delay_minutes": muteDelayMinutes,
             "auto_end_on_arrival": false,
-            "auto_end_on_departure": autoEndLiveActivity,
+            "auto_end_on_departure": false,
             "journey_updates_enabled": journeyUpdatesEnabled
         ]
+        let routeFromCRS = (deepLinkFromCRS ?? fromCRS).uppercased()
+        let routeToCRS = (deepLinkToCRS ?? toCRS).uppercased()
+        let coordinator = JourneyTrackingCoordinator.shared
+        if let active = coordinator.activeJourney,
+           active.plannedOrigin.crs.uppercased() == routeFromCRS,
+           active.plannedDestination.crs.uppercased() == routeToCRS {
+            payload["journey_phase"] = JourneyActivityAttributes.JourneyPhase.enRoute.rawValue
+        } else if let completed = coordinator.recentlyCompletedJourney,
+                  completed.plannedOrigin.crs.uppercased() == routeFromCRS,
+                  completed.plannedDestination.crs.uppercased() == routeToCRS {
+            payload["journey_phase"] = JourneyActivityAttributes.JourneyPhase.arrived.rawValue
+        } else if let candidate = coordinator.armedCandidates.first(where: {
+            $0.stations.first?.crs.uppercased() == routeFromCRS
+                && $0.stations.last?.crs.uppercased() == routeToCRS
+        }) {
+            payload["journey_phase"] = candidate.originArrivedAt == nil
+                ? JourneyActivityAttributes.JourneyPhase.pendingStart.rawValue
+                : JourneyActivityAttributes.JourneyPhase.atStart.rawValue
+        }
         if let routeTitle, !routeTitle.isEmpty {
             payload["display_name"] = routeTitle
         }

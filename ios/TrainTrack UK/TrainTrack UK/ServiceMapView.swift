@@ -2,6 +2,29 @@ import SwiftUI
 import Combine
 import CoreLocation
 
+@MainActor
+private enum RailwayMapPresentationGate {
+    private static var hasPresentedMap = false
+
+    static func waitForFirstMap(reduceMotion: Bool) async {
+        guard !hasPresentedMap else { return }
+        do {
+            if reduceMotion {
+                await Task.yield()
+            } else {
+                // Avoid constructing the first MapKit view during the navigation push.
+                try await Task.sleep(for: .milliseconds(450))
+            }
+        } catch {
+            return
+        }
+    }
+
+    static func markMapPresented() {
+        hasPresentedMap = true
+    }
+}
+
 struct ServiceMapView: View {
     private static let trainLocationEstimateMessage = "Train locations are estimates only"
     private static let initialServiceDetailsFreshness: TimeInterval = 15
@@ -30,6 +53,7 @@ struct ServiceMapView: View {
     @State private var railwayRouteStationRange: ClosedRange<Int>?
     @State private var railwayRouteError: String?
     @State private var isLoadingRailwayRoute = false
+    @State private var isMapPresentationReady = false
     @State private var isShowingTrainInfo = false
     @State private var isShowingEstimateNotice = true
     @State private var hasFinishedInitialLoad = false
@@ -64,7 +88,8 @@ struct ServiceMapView: View {
     }
 
     private var isMapLoading: Bool {
-        !hasFinishedInitialLoad
+        !isMapPresentationReady
+            || !hasFinishedInitialLoad
             || isLoadingRailwayRoute
             || (
                 hasCallingPoints
@@ -169,6 +194,9 @@ struct ServiceMapView: View {
                     highlightedTravelRange: highlightedTravelRange,
                     historicalArrivalTime: historicalArrivalTime
                 )
+                .onAppear {
+                    RailwayMapPresentationGate.markMapPresented()
+                }
                 .transition(.opacity)
             } else {
                 ContentUnavailableView {
@@ -198,9 +226,10 @@ struct ServiceMapView: View {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
+        .disablesHorizontalTabSwipe()
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                if hasCallingPoints && !isMapLoading {
+                if !isMapLoading {
                     Button {
                         isShowingTrainInfo = true
                     } label: {
@@ -240,6 +269,11 @@ struct ServiceMapView: View {
         .onReceive(progressClock) { now in
             guard hasCallingPoints, !isHistorical else { return }
             recalcCurrentIndex(at: now)
+        }
+        .task {
+            await RailwayMapPresentationGate.waitForFirstMap(reduceMotion: reduceMotion)
+            guard !Task.isCancelled else { return }
+            isMapPresentationReady = true
         }
         .task(id: loadRequestID) {
             await loadServiceDetails()

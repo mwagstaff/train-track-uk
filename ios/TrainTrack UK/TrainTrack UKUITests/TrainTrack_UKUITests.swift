@@ -37,6 +37,8 @@ final class TrainTrack_UKUITests: XCTestCase {
         app.launch()
 
         XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.tabBars.count, 1)
+        XCTAssertEqual(app.tabBars.buttons.count, 4)
         XCTAssertFalse(app.tabBars.buttons["Add Journey"].exists)
 
         app.swipeLeft()
@@ -56,6 +58,40 @@ final class TrainTrack_UKUITests: XCTestCase {
     }
 
     @MainActor
+    func testRepeatedTopLevelSwipesKeepNavigationStable() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
+
+        let swipeHeights: [CGFloat] = [0.28, 0.48, 0.68, 0.38]
+        for height in swipeHeights {
+            horizontalSwipe(in: app, from: 0.82, to: 0.18, at: height)
+            XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 2))
+
+            horizontalSwipe(in: app, from: 0.18, to: 0.82, at: height)
+            XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 2))
+        }
+
+        XCTAssertEqual(app.state, .runningForeground)
+        XCTAssertEqual(app.tabBars.count, 1)
+        XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.tabBars.buttons["Favourites"].isSelected)
+    }
+
+    private func horizontalSwipe(
+        in app: XCUIApplication,
+        from startX: CGFloat,
+        to endX: CGFloat,
+        at y: CGFloat
+    ) {
+        let window = app.windows.firstMatch
+        let start = window.coordinate(withNormalizedOffset: CGVector(dx: startX, dy: y))
+        let end = window.coordinate(withNormalizedOffset: CGVector(dx: endX, dy: y))
+        start.press(forDuration: 0.05, thenDragTo: end)
+    }
+
+    @MainActor
     func testCancellingStandaloneAddJourneyReturnsToMyJourneys() throws {
         let app = XCUIApplication()
         app.launch()
@@ -71,7 +107,7 @@ final class TrainTrack_UKUITests: XCTestCase {
 
         XCTAssertTrue(app.navigationBars["Add Journey"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 2))
-        XCTAssertFalse(app.tabBars.firstMatch.exists)
+        XCTAssertFalse(app.tabBars.firstMatch.isHittable)
 
         app.buttons["Cancel"].tap()
 
@@ -90,7 +126,7 @@ final class TrainTrack_UKUITests: XCTestCase {
         app.buttons["toolbar.add-journey"].tap()
 
         XCTAssertTrue(app.navigationBars["Add Journey"].waitForExistence(timeout: 2))
-        XCTAssertFalse(app.tabBars.firstMatch.exists)
+        XCTAssertFalse(app.tabBars.firstMatch.isHittable)
 
         let fromField = app.textFields["add-journey.from"]
         XCTAssertTrue(fromField.waitForExistence(timeout: 2))

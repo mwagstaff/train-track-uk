@@ -101,11 +101,6 @@ struct MyJourneyHistoryView: View {
                                             .padding(.bottom, 4)
                                     }
                                 }
-                                .swipeActions {
-                                    Button("Delete", role: .destructive) {
-                                        historyStore.delete(record)
-                                    }
-                                }
                             }
                         }
                     }
@@ -404,6 +399,7 @@ private struct JourneyHistoryDelayRepayActions: View {
     @EnvironmentObject private var historyStore: JourneyHistoryStore
     @Environment(\.openURL) private var openURL
     @State private var isResolvingClaimURL = false
+    @State private var isChoosingClaimOperator = false
     @State private var claimError: String?
     @ScaledMetric(relativeTo: .subheadline) private var actionControlHeight: CGFloat = 32
     @ScaledMetric(relativeTo: .subheadline) private var actionMenuWidth: CGFloat = 52
@@ -422,39 +418,38 @@ private struct JourneyHistoryDelayRepayActions: View {
         if isResolvingClaimURL {
             return "Opening claim page…"
         }
-        return record.delayRepayClaimStatus?.displayName ?? "Delay Repay eligible"
+        return record.delayRepayClaimStatus?.displayName ?? "Claim delay repay"
     }
 
     private var statusSystemImage: String? {
         record.delayRepayClaimStatus?.systemImage
     }
 
+    private var operatorOptions: [JourneyHistoryDelayRepayOperatorOption] {
+        JourneyHistoryDelayPolicy.operatorOptions(in: record)
+    }
+
     var body: some View {
         HStack(spacing: 10) {
-            HStack(spacing: 7) {
-                if isResolvingClaimURL {
-                    ProgressView()
-                        .controlSize(.small)
-                } else if let statusSystemImage {
-                    Image(systemName: statusSystemImage)
-                } else {
-                    Text("£")
+            if record.delayRepayClaimStatus == nil {
+                Button {
+                    beginClaim()
+                } label: {
+                    statusCapsule
                 }
-
-                Text(statusText)
+                .buttonStyle(.plain)
+                .disabled(isResolvingClaimURL)
+                .accessibilityLabel(isResolvingClaimURL ? "Opening claim page" : "Claim Delay Repay")
+                .accessibilityHint("Opens Delay Repay claim options")
+            } else {
+                statusCapsule
             }
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(statusColor)
-            .padding(.horizontal, 12)
-            .frame(height: actionControlHeight)
-            .background(statusColor.opacity(0.14), in: Capsule())
-            .accessibilityElement(children: .combine)
 
             Spacer(minLength: 8)
 
             Menu {
                 Button {
-                    openClaimPage()
+                    beginClaim()
                 } label: {
                     Label("Claim Delay Repay", systemImage: "sterlingsign.circle")
                 }
@@ -502,22 +497,64 @@ private struct JourneyHistoryDelayRepayActions: View {
         } message: {
             Text(claimError ?? "The claim page could not be opened.")
         }
+        .sheet(isPresented: $isChoosingClaimOperator) {
+            JourneyHistoryDelayRepayOperatorPicker(
+                finalDelayMinutes: record.delayMinutes,
+                options: operatorOptions
+            ) { option in
+                isChoosingClaimOperator = false
+                openClaimPage(for: option)
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
     }
 
-    private func openClaimPage() {
+    private var statusCapsule: some View {
+        HStack(spacing: 7) {
+            if isResolvingClaimURL {
+                ProgressView()
+                    .controlSize(.small)
+            } else if let statusSystemImage {
+                Image(systemName: statusSystemImage)
+            } else {
+                Text("£")
+            }
+
+            Text(statusText)
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(statusColor)
+        .padding(.horizontal, 12)
+        .frame(height: actionControlHeight)
+        .background(statusColor.opacity(0.14), in: Capsule())
+        .contentShape(Capsule())
+        .accessibilityElement(children: .combine)
+    }
+
+    private func beginClaim() {
         guard !isResolvingClaimURL else { return }
-        guard let leg = JourneyHistoryDelayPolicy.responsibleOperatorLeg(in: record) else {
+        guard let onlyOption = operatorOptions.first else {
             claimError = "No train operator was recorded for this journey."
             return
         }
+        if operatorOptions.count == 1 {
+            openClaimPage(for: onlyOption)
+        } else {
+            isChoosingClaimOperator = true
+        }
+    }
+
+    private func openClaimPage(for option: JourneyHistoryDelayRepayOperatorOption) {
+        guard !isResolvingClaimURL else { return }
 
         isResolvingClaimURL = true
         Task {
             defer { isResolvingClaimURL = false }
             do {
                 let url = try await NetworkServicePhone.shared.fetchDelayRepayClaimURL(
-                    operatorCode: leg.operatorCode,
-                    operatorName: leg.operatorName
+                    operatorCode: option.operatorCode,
+                    operatorName: option.operatorName
                 )
                 openURL(url) { accepted in
                     if !accepted {
@@ -525,17 +562,200 @@ private struct JourneyHistoryDelayRepayActions: View {
                     }
                 }
             } catch {
-                claimError = "The claim page for \(leg.operatorName ?? "this operator") is currently unavailable."
+                claimError = "The claim page for \(option.operatorName) is currently unavailable."
             }
         }
+    }
+}
+
+private struct JourneyHistoryDelayRepayOperatorPicker: View {
+    let finalDelayMinutes: Int?
+    let options: [JourneyHistoryDelayRepayOperatorOption]
+    let onSelect: (JourneyHistoryDelayRepayOperatorOption) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private var recommendedOption: JourneyHistoryDelayRepayOperatorOption? {
+        options.first(where: \.isRecommended)
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if let finalDelayMinutes {
+                            Label(
+                                "Final arrival \(delayText(finalDelayMinutes))",
+                                systemImage: "clock.badge.exclamationmark"
+                            )
+                            .font(.headline)
+                            .foregroundStyle(
+                                finalDelayMinutes >= JourneyHistoryDelayPolicy.delayRepayThresholdMinutes
+                                    ? Color.red
+                                    : Color.primary
+                            )
+                        }
+
+                        Text("Choose the operator most likely to have caused your final delay. If you pick the wrong one, they should normally forward your claim.")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+
+                        if let recommendedOption {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Label(
+                                    "Timing suggests \(recommendedOption.operatorName)",
+                                    systemImage: "chart.line.uptrend.xyaxis"
+                                )
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(Color.accentColor)
+                                    .lineLimit(nil)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if let reason = recommendedOption.recommendationReason {
+                                    Text(reason)
+                                        .font(.footnote)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(nil)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(12)
+                            .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                Section {
+                    ForEach(options) { option in
+                        Button {
+                            dismiss()
+                            onSelect(option)
+                        } label: {
+                            JourneyHistoryDelayRepayOperatorRow(option: option)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } header: {
+                    Text("Choose an operator")
+                }
+            }
+            .navigationTitle("Claim Delay Repay")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func delayText(_ minutes: Int) -> String {
+        minutes == 1 ? "1 minute late" : "\(minutes) minutes late"
+    }
+}
+
+private struct JourneyHistoryDelayRepayOperatorRow: View {
+    let option: JourneyHistoryDelayRepayOperatorOption
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(option.operatorName)
+                    .font(.headline)
+                Spacer(minLength: 8)
+                if option.isRecommended {
+                    Text("Most likely")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.accentColor.opacity(0.12), in: Capsule())
+                }
+            }
+
+            ForEach(option.legAssessments) { assessment in
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("Leg \(assessment.legNumber): \(assessment.leg.fromStation.name) → \(assessment.leg.toStation.name)")
+                        .font(.subheadline.weight(.medium))
+
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 16) {
+                            JourneyHistoryDelayMetric(
+                                event: "Departed",
+                                delayMinutes: assessment.departureDelayMinutes
+                            )
+                            JourneyHistoryDelayMetric(
+                                event: "Arrived",
+                                delayMinutes: assessment.arrivalDelayMinutes
+                            )
+                        }
+                        VStack(alignment: .leading, spacing: 6) {
+                            JourneyHistoryDelayMetric(
+                                event: "Departed",
+                                delayMinutes: assessment.departureDelayMinutes
+                            )
+                            JourneyHistoryDelayMetric(
+                                event: "Arrived",
+                                delayMinutes: assessment.arrivalDelayMinutes
+                            )
+                        }
+                    }
+                }
+                .padding(10)
+                .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 10))
+            }
+
+            Label("Open claim page", systemImage: "arrow.up.right.square")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Color.accentColor)
+        }
+        .padding(.vertical, 5)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Opens the Delay Repay claim page for \(option.operatorName)")
+    }
+}
+
+private struct JourneyHistoryDelayMetric: View {
+    let event: String
+    let delayMinutes: Int?
+
+    private var color: Color {
+        guard let delayMinutes else { return .secondary }
+        if delayMinutes >= JourneyHistoryDelayPolicy.delayRepayThresholdMinutes { return .red }
+        if delayMinutes > 0 { return .orange }
+        return .green
+    }
+
+    private var text: String {
+        guard let delayMinutes else { return "\(event) time unavailable" }
+        if delayMinutes == 0 { return "\(event) on time" }
+        let unit = delayMinutes == 1 ? "min" : "mins"
+        return "\(event) \(delayMinutes) \(unit) late"
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(delayMinutes == nil ? Color.secondary : Color.primary)
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
 private struct JourneyHistoryDetailView: View {
     let record: JourneyHistoryRecord
     @EnvironmentObject private var historyStore: JourneyHistoryStore
+    @Environment(\.dismiss) private var dismiss
     @State private var shareItem: JourneyHistoryShareItem?
     @State private var exportError: String?
+    @State private var isShowingRemovalConfirmation = false
 
     var body: some View {
         List {
@@ -599,6 +819,12 @@ private struct JourneyHistoryDetailView: View {
                     }
                 }
             }
+
+            Section {
+                Button("Remove this journey", role: .destructive) {
+                    isShowingRemovalConfirmation = true
+                }
+            }
         }
         .navigationTitle(record.routeTitle)
         .navigationBarTitleDisplayMode(.inline)
@@ -628,6 +854,18 @@ private struct JourneyHistoryDetailView: View {
             Button("OK", role: .cancel) { exportError = nil }
         } message: {
             Text(exportError ?? "The export could not be created.")
+        }
+        .alert(
+            "Remove this journey?",
+            isPresented: $isShowingRemovalConfirmation
+        ) {
+            Button("Cancel", role: .cancel) {}
+            Button("Remove journey", role: .destructive) {
+                historyStore.delete(record)
+                dismiss()
+            }
+        } message: {
+            Text("This cannot be undone.")
         }
     }
 
@@ -672,6 +910,7 @@ private struct JourneyHistoryDetailView: View {
                 stations: stations,
                 fromCRS: leg.fromStation.crs,
                 toCRS: travelledDestinationCRS(for: leg, index: index),
+                historicalDepartureTime: historicalDepartureTime(for: leg),
                 historicalArrivalTime: historicalArrivalTime(for: leg)
             )
         }.filter {
@@ -725,6 +964,13 @@ private struct JourneyHistoryDetailView: View {
         return String(format: "%02d:%02d", hour, minute)
     }
 
+    private func historicalDepartureTime(for leg: JourneyHistoryLeg) -> String? {
+        guard let departure = leg.actualDepartureAt ?? leg.detectedDepartureAt else { return nil }
+        let components = Calendar.current.dateComponents([.hour, .minute], from: departure)
+        guard let hour = components.hour, let minute = components.minute else { return nil }
+        return String(format: "%02d:%02d", hour, minute)
+    }
+
     private func mapCallingPoints(for leg: JourneyHistoryLeg) -> [CallingPoint] {
         let storedCallingPoints = leg.serviceCallingPoints.flatMap { $0.isEmpty ? nil : $0 }
             ?? leg.callingPoints
@@ -753,6 +999,7 @@ struct JourneyHistoryRouteMapLeg: Identifiable {
     let stations: [CallingPoint]
     let fromCRS: String
     let toCRS: String
+    let historicalDepartureTime: String?
     let historicalArrivalTime: String?
 
     var highlightedTravelRange: ClosedRange<Int>? {
@@ -801,7 +1048,9 @@ private struct JourneyHistoryCombinedRouteMapView: View {
                             id: "journey-leg-\(loaded.leg.id.uuidString)",
                             route: loaded.route,
                             stations: loaded.leg.stations,
+                            userDepartureCRS: loaded.leg.fromCRS,
                             highlightedTravelRange: loaded.leg.highlightedTravelRange,
+                            historicalDepartureTime: loaded.leg.historicalDepartureTime,
                             historicalArrivalTime: loaded.leg.historicalArrivalTime,
                             omitsFirstStationAnnotation: false
                         )
@@ -826,6 +1075,7 @@ private struct JourneyHistoryCombinedRouteMapView: View {
                 }
             }
         }
+        .disablesHorizontalTabSwipe()
         .navigationTitle("Journey Route")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)

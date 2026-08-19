@@ -7,9 +7,53 @@
 
 import Foundation
 import Testing
+import JourneyActivityShared
 @testable import TrainTrack_UK
 
 struct TrainTrack_UKTests {
+
+    @Test func journeyStatusMessagesCoverEachTrackingPhase() {
+        let phases = JourneyActivityAttributes.JourneyPhase.self
+
+        #expect(phases.pendingStart.statusMessage(
+            startStation: "Kent House",
+            destinationStation: "London Victoria"
+        ) == "Watching for arrival at Kent House")
+        #expect(phases.atStart.statusMessage(
+            startStation: "Kent House",
+            destinationStation: "London Victoria"
+        ) == "At Kent House")
+        #expect(phases.enRoute.statusMessage(
+            startStation: "Kent House",
+            destinationStation: "London Victoria"
+        ) == "Tracking train journey")
+        #expect(phases.arrived.statusMessage(
+            startStation: "Kent House",
+            destinationStation: "London Victoria"
+        ) == "Arrived at London Victoria")
+    }
+
+    @Test func arrivedJourneyOnlyOffersDelayRepayAtTheFifteenMinuteThreshold() {
+        let baseState = JourneyActivityAttributes.ContentState(
+            fromCRS: "BTN",
+            toCRS: "ECR",
+            destinationTitle: "East Croydon",
+            arrivalLabel: "Departed 10:59",
+            length: 12,
+            platform: "5",
+            estimated: "11:51",
+            statusText: nil,
+            delayMinutes: 0,
+            journeyPhase: .arrived
+        )
+        var fourteenMinutesLate = baseState
+        fourteenMinutesLate.arrivalDelayMinutes = 14
+        var fifteenMinutesLate = baseState
+        fifteenMinutesLate.arrivalDelayMinutes = 15
+
+        #expect(fourteenMinutesLate.delayRepayMessage == nil)
+        #expect(fifteenMinutesLate.delayRepayMessage == "Eligible for a Delay Repay claim — 15 min late")
+    }
 
     @Test @MainActor func scheduledLiveSessionsAreNotShownAsAdHocJourneyUpdates() throws {
         let scheduled = try notificationSubscription(id: "schedule", origin: nil, source: "scheduled")
@@ -65,6 +109,29 @@ struct TrainTrack_UKTests {
         #expect(Tab.allCases == [.favourites, .myJourneys, .addJourney, .history, .profile])
         #expect(Tab.allCases.map(\.title) == ["Favourites", "My Journeys", "Add Journey", "History", "Profile"])
         #expect(Tab.allCases.map(\.systemImage) == ["heart.fill", "list.bullet", "plus.circle", "clock.arrow.circlepath", "person.circle"])
+    }
+
+    @Test @MainActor func historyDeepLinkSelectsTheHistoryRoot() throws {
+        let tabRouter = TabRouter.shared
+        let deepLinkRouter = DeepLinkRouter.shared
+        let previousTab = tabRouter.selected
+        let previousResetTrigger = tabRouter.navigationResetTrigger
+        let previousRouteMapDestination = deepLinkRouter.routeMapDestination
+        defer {
+            tabRouter.selected = previousTab
+            tabRouter.navigationResetTrigger = previousResetTrigger
+            deepLinkRouter.routeMapDestination = previousRouteMapDestination
+        }
+
+        tabRouter.selected = .myJourneys
+        let resetTrigger = tabRouter.navigationResetTrigger
+        let url = try #require(URL(string: "traintrack://history"))
+
+        deepLinkRouter.handle(url: url)
+
+        #expect(tabRouter.selected == .history)
+        #expect(tabRouter.navigationResetTrigger == resetTrigger + 1)
+        #expect(deepLinkRouter.routeMapDestination == nil)
     }
 
     @Test func journeyStopPlacementPreservesTheCurrentDestination() {

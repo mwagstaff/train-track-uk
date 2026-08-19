@@ -120,6 +120,33 @@ enum RailwayStationAnnotationLabel {
     }
 }
 
+enum RailwayStationTransferLabel {
+    static func text(
+        stationName: String,
+        arrivalTime: String?,
+        departureTime: String?
+    ) -> String? {
+        guard let arrivalTime = railwayClockTime(arrivalTime),
+              let departureTime = railwayClockTime(departureTime),
+              let arrivalMinutes = minutesSinceMidnight(arrivalTime),
+              let departureMinutes = minutesSinceMidnight(departureTime) else {
+            return nil
+        }
+        let changeMinutes = (departureMinutes - arrivalMinutes + 24 * 60) % (24 * 60)
+        return "\(stationName) (arrived \(arrivalTime), \(changeMinutes) minute change, departed \(departureTime))"
+    }
+
+    private static func minutesSinceMidnight(_ time: String) -> Int? {
+        let components = time.split(separator: ":")
+        guard components.count == 2,
+              let hour = Int(components[0]),
+              let minute = Int(components[1]) else {
+            return nil
+        }
+        return hour * 60 + minute
+    }
+}
+
 struct RailwayStationInfoPresentation: Equatable {
     let timingText: String
     let platformText: String
@@ -196,7 +223,9 @@ struct ServiceRailwayMapBranch: Identifiable {
     let id: String
     let route: ServiceRailwayRoute
     let stations: [CallingPoint]
+    let userDepartureCRS: String?
     let highlightedTravelRange: ClosedRange<Int>?
+    let historicalDepartureTime: String?
     let historicalArrivalTime: String?
     let omitsFirstStationAnnotation: Bool
 
@@ -204,14 +233,18 @@ struct ServiceRailwayMapBranch: Identifiable {
         id: String,
         route: ServiceRailwayRoute,
         stations: [CallingPoint],
+        userDepartureCRS: String? = nil,
         highlightedTravelRange: ClosedRange<Int>? = nil,
+        historicalDepartureTime: String? = nil,
         historicalArrivalTime: String? = nil,
         omitsFirstStationAnnotation: Bool = true
     ) {
         self.id = id
         self.route = route
         self.stations = stations
+        self.userDepartureCRS = userDepartureCRS
         self.highlightedTravelRange = highlightedTravelRange
+        self.historicalDepartureTime = historicalDepartureTime
         self.historicalArrivalTime = historicalArrivalTime
         self.omitsFirstStationAnnotation = omitsFirstStationAnnotation
     }
@@ -223,9 +256,125 @@ private struct RailwayMapStationItem: Identifiable {
     let coordinate: CLLocationCoordinate2D
     let primaryIndex: Int?
     let stationIndex: Int
+    let userDepartureCRS: String?
     let historicalTravelRange: ClosedRange<Int>?
     let historicalArrivalTime: String?
     let finalStationIndex: Int
+    let labelOverride: String?
+    let isTransferStation: Bool
+}
+
+private struct RailwayMapAnnotationSource {
+    let idPrefix: String
+    let stations: [CallingPoint]
+    let highlightedTravelRange: ClosedRange<Int>?
+    let historicalDepartureTime: String?
+    let historicalArrivalTime: String?
+}
+
+private struct RailwayMapTransferAnnotationPlan {
+    var labelsByStationID: [String: String] = [:]
+    var suppressedStationIDs: Set<String> = []
+    var transferStationIDs: Set<String> = []
+}
+
+enum RailwayStationLabelPriority {
+    static func shouldRemainVisible(
+        stationIndex: Int,
+        finalStationIndex: Int,
+        stationCRS: String,
+        userDepartureCRS: String?
+    ) -> Bool {
+        if stationIndex == 0 || stationIndex == finalStationIndex {
+            return true
+        }
+        guard let userDepartureCRS else { return false }
+        return normalizedCRS(stationCRS) == normalizedCRS(userDepartureCRS)
+    }
+
+    private static func normalizedCRS(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    }
+}
+
+enum RailwayStationLabelCollisionDetector {
+    static let maximumLabelWidth: CGFloat = 180
+    static let maximumLineCount: CGFloat = 3
+    static let labelAnchorGap: CGFloat = 20
+    static let minimumOverlapRatio: CGFloat = 0.20
+
+    @MainActor
+    static func frame(
+        for text: String,
+        coordinate: CLLocationCoordinate2D,
+        in mapView: MKMapView
+    ) -> CGRect {
+        let preferredFont = UIFont.preferredFont(forTextStyle: .caption2)
+        let font = UIFont.systemFont(ofSize: preferredFont.pointSize, weight: .semibold)
+        return frame(
+            for: text,
+            anchor: mapView.convert(coordinate, toPointTo: mapView),
+            font: font
+        )
+    }
+
+    static func frame(for text: String, anchor: CGPoint, font: UIFont) -> CGRect {
+        let measuredBounds = NSString(string: text).boundingRect(
+            with: CGSize(width: maximumLabelWidth, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font],
+            context: nil
+        )
+        let textWidth = min(maximumLabelWidth, max(1, ceil(measuredBounds.width)))
+        let maximumHeight = ceil(font.lineHeight * maximumLineCount)
+        let textHeight = min(
+            maximumHeight,
+            max(ceil(font.lineHeight), ceil(measuredBounds.height))
+        )
+        let labelSize = CGSize(width: textWidth + 8, height: textHeight + 4)
+
+        // The annotation is bottom-anchored, with its label above the station dot.
+        return CGRect(
+            x: anchor.x - (labelSize.width / 2),
+            y: anchor.y - labelSize.height - labelAnchorGap,
+            width: labelSize.width,
+            height: labelSize.height
+        )
+    }
+
+    static func hasOverlap(labelFrames: [CGRect], visibleBounds: CGRect) -> Bool {
+        guard !visibleBounds.isEmpty else { return false }
+        let visibleFrames = labelFrames
+            .filter { frame in
+                let stationAnchor = CGPoint(
+                    x: frame.midX,
+                    y: frame.maxY + labelAnchorGap
+                )
+                return visibleBounds.contains(stationAnchor)
+            }
+
+        guard visibleFrames.count >= 2 else { return false }
+        for index in visibleFrames.indices.dropLast() {
+            for otherIndex in visibleFrames.indices where otherIndex > index {
+                if hasMeaningfulOverlap(
+                    visibleFrames[index],
+                    visibleFrames[otherIndex]
+                ) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private static func hasMeaningfulOverlap(_ first: CGRect, _ second: CGRect) -> Bool {
+        let intersection = first.intersection(second)
+        guard !intersection.isNull, !intersection.isEmpty else { return false }
+        let smallerArea = min(first.width * first.height, second.width * second.height)
+        guard smallerArea > 0 else { return false }
+        let overlapArea = intersection.width * intersection.height
+        return overlapArea / smallerArea >= minimumOverlapRatio
+    }
 }
 
 private enum RailwayMapAnnotationIdentifier {
@@ -320,6 +469,7 @@ private final class RailwayMapAnnotationZOrderView: UIView {
 
 enum RailwayMapShareRenderer {
     static let attributionFooterHeight: CGFloat = 28
+    static let maximumRenderScale: CGFloat = 2
 
     @MainActor
     static func image(for view: UIView) -> UIImage? {
@@ -333,6 +483,7 @@ enum RailwayMapShareRenderer {
         )
         let format = UIGraphicsImageRendererFormat.preferred()
         format.opaque = true
+        format.scale = min(format.scale, maximumRenderScale)
         let renderer = UIGraphicsImageRenderer(size: outputSize, format: format)
 
         return renderer.image { context in
@@ -340,7 +491,7 @@ enum RailwayMapShareRenderer {
             context.fill(CGRect(origin: .zero, size: outputSize))
 
             let mapRect = CGRect(origin: .zero, size: viewSize)
-            if !view.drawHierarchy(in: mapRect, afterScreenUpdates: true) {
+            if !view.drawHierarchy(in: mapRect, afterScreenUpdates: false) {
                 view.layer.render(in: context.cgContext)
             }
 
@@ -419,6 +570,8 @@ struct ServiceRailwayMapView: View {
     @State private var selectedStationID: String?
     @State private var mapViewReference = RailwayMapViewReference()
     @State private var isMapViewResolved = false
+    @State private var isMapContentReady = false
+    @State private var hidesSecondaryStationLabels = false
     @State private var isPreparingShare = false
     @State private var shareItem: RailwayMapShareItem?
     @State private var shareError: String?
@@ -449,41 +602,49 @@ struct ServiceRailwayMapView: View {
 
     var body: some View {
         Map(position: $cameraPosition, interactionModes: .all) {
-            MapPolyline(coordinates: route.coordinates)
-                .stroke(.secondary.opacity(0.45), lineWidth: 8)
-
-            ForEach(additionalRoutes) { branch in
-                MapPolyline(coordinates: branch.route.coordinates)
+            if isMapContentReady {
+                MapPolyline(coordinates: route.coordinates)
                     .stroke(.secondary.opacity(0.45), lineWidth: 8)
-            }
 
-            ForEach(routeSegments) { segment in
-                MapPolyline(coordinates: segment.coordinates)
-                    .stroke(segment.status.color, lineWidth: 6)
-            }
-
-            if let trainCoordinate {
-                Annotation(RailwayMapAnnotationIdentifier.estimatedTrain, coordinate: trainCoordinate) {
-                    estimatedTrainMarker
+                ForEach(additionalRoutes) { branch in
+                    MapPolyline(coordinates: branch.route.coordinates)
+                        .stroke(.secondary.opacity(0.45), lineWidth: 8)
                 }
-                .annotationTitles(.hidden)
-                .tag("estimated-train")
-            }
 
-            ForEach(stationItems) { item in
-                Annotation(
-                    RailwayMapAnnotationIdentifier.station(item.id),
-                    coordinate: item.coordinate,
-                    anchor: .bottom
-                ) {
-                    stationAnnotation(for: item)
+                ForEach(routeSegments) { segment in
+                    MapPolyline(coordinates: segment.coordinates)
+                        .stroke(segment.status.color, lineWidth: 6)
                 }
-                .annotationTitles(.hidden)
-                .tag(item.id)
+
+                if let trainCoordinate {
+                    Annotation(RailwayMapAnnotationIdentifier.estimatedTrain, coordinate: trainCoordinate) {
+                        estimatedTrainMarker
+                    }
+                    .annotationTitles(.hidden)
+                    .tag("estimated-train")
+                }
+
+                ForEach(stationItems) { item in
+                    Annotation(
+                        RailwayMapAnnotationIdentifier.station(item.id),
+                        coordinate: item.coordinate,
+                        anchor: .bottom
+                    ) {
+                        stationAnnotation(for: item)
+                    }
+                    .annotationTitles(.hidden)
+                    .tag(item.id)
+                }
             }
         }
         .transaction { transaction in
             transaction.animation = nil
+        }
+        .task {
+            // Commit the cold MapKit view before adding its route geometry and annotations.
+            try? await Task.sleep(for: .milliseconds(50))
+            guard !Task.isCancelled else { return }
+            isMapContentReady = true
         }
         .mapStyle(.standard(elevation: .flat, emphasis: .muted))
         .mapControls {
@@ -495,6 +656,7 @@ struct ServiceRailwayMapView: View {
                 mapViewReference.value = mapView
                 isMapViewResolved = true
             }
+            refreshStationLabelVisibility(in: mapView)
         })
         .overlay(alignment: .topTrailing) {
             Button {
@@ -535,6 +697,9 @@ struct ServiceRailwayMapView: View {
             hasCenteredOnTrain = false
             centerOnTrainOrFrameRoute()
         }
+        .onMapCameraChange(frequency: .onEnd) { _ in
+            refreshStationLabelVisibility()
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -573,12 +738,17 @@ struct ServiceRailwayMapView: View {
         }
 
         isPreparingShare = true
-        defer { isPreparingShare = false }
-        guard let image = RailwayMapShareRenderer.image(for: resolvedMapView) else {
-            shareError = "The route map image could not be created."
-            return
+        Task { @MainActor in
+            // Let the share-button gesture finish before synchronously drawing the map.
+            await Task.yield()
+            defer { isPreparingShare = false }
+
+            guard let image = RailwayMapShareRenderer.image(for: resolvedMapView) else {
+                shareError = "The route map image could not be created."
+                return
+            }
+            shareItem = RailwayMapShareItem(image: image)
         }
-        shareItem = RailwayMapShareItem(image: image)
     }
 
     private var routeSegments: [RailwayMapSegment] {
@@ -630,17 +800,23 @@ struct ServiceRailwayMapView: View {
     }
 
     private var stationItems: [RailwayMapStationItem] {
+        let transferPlan = transferAnnotationPlan
         let primary = stations.indices.compactMap { index -> RailwayMapStationItem? in
+            let id = stationItemID(prefix: "primary", index: index, station: stations[index])
+            guard !transferPlan.suppressedStationIDs.contains(id) else { return nil }
             guard let coordinate = route.coordinate(atStation: index) else { return nil }
             return RailwayMapStationItem(
-                id: "primary-\(index)-\(stations[index].crs)",
+                id: id,
                 station: stations[index],
                 coordinate: coordinate,
                 primaryIndex: index,
                 stationIndex: index,
+                userDepartureCRS: fromCRS,
                 historicalTravelRange: highlightedTravelRange,
                 historicalArrivalTime: historicalArrivalTime,
-                finalStationIndex: stations.count - 1
+                finalStationIndex: stations.count - 1,
+                labelOverride: transferPlan.labelsByStationID[id],
+                isTransferStation: transferPlan.transferStationIDs.contains(id)
             )
         }
         let additional = additionalRoutes.flatMap { branch in
@@ -648,20 +824,86 @@ struct ServiceRailwayMapView: View {
                 if branch.omitsFirstStationAnnotation && index == branch.stations.startIndex {
                     return nil
                 }
+                let id = stationItemID(prefix: branch.id, index: index, station: branch.stations[index])
+                guard !transferPlan.suppressedStationIDs.contains(id) else { return nil }
                 guard let coordinate = branch.route.coordinate(atStation: index) else { return nil }
                 return RailwayMapStationItem(
-                    id: "\(branch.id)-\(index)-\(branch.stations[index].crs)",
+                    id: id,
                     station: branch.stations[index],
                     coordinate: coordinate,
                     primaryIndex: nil,
                     stationIndex: index,
+                    userDepartureCRS: branch.userDepartureCRS,
                     historicalTravelRange: branch.highlightedTravelRange,
                     historicalArrivalTime: branch.historicalArrivalTime,
-                    finalStationIndex: branch.stations.count - 1
+                    finalStationIndex: branch.stations.count - 1,
+                    labelOverride: transferPlan.labelsByStationID[id],
+                    isTransferStation: transferPlan.transferStationIDs.contains(id)
                 )
             }
         }
         return primary + additional
+    }
+
+    private var transferAnnotationPlan: RailwayMapTransferAnnotationPlan {
+        let sources = [
+            RailwayMapAnnotationSource(
+                idPrefix: "primary",
+                stations: stations,
+                highlightedTravelRange: highlightedTravelRange,
+                historicalDepartureTime: nil,
+                historicalArrivalTime: historicalArrivalTime
+            )
+        ] + additionalRoutes.map { branch in
+            RailwayMapAnnotationSource(
+                idPrefix: branch.id,
+                stations: branch.stations,
+                highlightedTravelRange: branch.highlightedTravelRange,
+                historicalDepartureTime: branch.historicalDepartureTime,
+                historicalArrivalTime: branch.historicalArrivalTime
+            )
+        }
+
+        var plan = RailwayMapTransferAnnotationPlan()
+        for sourceIndex in sources.indices.dropLast() {
+            let arrivingSource = sources[sourceIndex]
+            let departingSource = sources[sourceIndex + 1]
+            guard let arrivingIndex = arrivingSource.highlightedTravelRange?.upperBound,
+                  let departingIndex = departingSource.highlightedTravelRange?.lowerBound,
+                  arrivingSource.stations.indices.contains(arrivingIndex),
+                  departingSource.stations.indices.contains(departingIndex) else {
+                continue
+            }
+
+            let arrivingStation = arrivingSource.stations[arrivingIndex]
+            let departingStation = departingSource.stations[departingIndex]
+            guard normalizedCRS(arrivingStation.crs) == normalizedCRS(departingStation.crs) else {
+                continue
+            }
+
+            let arrivingID = stationItemID(
+                prefix: arrivingSource.idPrefix,
+                index: arrivingIndex,
+                station: arrivingStation
+            )
+            let departingID = stationItemID(
+                prefix: departingSource.idPrefix,
+                index: departingIndex,
+                station: departingStation
+            )
+            plan.suppressedStationIDs.insert(departingID)
+            plan.transferStationIDs.insert(arrivingID)
+            plan.labelsByStationID[arrivingID] = RailwayStationTransferLabel.text(
+                stationName: arrivingStation.locationName,
+                arrivalTime: arrivingSource.historicalArrivalTime,
+                departureTime: departingSource.historicalDepartureTime
+            )
+        }
+        return plan
+    }
+
+    private func stationItemID(prefix: String, index: Int, station: CallingPoint) -> String {
+        "\(prefix)-\(index)-\(station.crs)"
     }
 
     private var trainCoordinate: CLLocationCoordinate2D? {
@@ -708,18 +950,20 @@ struct ServiceRailwayMapView: View {
             selectedStationID = item.id
         } label: {
             VStack(spacing: 3) {
-                Text(stationLabel(for: item))
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(item.station.isCancelledAtStation ? Color.red : Color.white)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 180)
-                    .strikethrough(
-                        item.station.isCancelledAtStation,
-                        color: item.station.isCancelledAtStation ? .red : nil
-                    )
-                    .shadow(color: .black.opacity(0.9), radius: 2)
+                if shouldShowLabel(for: item) {
+                    Text(stationLabel(for: item))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(item.station.isCancelledAtStation ? Color.red : Color.white)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 180)
+                        .strikethrough(
+                            item.station.isCancelledAtStation,
+                            color: item.station.isCancelledAtStation ? .red : nil
+                        )
+                        .shadow(color: .black.opacity(0.9), radius: 2)
+                }
 
                 stationDot(for: item)
             }
@@ -825,10 +1069,41 @@ struct ServiceRailwayMapView: View {
     }
 
     private func stationLabel(for item: RailwayMapStationItem) -> String {
-        RailwayStationAnnotationLabel.text(
+        if let labelOverride = item.labelOverride {
+            return labelOverride
+        }
+        return RailwayStationAnnotationLabel.text(
             for: item.station,
             historicalEvent: historicalEvent(for: item)
         )
+    }
+
+    private func shouldShowLabel(for item: RailwayMapStationItem) -> Bool {
+        item.isTransferStation
+            || !hidesSecondaryStationLabels
+            || RailwayStationLabelPriority.shouldRemainVisible(
+                stationIndex: item.stationIndex,
+                finalStationIndex: item.finalStationIndex,
+                stationCRS: item.station.crs,
+                userDepartureCRS: item.userDepartureCRS
+            )
+    }
+
+    private func refreshStationLabelVisibility(in resolvedMapView: MKMapView? = nil) {
+        guard let mapView = resolvedMapView ?? mapViewReference.value else { return }
+        let frames = stationItems.map { item in
+            RailwayStationLabelCollisionDetector.frame(
+                for: stationLabel(for: item),
+                coordinate: item.coordinate,
+                in: mapView
+            )
+        }
+        let shouldHideSecondaryLabels = RailwayStationLabelCollisionDetector.hasOverlap(
+            labelFrames: frames,
+            visibleBounds: mapView.bounds
+        )
+        guard hidesSecondaryStationLabels != shouldHideSecondaryLabels else { return }
+        hidesSecondaryStationLabels = shouldHideSecondaryLabels
     }
 
     private func historicalEvent(for item: RailwayMapStationItem) -> RailwayHistoricalStationEvent? {
