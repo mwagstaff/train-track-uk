@@ -67,8 +67,8 @@ function resolveRequestDeviceIds(req, deviceId) {
     };
 }
 
-function getFlyInstanceId() {
-    return process.env.FLY_ALLOC_ID || process.env.HOSTNAME || 'unknown';
+function getInstanceId() {
+    return process.env.HOSTNAME || 'unknown';
 }
 
 function logNotificationRequest(event, req, extra = {}) {
@@ -77,7 +77,7 @@ function logNotificationRequest(event, req, extra = {}) {
         '[notifications]',
         event,
         JSON.stringify({
-            instance_id: getFlyInstanceId(),
+            instance_id: getInstanceId(),
             path: req.path,
             method: req.method,
             clientIp,
@@ -89,7 +89,7 @@ function logNotificationRequest(event, req, extra = {}) {
 function buildRequestAuditContext(req) {
     if (!req) return null;
     return {
-        instance_id: getFlyInstanceId(),
+        instance_id: getInstanceId(),
         path: req.path,
         method: req.method,
         clientIp: req.headers?.['x-forwarded-for'] || req.ip || 'unknown',
@@ -117,7 +117,7 @@ function logDepartureRequest(event, req, extra = {}) {
         '[departures]',
         event,
         JSON.stringify({
-            instance_id: getFlyInstanceId(),
+            instance_id: getInstanceId(),
             path: req.path,
             method: req.method,
             clientIp,

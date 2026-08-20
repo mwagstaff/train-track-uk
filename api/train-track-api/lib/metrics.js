@@ -2,8 +2,8 @@ import os from 'os';
 import client from 'prom-client';
 
 const DEFAULT_METRIC_LABELS = Object.freeze({
-    service_name: process.env.PROMETHEUS_SERVICE_NAME || process.env.FLY_APP_NAME || 'train-track-api',
-    instance_id: process.env.FLY_ALLOC_ID || process.env.HOSTNAME || os.hostname() || 'unknown',
+    service_name: process.env.PROMETHEUS_SERVICE_NAME || 'train-track-api',
+    instance_id: process.env.HOSTNAME || os.hostname() || 'unknown',
     pid: String(process.pid)
 });
 

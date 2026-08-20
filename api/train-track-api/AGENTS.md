@@ -10,7 +10,6 @@ Always make code changes to the local files in this repository. Never edit files
 
 - `npm run dev` - Start development server with hot reload (runs `./.dev.sh` which includes environment variables and nodemon)
 - `npm start` - Start production server
-- `npm run deploy` - Deploy to Fly.io with high availability disabled and show logs
 
 ## Architecture Overview
 
@@ -212,8 +211,9 @@ The development script (`.dev.sh`) sets required API keys:
 - `LIVE_DEPARTURE_BOARD_API_KEY` - For departure board API
 - `SERVICE_DETAILS_API_KEY` - For service details API
 
-When deploying to Fly.io, any new environment variables will need to be added, using the following command as an example:
-`fly secrets set SERVICE_DETAILS_API_KEY=your-api-key`
+Production runs as a systemd-managed Node.js service on Hetzner. Add required
+environment variables through the Hetzner server-tooling service configuration;
+do not commit secrets here.
 
 ### Data Flow
 

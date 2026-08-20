@@ -47,7 +47,7 @@ Both the main app and the extension need to share data via App Groups:
 
 The backend needs to add `"mutable-content": 1` to the APNs payload so the extension can intercept:
 
-In `fly/train-track-api/lib/notification-push-client.js`, update the payload:
+In `api/train-track-api/lib/notification-push-client.js`, update the payload:
 
 ```javascript
 payload: {

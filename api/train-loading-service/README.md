@@ -105,10 +105,9 @@ For sequence-gap detection, leave `DARWIN_SELECTOR` blank so every sequence
 header is observed; non-SC/SF/LO message bodies are discarded without parsing.
 Optional durable-subscription settings are available in `.env.example`.
 
-Fly checks `/health/ready` every 30 seconds, and the shared `sky` deployer uses
-the same endpoint after each full deployment. The normal API does not depend on
-this service, and the iOS client treats missing loading data as a neutral/unknown
-carriage state.
+The shared `sky` deployer checks `/health/ready` after each full deployment. The
+normal API does not depend on this service, and the iOS client treats missing
+loading data as a neutral/unknown carriage state.
 
 ## Verify
 
@@ -135,6 +134,5 @@ contains that route. The externally routed API remains:
 https://api.skynolimit.dev/train-track-loading/api/v1
 ```
 
-Alternatively, the included `fly.toml` supports an isolated Fly deployment.
 Rollback consists of stopping only the loading service; existing
 `/train-track/api/v2` traffic is unaffected.

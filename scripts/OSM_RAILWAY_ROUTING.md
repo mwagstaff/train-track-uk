@@ -77,8 +77,8 @@ graph edge.
 
 On the development machine, preprocessing the 23.41 MB filtered PBF took about
 18 seconds and peaked just under 1 GB of memory. The compact whole-country JSON
-with routing costs is about 26 MB. Accordingly, preprocessing runs offline rather than on the current
-512 MB Fly.io API instance. The generated graph is loaded by the iOS app only
+with routing costs is about 26 MB. Accordingly, preprocessing runs offline rather than on the
+production API server. The generated graph is loaded by the iOS app only
 when an OSM map route is requested.
 
 ## In-app OS/OSM comparison
