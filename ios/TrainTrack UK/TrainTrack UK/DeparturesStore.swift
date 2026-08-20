@@ -34,6 +34,13 @@ final class DeparturesStore: ObservableObject {
     }
 
     func startPolling(journeyStore: JourneyStore) {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["APP_STORE_SCREENSHOTS"] == "1" {
+            installAppStoreScreenshotDepartures(for: journeyStore.journeys)
+            isInitialLoadInProgress = false
+            return
+        }
+        #endif
         if timerCancellable != nil || journeysCancellable != nil {
             return
         }
@@ -88,6 +95,48 @@ final class DeparturesStore: ObservableObject {
     }
 
     private func pairKey(from: String, to: String) -> String { "\(from)_\(to)" }
+
+    #if DEBUG
+    private func installAppStoreScreenshotDepartures(for journeys: [Journey]) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+
+        var departures: [String: [DepartureV2]] = [:]
+        var availability: [String: JourneyDataAvailability] = [:]
+        for (index, journey) in journeys.filter(\.favorite).enumerated() {
+            let scheduledDate = Date().addingTimeInterval(Double(12 + (index * 9)) * 60)
+            let scheduled = formatter.string(from: scheduledDate)
+            let estimated = index == 0
+                ? "On time"
+                : formatter.string(from: scheduledDate.addingTimeInterval(3 * 60))
+            let key = pairKey(from: journey.fromStation.crs, to: journey.toStation.crs)
+            departures[key] = [DepartureV2(
+                departureTime: DepartureTimeV2(scheduled: scheduled, estimated: estimated),
+                serviceType: "train",
+                platform: index == 0 ? "1" : "3",
+                isCancelled: false,
+                length: index == 0 ? 8 : 12,
+                destination: [PlaceInfoV2(
+                    crs: journey.toStation.crs,
+                    locationName: journey.toStation.name,
+                    via: nil
+                )],
+                origin: [PlaceInfoV2(
+                    crs: journey.fromStation.crs,
+                    locationName: journey.fromStation.name,
+                    via: nil
+                )],
+                serviceID: "SCREENSHOT-\(journey.fromStation.crs)-\(journey.toStation.crs)",
+                delayReason: index == 0 ? nil : "A late-running service",
+                cancelReason: nil,
+                timestamp: Date()
+            )]
+            availability[key] = .live
+        }
+        departuresByPair = departures
+        dataAvailabilityByPair = availability
+    }
+    #endif
 
     private func journeyPairs(from journeys: [Journey]) -> [(String, String)] {
         journeys.map { ($0.fromStation.crs, $0.toStation.crs) }

@@ -25,7 +25,6 @@ struct TrainTrackUKApp: App {
                 .environmentObject(DeparturesStore.shared)
                 .environmentObject(LiveActivityManager.shared)
                 .environmentObject(NotificationSubscriptionStore.shared)
-                .environmentObject(MuteRequestDebugStore.shared)
                 .environmentObject(ToastStore.shared)
                 .environmentObject(HolidayModeStore.shared)
                 .environmentObject(JourneyHistoryStore.shared)
@@ -45,7 +44,7 @@ struct TrainTrackUKApp: App {
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             if newPhase == .active {
-                print("🔄 [App] App became active - triggering Live Activity refresh")
+                debugLog("🔄 [App] App became active - triggering Live Activity refresh")
                 Task {
                     await LiveActivityManager.shared.registerAnyUnregisteredActivities()
                     await LiveActivityManager.shared.sendImmediateBackendCheckIn()
@@ -72,7 +71,7 @@ struct TrainTrackUKApp: App {
                 // foreground. This ensures geofences are registered after the app was
                 // killed/re-launched and stations need to be reloaded, and keeps the
                 // geofence set in step with any subscription changes made elsewhere.
-                print("📍 [App] App became active - refreshing notification subscriptions & geofences")
+                debugLog("📍 [App] App became active - refreshing notification subscriptions & geofences")
                 Task {
                     NotificationMuteRequestSender.shared.retryPendingMuteRequests(trigger: "app-active")
                     await NotificationSubscriptionStore.shared.refresh()
@@ -83,14 +82,14 @@ struct TrainTrackUKApp: App {
                     let elapsed = Date().timeIntervalSince(bgTime)
                     let thresholdSeconds = Double(autoReturnMinutes * 60)
                     if elapsed >= thresholdSeconds {
-                        print("🏠 [App] Auto-returning to Favourites after \(Int(elapsed / 60)) minutes in background")
+                        debugLog("🏠 [App] Auto-returning to Favourites after \(Int(elapsed / 60)) minutes in background")
                         TabRouter.shared.resetToFavourites()
                     }
                 }
                 backgroundedAt = nil
             } else if newPhase == .background {
                 backgroundedAt = Date()
-                print("💤 [App] App moved to background at \(backgroundedAt!)")
+                debugLog("💤 [App] App moved to background at \(backgroundedAt!)")
                 NotificationGeofenceManager.shared.stopLocationActivityIfIdle()
             }
         }

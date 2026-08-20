@@ -556,6 +556,10 @@ private struct JourneyHistoryDelayRepayActions: View {
                     operatorCode: option.operatorCode,
                     operatorName: option.operatorName
                 )
+                guard url.scheme?.lowercased() == "https" else {
+                    claimError = "The operator’s claim page did not provide a secure link."
+                    return
+                }
                 openURL(url) { accepted in
                     if !accepted {
                         claimError = "The operator’s claim page could not be opened."

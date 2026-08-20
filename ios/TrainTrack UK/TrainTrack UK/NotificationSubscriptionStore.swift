@@ -204,7 +204,7 @@ final class NotificationSubscriptionStore: ObservableObject {
             let ids = Set(serverSubscriptions.map(\.id))
             knownSubscriptionIDs = ids
             hasBootstrappedKnownIDs = true
-            print("🔑 [Store] Bootstrapped \(ids.count) known subscription ID(s)")
+            debugLog("🔑 [Store] Bootstrapped \(ids.count) known subscription ID(s)")
             return serverSubscriptions
         }
 
@@ -212,7 +212,7 @@ final class NotificationSubscriptionStore: ObservableObject {
         let orphans = serverSubscriptions.filter { !known.contains($0.id) }
 
         if !orphans.isEmpty {
-            print("🧹 [Store] Pruning \(orphans.count) orphaned server subscription(s): \(orphans.map(\.id))")
+            debugLog("🧹 [Store] Pruning \(orphans.count) orphaned server subscription(s): \(orphans.map(\.id))")
             for orphan in orphans {
                 try? await service.deleteSubscription(id: orphan.id)
             }

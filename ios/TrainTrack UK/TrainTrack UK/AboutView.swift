@@ -5,7 +5,7 @@ struct AboutView: View {
     private var appVersion: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
-        return "Version \(version)"
+        return build.isEmpty ? "Version \(version)" : "Version \(version) (\(build))"
     }
 
     private var deviceIdentifier: String {
@@ -46,6 +46,9 @@ struct AboutView: View {
             Section("Feedback") {
                 Link(destination: feedbackURL) {
                     Label("Email Feedback", systemImage: "envelope")
+                }
+                Link(destination: URL(string: "https://skynolimit.dev/privacy_policy")!) {
+                    Label("Privacy Policy", systemImage: "hand.raised")
                 }
             }
 

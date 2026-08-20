@@ -16,7 +16,7 @@ final class DeepLinkRouter: ObservableObject {
         // Handle refresh-live-activity deep link
         if host == "refresh-live-activity" {
             Task {
-                print("🔄 [DeepLink] Refreshing Live Activity from deep link")
+                debugLog("🔄 [DeepLink] Refreshing Live Activity from deep link")
 
                 // Provide haptic feedback to confirm the tap
                 let generator = UIImpactFeedbackGenerator(style: .medium)
@@ -27,7 +27,7 @@ final class DeepLinkRouter: ObservableObject {
                     depStore: DeparturesStore.shared
                 )
 
-                print("✅ [DeepLink] Refresh complete")
+                debugLog("✅ [DeepLink] Refresh complete")
             }
             return
         }

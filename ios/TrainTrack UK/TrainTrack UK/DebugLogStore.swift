@@ -7,17 +7,23 @@ final class DebugLogStore: ObservableObject {
 
     @Published private(set) var logs: [DebugLogEntry] = []
     @Published private(set) var isFetchingServerLogs = false
+    #if DEBUG
     private let maxLogs = 500
+    #endif
 
     private init() {
+        #if DEBUG
         // Load persisted logs
         if let data = UserDefaults.standard.data(forKey: "debug_logs"),
            let decoded = try? JSONDecoder().decode([DebugLogEntry].self, from: data) {
             logs = decoded
         }
+        #endif
     }
 
-    func log(_ message: String, category: String = "General") {
+    func log(_ message: @autoclosure () -> String, category: String = "General") {
+        #if DEBUG
+        let message = message()
         let entry = DebugLogEntry(
             timestamp: Date(),
             category: category,
@@ -37,15 +43,19 @@ final class DebugLogStore: ObservableObject {
 
         // Also print to console
         print("[\(category)] \(message)")
+        #endif
     }
 
     func clear() {
         logs.removeAll()
+        #if DEBUG
         UserDefaults.standard.removeObject(forKey: "debug_logs")
         ClientDiagnosticsLogger.clearStoredLogs()
+        #endif
     }
 
     func exportLogs() -> String {
+        #if DEBUG
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
 
@@ -57,9 +67,13 @@ final class DebugLogStore: ObservableObject {
             "## Debug Logs\n\(debugLogs.isEmpty ? "(no entries)" : debugLogs)",
             ClientDiagnosticsLogger.exportStoredLogs()
         ].joined(separator: "\n\n")
+        #else
+        return ""
+        #endif
     }
 
     func fetchServerAuditLogs(limit: Int = 40) async {
+        #if DEBUG
         guard !isFetchingServerLogs else { return }
         isFetchingServerLogs = true
         defer { isFetchingServerLogs = false }
@@ -94,8 +108,10 @@ final class DebugLogStore: ObservableObject {
         } catch {
             log("Server audit fetch failed: \(error.localizedDescription)", category: "Error")
         }
+        #endif
     }
 
+    #if DEBUG
     private func serverAuditSummary(_ event: [String: Any]) -> String {
         let recordedAt = event["recorded_at"] as? String ?? "unknown-time"
         let action = event["action"] as? String ?? "unknown-action"
@@ -127,6 +143,7 @@ final class DebugLogStore: ObservableObject {
             "Subscription: \(subscriptionId)"
         ].joined(separator: "\n")
     }
+    #endif
 }
 
 struct DebugLogEntry: Identifiable, Codable {

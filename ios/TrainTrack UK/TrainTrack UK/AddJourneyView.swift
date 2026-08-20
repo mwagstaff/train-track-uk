@@ -101,7 +101,7 @@ struct AddJourneyView: View {
                 }
                 updateFocus(for: router.selected)
             }
-            .onChange(of: scrollTarget) { target in
+            .onChange(of: scrollTarget) { _, target in
                 guard let target else { return }
                 let exists = target == fromInput.id || stopInputs.contains(where: { $0.id == target })
                 guard exists else { return }
@@ -279,7 +279,7 @@ struct AddJourneyView: View {
                 .disableAutocorrection(true)
                 .textContentType(.none)
                 .focused($focusedField, equals: focus)
-                .onChange(of: input.wrappedValue.query) { _ in
+                .onChange(of: input.wrappedValue.query) {
                     input.wrappedValue.selected = nil
                 }
             if let s = input.wrappedValue.selected {

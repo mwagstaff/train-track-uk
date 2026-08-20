@@ -73,17 +73,25 @@ enum ApiHostPreference {
 
     /// Returns the currently selected base URL, preferring an environment override when present.
     static var currentBaseURL: String {
+        #if DEBUG
         if let envBase = ProcessInfo.processInfo.environment["API_BASE"], !envBase.isEmpty {
             return envBase
         }
         return (ApiHost(rawValue: store.string(forKey: storageKey) ?? "") ?? .prod).baseURL
+        #else
+        return ApiHost.prod.baseURL
+        #endif
     }
 
     static var currentLoadingBaseURL: String {
+        #if DEBUG
         if let envBase = ProcessInfo.processInfo.environment["LOADING_API_BASE"], !envBase.isEmpty {
             return envBase
         }
         return (ApiHost(rawValue: store.string(forKey: storageKey) ?? "") ?? .prod).loadingBaseURL
+        #else
+        return ApiHost.prod.loadingBaseURL
+        #endif
     }
 }
 
@@ -151,7 +159,7 @@ enum DevicePreferencesSync {
             distanceModeratelyCloseMiles: defaults.object(forKey: "distanceModeratelyCloseMiles") as? Double ?? 5,
             liveActivityDurationMinutes: defaults.object(forKey: "liveActivityDurationMinutes") as? Int ?? 60,
             journeySortMode: defaults.string(forKey: "journeySortMode") ?? "distance",
-            apiHost: ApiHostPreference.store.string(forKey: ApiHostPreference.storageKey) ?? ApiHost.prod.rawValue,
+            apiHost: currentApiHost,
             autoReturnToFavouritesMinutes: defaults.object(forKey: "autoReturnToFavouritesMinutes") as? Int ?? 0,
             autoMuteOnArrival: defaults.object(forKey: "autoMuteOnArrival") as? Bool ?? true,
             muteDelayMinutes: defaults.object(forKey: "muteDelayMinutes") as? Int ?? 3,
@@ -163,6 +171,14 @@ enum DevicePreferencesSync {
             notificationDelays: NotificationPreferences.isEnabled(.delays),
             notificationPlatform: NotificationPreferences.isEnabled(.platform)
         )
+    }
+
+    private static var currentApiHost: String {
+        #if DEBUG
+        ApiHostPreference.store.string(forKey: ApiHostPreference.storageKey) ?? ApiHost.prod.rawValue
+        #else
+        ApiHost.prod.rawValue
+        #endif
     }
 
     static func syncCurrent() async {

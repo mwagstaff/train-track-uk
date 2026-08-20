@@ -318,7 +318,7 @@ private final class NetworkServiceWidget {
     func fetchDepartures(from: String, to: String) async throws -> [DepartureV2] {
         let path = "from/\(from)/to/\(to)"
         guard let url = URL(string: "\(base)/departures/\(path)") else { throw WidgetNetErr.invalidURL }
-        Logger.widget.info("GET \(url.absoluteString, privacy: .public)")
+        Logger.widget.debug("GET \(url.absoluteString, privacy: .public)")
         var request = URLRequest(url: url)
         request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
         let (data, _) = try await URLSession.shared.data(for: request)
@@ -339,7 +339,7 @@ private final class NetworkServiceWidget {
         guard !ids.isEmpty else { return [:] }
         let path = ids.joined(separator: "/")
         guard let url = URL(string: "\(base)/service_details/\(path)") else { throw WidgetNetErr.invalidURL }
-        Logger.widget.info("GET \(url.absoluteString, privacy: .public)")
+        Logger.widget.debug("GET \(url.absoluteString, privacy: .public)")
         var request = URLRequest(url: url)
         request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
         let (data, _) = try await URLSession.shared.data(for: request)
@@ -353,7 +353,7 @@ private final class NetworkServiceWidget {
                 out[key] = try decoder.decode(ServiceDetails.self, from: valData)
             }
         }
-        if out.isEmpty { Logger.widget.info("Service details result empty for \(ids.count, privacy: .public) ids") }
+        if out.isEmpty { Logger.widget.debug("Service details result empty for \(ids.count, privacy: .public) ids") }
         return out
     }
 }
@@ -377,17 +377,17 @@ private struct ClosestFavouriteProvider: TimelineProvider {
     }
 
     func getSnapshot(in context: Context, completion: @escaping (ClosestFavouriteEntry) -> ()) {
-        Logger.widget.info("getSnapshot called")
+        Logger.widget.debug("getSnapshot called")
         completion(placeholder(in: context))
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<ClosestFavouriteEntry>) -> ()) {
-        Logger.widget.info("getTimeline called (family=\(String(describing: context.family)))")
+        Logger.widget.debug("getTimeline called (family=\(String(describing: context.family)))")
         Task {
             let entry = await buildEntry(context: context)
             // Aim to refresh roughly every minute to keep departures fresh.
             let next = Date().addingTimeInterval(60)
-            Logger.widget.info("Timeline built: journey?=\(entry.journey != nil ? "yes" : "no", privacy: .public) deps=\(entry.departures.count, privacy: .public)")
+            Logger.widget.debug("Timeline built: journey?=\(entry.journey != nil ? "yes" : "no", privacy: .public) deps=\(entry.departures.count, privacy: .public)")
             completion(Timeline(entries: [entry], policy: .after(next)))
         }
     }
@@ -398,12 +398,12 @@ private struct ClosestFavouriteProvider: TimelineProvider {
             return []
         }
         guard let data = ud.data(forKey: journeysKey) else {
-            Logger.widget.info("No journeys data found in app group store")
+            Logger.widget.debug("No journeys data found in app group store")
             return []
         }
         do {
             let journeys = try JSONDecoder().decode([Journey].self, from: data)
-            Logger.widget.info("Decoded \(journeys.count, privacy: .public) stored journeys")
+            Logger.widget.debug("Decoded \(journeys.count, privacy: .public) stored journeys")
             return journeys
         } catch {
             Logger.widget.error("Failed to decode journeys JSON: \(error.localizedDescription, privacy: .public)")
@@ -453,25 +453,25 @@ private struct ClosestFavouriteProvider: TimelineProvider {
         let location = sharedLoc
         dbg.append("journeys=\(journeys.count)")
         dbg.append(sharedLoc != nil ? "loc=shared" : "loc=nil")
-        Logger.widget.info("Journeys available: \(journeys.count, privacy: .public)")
+        Logger.widget.debug("Journeys available: \(journeys.count, privacy: .public)")
         let j = closestFavourite(using: location, from: journeys)
-        if j == nil { Logger.widget.info("No favourite journey available for widget") }
+        if j == nil { Logger.widget.debug("No favourite journey available for widget") }
         guard var j else {
             return ClosestFavouriteEntry(date: Date(), journey: nil, departures: [], detailsById: [:], debugInfo: dbg.joined(separator: "; "))
         }
-        Logger.widget.info("Chosen journey: \(j.fromStation.crs, privacy: .public) → \(j.toStation.crs, privacy: .public)")
+        Logger.widget.debug("Chosen journey: \(j.fromStation.crs, privacy: .public) → \(j.toStation.crs, privacy: .public)")
         dbg.append("chosen=\(j.fromStation.crs)->\(j.toStation.crs)")
         do {
-            Logger.widget.info("Fetching departures… from=\(j.fromStation.crs, privacy: .public) to=\(j.toStation.crs, privacy: .public)")
+            Logger.widget.debug("Fetching departures… from=\(j.fromStation.crs, privacy: .public) to=\(j.toStation.crs, privacy: .public)")
             var deps = try await NetworkServiceWidget.shared.fetchDepartures(from: j.fromStation.crs, to: j.toStation.crs)
-            Logger.widget.info("Fetched \(deps.count, privacy: .public) departures")
+            Logger.widget.debug("Fetched \(deps.count, privacy: .public) departures")
             dbg.append("deps=\(deps.count)")
             if deps.isEmpty {
                 // Fallback: try reverse direction if original returned none
-                Logger.widget.info("Zero results; attempting reverse direction")
+                Logger.widget.debug("Zero results; attempting reverse direction")
                 let rev = try await NetworkServiceWidget.shared.fetchDepartures(from: j.toStation.crs, to: j.fromStation.crs)
                 if !rev.isEmpty {
-                    Logger.widget.info("Reverse direction returned \(rev.count, privacy: .public)")
+                    Logger.widget.debug("Reverse direction returned \(rev.count, privacy: .public)")
                     dbg.append("rev=\(rev.count)")
                     deps = rev
                     // Swap direction for display only
@@ -495,9 +495,9 @@ private struct ClosestFavouriteProvider: TimelineProvider {
             let count = rowsForFamily(context.family)
             deps = Array(deps.prefix(count))
             let detailIDs = deps.prefix(5).map { $0.serviceID }
-            Logger.widget.info("Fetching details for \(detailIDs.count, privacy: .public) services")
+            Logger.widget.debug("Fetching details for \(detailIDs.count, privacy: .public) services")
             let details = try await NetworkServiceWidget.shared.fetchServiceDetails(ids: detailIDs)
-            Logger.widget.info("Fetched details: \(details.count, privacy: .public)")
+            Logger.widget.debug("Fetched details: \(details.count, privacy: .public)")
             return ClosestFavouriteEntry(date: Date(), journey: j, departures: deps, detailsById: details, debugInfo: dbg.joined(separator: "; "))
         } catch {
             Logger.widget.error("Network error: \(error.localizedDescription, privacy: .public)")
@@ -562,10 +562,12 @@ private struct ClosestFavouriteWidgetView: View {
                     Spacer(minLength: 2)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("No upcoming departures found").font(.footnote).foregroundStyle(.secondary)
+                        #if DEBUG
                         if let dbg = entry.debugInfo, !dbg.isEmpty {
                             Text(dbg).font(.caption2).foregroundStyle(.secondary)
                                 .lineLimit(2)
                         }
+                        #endif
                     }
                 } else {
                     let limit = rowsForFamily()

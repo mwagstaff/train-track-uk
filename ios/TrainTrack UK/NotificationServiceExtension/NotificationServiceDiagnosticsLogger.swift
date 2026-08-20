@@ -1,11 +1,18 @@
 import Foundation
 
-enum NotificationServiceDiagnosticsLogger {
+nonisolated enum NotificationServiceDiagnosticsLogger {
+    #if DEBUG
     private static let suiteName = "group.dev.skynolimit.traintrack"
     private static let queue = DispatchQueue(label: "dev.skynolimit.traintrack.notification-service-diagnostics")
     private static let maxFileBytes = 512 * 1024
+    #endif
 
-    static func log(_ event: String, metadata: [String: Any?] = [:]) {
+    static func log(
+        _ event: String,
+        metadata: @autoclosure () -> [String: Any?] = [:]
+    ) {
+        #if DEBUG
+        let metadata = metadata()
         queue.async {
             guard let url = logFileURL(named: "diagnostics-notification-service.jsonl") else { return }
             let entry: [String: Any] = [
@@ -25,8 +32,10 @@ enum NotificationServiceDiagnosticsLogger {
             append(lineData, to: url)
             trimIfNeeded(url)
         }
+        #endif
     }
 
+    #if DEBUG
     private static func logFileURL(named name: String) -> URL? {
         let fileManager = FileManager.default
         let directory = fileManager.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
@@ -40,7 +49,7 @@ enum NotificationServiceDiagnosticsLogger {
         if FileManager.default.fileExists(atPath: url.path),
            let handle = try? FileHandle(forWritingTo: url) {
             defer { try? handle.close() }
-            try? handle.seekToEnd()
+            _ = try? handle.seekToEnd()
             try? handle.write(contentsOf: data)
         } else {
             try? data.write(to: url, options: .atomic)
@@ -77,4 +86,5 @@ enum NotificationServiceDiagnosticsLogger {
             return String(describing: value)
         }
     }
+    #endif
 }

@@ -87,7 +87,8 @@ final class LiveActivityManager: ObservableObject {
     // Force end any lingering activity as a last-resort safety.
     private var forceEndAfterSeconds: TimeInterval { durationSeconds }
 
-    // Global monitor timer for all activities
+    // Global monitor timer for all activities. Deadlines are measured in
+    // minutes, so a 30-second cadence avoids needless foreground wakeups.
     private var monitorTimer: Timer? = nil
 
     // User-configurable duration in minutes (default 60). Reads from UserDefaults.
@@ -95,7 +96,7 @@ final class LiveActivityManager: ObservableObject {
         let storedMinutes = UserDefaults.standard.integer(forKey: durationKey)
         let minutes = min(120, max(1, storedMinutes == 0 ? 60 : storedMinutes))
         let seconds = Double(minutes * 60)
-        print("🔧 [LiveActivity] Duration preference: \(minutes) minute\(minutes == 1 ? "" : "s") (\(seconds) seconds)")
+        debugLog("🔧 [LiveActivity] Duration preference: \(minutes) minute\(minutes == 1 ? "" : "s") (\(seconds) seconds)")
         return seconds
     }
 
@@ -504,36 +505,36 @@ final class LiveActivityManager: ObservableObject {
         }
 
         guard !trackedActivities.isEmpty else {
-            print("⚠️ [LiveActivity] No active activities, skipping refresh")
+            debugLog("⚠️ [LiveActivity] No active activities, skipping refresh")
             return
         }
 
-        print("🔄 [LiveActivity] refreshIfActive called for \(trackedActivities.count) active activities")
+        debugLog("🔄 [LiveActivity] refreshIfActive called for \(trackedActivities.count) active activities")
 
         // Refresh all tracked activities
         for (activityID, tracked) in trackedActivities {
             let fromCRS = tracked.fromCRS
             let toCRS = tracked.toCRS
 
-            print("🔄 [LiveActivity] Refreshing activity \(activityID): \(fromCRS) → \(toCRS)")
+            debugLog("🔄 [LiveActivity] Refreshing activity \(activityID): \(fromCRS) → \(toCRS)")
 
             // Find the matching journey
             if let journey = journeyStore.journeys.first(where: {
                 $0.fromStation.crs == fromCRS && $0.toStation.crs == toCRS
             }) {
-                print("✅ [LiveActivity] Found existing journey for \(activityID), refreshing...")
+                debugLog("✅ [LiveActivity] Found existing journey for \(activityID), refreshing...")
                 await refreshAndUpdate(for: journey, depStore: depStore, activityID: activityID)
             } else {
-                print("⚠️ [LiveActivity] Journey not found in store for \(activityID), attempting to create temporary journey...")
+                debugLog("⚠️ [LiveActivity] Journey not found in store for \(activityID), attempting to create temporary journey...")
 
                 // Try to find stations and create a temporary journey
                 if let fromStation = StationsService.shared.stations.first(where: { $0.crs == fromCRS }),
                    let toStation = StationsService.shared.stations.first(where: { $0.crs == toCRS }) {
                     let tempJourney = Journey(fromStation: fromStation, toStation: toStation, favorite: false)
-                    print("✅ [LiveActivity] Created temporary journey for \(activityID), refreshing...")
+                    debugLog("✅ [LiveActivity] Created temporary journey for \(activityID), refreshing...")
                     await refreshAndUpdate(for: tempJourney, depStore: depStore, activityID: activityID)
                 } else {
-                    print("❌ [LiveActivity] Could not find stations for \(fromCRS) → \(toCRS)")
+                    debugLog("❌ [LiveActivity] Could not find stations for \(fromCRS) → \(toCRS)")
                 }
             }
         }
@@ -552,11 +553,11 @@ final class LiveActivityManager: ObservableObject {
         windowEnd: String? = nil
     ) async {
         guard triggeredByUser || allowAutomaticStart else {
-            print("🚫 [LiveActivity] Start ignored (not user-triggered; auto-starts disabled)")
+            debugLog("🚫 [LiveActivity] Start ignored (not user-triggered; auto-starts disabled)")
             return
         }
         if !bypassSuppression, let lastEndedAt, Date().timeIntervalSince(lastEndedAt) < autoRestartSuppressionWindow {
-            print("🚫 [LiveActivity] Start suppressed to avoid immediate auto-restart (last end \(Date().timeIntervalSince(lastEndedAt))s ago)")
+            debugLog("🚫 [LiveActivity] Start suppressed to avoid immediate auto-restart (last end \(Date().timeIntervalSince(lastEndedAt))s ago)")
             return
         }
 
@@ -602,7 +603,7 @@ final class LiveActivityManager: ObservableObject {
                tracked.preferredServiceID != preferredServiceID {
                 tracked.preferredServiceID = preferredServiceID
                 trackedActivities[existingActivityID] = tracked
-                print("✅ [LiveActivity] Updated preferred service to \(preferredServiceID) for \(journey.fromStation.crs) → \(journey.toStation.crs)")
+                debugLog("✅ [LiveActivity] Updated preferred service to \(preferredServiceID) for \(journey.fromStation.crs) → \(journey.toStation.crs)")
                 if let tokenData = tracked.activity.pushToken {
                     let tokenString = encodePushToken(tokenData)
                     _ = await sendLiveActivityRegistration(
@@ -622,38 +623,31 @@ final class LiveActivityManager: ObservableObject {
                 }
                 await refreshAndUpdate(for: journey, depStore: depStore, activityID: existingActivityID)
             } else {
-                print("✅ [LiveActivity] Already tracking \(journey.fromStation.crs) → \(journey.toStation.crs), skipping")
+                debugLog("✅ [LiveActivity] Already tracking \(journey.fromStation.crs) → \(journey.toStation.crs), skipping")
             }
             return
         }
 
         let info = ActivityAuthorizationInfo()
-        print("🚂 [LiveActivity] ===== START REQUESTED =====")
-        print("🚂 [LiveActivity] Current active activities: \(trackedActivities.count)/\(maxConcurrentActivities)")
-        print("🚂 [LiveActivity] areActivitiesEnabled=\(info.areActivitiesEnabled)")
-        print("🚂 [LiveActivity] frequentPushesEnabled=\(info.frequentPushesEnabled)")
-        os_log("[LiveActivity] ===== START REQUESTED =====")
-        os_log("[LiveActivity] areActivitiesEnabled=%{public}@", String(info.areActivitiesEnabled))
-        os_log("[LiveActivity] frequentPushesEnabled=%{public}@", String(info.frequentPushesEnabled))
+        debugLog("🚂 [LiveActivity] ===== START REQUESTED =====")
+        debugLog("🚂 [LiveActivity] Current active activities: \(trackedActivities.count)/\(maxConcurrentActivities)")
+        debugLog("🚂 [LiveActivity] areActivitiesEnabled=\(info.areActivitiesEnabled)")
+        debugLog("🚂 [LiveActivity] frequentPushesEnabled=\(info.frequentPushesEnabled)")
 
         if !info.areActivitiesEnabled {
-            print("❌ [LiveActivity] ERROR: Not enabled in Settings")
+            debugLog("❌ [LiveActivity] ERROR: Not enabled in Settings")
             lastMessage = "Live Activities are disabled in Settings"
-            os_log("[LiveActivity] ERROR: Not enabled in Settings", type: .error)
             return
         }
 
         // If at max capacity, end the oldest activity first
         if trackedActivities.count >= maxConcurrentActivities {
-            print("⚠️ [LiveActivity] At max capacity (\(maxConcurrentActivities)), ending oldest activity")
+            debugLog("⚠️ [LiveActivity] At max capacity (\(maxConcurrentActivities)), ending oldest activity")
             await endOldestActivity()
         }
 
-        print("🚂 [LiveActivity] Attributes type=\(String(reflecting: JourneyActivityAttributes.self))")
-        print("🚂 [LiveActivity] Request start for \(journey.fromStation.crs) → \(journey.toStation.crs)")
-        print("🚂 [LiveActivity] ActivityAttributes check: \(JourneyActivityAttributes.self is any ActivityAttributes.Type ? "✅ Conforms" : "❌ Does NOT conform")")
-        os_log("[LiveActivity] Attributes type=%{public}@", String(reflecting: JourneyActivityAttributes.self))
-        os_log("[LiveActivity] Request start for %{public}@ → %{public}@", journey.fromStation.crs, journey.toStation.crs)
+        debugLog("🚂 [LiveActivity] Attributes type=\(String(reflecting: JourneyActivityAttributes.self))")
+        debugLog("🚂 [LiveActivity] Request start for \(journey.fromStation.crs) → \(journey.toStation.crs)")
 
         // Compute initial state
         let initial = await contentState(
@@ -665,39 +659,30 @@ final class LiveActivityManager: ObservableObject {
             windowStart: windowStart,
             windowEnd: windowEnd
         )
-        print("🚂 [LiveActivity] Initial state: platform=\(initial.platform), est=\(initial.estimated), dest=\(initial.destinationTitle)")
-        os_log("[LiveActivity] Initial content state: fromCRS=%{public}@, toCRS=%{public}@, dest=%{public}@, platform=%{public}@, est=%{public}@",
-               initial.fromCRS, initial.toCRS, initial.destinationTitle, initial.platform, initial.estimated)
+        debugLog("🚂 [LiveActivity] Initial state: platform=\(initial.platform), est=\(initial.estimated), dest=\(initial.destinationTitle)")
 
         do {
             let route = routePresentation(for: journey)
             let attr = JourneyActivityAttributes(displayName: route.title)
-            print("🚂 [LiveActivity] Attributes displayName=\(attr.displayName)")
-            os_log("[LiveActivity] Attributes displayName=%{public}@", attr.displayName)
+            debugLog("🚂 [LiveActivity] Attributes displayName=\(attr.displayName)")
 
-            print("🚂 [LiveActivity] Calling Activity.request()...")
-            os_log("[LiveActivity] Calling Activity.request()...")
+            debugLog("🚂 [LiveActivity] Calling Activity.request()...")
             let act = try Activity<JourneyActivityAttributes>.request(
                 attributes: attr,
                 content: .init(state: initial, staleDate: nil),
                 pushType: .token
             )
 
-            print("✅ [LiveActivity] SUCCESS! Activity created!")
-            print("✅ [LiveActivity] Activity ID: \(act.id)")
-            print("✅ [LiveActivity] Activity state: \(act.activityState)")
-            os_log("[LiveActivity] Activity created successfully!")
-            os_log("[LiveActivity] Activity ID: %{public}@", act.id)
-            os_log("[LiveActivity] Activity state: %{public}@", String(describing: act.activityState))
-            os_log("[LiveActivity] Activity content: %{public}@", String(describing: act.content))
-            os_log("[LiveActivity] Push token: %{public}@", String(describing: act.pushToken))
+            debugLog("✅ [LiveActivity] SUCCESS! Activity created!")
+            debugLog("✅ [LiveActivity] Activity ID: \(act.id)")
+            debugLog("✅ [LiveActivity] Activity state: \(act.activityState)")
 
             // Listen for push token updates so we can register with the backend for APNs live updates.
             watchPushToken(for: act, fromCRS: journey.fromStation.crs, toCRS: journey.toStation.crs)
             if act.pushToken == nil {
-                print("⏳ [LiveActivity] Waiting for push token via pushTokenUpdates stream (requested pushType=.token)")
+                debugLog("⏳ [LiveActivity] Waiting for push token via pushTokenUpdates stream (requested pushType=.token)")
             } else {
-                print("📡 [LiveActivity] Initial push token already available; will still watch for updates")
+                debugLog("📡 [LiveActivity] Initial push token already available; will still watch for updates")
                 let tokenString = encodePushToken(act.pushToken!)
                 _ = await sendLiveActivityRegistration(
                     activityID: act.id,
@@ -747,25 +732,21 @@ final class LiveActivityManager: ObservableObject {
 
             // Check all active activities
             let allActivities = currentSystemActivities()
-            print("✅ [LiveActivity] Total active activities: \(allActivities.count)")
-            os_log("[LiveActivity] Total active activities: %{public}d", allActivities.count)
+            debugLog("✅ [LiveActivity] Total active activities: \(allActivities.count)")
             for (index, activity) in allActivities.enumerated() {
-                print("✅ [LiveActivity] Activity [\(index)]: id=\(activity.id), state=\(activity.activityState)")
-                os_log("[LiveActivity] Activity [%{public}d]: id=%{public}@, state=%{public}@",
-                       index, activity.id, String(describing: activity.activityState))
+                debugLog("✅ [LiveActivity] Activity [\(index)]: id=\(activity.id), state=\(activity.activityState)")
             }
 
-            print("✅ [LiveActivity] ===== START COMPLETED SUCCESSFULLY =====")
-            print("✅ [LiveActivity] Now tracking \(trackedActivities.count) activities")
+            debugLog("✅ [LiveActivity] ===== START COMPLETED SUCCESSFULLY =====")
+            debugLog("✅ [LiveActivity] Now tracking \(trackedActivities.count) activities")
             lastMessage = nil
-            os_log("[LiveActivity] ===== START COMPLETED SUCCESSFULLY =====")
         } catch {
-            print("❌ [LiveActivity] ===== START FAILED =====")
-            print("❌ [LiveActivity] Error: \(error)")
-            print("❌ [LiveActivity] Error localizedDescription: \(error.localizedDescription)")
+            debugLog("❌ [LiveActivity] ===== START FAILED =====")
+            debugLog("❌ [LiveActivity] Error: \(error)")
+            debugLog("❌ [LiveActivity] Error localizedDescription: \(error.localizedDescription)")
             if let nsError = error as NSError? {
-                print("❌ [LiveActivity] Error domain: \(nsError.domain), code: \(nsError.code)")
-                print("❌ [LiveActivity] Error userInfo: \(nsError.userInfo)")
+                debugLog("❌ [LiveActivity] Error domain: \(nsError.domain), code: \(nsError.code)")
+                debugLog("❌ [LiveActivity] Error userInfo: \(nsError.userInfo)")
             }
             ClientDiagnosticsLogger.log("live_activity", "start_failed", metadata: [
                 "from": journey.fromStation.crs.uppercased(),
@@ -797,33 +778,26 @@ final class LiveActivityManager: ObservableObject {
             } else {
                 lastMessage = "Unable to start Live Activity: \(error.localizedDescription)"
             }
-            os_log("[LiveActivity] ===== START FAILED =====", type: .error)
-            os_log("[LiveActivity] Error: %{public}@", error.localizedDescription)
-            os_log("[LiveActivity] Error details: %{public}@", String(describing: error))
-            if let nsError = error as NSError? {
-                os_log("[LiveActivity] Error domain: %{public}@, code: %{public}d", nsError.domain, nsError.code)
-                os_log("[LiveActivity] Error userInfo: %{public}@", String(describing: nsError.userInfo))
-            }
         }
     }
 
     /// End the oldest tracked activity to make room for a new one
     private func endOldestActivity() async {
         guard let oldest = trackedActivities.min(by: { $0.value.startedAt < $1.value.startedAt }) else {
-            print("⚠️ [LiveActivity] No activities to end")
+            debugLog("⚠️ [LiveActivity] No activities to end")
             return
         }
 
         let activityID = oldest.key
         let tracked = oldest.value
-        print("🛑 [LiveActivity] Ending oldest activity \(activityID) (\(tracked.fromCRS) → \(tracked.toCRS)) started at \(tracked.startedAt)")
+        debugLog("🛑 [LiveActivity] Ending oldest activity \(activityID) (\(tracked.fromCRS) → \(tracked.toCRS)) started at \(tracked.startedAt)")
 
         await stopActivity(activityID: activityID)
     }
 
     /// Stop all active Live Activities
     func stop() async {
-        print("🛑 [LiveActivity] Stopping all \(trackedActivities.count) activities")
+        debugLog("🛑 [LiveActivity] Stopping all \(trackedActivities.count) activities")
 
         // Copy activity IDs to avoid mutation during iteration
         let activityIDs = Array(trackedActivities.keys)
@@ -846,7 +820,6 @@ final class LiveActivityManager: ObservableObject {
 
         lastEndedAt = Date()
         updatePublishedState()
-        os_log("[LiveActivity] All activities stopped")
     }
 
     /// Stop a specific Live Activity by its ID
@@ -855,11 +828,11 @@ final class LiveActivityManager: ObservableObject {
         preserveNotificationLiveSession: Bool = false
     ) async {
         guard let tracked = trackedActivities[activityID] else {
-            print("⚠️ [LiveActivity] Cannot stop activity \(activityID) - not found in tracked activities")
+            debugLog("⚠️ [LiveActivity] Cannot stop activity \(activityID) - not found in tracked activities")
             return
         }
 
-        print("🛑 [LiveActivity] Stopping activity \(activityID) (\(tracked.fromCRS) → \(tracked.toCRS))")
+        debugLog("🛑 [LiveActivity] Stopping activity \(activityID) (\(tracked.fromCRS) → \(tracked.toCRS))")
 
         // Invalidate timers for this activity
         tracked.timer?.invalidate()
@@ -867,7 +840,7 @@ final class LiveActivityManager: ObservableObject {
 
         // End the ActivityKit activity
         await tracked.activity.end(nil, dismissalPolicy: .immediate)
-        print("🛑 [LiveActivity] End requested for \(activityID) with dismissalPolicy=.immediate")
+        debugLog("🛑 [LiveActivity] End requested for \(activityID) with dismissalPolicy=.immediate")
 
         // Cancel push token task for this activity
         pushTokenTasks[activityID]?.cancel()
@@ -889,7 +862,7 @@ final class LiveActivityManager: ObservableObject {
             )
             let msg = "Deferred Live Activity unregistration during stop for \(tracked.fromCRS)→\(tracked.toCRS)"
             DebugLogStore.shared.log(msg, category: "Mute")
-            print("📍 \(msg)")
+            debugLog("📍 \(msg)")
         } else {
             await sendLiveActivityUnregistration(activityID: activityID)
         }
@@ -901,7 +874,6 @@ final class LiveActivityManager: ObservableObject {
         }
 
         lastEndedAt = Date()
-        os_log("[LiveActivity] Activity %{public}@ stopped", activityID)
     }
 
     /// Stop the Live Activity for a specific journey
@@ -929,7 +901,7 @@ final class LiveActivityManager: ObservableObject {
 
         let matchingActivities = systemActivities(forFromCRS: fromCRS, toCRS: toCRS)
         guard !matchingActivities.isEmpty else {
-            print("⚠️ [LiveActivity] No activity found for \(journey.fromStation.crs) → \(journey.toStation.crs)")
+            debugLog("⚠️ [LiveActivity] No activity found for \(journey.fromStation.crs) → \(journey.toStation.crs)")
             return
         }
 
@@ -943,7 +915,7 @@ final class LiveActivityManager: ObservableObject {
                 )
                 let msg = "Deferred Live Activity unregistration during stop for \(fromCRS)→\(toCRS)"
                 DebugLogStore.shared.log(msg, category: "Mute")
-                print("📍 \(msg)")
+                debugLog("📍 \(msg)")
             } else {
                 await sendLiveActivityUnregistration(activityID: activity.id)
             }
@@ -983,7 +955,7 @@ final class LiveActivityManager: ObservableObject {
                 )
                 let msg = "Deferred Live Activity unregistration during stop for \(fromCRS.uppercased())→\(toCRS.uppercased())"
                 DebugLogStore.shared.log(msg, category: "Mute")
-                print("📍 \(msg)")
+                debugLog("📍 \(msg)")
             } else {
                 await sendLiveActivityUnregistration(activityID: activity.id)
             }
@@ -1064,7 +1036,7 @@ final class LiveActivityManager: ObservableObject {
     private func updatePublishedState() {
         let trackedPairs = trackedActivities.values.map { ($0.fromCRS.uppercased(), $0.toCRS.uppercased()) }
         let systemPairs = currentSystemActivities().map {
-            ($0.contentState.fromCRS.uppercased(), $0.contentState.toCRS.uppercased())
+            ($0.content.state.fromCRS.uppercased(), $0.content.state.toCRS.uppercased())
         }
         let allPairs = trackedPairs + systemPairs
         var seen = Set<String>()
@@ -1076,7 +1048,7 @@ final class LiveActivityManager: ObservableObject {
         }
         isActive = !activeJourneys.isEmpty
         updateGlobalActivityMonitor()
-        print("📊 [LiveActivity] State updated: isActive=\(isActive), activeJourneys=\(activeJourneys.map { "\($0.fromCRS)→\($0.toCRS)" })")
+        debugLog("📊 [LiveActivity] State updated: isActive=\(isActive), activeJourneys=\(activeJourneys.map { "\($0.fromCRS)→\($0.toCRS)" })")
     }
 
     private func updateGlobalActivityMonitor() {
@@ -1085,20 +1057,20 @@ final class LiveActivityManager: ObservableObject {
         if hasAnyActivities {
             guard monitorTimer == nil else { return }
             scheduleGlobalActivityMonitor()
-            print("🛰️ [LiveActivity] Started global monitor")
+            debugLog("🛰️ [LiveActivity] Started global monitor")
             return
         }
 
         if let timer = monitorTimer {
             timer.invalidate()
             monitorTimer = nil
-            print("🛰️ [LiveActivity] Stopped global monitor (no activities)")
+            debugLog("🛰️ [LiveActivity] Stopped global monitor (no activities)")
         }
     }
 
     private func systemActivities(forFromCRS fromCRS: String, toCRS: String) -> [Activity<JourneyActivityAttributes>] {
         currentSystemActivities().filter {
-            $0.contentState.fromCRS.uppercased() == fromCRS && $0.contentState.toCRS.uppercased() == toCRS
+            $0.content.state.fromCRS.uppercased() == fromCRS && $0.content.state.toCRS.uppercased() == toCRS
         }
     }
 
@@ -1108,7 +1080,7 @@ final class LiveActivityManager: ObservableObject {
 
     private func isUsableSystemActivity(_ activity: Activity<JourneyActivityAttributes>) -> Bool {
         switch activity.activityState {
-        case .active, .stale:
+        case .pending, .active, .stale:
             return true
         case .ended, .dismissed:
             return false
@@ -1135,14 +1107,12 @@ final class LiveActivityManager: ObservableObject {
             forFromCRS: journey.fromStation.crs.uppercased(),
             toCRS: journey.toStation.crs.uppercased()
         ).isEmpty {
-            print("ℹ️ [LiveActivity] Suppressing start error because a matching activity already exists")
-            os_log("[LiveActivity] Suppressing start error because a matching activity already exists", type: .info)
+            debugLog("ℹ️ [LiveActivity] Suppressing start error because a matching activity already exists")
             return true
         }
 
         if isForegroundRestriction && (allowAutomaticStart || !triggeredByUser) {
-            print("ℹ️ [LiveActivity] Suppressing automatic foreground-only start error: \(error.localizedDescription)")
-            os_log("[LiveActivity] Suppressing automatic foreground-only start error: %{public}@", error.localizedDescription)
+            debugLog("ℹ️ [LiveActivity] Suppressing automatic foreground-only start error: \(error.localizedDescription)")
             return true
         }
 
@@ -1162,13 +1132,13 @@ final class LiveActivityManager: ObservableObject {
             windowEnd: windowEnd,
             now: now
         ) else {
-            print("⚠️ [LiveActivity] Fallback end timer NOT scheduled for \(activityID) (interval is nil)")
+            debugLog("⚠️ [LiveActivity] Fallback end timer NOT scheduled for \(activityID) (interval is nil)")
             return nil
         }
         let interval = max(1, deadline.date.timeIntervalSince(now))
         let minutes = Int(interval / 60)
         let deadlineText = ISO8601DateFormatter().string(from: deadline.date)
-        print("⏰ [LiveActivity] Scheduling fallback end timer for activity \(activityID): \(minutes) minute\(minutes == 1 ? "" : "s") (\(interval) seconds), source=\(deadline.source), deadline=\(deadlineText)")
+        debugLog("⏰ [LiveActivity] Scheduling fallback end timer for activity \(activityID): \(minutes) minute\(minutes == 1 ? "" : "s") (\(interval) seconds), source=\(deadline.source), deadline=\(deadlineText)")
         DebugLogStore.shared.log(
             "Fallback end scheduled for \(activityID): source=\(deadline.source), deadline=\(deadlineText)",
             category: "Live Activity"
@@ -1184,7 +1154,7 @@ final class LiveActivityManager: ObservableObject {
         ])
         let timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
             guard let self else { return }
-            print("⏳ [LiveActivity] Fallback end fired for \(activityID) after \(interval)s (\(minutes) min), source=\(deadline.source); ending locally")
+            debugLog("⏳ [LiveActivity] Fallback end fired for \(activityID) after \(interval)s (\(minutes) min), source=\(deadline.source); ending locally")
             Task { @MainActor in
                 DebugLogStore.shared.log(
                     "Fallback end fired for \(activityID): source=\(deadline.source), deadline=\(deadlineText)",
@@ -1193,27 +1163,26 @@ final class LiveActivityManager: ObservableObject {
                 await self.stopActivity(activityID: activityID)
             }
         }
-        print("✅ [LiveActivity] Fallback end timer scheduled for activity \(activityID) at \(deadline.date)")
+        debugLog("✅ [LiveActivity] Fallback end timer scheduled for activity \(activityID) at \(deadline.date)")
         return timer
     }
 
     private func scheduleGlobalActivityMonitor() {
         monitorTimer?.invalidate()
-        monitorTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            let list = self.currentSystemActivities()
-            let states = list.map { "\($0.id): \($0.activityState)" }.joined(separator: "; ")
-            print("🛰️ [LiveActivity] Monitor tick - activities: \(states)")
+        monitorTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let list = self.currentSystemActivities()
+                let states = list.map { "\($0.id): \($0.activityState)" }.joined(separator: "; ")
+                debugLog("🛰️ [LiveActivity] Monitor tick - activities: \(states)")
 
-            // Check each tracked activity for force-end on the main actor
-            Task { @MainActor in
                 let now = Date()
                 for (activityID, tracked) in self.trackedActivities {
                     let deadline = self.forceEndDeadline(for: tracked, now: now)
                     if now > deadline.date {
                         let elapsed = now.timeIntervalSince(tracked.startedAt)
                         let deadlineText = ISO8601DateFormatter().string(from: deadline.date)
-                        print("⏳ [LiveActivity] Force-ending activity \(activityID) after \(Int(elapsed))s, source=\(deadline.source), deadline=\(deadlineText)")
+                        debugLog("⏳ [LiveActivity] Force-ending activity \(activityID) after \(Int(elapsed))s, source=\(deadline.source), deadline=\(deadlineText)")
                         DebugLogStore.shared.log(
                             "Force-ending activity \(activityID): source=\(deadline.source), deadline=\(deadlineText)",
                             category: "Live Activity"
@@ -1236,18 +1205,17 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func scheduleUpdates(for journey: Journey, depStore: DeparturesStore, activityID: String) -> Timer {
-        print("⏰ [LiveActivity] Scheduling timer for activity \(activityID) updates every 10 seconds")
-        os_log("[LiveActivity] Scheduling timer for activity %{public}@ updates every 10 seconds", activityID)
+        debugLog("⏰ [LiveActivity] Scheduling timer for activity \(activityID) updates every 20 seconds")
 
         // NOTE: Timer-based updates only work when app is in foreground
         // For background updates, push notifications via APNs would be needed
-        let timer = Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
             guard let self else { return }
-            print("⏰ [LiveActivity] Timer fired for \(activityID) - starting refresh")
-            os_log("[LiveActivity] Timer fired for %{public}@ - starting refresh", activityID)
+            debugLog("⏰ [LiveActivity] Timer fired for \(activityID) - starting refresh")
             Task {
-                // Force refresh departure data before updating the Live Activity
-                await self.refreshAndUpdate(for: journey, depStore: depStore, activityID: activityID)
+                // DeparturesStore already refreshes all saved journeys every 20 seconds.
+                // Reuse its snapshot instead of issuing a duplicate request per activity.
+                await self.update(for: journey, depStore: depStore, activityID: activityID)
             }
         }
 
@@ -1263,8 +1231,7 @@ final class LiveActivityManager: ObservableObject {
         // Fetch fresh departure data from the API
         let timestamp = Date()
         let activityLabel = activityID ?? "all"
-        print("🔄 [LiveActivity] [\(timestamp)] Fetching fresh departure data for \(journey.fromStation.crs) → \(journey.toStation.crs) (activity: \(activityLabel))")
-        os_log("[LiveActivity] Fetching fresh departure data for %{public}@ → %{public}@", journey.fromStation.crs, journey.toStation.crs)
+        debugLog("🔄 [LiveActivity] [\(timestamp)] Fetching fresh departure data for \(journey.fromStation.crs) → \(journey.toStation.crs) (activity: \(activityLabel))")
 
         // Refresh departure data for this specific journey
         await depStore.refreshSpecificJourney(fromCRS: journey.fromStation.crs, toCRS: journey.toStation.crs)
@@ -1308,7 +1275,7 @@ final class LiveActivityManager: ObservableObject {
             trackedActivities[activityID] = tracked
 
             if let expiredPreferredServiceID = preferredServiceID {
-                print("↪️ [LiveActivity] Preferred service \(expiredPreferredServiceID) is no longer relevant for \(journey.fromStation.crs) → \(journey.toStation.crs); falling back to the next live departure")
+                debugLog("↪️ [LiveActivity] Preferred service \(expiredPreferredServiceID) is no longer relevant for \(journey.fromStation.crs) → \(journey.toStation.crs); falling back to the next live departure")
             }
 
             if let tokenData = tracked.activity.pushToken {
@@ -1331,18 +1298,19 @@ final class LiveActivityManager: ObservableObject {
             }
         }
 
-        print("🔄 [LiveActivity] Found \(deps.count) departures after refresh")
+        debugLog("🔄 [LiveActivity] Found \(deps.count) departures after refresh")
         if let selectedDep = selectPrimaryDeparture(
             preferredServiceID: effectivePreferredServiceID,
             allDepartures: deps,
             filteredDepartures: relevantDeps
         ) {
-            print("✅ [LiveActivity] Fetched departure data, selected service: \(selectedDep.serviceID), platform: \(selectedDep.platform ?? "TBC"), time: \(selectedDep.departureTime.estimated ?? selectedDep.departureTime.scheduled)")
-            os_log("[LiveActivity] Selected service: %{public}@, platform: %{public}@", selectedDep.serviceID, selectedDep.platform ?? "TBC")
+            let departureTime = selectedDep.departureTime.estimated.isEmpty
+                ? selectedDep.departureTime.scheduled
+                : selectedDep.departureTime.estimated
+            debugLog("✅ [LiveActivity] Fetched departure data, selected service: \(selectedDep.serviceID), platform: \(selectedDep.platform ?? "TBC"), time: \(departureTime)")
             await depStore.ensureServiceDetails(for: [selectedDep.serviceID], force: true)
         } else {
-            print("⚠️ [LiveActivity] No departures found after refresh")
-            os_log("[LiveActivity] WARNING: No departures found after refresh", type: .error)
+            debugLog("⚠️ [LiveActivity] No departures found after refresh")
         }
 
         // Now update the Live Activity with the fresh data
@@ -1392,11 +1360,9 @@ final class LiveActivityManager: ObservableObject {
             let formatter = DateFormatter()
             formatter.dateFormat = "HH:mm:ss"
             let timeStr = formatter.string(from: state.lastUpdated)
-            print("✅ [LiveActivity] Updated \(a.id) at \(timeStr) to show: platform=\(state.platform), est=\(state.estimated), dest=\(state.destinationTitle), upcoming=\(state.upcomingDepartures.count)")
-            os_log("[LiveActivity] Updated activity %{public}@ at %{public}@", String(describing: a.id), timeStr)
+            debugLog("✅ [LiveActivity] Updated \(a.id) at \(timeStr) to show: platform=\(state.platform), est=\(state.estimated), dest=\(state.destinationTitle), upcoming=\(state.upcomingDepartures.count)")
         } else {
-            print("⚠️ [LiveActivity] Update skipped; activity not found for \(journey.fromStation.crs) → \(journey.toStation.crs)")
-            os_log("[LiveActivity] Update skipped; activity not found", type: .error)
+            debugLog("⚠️ [LiveActivity] Update skipped; activity not found for \(journey.fromStation.crs) → \(journey.toStation.crs)")
         }
     }
 
@@ -1710,7 +1676,7 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func parseDepartureMinutes(_ depTime: DepartureTimeV2) -> Int? {
-        let timeStr = depTime.estimated ?? depTime.scheduled
+        let timeStr = depTime.estimated.isEmpty ? depTime.scheduled : depTime.estimated
         return parseHHmmToMinutes(timeStr)
     }
 
@@ -1769,11 +1735,11 @@ final class LiveActivityManager: ObservableObject {
         activityUpdatesTask?.cancel()
         activityUpdatesTask = Task { [weak self] in
             guard let self else { return }
-            self.logger.info("[ActivityMonitor] Activity.activityUpdates stream started")
+            self.logger.debug("[ActivityMonitor] Activity.activityUpdates stream started")
             for await activity in Activity<JourneyActivityAttributes>.activityUpdates {
                 await self.handleActivityUpdate(activity)
             }
-            self.logger.info("[ActivityMonitor] Activity.activityUpdates stream completed")
+            self.logger.debug("[ActivityMonitor] Activity.activityUpdates stream completed")
         }
     }
 
@@ -1798,13 +1764,13 @@ final class LiveActivityManager: ObservableObject {
         }
         #endif
         await registerRemoteStartedActivityIfNeeded(activity)
-        self.logger.info("[ActivityMonitor] Activity emitted id=\(activity.id, privacy: .public) state=\(self.describe(state: activity.activityState), privacy: .public)")
+        self.logger.debug("[ActivityMonitor] Activity emitted id=\(activity.id, privacy: .public) state=\(self.describe(state: activity.activityState), privacy: .public)")
         logActivitySnapshot(activity, context: "activityUpdates emit")
         stateMonitorTasks[activity.id]?.cancel()
         stateMonitorTasks[activity.id] = Task { [weak self] in
             guard let self else { return }
             for await state in activity.activityStateUpdates {
-                self.logger.info("[ActivityMonitor] Activity \(activity.id, privacy: .public) transitioned to \(self.describe(state: state), privacy: .public)")
+                self.logger.debug("[ActivityMonitor] Activity \(activity.id, privacy: .public) transitioned to \(self.describe(state: state), privacy: .public)")
                 logActivitySnapshot(activity, context: "state transition -> \(self.describe(state: state))")
                 if state == .ended || state == .dismissed {
                     pushTokenTasks[activity.id]?.cancel()
@@ -1812,7 +1778,7 @@ final class LiveActivityManager: ObservableObject {
                     self.cleanupAfterRemoteEnd(for: activity)
                 }
             }
-            self.logger.info("[ActivityMonitor] Activity \(activity.id, privacy: .public) state stream ended")
+            self.logger.debug("[ActivityMonitor] Activity \(activity.id, privacy: .public) state stream ended")
             self.stateMonitorTasks[activity.id] = nil
         }
     }
@@ -1820,17 +1786,17 @@ final class LiveActivityManager: ObservableObject {
     private func registerRemoteStartedActivityIfNeeded(_ activity: Activity<JourneyActivityAttributes>) async {
         await replaceScheduledActivityIfNeeded(with: activity)
 
-        let fromCRS = activity.contentState.fromCRS.uppercased()
-        let toCRS = activity.contentState.toCRS.uppercased()
+        let fromCRS = activity.content.state.fromCRS.uppercased()
+        let toCRS = activity.content.state.toCRS.uppercased()
         let scheduleKey = scheduledActivityKey(for: activity)
         let effectiveJourneyUpdatesEnabled = remoteStartedJourneyUpdatesEnabled(for: activity)
         guard trackedActivities[activity.id] == nil else {
             ClientDiagnosticsLogger.log("live_activity", "remote_started_already_tracked", metadata: [
                 "activity_id": activity.id,
-                "schedule_key": activity.contentState.scheduleKey,
+                "schedule_key": activity.content.state.scheduleKey,
                 "from": fromCRS,
                 "to": toCRS,
-                "journey_updates_enabled": activity.contentState.journeyUpdatesEnabled,
+                "journey_updates_enabled": activity.content.state.journeyUpdatesEnabled,
                 "effective_journey_updates_enabled": effectiveJourneyUpdatesEnabled
             ])
             await ensureScheduledJourneyUpdatesActiveIfNeeded(activity, fromCRS: fromCRS, toCRS: toCRS)
@@ -1842,14 +1808,14 @@ final class LiveActivityManager: ObservableObject {
             "activity_id": activity.id,
             "from": fromCRS,
             "to": toCRS,
-            "route_title": activity.contentState.routeTitle,
-            "schedule_key": activity.contentState.scheduleKey,
-            "window_start": activity.contentState.windowStart,
-            "window_end": activity.contentState.windowEnd,
-            "journey_updates_enabled": activity.contentState.journeyUpdatesEnabled,
+            "route_title": activity.content.state.routeTitle,
+            "schedule_key": activity.content.state.scheduleKey,
+            "window_start": activity.content.state.windowStart,
+            "window_end": activity.content.state.windowEnd,
+            "journey_updates_enabled": activity.content.state.journeyUpdatesEnabled,
             "effective_journey_updates_enabled": effectiveJourneyUpdatesEnabled
         ])
-        if scheduleKey != nil && !activity.contentState.journeyUpdatesEnabled {
+        if scheduleKey != nil && !activity.content.state.journeyUpdatesEnabled {
             DebugLogStore.shared.log(
                 "Scheduled push-started activity promoted to live journey updates for \(fromCRS)→\(toCRS)",
                 category: "Scheduled"
@@ -1864,14 +1830,14 @@ final class LiveActivityManager: ObservableObject {
             preferredServiceID: nil,
             journeyUpdatesEnabled: effectiveJourneyUpdatesEnabled,
             scheduleKey: scheduleKey,
-            windowStart: activity.contentState.windowStart,
-            windowEnd: activity.contentState.windowEnd
+            windowStart: activity.content.state.windowStart,
+            windowEnd: activity.content.state.windowEnd
         )
         tracked.fallbackEndTimer = scheduleFallbackEnd(
             for: activity.id,
             scheduleKey: scheduleKey,
-            windowStart: activity.contentState.windowStart,
-            windowEnd: activity.contentState.windowEnd
+            windowStart: activity.content.state.windowStart,
+            windowEnd: activity.content.state.windowEnd
         )
         trackedActivities[activity.id] = tracked
         watchPushToken(for: activity, fromCRS: fromCRS, toCRS: toCRS)
@@ -1880,7 +1846,7 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func scheduledActivityKey(for activity: Activity<JourneyActivityAttributes>) -> String? {
-        guard let scheduleKey = activity.contentState.scheduleKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard let scheduleKey = activity.content.state.scheduleKey?.trimmingCharacters(in: .whitespacesAndNewlines),
               !scheduleKey.isEmpty else {
             return nil
         }
@@ -1891,7 +1857,7 @@ final class LiveActivityManager: ObservableObject {
         if scheduledActivityKey(for: activity) != nil {
             return true
         }
-        return activity.contentState.journeyUpdatesEnabled
+        return activity.content.state.journeyUpdatesEnabled
     }
 
     private func ensureScheduledJourneyUpdatesActiveIfNeeded(
@@ -1906,14 +1872,14 @@ final class LiveActivityManager: ObservableObject {
 
         let wasEnabled = tracked.journeyUpdatesEnabled
         let needsMetadataRefresh = tracked.scheduleKey != scheduleKey
-            || tracked.windowStart != activity.contentState.windowStart
-            || tracked.windowEnd != activity.contentState.windowEnd
+            || tracked.windowStart != activity.content.state.windowStart
+            || tracked.windowEnd != activity.content.state.windowEnd
         guard !wasEnabled || needsMetadataRefresh else { return }
 
         tracked.journeyUpdatesEnabled = true
         tracked.scheduleKey = scheduleKey
-        tracked.windowStart = activity.contentState.windowStart
-        tracked.windowEnd = activity.contentState.windowEnd
+        tracked.windowStart = activity.content.state.windowStart
+        tracked.windowEnd = activity.content.state.windowEnd
         if needsMetadataRefresh {
             tracked.fallbackEndTimer?.invalidate()
             tracked.fallbackEndTimer = scheduleFallbackEnd(
@@ -1945,14 +1911,14 @@ final class LiveActivityManager: ObservableObject {
             tokenString: encodePushToken(tokenData),
             fromCRS: fromCRS,
             toCRS: toCRS,
-            routeTitle: activity.contentState.routeTitle,
-            deepLinkFromCRS: activity.contentState.deepLinkFromCRS,
-            deepLinkToCRS: activity.contentState.deepLinkToCRS,
+            routeTitle: activity.content.state.routeTitle,
+            deepLinkFromCRS: activity.content.state.deepLinkFromCRS,
+            deepLinkToCRS: activity.content.state.deepLinkToCRS,
             preferredServiceID: tracked.preferredServiceID,
             journeyUpdatesEnabled: true,
             scheduleKey: scheduleKey,
-            windowStart: activity.contentState.windowStart,
-            windowEnd: activity.contentState.windowEnd
+            windowStart: activity.content.state.windowStart,
+            windowEnd: activity.content.state.windowEnd
         )
     }
 
@@ -1967,10 +1933,10 @@ final class LiveActivityManager: ObservableObject {
                 "activity_id": activity.id,
                 "from": fromCRS,
                 "to": toCRS,
-                "route_title": activity.contentState.routeTitle,
-                "window_start": activity.contentState.windowStart,
-                "window_end": activity.contentState.windowEnd,
-                "journey_updates_enabled": activity.contentState.journeyUpdatesEnabled
+                "route_title": activity.content.state.routeTitle,
+                "window_start": activity.content.state.windowStart,
+                "window_end": activity.content.state.windowEnd,
+                "journey_updates_enabled": activity.content.state.journeyUpdatesEnabled
             ])
             DebugLogStore.shared.log(
                 "Remote-started activity skipped live session registration: missing schedule key for \(fromCRS)→\(toCRS)",
@@ -1992,8 +1958,8 @@ final class LiveActivityManager: ObservableObject {
             fromName: fromName,
             toName: toName,
             scheduleKey: scheduleKey,
-            windowStart: activity.contentState.windowStart,
-            windowEnd: activity.contentState.windowEnd,
+            windowStart: activity.content.state.windowStart,
+            windowEnd: activity.content.state.windowEnd,
             source: "remote_started_live_activity",
             metadata: [
                 "activity_id": activity.id,
@@ -2002,10 +1968,10 @@ final class LiveActivityManager: ObservableObject {
                 "to": toCRS,
                 "from_name": fromName,
                 "to_name": toName,
-                "route_title": activity.contentState.routeTitle,
-                "window_start": activity.contentState.windowStart,
-                "window_end": activity.contentState.windowEnd,
-                "journey_updates_enabled": activity.contentState.journeyUpdatesEnabled
+                "route_title": activity.content.state.routeTitle,
+                "window_start": activity.content.state.windowStart,
+                "window_end": activity.content.state.windowEnd,
+                "journey_updates_enabled": activity.content.state.journeyUpdatesEnabled
             ]
         )
 
@@ -2076,7 +2042,7 @@ final class LiveActivityManager: ObservableObject {
             category: "Scheduled"
         )
         if !unregistered.isEmpty {
-            print("📡 [LiveActivity] registerAnyUnregisteredActivities: found \(unregistered.count) unregistered activity/activities")
+            debugLog("📡 [LiveActivity] registerAnyUnregisteredActivities: found \(unregistered.count) unregistered activity/activities")
             for activity in unregistered {
                 await registerRemoteStartedActivityIfNeeded(activity)
             }
@@ -2087,22 +2053,22 @@ final class LiveActivityManager: ObservableObject {
             #if DEBUG
             if isDebugJourneySimulationActivity(activity) { continue }
             #endif
-            let fromCRS = activity.contentState.fromCRS.uppercased()
-            let toCRS = activity.contentState.toCRS.uppercased()
+            let fromCRS = activity.content.state.fromCRS.uppercased()
+            let toCRS = activity.content.state.toCRS.uppercased()
             await ensureScheduledJourneyUpdatesActiveIfNeeded(activity, fromCRS: fromCRS, toCRS: toCRS)
             await ensureNotificationLiveSessionForRemoteStartedActivity(activity, fromCRS: fromCRS, toCRS: toCRS)
         }
     }
 
     private func replaceScheduledActivityIfNeeded(with activity: Activity<JourneyActivityAttributes>) async {
-        guard let scheduleKey = activity.contentState.scheduleKey,
+        guard let scheduleKey = activity.content.state.scheduleKey,
               !scheduleKey.isEmpty else {
             return
         }
 
         let trackedDuplicateIDs = trackedActivities.compactMap { entry -> String? in
             guard entry.key != activity.id,
-                  entry.value.activity.contentState.scheduleKey == scheduleKey else {
+                  entry.value.activity.content.state.scheduleKey == scheduleKey else {
                 return nil
             }
             return entry.key
@@ -2114,7 +2080,7 @@ final class LiveActivityManager: ObservableObject {
 
         let untrackedDuplicates = currentSystemActivities().filter {
             $0.id != activity.id
-                && $0.contentState.scheduleKey == scheduleKey
+                && $0.content.state.scheduleKey == scheduleKey
                 && trackedActivities[$0.id] == nil
         }
 
@@ -2127,6 +2093,8 @@ final class LiveActivityManager: ObservableObject {
 
     private func describe(state: ActivityState) -> String {
         switch state {
+        case .pending:
+            return "pending"
         case .active:
             return "active"
         case .stale:
@@ -2143,11 +2111,11 @@ final class LiveActivityManager: ObservableObject {
     // Debug helper: log current attributes/content state for an Activity to aid APNs troubleshooting.
     private func logActivitySnapshot(_ activity: Activity<JourneyActivityAttributes>, context: String) {
         var payload: [String: Any] = [:]
-        if let stateData = try? JSONEncoder.activityDebug.encode(activity.contentState),
+        if let stateData = try? JSONEncoder.activityDebug.encode(activity.content.state),
            let stateObj = try? JSONSerialization.jsonObject(with: stateData) {
             payload["contentState"] = stateObj
         } else {
-            payload["contentState"] = "\(activity.contentState)"
+            payload["contentState"] = "\(activity.content.state)"
         }
         payload["attributesDisplayName"] = activity.attributes.displayName
         payload["state"] = describe(state: activity.activityState)
@@ -2156,9 +2124,9 @@ final class LiveActivityManager: ObservableObject {
         }
         if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]),
            let text = String(data: data, encoding: .utf8) {
-            print("🛰️ [LiveActivity][\(context)] Snapshot:\n\(text)")
+            debugLog("🛰️ [LiveActivity][\(context)] Snapshot:\n\(text)")
         } else {
-            print("🛰️ [LiveActivity][\(context)] Snapshot could not be serialized")
+            debugLog("🛰️ [LiveActivity][\(context)] Snapshot could not be serialized")
         }
     }
 
@@ -2167,12 +2135,12 @@ final class LiveActivityManager: ObservableObject {
     private func cleanupAfterRemoteEnd(for activity: Activity<JourneyActivityAttributes>) {
         let activityID = activity.id
         guard let tracked = trackedActivities[activityID] else {
-            print("⚠️ [LiveActivity] Cleanup requested for unknown activity \(activityID)")
+            debugLog("⚠️ [LiveActivity] Cleanup requested for unknown activity \(activityID)")
             updatePublishedState()
             return
         }
 
-        print("🧹 [LiveActivity] Cleaning up after remote end/dismiss for activity \(activityID) (\(tracked.fromCRS) → \(tracked.toCRS))")
+        debugLog("🧹 [LiveActivity] Cleaning up after remote end/dismiss for activity \(activityID) (\(tracked.fromCRS) → \(tracked.toCRS))")
 
         // Invalidate timers for this activity
         tracked.timer?.invalidate()
@@ -2203,7 +2171,7 @@ final class LiveActivityManager: ObservableObject {
                 )
                 let msg = "Preserving notification live session on arrival for \(tracked.fromCRS)→\(tracked.toCRS)"
                 DebugLogStore.shared.log(msg, category: "Mute")
-                print("📍 \(msg)")
+                debugLog("📍 \(msg)")
                 await NotificationSubscriptionStore.shared.removeLiveSessionsLocally(containingFrom: tracked.fromCRS, to: tracked.toCRS)
             } else {
                 await sendLiveActivityUnregistration(activityID: activityID)
@@ -2300,22 +2268,22 @@ final class LiveActivityManager: ObservableObject {
         pushTokenTasks[activity.id]?.cancel()
         pushTokenTasks[activity.id] = Task { @MainActor [weak self] in
             guard let self else { return }
-            self.logger.info("[LiveActivity] Listening for push token updates for activity \(activity.id, privacy: .public)")
-            print("👂 [LiveActivity] Started watching push tokens for \(activity.id)")
+            self.logger.debug("[LiveActivity] Listening for push token updates for activity \(activity.id, privacy: .public)")
+            debugLog("👂 [LiveActivity] Started watching push tokens for \(activity.id)")
             var tokenCount = 0
             var registeredTokens = Set<String>()
             @MainActor
             func register(_ tokenData: Data, source: String) async {
                 let tokenString = encodePushToken(tokenData)
                 guard registeredTokens.insert(tokenString).inserted else {
-                    print("↩️ [LiveActivity] Skipping duplicate \(source) push token for \(activity.id)")
+                    debugLog("↩️ [LiveActivity] Skipping duplicate \(source) push token for \(activity.id)")
                     return
                 }
 
                 tokenCount += 1
                 let tokenPreview = String(tokenString.prefix(8)) + "..." + String(tokenString.suffix(8))
-                self.logger.info("[LiveActivity] Received \(source, privacy: .public) push token #\(tokenCount) for activity \(activity.id, privacy: .public): \(tokenPreview, privacy: .public)")
-                print("📡 [LiveActivity] \(source) push token #\(tokenCount) received for \(activity.id): \(tokenString)")
+                self.logger.debug("[LiveActivity] Received \(source, privacy: .public) push token #\(tokenCount) for activity \(activity.id, privacy: .public)")
+                debugLog("📡 [LiveActivity] \(source) push token #\(tokenCount) received for \(activity.id): \(tokenPreview)")
 
                 var retryCount = 0
                 var success = false
@@ -2326,41 +2294,41 @@ final class LiveActivityManager: ObservableObject {
                         tokenString: tokenString,
                         fromCRS: fromCRS,
                         toCRS: toCRS,
-                        routeTitle: activity.contentState.routeTitle,
-                        deepLinkFromCRS: activity.contentState.deepLinkFromCRS,
-                        deepLinkToCRS: activity.contentState.deepLinkToCRS,
+                        routeTitle: activity.content.state.routeTitle,
+                        deepLinkFromCRS: activity.content.state.deepLinkFromCRS,
+                        deepLinkToCRS: activity.content.state.deepLinkToCRS,
                         preferredServiceID: preferredServiceID,
-                        journeyUpdatesEnabled: self.trackedActivities[activity.id]?.journeyUpdatesEnabled ?? activity.contentState.journeyUpdatesEnabled,
-                        scheduleKey: activity.contentState.scheduleKey,
-                        windowStart: activity.contentState.windowStart,
-                        windowEnd: activity.contentState.windowEnd
+                        journeyUpdatesEnabled: self.trackedActivities[activity.id]?.journeyUpdatesEnabled ?? activity.content.state.journeyUpdatesEnabled,
+                        scheduleKey: activity.content.state.scheduleKey,
+                        windowStart: activity.content.state.windowStart,
+                        windowEnd: activity.content.state.windowEnd
                     )
                     if !success {
                         retryCount += 1
                         if retryCount < 3 {
-                            print("⚠️ [LiveActivity] Token registration failed, retrying (\(retryCount)/3)...")
+                            debugLog("⚠️ [LiveActivity] Token registration failed, retrying (\(retryCount)/3)...")
                             try? await Task.sleep(nanoseconds: 2_000_000_000) // 2 second delay
                         }
                     }
                 }
 
                 if success {
-                    print("✅ [LiveActivity] \(source) token #\(tokenCount) successfully registered with backend")
+                    debugLog("✅ [LiveActivity] \(source) token #\(tokenCount) successfully registered with backend")
                 } else {
-                    print("❌ [LiveActivity] \(source) token #\(tokenCount) failed to register after 3 attempts")
+                    debugLog("❌ [LiveActivity] \(source) token #\(tokenCount) failed to register after 3 attempts")
                 }
             }
 
             if let tokenData = activity.pushToken {
                 await register(tokenData, source: "current")
             } else {
-                print("⏳ [LiveActivity] No current push token for \(activity.id); waiting for pushTokenUpdates")
+                debugLog("⏳ [LiveActivity] No current push token for \(activity.id); waiting for pushTokenUpdates")
             }
 
             for await tokenData in activity.pushTokenUpdates {
                 await register(tokenData, source: "stream")
             }
-            print("👋 [LiveActivity] Stopped watching push tokens for \(activity.id) (received \(tokenCount) total)")
+            debugLog("👋 [LiveActivity] Stopped watching push tokens for \(activity.id) (received \(tokenCount) total)")
             self.pushTokenTasks[activity.id] = nil
         }
     }
@@ -2384,7 +2352,7 @@ final class LiveActivityManager: ObservableObject {
         let urlString = "\(base)/live_activities"
         guard let url = URL(string: urlString) else {
             logger.error("[LiveActivity] Invalid live activity registration URL: \(urlString, privacy: .public)")
-            print("❌ [LiveActivity] Invalid URL: \(urlString)")
+            debugLog("❌ [LiveActivity] Invalid URL: \(urlString)")
             return false
         }
 
@@ -2463,12 +2431,12 @@ final class LiveActivityManager: ObservableObject {
             request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
         } catch {
             logger.error("[LiveActivity] Failed to encode live activity registration payload: \(String(describing: error), privacy: .public)")
-            print("❌ [LiveActivity] Failed to encode live activity payload: \(error)")
+            debugLog("❌ [LiveActivity] Failed to encode live activity payload: \(error)")
             return false
         }
 
-        print("➡️ [LiveActivity] Registering token \(tokenPreview) for activity \(activityID) at \(urlString)")
-        logger.info("[LiveActivity] Registering live activity with backend: \(urlString, privacy: .public)")
+        debugLog("➡️ [LiveActivity] Registering token \(tokenPreview) for activity \(activityID) at \(urlString)")
+        logger.debug("[LiveActivity] Registering live activity with backend: \(urlString, privacy: .public)")
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -2476,20 +2444,20 @@ final class LiveActivityManager: ObservableObject {
                 let body = String(data: data, encoding: .utf8) ?? "<no body>"
                 let success = (200...299).contains(http.statusCode)
                 if success {
-                    print("✅ [LiveActivity] Registration successful: status=\(http.statusCode) token=\(tokenPreview)")
-                    logger.info("[LiveActivity] Registration successful: status=\(http.statusCode)")
+                    debugLog("✅ [LiveActivity] Registration successful: status=\(http.statusCode) token=\(tokenPreview)")
+                    logger.debug("[LiveActivity] Registration successful: status=\(http.statusCode)")
                 } else {
-                    print("❌ [LiveActivity] Registration failed: status=\(http.statusCode) body=\(body)")
+                    debugLog("❌ [LiveActivity] Registration failed: status=\(http.statusCode) body=\(body)")
                     logger.error("[LiveActivity] Registration failed: status=\(http.statusCode)")
                 }
                 return success
             } else {
-                print("⚠️ [LiveActivity] Registration response was not HTTPURLResponse")
+                debugLog("⚠️ [LiveActivity] Registration response was not HTTPURLResponse")
                 logger.warning("[LiveActivity] Registration response not HTTPURLResponse")
                 return false
             }
         } catch {
-            print("❌ [LiveActivity] Network error registering live activity: \(error)")
+            debugLog("❌ [LiveActivity] Network error registering live activity: \(error)")
             logger.error("[LiveActivity] Network error registering live activity: \(String(describing: error), privacy: .public)")
             return false
         }
@@ -2530,22 +2498,20 @@ final class LiveActivityManager: ObservableObject {
         }
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 return false
             }
             if (200...299).contains(http.statusCode) {
-                logger.info("[LiveActivity] Push-to-start token registered successfully")
+                logger.debug("[LiveActivity] Push-to-start token registered successfully")
                 ClientDiagnosticsLogger.log("live_activity", "push_to_start_registration_http_success", metadata: [
                     "status": http.statusCode
                 ])
                 return true
             }
-            let body = String(data: data, encoding: .utf8) ?? "<no body>"
-            logger.error("[LiveActivity] Push-to-start registration failed: status=\(http.statusCode) body=\(body, privacy: .public)")
+            logger.error("[LiveActivity] Push-to-start registration failed: status=\(http.statusCode)")
             ClientDiagnosticsLogger.log("live_activity", "push_to_start_registration_http_failed", metadata: [
-                "status": http.statusCode,
-                "body": body
+                "status": http.statusCode
             ])
             return false
         } catch {
@@ -2565,7 +2531,7 @@ final class LiveActivityManager: ObservableObject {
         let urlString = "\(base)/live_activities"
         guard let url = URL(string: urlString) else {
             logger.error("[LiveActivity] Invalid live activity unregistration URL: \(urlString, privacy: .public)")
-            print("❌ [LiveActivity] Invalid unregistration URL: \(urlString)")
+            debugLog("❌ [LiveActivity] Invalid unregistration URL: \(urlString)")
             return
         }
 
@@ -2586,14 +2552,14 @@ final class LiveActivityManager: ObservableObject {
             request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
         } catch {
             logger.error("[LiveActivity] Failed to encode live activity unregistration payload: \(String(describing: error), privacy: .public)")
-            print("❌ [LiveActivity] Failed to encode unregistration payload: \(error)")
+            debugLog("❌ [LiveActivity] Failed to encode unregistration payload: \(error)")
             return
         }
 
         let requestLog = "Live Activity unregistration request\nURL: \(urlString)\nActivity: \(activityID)\nDevice: \(deviceID)\nPreserve notification session: \(preserveNotificationLiveSession)"
         DebugLogStore.shared.log(requestLog, category: "Mute")
-        print("➡️ [LiveActivity] Unregistering activity \(activityID) at \(urlString) preserveNotificationLiveSession=\(preserveNotificationLiveSession)")
-        logger.info("[LiveActivity] Unregistering live activity with backend: \(urlString, privacy: .public)")
+        debugLog("➡️ [LiveActivity] Unregistering activity \(activityID) at \(urlString) preserveNotificationLiveSession=\(preserveNotificationLiveSession)")
+        logger.debug("[LiveActivity] Unregistering live activity with backend: \(urlString, privacy: .public)")
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -2603,17 +2569,17 @@ final class LiveActivityManager: ObservableObject {
                 let responseLog = "Live Activity unregistration completed with status: \(http.statusCode)\nURL: \(urlString)\nActivity: \(activityID)\nPreserve notification session: \(preserveNotificationLiveSession)\nResponse: \(body)"
                 DebugLogStore.shared.log(responseLog, category: success ? "Mute" : "Error")
                 if success {
-                    print("✅ [LiveActivity] Unregistration successful: status=\(http.statusCode) body=\(body)")
-                    logger.info("[LiveActivity] Unregistration successful: status=\(http.statusCode)")
+                    debugLog("✅ [LiveActivity] Unregistration successful: status=\(http.statusCode) body=\(body)")
+                    logger.debug("[LiveActivity] Unregistration successful: status=\(http.statusCode)")
                 } else {
-                    print("⚠️ [LiveActivity] Unregistration returned: status=\(http.statusCode) body=\(body)")
+                    debugLog("⚠️ [LiveActivity] Unregistration returned: status=\(http.statusCode) body=\(body)")
                     logger.warning("[LiveActivity] Unregistration returned: status=\(http.statusCode)")
                 }
             }
         } catch {
             let errorLog = "Live Activity unregistration failed: \(error.localizedDescription)\nURL: \(urlString)\nActivity: \(activityID)\nPreserve notification session: \(preserveNotificationLiveSession)"
             DebugLogStore.shared.log(errorLog, category: "Error")
-            print("❌ [LiveActivity] Network error unregistering live activity: \(error)")
+            debugLog("❌ [LiveActivity] Network error unregistering live activity: \(error)")
             logger.error("[LiveActivity] Network error unregistering live activity: \(String(describing: error), privacy: .public)")
         }
     }
@@ -2621,7 +2587,7 @@ final class LiveActivityManager: ObservableObject {
     func finalizeArrivalTriggeredActivityUnregistration(activityID: String, fromCRS: String, toCRS: String) async {
         let msg = "Finalizing deferred Live Activity unregistration for \(fromCRS)→\(toCRS)"
         DebugLogStore.shared.log(msg, category: "Mute")
-        print("📍 \(msg)")
+        debugLog("📍 \(msg)")
         await sendLiveActivityUnregistration(
             activityID: activityID,
             preserveNotificationLiveSession: false
@@ -2631,7 +2597,7 @@ final class LiveActivityManager: ObservableObject {
     func sendImmediateBackendCheckIn(force: Bool = false) async {
         let hasAnyActivities = !trackedActivities.isEmpty || !currentSystemActivities().isEmpty
         if !force, !hasAnyActivities {
-            logger.info("[LiveActivity] Skipping check-in because no activities are active")
+            logger.debug("[LiveActivity] Skipping check-in because no activities are active")
             return
         }
         if !force, let last = lastBackendCheckInAt, Date().timeIntervalSince(last) < backendCheckInMinIntervalSeconds {
@@ -2660,12 +2626,11 @@ final class LiveActivityManager: ObservableObject {
 
         do {
             request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (_, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-                let body = String(data: data, encoding: .utf8) ?? "<no body>"
-                logger.warning("[LiveActivity] Check-in returned status=\(http.statusCode) body=\(body, privacy: .public)")
+                logger.warning("[LiveActivity] Check-in returned status=\(http.statusCode)")
             } else {
-                logger.info("[LiveActivity] Check-in sent successfully for device \(deviceID, privacy: .public)")
+                logger.debug("[LiveActivity] Check-in sent successfully")
             }
         } catch {
             logger.error("[LiveActivity] Failed to send check-in: \(String(describing: error), privacy: .public)")

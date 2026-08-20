@@ -33,6 +33,7 @@ certs/
 # Logs (explicit requirement)
 ###############
 *.log
+console.txt
 logs/
 **/logs/
 *.pid
@@ -247,6 +248,7 @@ anthropic.config.js
 ############################################
 
 .codex/
+.release-prep/
 .codex_cache/
 .codex_tokens/
 .openai/

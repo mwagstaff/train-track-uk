@@ -54,12 +54,12 @@ final class ServerConfigStore: ObservableObject {
         if let maxSubs = config.maxSubscriptionsPerDevice, maxSubs > 0 {
             UserDefaults.standard.set(maxSubs, forKey: maxSubsKey)
             maxSubscriptionsPerDevice = maxSubs
-            print("⚙️ [ServerConfig] maxSubscriptionsPerDevice = \(maxSubs)")
+            debugLog("⚙️ [ServerConfig] maxSubscriptionsPerDevice = \(maxSubs)")
         }
         if let maxLive = config.maxLiveSessionsPerDevice, maxLive > 0 {
             UserDefaults.standard.set(maxLive, forKey: maxLiveKey)
             maxLiveSessionsPerDevice = maxLive
-            print("⚙️ [ServerConfig] maxLiveSessionsPerDevice = \(maxLive)")
+            debugLog("⚙️ [ServerConfig] maxLiveSessionsPerDevice = \(maxLive)")
         }
     }
 

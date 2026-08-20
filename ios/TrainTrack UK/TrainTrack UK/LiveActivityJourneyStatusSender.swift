@@ -54,9 +54,9 @@ final class LiveActivityJourneyStatusSender: NSObject, URLSessionTaskDelegate {
             self.backgroundTasks.removeValue(forKey: task.taskIdentifier)?.end()
         }
         if let error {
-            print("❌ [LiveActivityStatus] Request failed: \(error.localizedDescription)")
+            debugLog("❌ [LiveActivityStatus] Request failed: \(error.localizedDescription)")
         } else if let response = task.response as? HTTPURLResponse {
-            print("📡 [LiveActivityStatus] Response: \(response.statusCode)")
+            debugLog("📡 [LiveActivityStatus] Response: \(response.statusCode)")
         }
     }
 }

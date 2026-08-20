@@ -35,7 +35,9 @@ struct PreferencesView: View {
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
     @State private var notificationPendingDelete: NotificationSubscription? = nil
     @State private var showNotificationDeleteDialog = false
+    #if DEBUG
     @State private var showDebugLogs = false
+    #endif
     @State private var notificationPreferencesError: String? = nil
     @State private var notificationPreferencesSyncTask: Task<Void, Never>? = nil
     @State private var devicePreferencesSyncTask: Task<Void, Never>? = nil
@@ -281,6 +283,7 @@ struct PreferencesView: View {
             }
             #endif
 
+            #if DEBUG
             Section("Diagnostics") {
                 Button("View Debug Logs") {
                     showDebugLogs = true
@@ -289,6 +292,7 @@ struct PreferencesView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            #endif
         }
         .navigationTitle("Preferences")
         .task {
@@ -296,17 +300,17 @@ struct PreferencesView: View {
             try? await StationsService.shared.loadStations()
             syncDevicePreferences()
         }
-        .onChange(of: veryCloseMiles) { newValue in
+        .onChange(of: veryCloseMiles) { _, newValue in
             // Keep thresholds sensible: moderately >= veryClose
             if moderatelyCloseMiles < newValue { moderatelyCloseMiles = newValue }
         }
-        .onChange(of: moderatelyCloseMiles) { newValue in
+        .onChange(of: moderatelyCloseMiles) { _, newValue in
             if newValue < veryCloseMiles { veryCloseMiles = newValue }
         }
-        .onChange(of: notificationPreferencesSignature) { _ in
+        .onChange(of: notificationPreferencesSignature) {
             syncNotificationPreferences()
         }
-        .onChange(of: devicePreferencesSignature) { _ in
+        .onChange(of: devicePreferencesSignature) {
             syncDevicePreferences()
         }
         .alert("Delete schedule?", isPresented: $showNotificationDeleteDialog, presenting: notificationPendingDelete) { sub in
@@ -319,9 +323,11 @@ struct PreferencesView: View {
         } message: { _ in
             Text("This will remove the scheduled notifications for this journey.")
         }
+        #if DEBUG
         .sheet(isPresented: $showDebugLogs) {
             DebugLogView()
         }
+        #endif
     }
 
     private func notificationTypeBinding(_ type: NotificationType) -> Binding<Bool> {

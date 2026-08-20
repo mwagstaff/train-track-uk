@@ -282,11 +282,14 @@ enum JourneyHistoryDebugDataGenerator {
         )
         let plannedDestination = route.stations[plannedDestinationIndex]
         let recordedDestination = route.stations[recordedDestinationIndex]
+        let serviceID = ProcessInfo.processInfo.environment["APP_STORE_SCREENSHOTS"] == "1"
+            ? String(format: "1P%02d", index + 22)
+            : "DEBUG-\(route.template.key)-\(index)"
         let leg = JourneyHistoryLeg(
             plannedLegIndex: 0,
             fromStation: route.stations[0],
             toStation: plannedDestination,
-            serviceID: "DEBUG-\(route.template.key)-\(index)",
+            serviceID: serviceID,
             operatorName: route.template.operatorName,
             operatorCode: route.template.operatorCode,
             callingPoints: Array(serviceCallingPoints[0...plannedDestinationIndex]),

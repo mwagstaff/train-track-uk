@@ -22,7 +22,7 @@ final class LocationManagerPhone: NSObject, ObservableObject, CLLocationManagerD
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         manager.showsBackgroundLocationIndicator = false
-        print("📍 [LocationManagerPhone] init auth=\(manager.authorizationStatus.rawValue)")
+        debugLog("📍 [LocationManagerPhone] init auth=\(manager.authorizationStatus.rawValue)")
         loadCachedLocationIfAvailable()
         backgroundObserver = NotificationCenter.default
             .publisher(for: UIApplication.didEnterBackgroundNotification)
@@ -31,22 +31,35 @@ final class LocationManagerPhone: NSObject, ObservableObject, CLLocationManagerD
                     self?.cancel()
                 }
             }
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["APP_STORE_SCREENSHOTS"] == "1" {
+            let fixture = CLLocation(latitude: 51.412659, longitude: -0.045786)
+            lastLocation = fixture
+            coordinate = fixture.coordinate
+            coordinateTimestamp = fixture.timestamp
+        }
+        #endif
     }
 
     func request(forceFresh: Bool = false) {
-        if !forceFresh, hasFreshCachedLocation(maxAge: freshLocationMaxAge) {
-            print("📍 [LocationManagerPhone] request skipped; using cached location")
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["APP_STORE_SCREENSHOTS"] == "1" {
             return
         }
-        print("📍 [LocationManagerPhone] request auth=\(manager.authorizationStatus.rawValue)")
+        #endif
+        if !forceFresh, hasFreshCachedLocation(maxAge: freshLocationMaxAge) {
+            debugLog("📍 [LocationManagerPhone] request skipped; using cached location")
+            return
+        }
+        debugLog("📍 [LocationManagerPhone] request auth=\(manager.authorizationStatus.rawValue)")
         switch manager.authorizationStatus {
         case .notDetermined:
-            print("📍 [LocationManagerPhone] requesting WhenInUse authorization")
+            debugLog("📍 [LocationManagerPhone] requesting WhenInUse authorization")
             manager.requestWhenInUseAuthorization()
         case .authorizedAlways, .authorizedWhenInUse:
             requestOneShotLocation()
         case .denied, .restricted:
-            print("📍 [LocationManagerPhone] request ignored; authorization unavailable")
+            debugLog("📍 [LocationManagerPhone] request ignored; authorization unavailable")
             break
         @unknown default:
             break
@@ -55,7 +68,7 @@ final class LocationManagerPhone: NSObject, ObservableObject, CLLocationManagerD
 
     func cancel() {
         if isRequestingLocation {
-            print("📍 [LocationManagerPhone] cancel active request")
+            debugLog("📍 [LocationManagerPhone] cancel active request")
         }
         isRequestingLocation = false
         timeoutTask?.cancel()
@@ -65,7 +78,7 @@ final class LocationManagerPhone: NSObject, ObservableObject, CLLocationManagerD
 
     // MARK: - CLLocationManagerDelegate
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        print("📍 [LocationManagerPhone] authorization changed -> \(manager.authorizationStatus.rawValue)")
+        debugLog("📍 [LocationManagerPhone] authorization changed -> \(manager.authorizationStatus.rawValue)")
         if manager.authorizationStatus == .authorizedAlways || manager.authorizationStatus == .authorizedWhenInUse {
             requestOneShotLocation()
         }
@@ -73,7 +86,7 @@ final class LocationManagerPhone: NSObject, ObservableObject, CLLocationManagerD
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         if let loc = locations.last {
-            print("📍 [LocationManagerPhone] didUpdateLocations lat=\(loc.coordinate.latitude) lng=\(loc.coordinate.longitude)")
+            debugLog("📍 [LocationManagerPhone] didUpdateLocations lat=\(loc.coordinate.latitude) lng=\(loc.coordinate.longitude)")
             cancel()
             lastLocation = loc
             coordinate = loc.coordinate
@@ -83,13 +96,12 @@ final class LocationManagerPhone: NSObject, ObservableObject, CLLocationManagerD
                 ud.set(loc.coordinate.latitude, forKey: "widget_last_lat")
                 ud.set(loc.coordinate.longitude, forKey: "widget_last_lng")
                 ud.set(loc.timestamp.timeIntervalSince1970, forKey: "widget_last_loc_ts")
-                ud.synchronize()
             }
         }
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        print("📍 [LocationManagerPhone] didFailWithError \(error.localizedDescription)")
+        debugLog("📍 [LocationManagerPhone] didFailWithError \(error.localizedDescription)")
         cancel()
         // Ignore errors; coordinate remains nil
     }
@@ -97,7 +109,7 @@ final class LocationManagerPhone: NSObject, ObservableObject, CLLocationManagerD
     private func requestOneShotLocation() {
         guard !isRequestingLocation else { return }
         isRequestingLocation = true
-        print("📍 [LocationManagerPhone] requestLocation()")
+        debugLog("📍 [LocationManagerPhone] requestLocation()")
         manager.requestLocation()
         timeoutTask?.cancel()
         timeoutTask = Task { [weak self] in
@@ -154,7 +166,7 @@ final class LocationManagerPhone: NSObject, ObservableObject, CLLocationManagerD
     }
 
     deinit {
-        print("📍 [LocationManagerPhone] deinit")
+        debugLog("📍 [LocationManagerPhone] deinit")
         timeoutTask?.cancel()
         backgroundObserver?.cancel()
         manager.stopUpdatingLocation()

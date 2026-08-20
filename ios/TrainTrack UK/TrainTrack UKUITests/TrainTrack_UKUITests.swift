@@ -168,4 +168,97 @@ final class TrainTrack_UKUITests: XCTestCase {
             XCUIApplication().launch()
         }
     }
+
+    @MainActor
+    func testAppStoreScreenshots() throws {
+        let app = XCUIApplication()
+        XCUIDevice.shared.orientation = .portrait
+        app.launchEnvironment["APP_STORE_SCREENSHOTS"] = "1"
+        app.launchEnvironment["UI_TEST_RESET_JOURNEYS"] = "1"
+        app.launchEnvironment["UI_TEST_RESET_HISTORY"] = "1"
+        app.launchArguments += [
+            "-AppleLanguages", "(en)",
+            "-AppleLocale", "en_GB",
+            "-journeySortMode", "alphabetical",
+            "-showClosestJourneyLegOnly", "NO"
+        ]
+        app.launch()
+
+        XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Kent House → London Victoria"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["East Croydon → Brighton"].waitForExistence(timeout: 10))
+        capture("01-favourites", in: app)
+
+        tapTab("My Journeys", in: app)
+        XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Edinburgh Waverley → Glasgow Queen Street"].waitForExistence(timeout: 10))
+        capture("02-my-journeys-top", in: app)
+
+        let finalJourney = app.staticTexts["Manchester Piccadilly → Leeds"]
+        scrollToVisible(finalJourney, in: app)
+        XCTAssertTrue(finalJourney.exists)
+        capture("03-my-journeys-lower", in: app)
+
+        tapTab("History", in: app)
+        XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 10))
+        app.buttons["Journey history actions"].tap()
+        app.buttons["Generate test history to 2,000"].tap()
+
+        let historyAlert = app.alerts["Test journey history"]
+        XCTAssertTrue(historyAlert.waitForExistence(timeout: 120))
+        historyAlert.buttons["OK"].tap()
+
+        app.buttons["Filter journey history"].tap()
+        let delayRepayToggle = app.descendants(matching: .any)
+            .matching(identifier: "Delay Repay eligible only")
+            .firstMatch
+        XCTAssertTrue(delayRepayToggle.waitForExistence(timeout: 10))
+        delayRepayToggle.tap()
+
+        let claimButton = app.buttons["Claim Delay Repay"].firstMatch
+        XCTAssertTrue(claimButton.waitForExistence(timeout: 15))
+        capture("04-history-delay-repay", in: app)
+
+        app.buttons["Delay Repay claim options"].firstMatch.tap()
+        XCTAssertTrue(app.buttons["Mark claim as successful"].waitForExistence(timeout: 10))
+        capture("05-delay-repay-options", in: app)
+        app.buttons["Mark claim as successful"].tap()
+
+        let eligibleJourney = app.staticTexts["London Kings Cross → Finsbury Park"]
+        XCTAssertTrue(eligibleJourney.waitForExistence(timeout: 15))
+        eligibleJourney.tap()
+        XCTAssertTrue(app.navigationBars["London Kings Cross → Finsbury Park"].waitForExistence(timeout: 15))
+        capture("06-history-detail", in: app)
+
+        let routeMapLink = app.descendants(matching: .any)
+            .matching(identifier: "View Route Map")
+            .firstMatch
+        XCTAssertTrue(routeMapLink.waitForExistence(timeout: 10))
+        routeMapLink.tap()
+        XCTAssertTrue(app.maps.firstMatch.waitForExistence(timeout: 60))
+        RunLoop.current.run(until: Date().addingTimeInterval(5))
+        capture("07-route-map", in: app)
+    }
+
+    private func tapTab(_ label: String, in app: XCUIApplication) {
+        let button = app.buttons[label].firstMatch
+        XCTAssertTrue(button.waitForExistence(timeout: 10))
+        button.tap()
+    }
+
+    private func scrollToVisible(_ element: XCUIElement, in app: XCUIApplication) {
+        var attempts = 0
+        while !element.isHittable && attempts < 6 {
+            app.swipeUp()
+            attempts += 1
+        }
+    }
+
+    private func capture(_ name: String, in app: XCUIApplication) {
+        XCTAssertEqual(app.state, .runningForeground)
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
 }

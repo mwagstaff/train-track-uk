@@ -1,7 +1,7 @@
 import CoreLocation
 import Foundation
 
-enum StationDetectionPolicy {
+nonisolated enum StationDetectionPolicy {
     static let maximumMonitoredConditions = 20
     static let conditionsPerStationCoordinate = 2
     static let departureAccuracyMarginMeters: CLLocationDistance = 50

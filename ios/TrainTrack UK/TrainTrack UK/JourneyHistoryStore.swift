@@ -22,6 +22,9 @@ final class JourneyHistoryStore: ObservableObject {
         isUsingInMemoryFallback = result.isInMemoryOnly
         reload()
         #if DEBUG
+        if ProcessInfo.processInfo.environment["UI_TEST_RESET_HISTORY"] == "1" {
+            clear()
+        }
         applyVICToKTHDebugFixtureIfPresent()
         #endif
         log(
@@ -260,7 +263,10 @@ final class JourneyHistoryStore: ObservableObject {
 
     #if DEBUG
     func generateDebugHistoryToCapacity() async throws -> Int {
-        let requestedCount = max(0, Self.maximumRecordCount - records.count)
+        let targetCount = ProcessInfo.processInfo.environment["APP_STORE_SCREENSHOTS"] == "1"
+            ? 12
+            : Self.maximumRecordCount
+        let requestedCount = max(0, targetCount - records.count)
         guard requestedCount > 0 else { return 0 }
         let generatedRecords = try await JourneyHistoryDebugDataGenerator.records(count: requestedCount)
         for record in generatedRecords {

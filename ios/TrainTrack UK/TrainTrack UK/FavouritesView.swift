@@ -103,7 +103,7 @@ struct FavouritesView: View {
                 selectedJourneyIds.removeAll()
                 debounceTask?.cancel()
             }
-            .onChange(of: store.journeys) { _ in
+            .onChange(of: store.journeys) {
                 refreshManualOrder()
             }
             .onChange(of: scenePhase) { _, newPhase in
@@ -111,7 +111,7 @@ struct FavouritesView: View {
                     location.request(forceFresh: true)
                 }
             }
-            .onChange(of: searchText) { value in
+            .onChange(of: searchText) { _, value in
                 debounceTask?.cancel()
                 let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
                 if trimmed.isEmpty {

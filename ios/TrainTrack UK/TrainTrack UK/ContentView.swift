@@ -112,21 +112,11 @@ struct ContentView: View {
             // Ensure polling starts even if App.onAppear wasn't fired
             depStore.startPolling(journeyStore: journeyStore)
         }
-        .task(priority: .utility) {
-            do {
-                // Warm the bundled routing graph as soon as the first UI frame is available.
-                // Route maps can be opened from favourites even when no journeys are saved.
-                await Task.yield()
-                try await RailwayRoutingService.shared.prepare()
-            } catch {
-                // Pre-warming is opportunistic; route loading reports real failures on demand.
-            }
-        }
-        .onChange(of: router.selected) { newTab in
+        .onChange(of: router.selected) { _, newTab in
             // Remember the last tab that isn't Add Journey so we can return there
             if newTab != .addJourney { router.lastNonAddTab = newTab }
         }
-        .onChange(of: router.navigationResetTrigger) { _ in
+        .onChange(of: router.navigationResetTrigger) {
             // Pop all navigation stacks to root when triggered
             favouritesPath = NavigationPath()
             myJourneysPath = NavigationPath()

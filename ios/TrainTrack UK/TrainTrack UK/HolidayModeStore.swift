@@ -35,7 +35,7 @@ final class HolidayModeStore: ObservableObject {
         do {
             try await NotificationSubscriptionService.shared.setHolidayMode(enabled: isEnabled)
         } catch {
-            print("⚠️ [HolidayMode] Failed to sync holiday mode to server: \(error.localizedDescription)")
+            debugLog("⚠️ [HolidayMode] Failed to sync holiday mode to server: \(error.localizedDescription)")
         }
     }
 

@@ -35,7 +35,7 @@ enum NotificationAuthorizationManager {
 
         switch settings.authorizationStatus {
         case .authorized, .provisional, .ephemeral:
-            await registerForRemoteNotifications()
+            registerForRemoteNotifications()
             return true
         case .denied:
             return false
@@ -43,7 +43,7 @@ enum NotificationAuthorizationManager {
             do {
                 let granted = try await center.requestAuthorization(options: [.alert, .sound, .badge])
                 if granted {
-                    await registerForRemoteNotifications()
+                    registerForRemoteNotifications()
                 }
                 return granted
             } catch {
@@ -59,7 +59,7 @@ enum NotificationAuthorizationManager {
         let settings = await center.notificationSettings()
         switch settings.authorizationStatus {
         case .authorized, .provisional, .ephemeral:
-            await registerForRemoteNotifications()
+            registerForRemoteNotifications()
         default:
             break
         }
@@ -129,7 +129,7 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
-        print("⚠️ [Notifications] Failed to register for remote notifications: \(error.localizedDescription)")
+        debugLog("⚠️ [Notifications] Failed to register for remote notifications: \(error.localizedDescription)")
         ClientDiagnosticsLogger.log("notifications", "remote_notification_registration_failed", metadata: [
             "error": error.localizedDescription
         ])
@@ -745,7 +745,7 @@ final class ScheduledLiveActivityAutoStartManager {
             do {
                 try await NotificationSubscriptionStore.shared.deleteLiveSession(id: liveSessionID)
             } catch {
-                print("⚠️ [ScheduledLiveActivity] Failed to delete existing live session \(liveSessionID): \(error.localizedDescription)")
+                debugLog("⚠️ [ScheduledLiveActivity] Failed to delete existing live session \(liveSessionID): \(error.localizedDescription)")
             }
         }
         if hasActiveActivity(id: record.activityID) {

@@ -446,7 +446,7 @@ struct ServiceMapView: View {
                 ))
             } catch {
                 #if DEBUG
-                print(
+                debugLog(
                     "🗺️ [ServiceMapView] additional branch route unavailable: "
                     + error.localizedDescription
                 )
@@ -479,7 +479,7 @@ struct ServiceMapView: View {
         railwayRouteStationRange = nil
         railwayRouteError = error.localizedDescription
         #if DEBUG
-        print(
+        debugLog(
             "🗺️ [ServiceMapView] railway route unavailable: "
             + error.localizedDescription
         )

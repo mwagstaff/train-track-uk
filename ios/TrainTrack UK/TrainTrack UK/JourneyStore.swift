@@ -30,6 +30,11 @@ final class JourneyStore: ObservableObject {
         #endif
         loadJourneys()
         loadManualOrders()
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["APP_STORE_SCREENSHOTS"] == "1" {
+            loadAppStoreScreenshotJourneys()
+        }
+        #endif
     }
 
     func loadJourneys() {
@@ -48,12 +53,58 @@ final class JourneyStore: ObservableObject {
         do {
             let data = try JSONEncoder().encode(journeys)
             userDefaults.set(data, forKey: journeysKey)
-            userDefaults.synchronize()
             WidgetCenter.shared.reloadAllTimelines()
         } catch {
             // Ignore encoding error for now
         }
     }
+
+    #if DEBUG
+    private func loadAppStoreScreenshotJourneys() {
+        let kentHouse = Station(crs: "KTH", name: "Kent House", longitude: "-0.045786", latitude: "51.412659")
+        let victoria = Station(crs: "VIC", name: "London Victoria", longitude: "-0.144200", latitude: "51.495100")
+        let eastCroydon = Station(crs: "ECR", name: "East Croydon", longitude: "-0.093335", latitude: "51.375679")
+        let brighton = Station(crs: "BTN", name: "Brighton", longitude: "-0.141234", latitude: "50.829659")
+        let paddington = Station(crs: "PAD", name: "London Paddington", longitude: "-0.176049", latitude: "51.516014")
+        let oxford = Station(crs: "OXF", name: "Oxford", longitude: "-1.270037", latitude: "51.753549")
+        let kingsCross = Station(crs: "KGX", name: "London Kings Cross", longitude: "-0.122907", latitude: "51.530827")
+        let cambridge = Station(crs: "CBG", name: "Cambridge", longitude: "0.137584", latitude: "52.194519")
+        let euston = Station(crs: "EUS", name: "London Euston", longitude: "-0.134545", latitude: "51.528313")
+        let birmingham = Station(crs: "BHM", name: "Birmingham New Street", longitude: "-1.898375", latitude: "52.478153")
+        let manchester = Station(crs: "MAN", name: "Manchester Piccadilly", longitude: "-2.228991", latitude: "53.476704")
+        let leeds = Station(crs: "LDS", name: "Leeds", longitude: "-1.549089", latitude: "53.795158")
+        let edinburgh = Station(crs: "EDB", name: "Edinburgh Waverley", longitude: "-3.188236", latitude: "55.952442")
+        let glasgow = Station(crs: "GLQ", name: "Glasgow Queen Street", longitude: "-4.251385", latitude: "55.863003")
+
+        let routes: [(String, Station, Station, Bool)] = [
+            ("00000000-0000-0000-0000-000000000001", kentHouse, victoria, true),
+            ("00000000-0000-0000-0000-000000000002", eastCroydon, brighton, true),
+            ("00000000-0000-0000-0000-000000000003", paddington, oxford, false),
+            ("00000000-0000-0000-0000-000000000004", kingsCross, cambridge, false),
+            ("00000000-0000-0000-0000-000000000005", euston, birmingham, false),
+            ("00000000-0000-0000-0000-000000000006", manchester, leeds, false),
+            ("00000000-0000-0000-0000-000000000007", edinburgh, glasgow, false)
+        ]
+        let createdAt = Date(timeIntervalSince1970: 1_756_000_000)
+        journeys = routes.map { rawID, from, to, favourite in
+            let id = UUID(uuidString: rawID)!
+            return Journey(
+                id: id,
+                groupId: id,
+                legIndex: 0,
+                fromStation: from,
+                toStation: to,
+                createdAt: createdAt,
+                favorite: favourite
+            )
+        }
+        favouriteManualOrder = journeys.filter(\.favorite).map(\.groupId)
+        myJourneysManualOrder = journeys.filter { !$0.favorite }.map(\.groupId)
+        saveJourneys()
+        saveFavouriteManualOrder()
+        saveMyJourneysManualOrder()
+    }
+    #endif
 
     func journeyExists(from fromCRS: String, to toCRS: String) -> Bool {
         journeys.contains { $0.fromStation.crs == fromCRS && $0.toStation.crs == toCRS }

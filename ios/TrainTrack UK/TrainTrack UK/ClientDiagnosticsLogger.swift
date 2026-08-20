@@ -1,11 +1,19 @@
 import Foundation
 
-enum ClientDiagnosticsLogger {
+nonisolated enum ClientDiagnosticsLogger {
+    #if DEBUG
     private static let suiteName = "group.dev.skynolimit.traintrack"
     private static let queue = DispatchQueue(label: "dev.skynolimit.traintrack.client-diagnostics")
     private static let maxFileBytes = 512 * 1024
+    #endif
 
-    static func log(_ category: String, _ event: String, metadata: [String: Any?] = [:]) {
+    static func log(
+        _ category: String,
+        _ event: String,
+        metadata: @autoclosure () -> [String: Any?] = [:]
+    ) {
+        #if DEBUG
+        let metadata = metadata()
         queue.async {
             guard let url = logFileURL(named: "diagnostics-app.jsonl") else { return }
             let entry: [String: Any] = [
@@ -25,17 +33,27 @@ enum ClientDiagnosticsLogger {
             append(lineData, to: url)
             trimIfNeeded(url)
         }
+        #endif
     }
 
     static func appLogURL() -> URL? {
+        #if DEBUG
         logFileURL(named: "diagnostics-app.jsonl")
+        #else
+        nil
+        #endif
     }
 
     static func notificationServiceLogURL() -> URL? {
+        #if DEBUG
         logFileURL(named: "diagnostics-notification-service.jsonl")
+        #else
+        nil
+        #endif
     }
 
     static func exportStoredLogs() -> String {
+        #if DEBUG
         [
             ("Client Diagnostics", appLogURL()),
             ("Notification Service Extension Diagnostics", notificationServiceLogURL())
@@ -49,15 +67,21 @@ enum ClientDiagnosticsLogger {
             return "## \(title)\n\(body)"
         }
         .joined(separator: "\n\n")
+        #else
+        ""
+        #endif
     }
 
     static func clearStoredLogs() {
+        #if DEBUG
         [appLogURL(), notificationServiceLogURL()].forEach { url in
             guard let url else { return }
             try? FileManager.default.removeItem(at: url)
         }
+        #endif
     }
 
+    #if DEBUG
     private static func logFileURL(named name: String) -> URL? {
         let fileManager = FileManager.default
         let directory = fileManager.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
@@ -71,7 +95,7 @@ enum ClientDiagnosticsLogger {
         if FileManager.default.fileExists(atPath: url.path),
            let handle = try? FileHandle(forWritingTo: url) {
             defer { try? handle.close() }
-            try? handle.seekToEnd()
+            _ = try? handle.seekToEnd()
             try? handle.write(contentsOf: data)
         } else {
             try? data.write(to: url, options: .atomic)
@@ -111,4 +135,5 @@ enum ClientDiagnosticsLogger {
             return String(describing: value)
         }
     }
+    #endif
 }

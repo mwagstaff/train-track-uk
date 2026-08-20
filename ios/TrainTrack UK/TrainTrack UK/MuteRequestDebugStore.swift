@@ -1,3 +1,4 @@
+#if DEBUG
 import Foundation
 import Combine
 
@@ -33,3 +34,4 @@ final class MuteRequestDebugStore: ObservableObject {
         )
     }
 }
+#endif
