@@ -500,6 +500,13 @@ export function getDeviceLastSeen(deviceId, now = Date.now()) {
     return ts;
 }
 
+export function forgetDeviceLastSeen(deviceId) {
+    if (typeof deviceId !== 'string' || deviceId.trim().length === 0) {
+        return false;
+    }
+    return deviceLastSeen.delete(deviceId.trim());
+}
+
 function cleanupOldDevices(now = Date.now()) {
     const cutoff = now - DEVICE_RETENTION_MS;
     for (const [token, ts] of deviceLastSeen.entries()) {

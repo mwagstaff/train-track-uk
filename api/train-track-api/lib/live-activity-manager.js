@@ -8,6 +8,7 @@ import { getDeviceLastSeen } from './metrics.js';
 import { notificationSubscriptionManager } from './notification-subscription-manager.js';
 import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
 import { minutesUntilDeparture } from './live-activity-departure-order.js';
+import { allowDeviceData } from './device-data-deletion-state.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.LIVE_ACTIVITY_POLL_INTERVAL_SECONDS || '20');
 const DEFAULT_END_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_END_AFTER_SECONDS || '7200'); // default 2 hours
@@ -22,6 +23,7 @@ class LiveActivityManager {
         this.pollIntervalMs = DEFAULT_POLL_INTERVAL_SECONDS * 1000;
         this.isPolling = false;
         this.pollTimer = null;
+        this.deletedDeviceIds = new Set();
         this.startPollingLoop();
     }
 
@@ -84,6 +86,10 @@ class LiveActivityManager {
         windowStart,
         windowEnd
     }) {
+        if (!allowDeviceData(deviceId)) {
+            throw new Error('Device data deletion is in progress');
+        }
+        this.deletedDeviceIds.delete(deviceId);
         const key = this.buildKey(deviceId, activityId);
         const existing = this.subscriptions.get(key);
 
@@ -298,6 +304,9 @@ class LiveActivityManager {
     }
 
     async pollSubscription(subscription, { force = false, dryRun = false } = {}) {
+        if (this.deletedDeviceIds.has(subscription?.deviceId)) {
+            return { sent: false, reason: 'device_data_deleted' };
+        }
         // Guard against concurrent polls of the same subscription. This prevents a
         // double-push race between the registration-forced poll and the periodic pollAll()
         // timer both firing for the same subscription at almost the same moment.
@@ -499,6 +508,7 @@ class LiveActivityManager {
     }
 
     logPushEvent(subscription, payload, pushResponse, type, extraMetadata = {}) {
+        if (this.deletedDeviceIds.has(subscription?.deviceId)) return;
         const status = pushResponse?.status ?? null;
         const success = typeof status === 'number' && status >= 200 && status < 300;
         recordNotificationEvent({
@@ -1666,7 +1676,9 @@ class LiveActivityManager {
 
     async saveSubscriptionToMongo(subscription) {
         if (!subscription?.deviceId || !subscription?.activityId) return;
+        if (this.deletedDeviceIds.has(subscription.deviceId)) return;
         const collection = await getMongoCollection(COLLECTIONS.liveActivitySessions);
+        if (this.deletedDeviceIds.has(subscription.deviceId)) return;
         const key = this.buildKey(subscription.deviceId, subscription.activityId);
         const record = this.serializeSubscription(subscription);
         await collection.updateOne(
@@ -1674,6 +1686,9 @@ class LiveActivityManager {
             { $set: { _id: key, ...record } },
             { upsert: true }
         );
+        if (this.deletedDeviceIds.has(subscription.deviceId)) {
+            await collection.deleteOne({ _id: key });
+        }
     }
 
     async deleteSubscriptionFromMongo(subscription) {
@@ -1780,6 +1795,22 @@ class LiveActivityManager {
 
     getSubscriptionCount() {
         return this.subscriptions.size;
+    }
+
+    purgeDeviceRuntimeState(deviceId) {
+        const normalizedDeviceId = typeof deviceId === 'string' ? deviceId.trim() : '';
+        if (!normalizedDeviceId) return 0;
+
+        this.deletedDeviceIds.add(normalizedDeviceId);
+
+        let removed = 0;
+        for (const [key, subscription] of this.subscriptions.entries()) {
+            if (subscription?.deviceId !== normalizedDeviceId) continue;
+            this.clearEndTimer(subscription);
+            this.subscriptions.delete(key);
+            removed += 1;
+        }
+        return removed;
     }
 
     isLoggingEnabled() {

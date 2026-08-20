@@ -1,4 +1,5 @@
 import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
+import { referencesDeletedDevice } from './device-data-deletion-state.js';
 
 function normalizeDeviceId(value) {
     return typeof value === 'string' ? value.trim() : '';
@@ -16,6 +17,10 @@ export const holidayModeStore = {
             { $set: { _id: normalizedDeviceId, deviceId: normalizedDeviceId, enabled: Boolean(enabled), updatedAt: new Date().toISOString() } },
             { upsert: true }
         );
+        if (referencesDeletedDevice({ deviceId: normalizedDeviceId })) {
+            await collection.deleteOne({ _id: normalizedDeviceId });
+            throw new Error('Device data deletion is in progress');
+        }
     },
 
     async listEnabledDeviceIds() {

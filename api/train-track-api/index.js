@@ -1,7 +1,6 @@
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
-import os from 'os';
 import { getTrainTimes, refreshPastDepartures } from './lib/realtime-trains-api.js';
 import { getServiceDetails, getServiceDetailsWithContext } from './lib/service-details.js';
 import { getXbarOutput } from './lib/xbar.js';
@@ -9,6 +8,7 @@ import { pastDeparturesCache } from './lib/past-departures-cache.js';
 import {
     metricsMiddleware,
     getMetrics,
+    forgetDeviceLastSeen,
     recordPushTokenRegistration,
     updateNotificationSubscriptionGauges,
     updatePushSubscriptionGauges
@@ -23,6 +23,16 @@ import { testServiceHarness } from './lib/test-service-harness.js';
 import { formatDepartureJourneyResult, shouldIncludeDepartureStatus } from './lib/departure-response.js';
 import { ensureMongoIndexes } from './lib/mongo-client.js';
 import { resolveDelayRepayOperator } from './lib/delay-repay-config.js';
+import {
+    deleteSubscriptionAuditEventsForDevice,
+    startSubscriptionAuditLogMaintenance
+} from './lib/subscription-audit-log.js';
+import { DeviceDataDeletionService } from './lib/device-data-deletion.js';
+import { registerDeviceDataDeletionRoute } from './lib/device-data-route.js';
+import {
+    finishDeviceDataDeletion,
+    markDeviceDataDeleted
+} from './lib/device-data-deletion-state.js';
 import path from 'path';
 
 function isLiveActivityLoggingEnabled() {
@@ -151,8 +161,6 @@ function logLiveActivityStartup() {
     );
 }
 
-const ENV_LOG_FILE_PATH = path.join(os.tmpdir(), 'train-track-api-env.log');
-
 function getApnsConfigurationState() {
     const notificationConfigured = notificationSubscriptionManager.pushClient.isConfigured();
     const liveActivityConfigured = liveActivityManager.pushClient.isConfigured();
@@ -167,35 +175,6 @@ function getApnsConfigurationState() {
         authKeyPath,
         authKeyFilePresent
     };
-}
-
-function writeEnvironmentSnapshotToTempLog() {
-    const apnsConfig = getApnsConfigurationState();
-    const trackedValues = {
-        APNS_KEY_ID: process.env.APNS_KEY_ID ?? '<unset>',
-        APNS_TEAM_ID: process.env.APNS_TEAM_ID ?? '<unset>',
-        APNS_AUTH_KEY_PRESENT: apnsConfig.authKeyInlinePresent,
-        APNS_AUTH_KEY_PATH: apnsConfig.authKeyPath,
-        APNS_AUTH_KEY_FILE_PRESENT: apnsConfig.authKeyFilePresent,
-        APNS_NOTIFICATION_CONFIGURED: apnsConfig.notificationConfigured,
-        APNS_LIVE_ACTIVITY_CONFIGURED: apnsConfig.liveActivityConfigured,
-        LIVE_DEPARTURE_BOARD_API_KEY: process.env.LIVE_DEPARTURE_BOARD_API_KEY ?? '<unset>',
-        SERVICE_DETAILS_API_KEY: process.env.SERVICE_DETAILS_API_KEY ?? '<unset>'
-    };
-    const allEnvVars = Object.fromEntries(
-        Object.entries(process.env).sort(([left], [right]) => left.localeCompare(right))
-    );
-
-    const payload = {
-        timestamp: new Date().toISOString(),
-        pid: process.pid,
-        instance_id: getFlyInstanceId(),
-        tracked_values: trackedValues,
-        env: allEnvVars
-    };
-
-    fs.appendFileSync(ENV_LOG_FILE_PATH, `${JSON.stringify(payload)}\n`, 'utf8');
-    console.log(`[startup] wrote environment snapshot to ${ENV_LOG_FILE_PATH}`);
 }
 
 // Use Express to create a server
@@ -231,6 +210,25 @@ app.use('/api/v2/live_activities', (req, res, next) => {
 
 // Add metrics middleware to track all requests
 app.use(metricsMiddleware);
+
+const deviceDataDeletionService = new DeviceDataDeletionService({
+    purgeRuntimeState: async (deviceId) => {
+        const notification = await notificationSubscriptionManager.purgeDeviceRuntimeState(deviceId);
+        const liveActivities = await liveActivityManager.purgeDeviceRuntimeState(deviceId);
+        const journeyTracking = await journeyTrackingManager.purgeDeviceRuntimeState(deviceId);
+        return {
+            notificationSubscriptions: notification.subscriptions,
+            holidayMode: notification.holidayMode ? 1 : 0,
+            liveActivitySessions: liveActivities,
+            journeyTrackingSessions: journeyTracking
+        };
+    },
+    deleteAuditLogEntries: deleteSubscriptionAuditEventsForDevice,
+    markDeviceDataDeleted,
+    finishDeviceDataDeletion,
+    forgetDeviceLastSeen
+});
+registerDeviceDataDeletionRoute(app, deviceDataDeletionService);
 
 app.get('/healthcheck', (req, res) => {
     const apnsConfig = getApnsConfigurationState();
@@ -338,27 +336,35 @@ app.post('/api/v2/live_activities', async (req, res) => {
         use_sandbox: Boolean(use_sandbox)
     });
 
-    const subscription = liveActivityManager.registerSubscription({
-        deviceId: canonicalDeviceId,
-        activityId: activity_id,
-        pushToken: live_activity_push_token,
-        fromStation: from,
-        toStation: to,
-        displayName: typeof display_name === 'string' ? display_name : null,
-        deepLinkFromStation: typeof deep_link_from === 'string' ? deep_link_from : null,
-        deepLinkToStation: typeof deep_link_to === 'string' ? deep_link_to : null,
-        preferredServiceId: preferred_service_id,
-        useSandbox: Boolean(use_sandbox),
-        muteOnArrival: mute_on_arrival === true || mute_on_arrival === 'true',
-        muteDelayMinutes: mute_delay_minutes !== undefined ? Number(mute_delay_minutes) : undefined,
-        autoEndOnArrival: auto_end_on_arrival === true || auto_end_on_arrival === 'true',
-        autoEndOnDeparture: auto_end_on_departure === true || auto_end_on_departure === 'true',
-        journeyPhase: typeof journey_phase === 'string' ? journey_phase : null,
-        scheduleKey: typeof schedule_key === 'string' ? schedule_key : null,
-        journeyUpdatesEnabled: journey_updates_enabled === undefined ? undefined : (journey_updates_enabled === true || journey_updates_enabled === 'true'),
-        windowStart: typeof window_start === 'string' ? window_start : null,
-        windowEnd: typeof window_end === 'string' ? window_end : null
-    });
+    let subscription;
+    try {
+        subscription = liveActivityManager.registerSubscription({
+            deviceId: canonicalDeviceId,
+            activityId: activity_id,
+            pushToken: live_activity_push_token,
+            fromStation: from,
+            toStation: to,
+            displayName: typeof display_name === 'string' ? display_name : null,
+            deepLinkFromStation: typeof deep_link_from === 'string' ? deep_link_from : null,
+            deepLinkToStation: typeof deep_link_to === 'string' ? deep_link_to : null,
+            preferredServiceId: preferred_service_id,
+            useSandbox: Boolean(use_sandbox),
+            muteOnArrival: mute_on_arrival === true || mute_on_arrival === 'true',
+            muteDelayMinutes: mute_delay_minutes !== undefined ? Number(mute_delay_minutes) : undefined,
+            autoEndOnArrival: auto_end_on_arrival === true || auto_end_on_arrival === 'true',
+            autoEndOnDeparture: auto_end_on_departure === true || auto_end_on_departure === 'true',
+            journeyPhase: typeof journey_phase === 'string' ? journey_phase : null,
+            scheduleKey: typeof schedule_key === 'string' ? schedule_key : null,
+            journeyUpdatesEnabled: journey_updates_enabled === undefined ? undefined : (journey_updates_enabled === true || journey_updates_enabled === 'true'),
+            windowStart: typeof window_start === 'string' ? window_start : null,
+            windowEnd: typeof window_end === 'string' ? window_end : null
+        });
+    } catch (error) {
+        const deletionInProgress = error?.message === 'Device data deletion is in progress';
+        return res.status(deletionInProgress ? 409 : 400).json({
+            error: deletionInProgress ? error.message : 'Unable to register Live Activity'
+        });
+    }
     recordPushTokenRegistration({
         channel: 'live_activity',
         environment: Boolean(use_sandbox) ? 'sandbox' : 'prod'
@@ -1366,6 +1372,7 @@ app.get('/api/v1/xbar/from/:fromStation/to/:toStation/max_departures/:maxDepartu
 
 // Hydrate persistent push state from Mongo before accepting requests.
 await ensureMongoIndexes();
+await startSubscriptionAuditLogMaintenance();
 await liveActivityManager.init();
 await notificationSubscriptionManager.init();
 journeyTrackingManager.startPollingLoop();
@@ -1374,5 +1381,4 @@ const port = process.env.PORT || 3012;
 app.listen(port, () => {
     console.log(`Server running on port ${port}`);
     logLiveActivityStartup();
-    writeEnvironmentSnapshotToTempLog();
 });

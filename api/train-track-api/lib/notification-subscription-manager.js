@@ -9,6 +9,7 @@ import { recordNotificationEvent, recordSubscriptionAuditEvent } from './admin-d
 import { holidayModeStore } from './holiday-mode-store.js';
 import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
 import { sleep } from './retry-utils.js';
+import { allowDeviceData } from './device-data-deletion-state.js';
 import {
     buildMuteNotificationPlan,
     resolveDetectionSource,
@@ -47,8 +48,9 @@ const DAY_MAP = {
 };
 
 export class NotificationSubscriptionManager {
-    constructor() {
+    constructor(options = {}) {
         this.subscriptions = new Map();
+        this.getCollection = options.getCollection || getMongoCollection;
         this.pushClient = new NotificationPushClient();
         this.liveActivityPushClient = new LiveActivityPushClient();
         this.pollIntervalMs = DEFAULT_POLL_INTERVAL_SECONDS * 1000;
@@ -56,6 +58,7 @@ export class NotificationSubscriptionManager {
         this.hasHydratedFromMongo = false;
         this.pollTimer = null;
         this.holidayModeDeviceIds = new Set();
+        this.deletedDeviceIds = new Set();
         // Polling loop is started by init() after Mongo hydration.
     }
 
@@ -98,7 +101,7 @@ export class NotificationSubscriptionManager {
     }
 
     async loadSubscriptionsFromMongo() {
-        const collection = await getMongoCollection(COLLECTIONS.notificationSubscriptions);
+        const collection = await this.getCollection(COLLECTIONS.notificationSubscriptions);
         const documents = await collection.find({}).toArray();
         this.subscriptions.clear();
         if (documents.length === 0) {
@@ -152,12 +155,17 @@ export class NotificationSubscriptionManager {
     // --- Mongo persistence helpers ---
 
     async _saveSubscription(sub) {
-        const collection = await getMongoCollection(COLLECTIONS.notificationSubscriptions);
+        if (this.deletedDeviceIds.has(sub?.deviceId)) return;
+        const collection = await this.getCollection(COLLECTIONS.notificationSubscriptions);
+        if (this.deletedDeviceIds.has(sub?.deviceId)) return;
         await collection.updateOne(
             { _id: sub.id },
             { $set: { _id: sub.id, ...sub } },
             { upsert: true }
         );
+        if (this.deletedDeviceIds.has(sub?.deviceId)) {
+            await collection.deleteOne({ _id: sub.id });
+        }
     }
 
     async _deleteFromMongo(id) {
@@ -218,6 +226,10 @@ export class NotificationSubscriptionManager {
         if (!deviceId || !pushToken) {
             throw new Error('device_id and push_token are required');
         }
+        if (!allowDeviceData(deviceId)) {
+            throw new Error('Device data deletion is in progress');
+        }
+        this.deletedDeviceIds.delete(deviceId);
         const legs = Array.isArray(legsInput) ? legsInput : [];
         if (legs.length === 0) {
             throw new Error('At least one journey leg is required');
@@ -489,6 +501,10 @@ export class NotificationSubscriptionManager {
         if (!deviceId) {
             throw new Error('device_id is required');
         }
+        if (!allowDeviceData(deviceId)) {
+            throw new Error('Device data deletion is in progress');
+        }
+        this.deletedDeviceIds.delete(deviceId);
         const isEnabling = Boolean(enabled);
         if (isEnabling) {
             this.holidayModeDeviceIds.add(deviceId);
@@ -623,6 +639,7 @@ export class NotificationSubscriptionManager {
     }
 
     async pollSubscription(subscription) {
+        if (this.deletedDeviceIds.has(subscription?.deviceId)) return;
         if (this.isExpiredLiveSession(subscription)) {
             await this.deleteSubscription({
                 deviceId: subscription.deviceId,
@@ -1465,6 +1482,25 @@ export class NotificationSubscriptionManager {
         return this.subscriptions.size;
     }
 
+    purgeDeviceRuntimeState(deviceId) {
+        const normalizedDeviceId = typeof deviceId === 'string' ? deviceId.trim() : '';
+        if (!normalizedDeviceId) {
+            return { subscriptions: 0, holidayMode: false };
+        }
+
+        this.deletedDeviceIds.add(normalizedDeviceId);
+
+        let subscriptions = 0;
+        for (const [id, subscription] of this.subscriptions.entries()) {
+            if (subscription?.deviceId !== normalizedDeviceId) continue;
+            this.subscriptions.delete(id);
+            subscriptions += 1;
+        }
+
+        const holidayMode = this.holidayModeDeviceIds.delete(normalizedDeviceId);
+        return { subscriptions, holidayMode };
+    }
+
     subscriptionSource(subscription) {
         return normalizeSource(subscription?.source);
     }
@@ -1609,6 +1645,11 @@ export class NotificationSubscriptionManager {
     }
 
     async recordSubscriptionAudit(event) {
+        const deviceId = event?.device_id
+            || event?.subscription?.deviceId
+            || event?.before?.deviceId
+            || event?.after?.deviceId;
+        if (this.deletedDeviceIds.has(deviceId)) return;
         try {
             await recordSubscriptionAuditEvent(event);
         } catch (error) {

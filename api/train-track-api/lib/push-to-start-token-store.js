@@ -1,5 +1,6 @@
 import { recordSubscriptionAuditEvent } from './admin-data-store.js';
 import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
+import { allowDeviceData, referencesDeletedDevice } from './device-data-deletion-state.js';
 
 const MIN_PUSH_TO_START_TTL_SECONDS = Math.max(
     90 * 24 * 60 * 60,
@@ -50,6 +51,9 @@ export const pushToStartTokenStore = {
         if (!normalizedDeviceId || !normalizedToken) {
             throw new Error('deviceId and pushToStartToken are required');
         }
+        if (!allowDeviceData(normalizedDeviceId)) {
+            throw new Error('Device data deletion is in progress');
+        }
 
         const record = {
             _id: normalizedDeviceId,
@@ -67,6 +71,10 @@ export const pushToStartTokenStore = {
                 { $set: record },
                 { upsert: true }
             );
+            if (referencesDeletedDevice(record)) {
+                await collection.deleteOne({ _id: normalizedDeviceId });
+                throw new Error('Device data deletion is in progress');
+            }
             const ttl = ttlDetailsForRecord(record);
             await recordPushToStartAudit({
                 action: 'push_to_start_upsert',

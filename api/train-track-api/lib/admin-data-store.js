@@ -1,13 +1,12 @@
 import crypto from 'crypto';
-import fs from 'fs/promises';
-import path from 'path';
 import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
+import { appendSubscriptionAuditLogEvent } from './subscription-audit-log.js';
+import { allowDeviceData, referencesDeletedDevice } from './device-data-deletion-state.js';
 
 const MAX_EVENT_LOG_SIZE = Number(process.env.ADMIN_NOTIFICATION_LOG_MAX || '5000');
 const MAX_PUSH_AUDIT_LOG_SIZE = Number(process.env.ADMIN_PUSH_AUDIT_LOG_MAX || '10000');
 const MAX_LIVE_ACTIVITY_PAYLOAD_LOG_SIZE = Number(process.env.ADMIN_LIVE_ACTIVITY_PAYLOAD_LOG_MAX || '5000');
 const MAX_SUBSCRIPTION_AUDIT_LOG_SIZE = Number(process.env.ADMIN_SUBSCRIPTION_AUDIT_LOG_MAX || '10000');
-const SUBSCRIPTION_AUDIT_LOG_PATH = process.env.SUBSCRIPTION_AUDIT_LOG_PATH || path.resolve(process.cwd(), 'subscription-audit.log');
 const MAX_GEOFENCE_EVENT_LOG_SIZE = 100;
 
 export async function listNotificationSubscriptions({ search = '', limit = 500 } = {}) {
@@ -35,6 +34,7 @@ export async function getNotificationSubscription(id) {
 }
 
 export async function recordSubscriptionAuditEvent(event = {}) {
+    if (referencesDeletedDevice(event)) return null;
     const normalized = {
         id: event.id || crypto.randomUUID(),
         recorded_at: event.recorded_at ? new Date(event.recorded_at) : new Date(),
@@ -61,15 +61,27 @@ export async function recordSubscriptionAuditEvent(event = {}) {
             { $set: { _id: normalized.id, ...normalized } },
             { upsert: true }
         );
+        if (referencesDeletedDevice(normalized)) {
+            await collection.deleteOne({ _id: normalized.id });
+            return null;
+        }
     } catch (error) {
         console.error('[admin] Failed to persist subscription audit event to Mongo:', error?.message || error);
     }
 
+    if (referencesDeletedDevice(normalized)) return null;
+
     try {
-        await fs.appendFile(SUBSCRIPTION_AUDIT_LOG_PATH, `${JSON.stringify(normalized)}\n`, 'utf8');
+        if (!referencesDeletedDevice(normalized)) {
+            await appendSubscriptionAuditLogEvent(normalized, {
+                shouldAppend: () => !referencesDeletedDevice(normalized)
+            });
+        }
     } catch (error) {
         console.error('[admin] Failed to append subscription audit event:', error?.message || error);
     }
+
+    if (referencesDeletedDevice(normalized)) return null;
 
     console.log('[notifications] subscription_audit', JSON.stringify({
         action: normalized.action,
@@ -93,6 +105,7 @@ export async function listSubscriptionAuditEvents({ search = '', limit = 500 } =
 }
 
 export async function recordNotificationEvent(event = {}) {
+    if (referencesDeletedDevice(event)) return null;
     const now = new Date();
     const status = event.status ?? null;
     const success = event.success ?? isSuccessStatus(status);
@@ -125,6 +138,10 @@ export async function recordNotificationEvent(event = {}) {
             { $set: { _id: normalized.id, ...normalized } },
             { upsert: true }
         );
+        if (referencesDeletedDevice(normalized)) {
+            await collection.deleteOne({ _id: normalized.id });
+            return null;
+        }
     } catch (error) {
         console.error('[admin] Failed to persist notification event:', error?.message || error);
     }
@@ -147,6 +164,7 @@ export async function getNotificationEvent(id) {
 }
 
 export async function recordPushAuditEvent(event = {}) {
+    if (referencesDeletedDevice(event)) return null;
     const normalized = {
         id: event.id || crypto.randomUUID(),
         recorded_at: event.recorded_at ? new Date(event.recorded_at) : new Date(),
@@ -173,6 +191,10 @@ export async function recordPushAuditEvent(event = {}) {
             { $set: { _id: normalized.id, ...normalized } },
             { upsert: true }
         );
+        if (referencesDeletedDevice(normalized)) {
+            await collection.deleteOne({ _id: normalized.id });
+            return null;
+        }
     } catch (error) {
         console.error('[admin] Failed to persist push audit event:', error?.message || error);
     }
@@ -191,6 +213,7 @@ export async function listPushAuditEvents({ search = '', limit = 500 } = {}) {
 }
 
 export async function recordLiveActivityPayload(event = {}) {
+    if (referencesDeletedDevice(event)) return null;
     const normalized = {
         id: event.id || crypto.randomUUID(),
         recorded_at: event.recorded_at ? new Date(event.recorded_at) : new Date(),
@@ -213,6 +236,10 @@ export async function recordLiveActivityPayload(event = {}) {
             { $set: { _id: normalized.id, ...normalized } },
             { upsert: true }
         );
+        if (referencesDeletedDevice(normalized)) {
+            await collection.deleteOne({ _id: normalized.id });
+            return null;
+        }
     } catch (error) {
         console.error('[admin] Failed to persist live activity payload:', error?.message || error);
     }
@@ -239,6 +266,9 @@ export async function recordDevicePreferences({ deviceId, preferences = {} } = {
     if (!normalizedDeviceId) {
         throw new Error('deviceId is required');
     }
+    if (!allowDeviceData(normalizedDeviceId)) {
+        throw new Error('Device data deletion is in progress');
+    }
     const record = {
         device_id: normalizedDeviceId,
         preferences: preferences && typeof preferences === 'object' && !Array.isArray(preferences) ? preferences : {},
@@ -250,6 +280,10 @@ export async function recordDevicePreferences({ deviceId, preferences = {} } = {
         { $set: { _id: normalizedDeviceId, ...record } },
         { upsert: true }
     );
+    if (referencesDeletedDevice(record)) {
+        await collection.deleteOne({ _id: normalizedDeviceId });
+        throw new Error('Device data deletion is in progress');
+    }
     return stripMongoId(record);
 }
 
@@ -269,6 +303,7 @@ export async function listDevicePreferences() {
 }
 
 export async function recordGeofenceEvent({ deviceId, clientTimestamp, event, regionId, from, to, ip } = {}) {
+    if (referencesDeletedDevice({ deviceId })) return;
     const entry = {
         id: crypto.randomUUID(),
         received_at: new Date(),
@@ -283,6 +318,9 @@ export async function recordGeofenceEvent({ deviceId, clientTimestamp, event, re
     try {
         const collection = await getMongoCollection(COLLECTIONS.geofenceEvents);
         await collection.insertOne({ _id: entry.id, ...entry });
+        if (referencesDeletedDevice(entry)) {
+            await collection.deleteOne({ _id: entry.id });
+        }
     } catch (error) {
         console.error('[admin] Failed to persist geofence event:', error?.message || error);
     }

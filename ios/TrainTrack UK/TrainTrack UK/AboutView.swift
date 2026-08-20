@@ -2,14 +2,16 @@ import SwiftUI
 import UIKit
 
 struct AboutView: View {
+    @State private var didCopySupportID = false
+
     private var appVersion: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "Unknown"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? ""
         return build.isEmpty ? "Version \(version)" : "Version \(version) (\(build))"
     }
 
-    private var deviceIdentifier: String {
-        UIDevice.current.identifierForVendor?.uuidString ?? "unknown-device"
+    private var supportID: String {
+        DeviceIdentity.deviceToken
     }
 
     private var feedbackURL: URL {
@@ -17,7 +19,7 @@ struct AboutView: View {
         components.scheme = "mailto"
         components.path = "mike.wagstaff@gmail.com"
         components.queryItems = [
-            URLQueryItem(name: "subject", value: "TrainTrack UK feedback [\(deviceIdentifier)]")
+            URLQueryItem(name: "subject", value: "TrainTrack UK feedback [\(supportID)]")
         ]
         return components.url ?? URL(string: "mailto:mike.wagstaff@gmail.com")!
     }
@@ -50,6 +52,34 @@ struct AboutView: View {
                 Link(destination: URL(string: "https://skynolimit.dev/privacy_policy")!) {
                     Label("Privacy Policy", systemImage: "hand.raised")
                 }
+            }
+
+            Section("Support") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Support ID")
+                        .font(.subheadline.weight(.semibold))
+                    Text(supportID)
+                        .font(.footnote.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .accessibilityLabel("Support ID")
+                        .accessibilityValue(supportID)
+                    Text("Include this ID when contacting support or asking us to delete data stored for this installation.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.vertical, 4)
+
+                Button {
+                    UIPasteboard.general.string = supportID
+                    didCopySupportID = true
+                } label: {
+                    Label(
+                        didCopySupportID ? "Support ID Copied" : "Copy Support ID",
+                        systemImage: didCopySupportID ? "checkmark" : "doc.on.doc"
+                    )
+                }
+                .accessibilityHint("Copies the identifier used to find this installation's server data")
             }
 
             Section("Data sources") {

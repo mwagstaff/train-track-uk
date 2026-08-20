@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { recordSubscriptionAuditEvent } from './admin-data-store.js';
 import { NotificationPushClient } from './notification-push-client.js';
 import { getServiceDetailsWithContext } from './service-details.js';
+import { allowDeviceData } from './device-data-deletion-state.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.JOURNEY_TRACKING_POLL_INTERVAL_SECONDS || '30');
 const DEFAULT_SESSION_LIFETIME_MS = 24 * 60 * 60 * 1000;
@@ -19,6 +20,7 @@ export class JourneyTrackingManager {
             || Math.max(5, DEFAULT_POLL_INTERVAL_SECONDS) * 1000;
         this.pollTimer = null;
         this.isPolling = false;
+        this.deletedDeviceIds = new Set();
     }
 
     startPollingLoop() {
@@ -39,6 +41,10 @@ export class JourneyTrackingManager {
     upsertSession(payload = {}) {
         this.pruneExpired();
         const normalized = normalizeRegistration(payload);
+        if (!allowDeviceData(normalized.deviceId)) {
+            throw new Error('Device data deletion is in progress');
+        }
+        this.deletedDeviceIds.delete(normalized.deviceId);
         const existing = Array.from(this.sessions.values()).find((session) => (
             session.journeyId === normalized.journeyId
                 && session.deviceId === normalized.deviceId
@@ -90,6 +96,21 @@ export class JourneyTrackingManager {
         return removed;
     }
 
+    purgeDeviceRuntimeState(deviceId) {
+        const normalizedDeviceId = cleanString(deviceId);
+        if (!normalizedDeviceId) return 0;
+
+        this.deletedDeviceIds.add(normalizedDeviceId);
+
+        let removed = 0;
+        for (const [id, session] of this.sessions.entries()) {
+            if (session.deviceId !== normalizedDeviceId) continue;
+            this.sessions.delete(id);
+            removed += 1;
+        }
+        return removed;
+    }
+
     async pollAll() {
         if (this.isPolling) return;
         this.isPolling = true;
@@ -118,6 +139,7 @@ export class JourneyTrackingManager {
         const session = typeof sessionOrId === 'string'
             ? this.sessions.get(sessionOrId)
             : sessionOrId;
+        if (this.deletedDeviceIds.has(session?.deviceId)) return { status: 'device_data_deleted' };
         if (!session || !this.sessions.has(session.id)) return { status: 'not_found' };
 
         const details = await this.getDetails(session.serviceId, {
@@ -211,6 +233,7 @@ export class JourneyTrackingManager {
     }
 
     audit(action, session, metadata = {}) {
+        if (this.deletedDeviceIds.has(session?.deviceId)) return;
         const event = {
             action,
             reason: action,
