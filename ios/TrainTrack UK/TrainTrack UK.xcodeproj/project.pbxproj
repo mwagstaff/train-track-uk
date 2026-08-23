@@ -922,7 +922,7 @@
 				INFOPLIST_KEY_CFBundleURLTypes = "{\n    CFBundleURLName = \"dev.skynolimit.traintrack\";\n    CFBundleURLSchemes =     (\n        traintrack\n    );\n}";
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "TrainTrack uses your location during active journeys to detect station arrivals, notify you near your destination, and record your journey history.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "TrainTrack uses your location to show the closest stations first";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "TrainTrack uses your location to show nearby stations and your estimated position on route maps.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -966,7 +966,7 @@
 				INFOPLIST_KEY_CFBundleURLTypes = "{\n    CFBundleURLName = \"dev.skynolimit.traintrack\";\n    CFBundleURLSchemes =     (\n        traintrack\n    );\n}";
 				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "TrainTrack uses your location during active journeys to detect station arrivals, notify you near your destination, and record your journey history.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "TrainTrack uses your location to show the closest stations first";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "TrainTrack uses your location to show nearby stations and your estimated position on route maps.";
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;

@@ -622,6 +622,8 @@ struct ServiceRailwayMapView: View {
                         .stroke(segment.status.color, lineWidth: 6)
                 }
 
+                UserAnnotation()
+
                 if let trainCoordinate {
                     Annotation(RailwayMapAnnotationIdentifier.estimatedTrain, coordinate: trainCoordinate) {
                         estimatedTrainMarker
