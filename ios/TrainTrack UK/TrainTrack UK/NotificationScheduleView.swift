@@ -4,13 +4,17 @@ import UIKit
 struct NotificationScheduleView: View {
     let group: JourneyGroup
     let reverseGroup: JourneyGroup?
+    let existingSubscription: NotificationSubscription?
 
     @EnvironmentObject var activityMgr: LiveActivityManager
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
     @Environment(\.dismiss) private var dismiss
 
     @State private var legs: [NotificationLeg]
+    @State private var scheduleKind: NotificationScheduleKind = .regular
     @State private var selectedDays: Set<DayOfWeek>
+    @State private var outboundTravelDate = Calendar.current.startOfDay(for: Date())
+    @State private var returnTravelDate = Calendar.current.startOfDay(for: Date())
     @State private var errorMessage: String?
     @State private var showErrorAlert = false
     @State private var isSaving = false
@@ -22,15 +26,22 @@ struct NotificationScheduleView: View {
     @State private var showWindowHint: Set<Int> = []
 
     private let maxWindowMinutes = 120
+    private let outboundLegCount: Int
+    private let regularLegCount: Int
 
-    init(group: JourneyGroup, reverseGroup: JourneyGroup? = nil) {
+    init(
+        group: JourneyGroup,
+        reverseGroup: JourneyGroup? = nil,
+        existingSubscription: NotificationSubscription? = nil
+    ) {
         self.group = group
         self.reverseGroup = reverseGroup
+        self.existingSubscription = existingSubscription
         var grouped: [JourneyGroup] = [group]
         if let reverseGroup, reverseGroup.id != group.id {
             grouped.append(reverseGroup)
         }
-        let initialLegs = grouped.enumerated().flatMap { groupIndex, group in
+        let regularLegs = grouped.enumerated().flatMap { groupIndex, group in
             let window = Self.defaultWindow(forGroupIndex: groupIndex)
             return group.legs.map { leg in
             return NotificationLeg(
@@ -44,7 +55,26 @@ struct NotificationScheduleView: View {
             )
             }
         }
-        _legs = State(initialValue: initialLegs)
+        let returnLegs: [NotificationLeg]
+        if reverseGroup == nil {
+            let window = Self.defaultWindow(forGroupIndex: 1)
+            returnLegs = group.legs.reversed().map { leg in
+                NotificationLeg(
+                    from: leg.toStation.crs,
+                    to: leg.fromStation.crs,
+                    fromName: leg.toStation.name,
+                    toName: leg.fromStation.name,
+                    enabled: false,
+                    windowStart: window.start,
+                    windowEnd: window.end
+                )
+            }
+        } else {
+            returnLegs = []
+        }
+        outboundLegCount = group.legs.count
+        regularLegCount = regularLegs.count
+        _legs = State(initialValue: regularLegs + returnLegs)
         _selectedDays = State(initialValue: [.mon, .tue, .wed, .thu, .fri])
     }
 
@@ -56,17 +86,41 @@ struct NotificationScheduleView: View {
     }
 
     private var existing: NotificationSubscription? {
-        notificationStore.subscription(for: routeKey)
+        existingSubscription
     }
 
-    private var hasEnabledLegs: Bool { legs.contains(where: { $0.enabled }) }
+    private var activeLegIndices: [Int] {
+        scheduleKind == .regular ? regularLegIndices : Array(legs.indices)
+    }
+
+    private var hasEnabledLegs: Bool {
+        activeLegIndices.contains { legs[$0].enabled }
+    }
+
+    private var outboundLegIndices: [Int] {
+        Array(0..<min(outboundLegCount, legs.count))
+    }
+
+    private var returnLegIndices: [Int] {
+        Array(min(outboundLegCount, legs.count)..<legs.count)
+    }
+
+    private var regularLegIndices: [Int] {
+        Array(0..<min(regularLegCount, legs.count))
+    }
 
     private var orderedSelectedDays: [DayOfWeek] {
         DayOfWeek.allCases.filter(selectedDays.contains)
     }
 
     private var draftState: ScheduleDraftState {
-        ScheduleDraftState(days: orderedSelectedDays, legs: legs)
+        ScheduleDraftState(
+            scheduleKind: scheduleKind,
+            days: orderedSelectedDays,
+            outboundTravelDate: travelDateString(from: outboundTravelDate),
+            returnTravelDate: travelDateString(from: returnTravelDate),
+            legs: legs
+        )
     }
 
     private var hasUnsavedChanges: Bool {
@@ -78,40 +132,70 @@ struct NotificationScheduleView: View {
     }
 
     private var canSave: Bool {
-        !selectedDays.isEmpty && hasEnabledLegs && !isSaving
+        let hasDays = scheduleKind == .oneOff || !selectedDays.isEmpty
+        return hasDays && hasEnabledLegs && !isSaving
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Days") {
-                    LazyVGrid(
-                        columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: DayOfWeek.allCases.count),
-                        spacing: 8
-                    ) {
-                        ForEach(DayOfWeek.allCases) { day in
-                            dayCheckbox(day)
+                Section {
+                    Picker("Journey frequency", selection: $scheduleKind) {
+                        ForEach(NotificationScheduleKind.allCases) { kind in
+                            Text(kind.displayName).tag(kind)
                         }
                     }
+                    .pickerStyle(.segmented)
                 }
 
-                ForEach(legs.indices, id: \.self) { index in
-                    let leg = legs[index]
-                    Section("\(legLabel(leg))") {
-                        Toggle("Enabled", isOn: bindingForLegEnabled(index))
-                        DatePicker("Start", selection: bindingForStartTime(index), displayedComponents: .hourAndMinute)
-                            .disabled(!leg.enabled)
-                        DatePicker("End", selection: bindingForEndTime(index), displayedComponents: .hourAndMinute)
-                            .disabled(!leg.enabled)
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(!leg.enabled)
-                        if showWindowHint.contains(index) {
-                            Text("Choose a window up to 2 hours.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
+                if scheduleKind == .regular {
+                    Section("Days") {
+                        LazyVGrid(
+                            columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: DayOfWeek.allCases.count),
+                            spacing: 8
+                        ) {
+                            ForEach(DayOfWeek.allCases) { day in
+                                dayCheckbox(day)
+                            }
                         }
                     }
+
+                    ForEach(regularLegIndices, id: \.self) { index in
+                        let leg = legs[index]
+                        Section("\(legLabel(leg))") {
+                            Toggle("Enabled", isOn: bindingForLegEnabled(index))
+                            DatePicker("Start", selection: bindingForStartTime(index), displayedComponents: .hourAndMinute)
+                                .disabled(!leg.enabled)
+                            DatePicker("End", selection: bindingForEndTime(index), displayedComponents: .hourAndMinute)
+                                .disabled(!leg.enabled)
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(!leg.enabled)
+                            if showWindowHint.contains(index) {
+                                windowHint
+                            }
+                        }
+                    }
+                } else {
+                    Section("Date") {
+                        AutoDismissDatePicker(
+                            title: "Day of travel",
+                            selection: $outboundTravelDate,
+                            minimumDate: Calendar.current.startOfDay(for: Date())
+                        )
+                    }
+
+                    travelWindowSection(
+                        title: "Outbound travel window",
+                        indices: outboundLegIndices,
+                        travelDate: nil
+                    )
+
+                    travelWindowSection(
+                        title: "Return travel window",
+                        indices: returnLegIndices,
+                        travelDate: $returnTravelDate
+                    )
                 }
 
                 if existing != nil {
@@ -124,6 +208,12 @@ struct NotificationScheduleView: View {
             }
             .navigationTitle("Schedule journey updates")
             .navigationBarTitleDisplayMode(.inline)
+            .onChange(of: outboundTravelDate) { oldDate, newDate in
+                if Calendar.current.isDate(returnTravelDate, inSameDayAs: oldDate)
+                    || returnTravelDate < newDate {
+                    returnTravelDate = newDate
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button {
@@ -205,7 +295,8 @@ struct NotificationScheduleView: View {
                 toName: leg.fromName,
                 enabled: leg.enabled,
                 windowStart: leg.windowStart,
-                windowEnd: leg.windowEnd
+                windowEnd: leg.windowEnd,
+                travelDate: leg.travelDate
             )
         }
         showWindowHint.removeAll()
@@ -214,6 +305,8 @@ struct NotificationScheduleView: View {
     private func applyExistingIfNeeded() {
         guard !didApplyExisting, let existing else { return }
         didApplyExisting = true
+        scheduleKind = existing.scheduleKind
+            ?? (existing.legs.contains { $0.travelDate != nil } ? .oneOff : .regular)
         selectedDays = Set(existing.daysOfWeek)
         let existingById = Dictionary(uniqueKeysWithValues: existing.legs.map { ($0.id, $0) })
         for index in legs.indices {
@@ -221,8 +314,19 @@ struct NotificationScheduleView: View {
                 legs[index].enabled = existingLeg.enabled
                 legs[index].windowStart = existingLeg.windowStart
                 legs[index].windowEnd = existingLeg.windowEnd
+                legs[index].travelDate = existingLeg.travelDate
                 clampLegWindow(index)
             }
+        }
+        if let value = outboundLegIndices.compactMap({ legs[$0].travelDate }).first,
+           let date = travelDate(from: value) {
+            outboundTravelDate = date
+        }
+        if let value = returnLegIndices.compactMap({ legs[$0].travelDate }).first,
+           let date = travelDate(from: value) {
+            returnTravelDate = date
+        } else {
+            returnTravelDate = outboundTravelDate
         }
     }
 
@@ -238,6 +342,47 @@ struct NotificationScheduleView: View {
         } else if endDate > maxEnd {
             legs[index].windowEnd = timeString(from: maxEnd)
         }
+    }
+
+    private func travelWindowSection(
+        title: String,
+        indices: [Int],
+        travelDate: Binding<Date>?
+    ) -> some View {
+        let isEnabled = indices.contains { legs[$0].enabled }
+        let hintIsVisible = !showWindowHint.isDisjoint(with: indices)
+        return Section(title) {
+            Toggle("Enabled", isOn: bindingForLegsEnabled(indices))
+            if let travelDate {
+                AutoDismissDatePicker(
+                    title: "Date",
+                    selection: travelDate,
+                    minimumDate: outboundTravelDate
+                )
+                .disabled(!isEnabled)
+            }
+            DatePicker(
+                "Start",
+                selection: bindingForStartTime(indices),
+                displayedComponents: .hourAndMinute
+            )
+            .disabled(!isEnabled)
+            DatePicker(
+                "End",
+                selection: bindingForEndTime(indices),
+                displayedComponents: .hourAndMinute
+            )
+            .disabled(!isEnabled)
+            if hintIsVisible {
+                windowHint
+            }
+        }
+    }
+
+    private var windowHint: some View {
+        Text("Choose a window up to 2 hours.")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
     }
 
     private func dayCheckbox(_ day: DayOfWeek) -> some View {
@@ -285,6 +430,17 @@ struct NotificationScheduleView: View {
         )
     }
 
+    private func bindingForLegsEnabled(_ indices: [Int]) -> Binding<Bool> {
+        Binding(
+            get: { indices.contains { legs[$0].enabled } },
+            set: { isEnabled in
+                for index in indices {
+                    legs[index].enabled = isEnabled
+                }
+            }
+        )
+    }
+
     private func bindingForStartTime(_ index: Int) -> Binding<Date> {
         Binding(
             get: {
@@ -296,6 +452,26 @@ struct NotificationScheduleView: View {
                 let twoHoursLater = Calendar.current.date(byAdding: .hour, value: 2, to: newValue) ?? newValue
                 legs[index].windowEnd = timeString(from: twoHoursLater)
                 showWindowHint.remove(index)
+            }
+        )
+    }
+
+    private func bindingForStartTime(_ indices: [Int]) -> Binding<Date> {
+        guard let firstIndex = indices.first else {
+            return .constant(Date())
+        }
+        return Binding(
+            get: {
+                timeFromString(legs[firstIndex].windowStart)
+                    ?? defaultWindowDate(for: firstIndex, isStart: true)
+            },
+            set: { newValue in
+                let endDate = Calendar.current.date(byAdding: .hour, value: 2, to: newValue) ?? newValue
+                for index in indices {
+                    legs[index].windowStart = timeString(from: newValue)
+                    legs[index].windowEnd = timeString(from: endDate)
+                    showWindowHint.remove(index)
+                }
             }
         )
     }
@@ -321,6 +497,32 @@ struct NotificationScheduleView: View {
         )
     }
 
+    private func bindingForEndTime(_ indices: [Int]) -> Binding<Date> {
+        guard let firstIndex = indices.first else {
+            return .constant(Date())
+        }
+        return Binding(
+            get: {
+                timeFromString(legs[firstIndex].windowEnd)
+                    ?? defaultWindowDate(for: firstIndex, isStart: false)
+            },
+            set: { newValue in
+                for index in indices {
+                    legs[index].windowEnd = timeString(from: newValue)
+                    if let startDate = timeFromString(legs[index].windowStart) {
+                        let maxEnd = Calendar.current.date(byAdding: .minute, value: maxWindowMinutes, to: startDate) ?? startDate
+                        if newValue > maxEnd {
+                            showWindowHint.insert(index)
+                        } else {
+                            showWindowHint.remove(index)
+                        }
+                    }
+                    clampLegWindow(index)
+                }
+            }
+        )
+    }
+
     private func timeFromString(_ value: String) -> Date? {
         let parts = value.split(separator: ":")
         guard parts.count == 2,
@@ -332,6 +534,22 @@ struct NotificationScheduleView: View {
     private func timeString(from date: Date) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private func travelDate(from value: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar.current
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.date(from: value)
+    }
+
+    private func travelDateString(from date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar.current
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
     }
 
@@ -384,7 +602,17 @@ struct NotificationScheduleView: View {
                 return
             }
 
-            let primaryLeg = legs.first(where: { $0.enabled }) ?? legs.first
+            let requestLegs = activeLegIndices.map { index in
+                var leg = legs[index]
+                if scheduleKind == .oneOff {
+                    let date = outboundLegIndices.contains(index) ? outboundTravelDate : returnTravelDate
+                    leg.travelDate = travelDateString(from: date)
+                } else {
+                    leg.travelDate = nil
+                }
+                return leg
+            }
+            let primaryLeg = requestLegs.first(where: { $0.enabled }) ?? requestLegs.first
             #if DEBUG
             let useSandbox = true
             #else
@@ -395,9 +623,10 @@ struct NotificationScheduleView: View {
                 deviceId: DeviceIdentity.deviceToken,
                 pushToken: pushToken,
                 routeKey: routeKey,
-                daysOfWeek: orderedSelectedDays,
+                scheduleKind: scheduleKind,
+                daysOfWeek: scheduleKind == .regular ? orderedSelectedDays : [],
                 notificationTypes: NotificationPreferences.effectiveTypes(for: .scheduled),
-                legs: legs,
+                legs: requestLegs,
                 windowStart: primaryLeg?.windowStart,
                 windowEnd: primaryLeg?.windowEnd,
                 from: primaryLeg?.from,
@@ -452,6 +681,13 @@ struct NotificationScheduleView: View {
     }
 }
 
+struct NotificationScheduleDestination: Identifiable {
+    let id = UUID()
+    let group: JourneyGroup
+    let reverseGroup: JourneyGroup?
+    let existingSubscription: NotificationSubscription?
+}
+
 #Preview {
     Group {
         if let first = JourneyStore.shared.journeyGroups().first {
@@ -464,8 +700,55 @@ struct NotificationScheduleView: View {
 }
 
 private struct ScheduleDraftState: Equatable {
+    let scheduleKind: NotificationScheduleKind
     let days: [DayOfWeek]
+    let outboundTravelDate: String
+    let returnTravelDate: String
     let legs: [NotificationLeg]
+}
+
+private struct AutoDismissDatePicker: View {
+    let title: String
+    @Binding var selection: Date
+    let minimumDate: Date
+
+    @State private var isPresented = false
+
+    var body: some View {
+        Button {
+            isPresented = true
+        } label: {
+            HStack {
+                Text(title)
+                    .foregroundStyle(.primary)
+                Spacer()
+                Text(selection.formatted(date: .abbreviated, time: .omitted))
+                    .foregroundStyle(.primary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(selection.formatted(date: .long, time: .omitted))
+        .popover(isPresented: $isPresented, arrowEdge: .trailing) {
+            DatePicker(
+                title,
+                selection: Binding(
+                    get: { selection },
+                    set: { newDate in
+                        selection = newDate
+                        isPresented = false
+                    }
+                ),
+                in: minimumDate...,
+                displayedComponents: .date
+            )
+            .datePickerStyle(.graphical)
+            .labelsHidden()
+            .padding()
+            .frame(width: 340)
+            .presentationCompactAdaptation(.popover)
+        }
+    }
 }
 
 private struct SheetDismissGuard: UIViewControllerRepresentable {

@@ -159,7 +159,8 @@ struct PreferencesView: View {
                             NavigationLink {
                                 NotificationScheduleView(
                                     group: schedule.group,
-                                    reverseGroup: schedule.reverseGroup
+                                    reverseGroup: schedule.reverseGroup,
+                                    existingSubscription: sub
                                 )
                                 .environmentObject(notificationStore)
                             } label: {
@@ -171,7 +172,7 @@ struct PreferencesView: View {
                     }
                     .onDelete(perform: deleteScheduledNotifications)
                 }
-                Text("Notification types above apply to all schedules. You can schedule notifications for up to 3 journeys.")
+                Text("Notification types above apply to all schedules. You can create up to \(ServerConfigStore.shared.maxSubscriptionsPerDevice) schedules.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

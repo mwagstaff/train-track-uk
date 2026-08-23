@@ -98,7 +98,8 @@ struct JourneyCard: View {
     let isFavourite: Bool
     let defaultDepartureCount: Int
     let isLiveActive: Bool
-    let isScheduled: Bool
+    let scheduledSubscriptions: [NotificationSubscription]
+    let canAddSchedule: Bool
     let isBusy: Bool
     let isInteractive: Bool
     let isExpanded: Bool
@@ -109,7 +110,8 @@ struct JourneyCard: View {
     let onOpenDeparture: (Journey, DepartureV2) -> Void
     let onToggleFavourite: () -> Void
     let onToggleJourneyUpdates: () -> Void
-    let onScheduleJourneyUpdates: () -> Void
+    let onAddJourneySchedule: () -> Void
+    let onEditJourneySchedule: (NotificationSubscription) -> Void
     let onRemoveJourney: () -> Void
 
     @EnvironmentObject private var depStore: DeparturesStore
@@ -127,6 +129,7 @@ struct JourneyCard: View {
     }
 
     private var firstLeg: Journey { group.legs.first! }
+    private var isScheduled: Bool { !scheduledSubscriptions.isEmpty }
 
     private var upcomingDepartures: [DepartureV2] {
         depStore.departures(for: firstLeg).filter { departure in
@@ -398,12 +401,34 @@ struct JourneyCard: View {
                     Divider()
                 }
 
-                Button(action: onScheduleJourneyUpdates) {
+                if scheduledSubscriptions.count == 1, let schedule = scheduledSubscriptions.first {
+                    Button {
+                        onEditJourneySchedule(schedule)
+                    } label: {
+                        Label("Edit scheduled updates", systemImage: "clock.fill")
+                    }
+                } else if scheduledSubscriptions.count > 1 {
+                    Menu {
+                        ForEach(scheduledSubscriptions) { schedule in
+                            Button {
+                                onEditJourneySchedule(schedule)
+                            } label: {
+                                Text(schedule.daysLabel)
+                                Text(schedule.windowLabel)
+                            }
+                        }
+                    } label: {
+                        Label("Edit scheduled updates", systemImage: "clock.fill")
+                    }
+                }
+
+                Button(action: onAddJourneySchedule) {
                     Label(
-                        isScheduled ? "Edit scheduled updates" : "Schedule journey updates",
-                        systemImage: isScheduled ? "clock.fill" : "clock"
+                        isScheduled ? "Add another schedule" : "Schedule journey updates",
+                        systemImage: "clock.badge.plus"
                     )
                 }
+                .disabled(!canAddSchedule)
 
                 Divider()
 

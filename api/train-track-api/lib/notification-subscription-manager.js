@@ -43,6 +43,8 @@ const SCHEDULE_TIME_ZONE = process.env.NOTIFICATION_SCHEDULE_TIME_ZONE || 'Europ
 const LIVE_ACTIVITY_ATTRIBUTES_TYPE = process.env.APNS_LIVE_ACTIVITY_ATTRIBUTES_TYPE || 'JourneyActivityAttributes';
 
 const VALID_TYPES = new Set(['summary', 'delays', 'platform']);
+const REGULAR_SCHEDULE = 'regular';
+const ONE_OFF_SCHEDULE = 'one_off';
 const DAY_MAP = {
     sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6
 };
@@ -68,6 +70,7 @@ export class NotificationSubscriptionManager {
         await this.hydrateFromMongoWithRetry();
         await this.hydrateHolidayModeFromMongo();
         await this.pruneExpiredLiveSessions();
+        await this.pruneExpiredOneOffSchedules();
         this.startPollingLoop();
     }
 
@@ -128,6 +131,13 @@ export class NotificationSubscriptionManager {
                 sub.lastStateByLeg = sub.lastStateByLeg || {};
                 sub.mutedByLegDay = sub.mutedByLegDay || {};
                 sub.mutedAtByLegDay = sub.mutedAtByLegDay || {};
+                sub.scheduleKind = normalizeSource(sub.source) === SCHEDULED_SOURCE
+                    ? normalizeScheduleKind(sub.scheduleKind)
+                    : null;
+                sub.legs = (sub.legs || []).map((leg) => ({
+                    ...leg,
+                    travelDate: normalizeTravelDate(leg.travelDate)
+                }));
                 sub.pushTokenInvalidAt = sub.pushTokenInvalidAt || null;
                 sub.lastBadTokenReason = sub.lastBadTokenReason || null;
                 this.subscriptions.set(sub.id, sub);
@@ -146,10 +156,6 @@ export class NotificationSubscriptionManager {
                 loaded
             }
         });
-        const pruned = await this.pruneDuplicateScheduledSubscriptions();
-        if (pruned > 0) {
-            console.log(`[notifications] Pruned ${pruned} duplicate scheduled subscription(s) from Mongo`);
-        }
     }
 
     // --- Mongo persistence helpers ---
@@ -197,6 +203,16 @@ export class NotificationSubscriptionManager {
                     });
                     return false;
                 }
+                if (isExpiredOneOffSchedule(sub)) {
+                    this.deleteSubscription({
+                        deviceId: sub.deviceId,
+                        subscriptionId: sub.id,
+                        reason: 'expired_one_off_schedule_list'
+                    }).catch((error) => {
+                        console.error('[notifications] Failed to delete expired one-off schedule:', error?.message || error);
+                    });
+                    return false;
+                }
                 return true;
             })
             .map((sub) => this.publicSubscription(sub));
@@ -211,6 +227,7 @@ export class NotificationSubscriptionManager {
             deviceId,
             pushToken,
             routeKey: routeKeyInput,
+            scheduleKind: scheduleKindInput,
             daysOfWeek: daysInput,
             notificationTypes: typesInput,
             legs: legsInput,
@@ -239,8 +256,11 @@ export class NotificationSubscriptionManager {
         }
 
         const source = normalizeSource(sourceInput);
+        const scheduleKind = source === SCHEDULED_SOURCE
+            ? normalizeScheduleKind(scheduleKindInput)
+            : null;
         const daysOfWeek = normalizeDays(daysInput);
-        if (source === SCHEDULED_SOURCE && daysOfWeek.length === 0) {
+        if (source === SCHEDULED_SOURCE && scheduleKind === REGULAR_SCHEDULE && daysOfWeek.length === 0) {
             throw new Error('At least one day of week is required');
         }
 
@@ -253,11 +273,15 @@ export class NotificationSubscriptionManager {
             const enabled = Boolean(leg.enabled);
             const windowStart = leg.window_start || leg.windowStart;
             const windowEnd = leg.window_end || leg.windowEnd;
+            const travelDate = normalizeTravelDate(leg.travel_date || leg.travelDate);
             if (enabled && source === SCHEDULED_SOURCE) {
                 const { startMinutes, endMinutes } = parseWindow(windowStart, windowEnd);
                 const duration = endMinutes - startMinutes;
                 if (duration < 0 || duration > MAX_WINDOW_MINUTES) {
                     throw new Error(`Time window must be within 2 hours for leg ${index + 1}`);
+                }
+                if (scheduleKind === ONE_OFF_SCHEDULE && !travelDate) {
+                    throw new Error(`A valid travel date is required for leg ${index + 1}`);
                 }
             }
             return {
@@ -267,7 +291,8 @@ export class NotificationSubscriptionManager {
                 toName: leg.to_name || leg.toName,
                 enabled,
                 windowStart,
-                windowEnd
+                windowEnd,
+                travelDate: scheduleKind === ONE_OFF_SCHEDULE ? travelDate : null
             };
         });
 
@@ -285,29 +310,16 @@ export class NotificationSubscriptionManager {
             && this.subscriptionSource(existingById) === source
         )
             ? existingById
-            : Array.from(this.subscriptions.values()).find(
-                (sub) => sub.deviceId === deviceId
-                    && sub.routeKey === routeKey
-                    && this.subscriptionSource(sub) === source
-            );
-        const overlappingScheduledSubscriptions = source === SCHEDULED_SOURCE
-            ? Array.from(this.subscriptions.values()).filter((sub) =>
-                sub.deviceId === deviceId
-                && sub.id !== existing?.id
-                && this.subscriptionSource(sub) === SCHEDULED_SOURCE
-                && (
-                    sub.routeKey === routeKey
-                    || scheduledSubscriptionsOverlap(sub, daysOfWeek, normalizedLegs)
-                )
-            )
-            : [];
+            : null;
+        if (subscriptionId && !existing) {
+            throw new Error('Subscription not found');
+        }
         const deviceCount = this.countSubscriptionsForDevice(deviceId, { source });
-        const effectiveDeviceCount = Math.max(0, deviceCount - overlappingScheduledSubscriptions.length);
-        if (!existing && effectiveDeviceCount >= MAX_SUBSCRIPTIONS_PER_DEVICE) {
+        if (!existing && deviceCount >= MAX_SUBSCRIPTIONS_PER_DEVICE) {
             if (source === LIVE_SESSION_SOURCE) {
                 throw new Error(`Maximum of ${MAX_SUBSCRIPTIONS_PER_DEVICE} live journeys reached`);
             }
-            throw new Error(`Maximum of ${MAX_SUBSCRIPTIONS_PER_DEVICE} scheduled journeys reached`);
+            throw new Error(`Maximum of ${MAX_SUBSCRIPTIONS_PER_DEVICE} schedules reached`);
         }
 
         const nowIso = new Date().toISOString();
@@ -323,11 +335,14 @@ export class NotificationSubscriptionManager {
         const resetScheduledDeliveryState = source === SCHEDULED_SOURCE && Boolean(existing);
 
         const subscription = {
-            id: existing?.id || subscriptionId || crypto.randomUUID(),
+            id: existing?.id || crypto.randomUUID(),
             deviceId,
             pushToken,
             routeKey,
-            daysOfWeek: daysOfWeek.length > 0 ? daysOfWeek : (existing?.daysOfWeek || []),
+            scheduleKind,
+            daysOfWeek: scheduleKind === ONE_OFF_SCHEDULE
+                ? []
+                : (daysOfWeek.length > 0 ? daysOfWeek : (existing?.daysOfWeek || [])),
             notificationTypes,
             legs: normalizedLegs,
             useSandbox: Boolean(useSandbox),
@@ -368,26 +383,12 @@ export class NotificationSubscriptionManager {
             before: existing || null,
             after: subscription,
             metadata: {
-                request: auditContext,
-                overlapping_scheduled_subscription_ids: overlappingScheduledSubscriptions.map((sub) => sub.id)
+                request: auditContext
             }
         });
         if (source === SCHEDULED_SOURCE) {
             await this.auditScheduledPushToStartReadiness(subscription);
         }
-        await Promise.all(overlappingScheduledSubscriptions.map(async (staleSubscription) => {
-            this.subscriptions.delete(staleSubscription.id);
-            await this._deleteFromMongo(staleSubscription.id);
-            await this.recordSubscriptionAudit({
-                action: 'delete',
-                reason: 'overlapping_schedule_replaced',
-                source: this.subscriptionSource(staleSubscription),
-                before: staleSubscription,
-                metadata: {
-                    replacement_subscription_id: subscription.id
-                }
-            });
-        }));
         return this.publicSubscription(subscription);
     }
 
@@ -598,6 +599,7 @@ export class NotificationSubscriptionManager {
             if (sub.deviceId !== deviceId) return false;
             if (source && this.subscriptionSource(sub) !== source) return false;
             if (this.isExpiredLiveSession(sub)) return false;
+            if (isExpiredOneOffSchedule(sub)) return false;
             return true;
         }).length;
     }
@@ -626,6 +628,7 @@ export class NotificationSubscriptionManager {
         this.isPolling = true;
         try {
             await this.pruneExpiredLiveSessions();
+            await this.pruneExpiredOneOffSchedules();
             const jobs = Array.from(this.subscriptions.values()).map((sub) =>
                 this.pollSubscription(sub).catch((error) => {
                     console.error(`Notification poll failed for ${sub.deviceId}/${sub.routeKey}: ${error?.message || error}`);
@@ -645,6 +648,14 @@ export class NotificationSubscriptionManager {
                 deviceId: subscription.deviceId,
                 subscriptionId: subscription.id,
                 reason: 'expired_live_session_poll'
+            });
+            return;
+        }
+        if (isExpiredOneOffSchedule(subscription)) {
+            await this.deleteSubscription({
+                deviceId: subscription.deviceId,
+                subscriptionId: subscription.id,
+                reason: 'expired_one_off_schedule_poll'
             });
             return;
         }
@@ -1299,6 +1310,9 @@ export class NotificationSubscriptionManager {
             id: subscription.id,
             device_id: subscription.deviceId,
             route_key: subscription.routeKey,
+            schedule_type: this.subscriptionSource(subscription) === SCHEDULED_SOURCE
+                ? normalizeScheduleKind(subscription.scheduleKind)
+                : null,
             days_of_week: subscription.daysOfWeek,
             notification_types: getEffectiveNotificationTypes(subscription),
             use_sandbox: subscription.useSandbox,
@@ -1317,7 +1331,8 @@ export class NotificationSubscriptionManager {
                 to_name: leg.toName,
                 enabled: leg.enabled,
                 window_start: leg.windowStart,
-                window_end: leg.windowEnd
+                window_end: leg.windowEnd,
+                travel_date: leg.travelDate || null
             })),
             created_at: subscription.createdAt,
             updated_at: subscription.updatedAt
@@ -1539,45 +1554,15 @@ export class NotificationSubscriptionManager {
         })));
     }
 
-    async pruneDuplicateScheduledSubscriptions() {
-        const groups = new Map();
-        for (const sub of this.subscriptions.values()) {
-            if (this.subscriptionSource(sub) !== SCHEDULED_SOURCE) continue;
-            const key = [
-                String(sub.deviceId || '').trim(),
-                String(sub.routeKey || '').trim()
-            ].join('|');
-            if (!key || key === '|') continue;
-            const current = groups.get(key) || [];
-            current.push(sub);
-            groups.set(key, current);
-        }
-
-        const staleIds = [];
-        for (const group of groups.values()) {
-            if (group.length <= 1) continue;
-            const sorted = [...group].sort((left, right) =>
-                subscriptionTimestamp(right) - subscriptionTimestamp(left)
-            );
-            staleIds.push(...sorted.slice(1).map((sub) => sub.id).filter(Boolean));
-        }
-
-        if (staleIds.length === 0) return 0;
-        await Promise.all(staleIds.map(async (id) => {
-            const stale = this.subscriptions.get(id);
-            this.subscriptions.delete(id);
-            await this._deleteFromMongo(id);
-            await this.recordSubscriptionAudit({
-                action: 'delete',
-                reason: 'duplicate_scheduled_prune',
-                source: this.subscriptionSource(stale),
-                before: stale || { id },
-                metadata: {
-                    duplicate_group_prune: true
-                }
-            });
-        }));
-        return staleIds.length;
+    async pruneExpiredOneOffSchedules(now = new Date()) {
+        const expiredIds = Array.from(this.subscriptions.values())
+            .filter((sub) => isExpiredOneOffSchedule(sub, now))
+            .map((sub) => sub.id);
+        if (expiredIds.length === 0) return;
+        await Promise.all(expiredIds.map((id) => this.deleteSubscription({
+            subscriptionId: id,
+            reason: 'expired_one_off_schedule_prune'
+        })));
     }
 
     async handleBadNotificationToken(subscription, context, pushResult) {
@@ -1696,6 +1681,26 @@ function normalizeDays(daysInput) {
     return Array.from(result);
 }
 
+function normalizeScheduleKind(value) {
+    return value === ONE_OFF_SCHEDULE ? ONE_OFF_SCHEDULE : REGULAR_SCHEDULE;
+}
+
+function normalizeTravelDate(value) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        return null;
+    }
+    const [year, month, day] = value.split('-').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (
+        date.getUTCFullYear() !== year
+        || date.getUTCMonth() !== month - 1
+        || date.getUTCDate() !== day
+    ) {
+        return null;
+    }
+    return value;
+}
+
 function stripMongoId(value) {
     if (!value || typeof value !== 'object') return value;
     const { _id, ...rest } = value;
@@ -1761,8 +1766,8 @@ function parseTimeToMinutes(value) {
     return hour * 60 + minute;
 }
 
-function currentMinutes() {
-    const { hour, minute } = getScheduleTimeParts();
+function currentMinutes(date = new Date()) {
+    const { hour, minute } = getScheduleTimeParts(date);
     return hour * 60 + minute;
 }
 
@@ -1793,14 +1798,20 @@ function getLiveActivityStartWindowState(leg) {
     return { allowed: true, reason: 'within_window', nowMinutes, startMinutes, endMinutes };
 }
 
-function shouldPollNow(subscription, leg) {
+export function shouldPollNow(subscription, leg, now = new Date()) {
     if (normalizeSource(subscription?.source) === LIVE_SESSION_SOURCE) {
         const activeUntil = Date.parse(subscription?.activeUntil || '');
-        return !Number.isFinite(activeUntil) || activeUntil > Date.now();
+        return !Number.isFinite(activeUntil) || activeUntil > now.getTime();
     }
-    const today = currentScheduleWeekdayKey();
-    if (!subscription.daysOfWeek.includes(today)) {
-        return false;
+    if (normalizeScheduleKind(subscription?.scheduleKind) === ONE_OFF_SCHEDULE) {
+        if (leg.travelDate !== currentScheduleDateKey(now)) {
+            return false;
+        }
+    } else {
+        const today = currentScheduleWeekdayKey(now);
+        if (!subscription.daysOfWeek.includes(today)) {
+            return false;
+        }
     }
     let startMinutes;
     let endMinutes;
@@ -1809,8 +1820,40 @@ function shouldPollNow(subscription, leg) {
     } catch {
         return false;
     }
-    const nowMinutes = currentMinutes();
+    const nowMinutes = currentMinutes(now);
     return nowMinutes >= startMinutes && nowMinutes <= endMinutes;
+}
+
+export function isExpiredOneOffSchedule(subscription, now = new Date()) {
+    if (
+        normalizeSource(subscription?.source) !== SCHEDULED_SOURCE
+        || normalizeScheduleKind(subscription?.scheduleKind) !== ONE_OFF_SCHEDULE
+    ) {
+        return false;
+    }
+
+    const latestWindow = (Array.isArray(subscription?.legs) ? subscription.legs : [])
+        .filter((leg) => leg?.enabled)
+        .map((leg) => ({
+            travelDate: normalizeTravelDate(leg.travelDate),
+            endMinutes: parseTimeToMinutes(leg.windowEnd)
+        }))
+        .filter((window) => window.travelDate && window.endMinutes !== null)
+        .sort((left, right) => {
+            if (left.travelDate !== right.travelDate) {
+                return right.travelDate.localeCompare(left.travelDate);
+            }
+            return right.endMinutes - left.endMinutes;
+        })[0];
+    if (!latestWindow) {
+        return false;
+    }
+
+    const today = currentScheduleDateKey(now);
+    if (today !== latestWindow.travelDate) {
+        return today > latestWindow.travelDate;
+    }
+    return currentMinutes(now) > latestWindow.endMinutes;
 }
 
 function getScheduleTimeParts(date = new Date()) {
@@ -2187,44 +2230,6 @@ function buildMutedStatusBody(leg, snapshot) {
     }
 
     return `${formatDepartureTime(primary)}, on time. Platform TBC.`;
-}
-
-function scheduledSubscriptionsOverlap(existingSubscription, nextDaysOfWeek, nextLegs) {
-    const existingDays = new Set(Array.isArray(existingSubscription?.daysOfWeek) ? existingSubscription.daysOfWeek : []);
-    const nextDays = new Set(Array.isArray(nextDaysOfWeek) ? nextDaysOfWeek : []);
-    const hasSharedDay = nextDays.size === 0
-        ? true
-        : Array.from(nextDays).some((day) => existingDays.has(day));
-
-    if (!hasSharedDay) {
-        return false;
-    }
-
-    const nextLegKeys = new Set(
-        (Array.isArray(nextLegs) ? nextLegs : [])
-            .filter((leg) => leg?.enabled)
-            .map((leg) => scheduledLegKey(leg))
-    );
-
-    return (Array.isArray(existingSubscription?.legs) ? existingSubscription.legs : []).some(
-        (leg) => leg?.enabled && nextLegKeys.has(scheduledLegKey(leg))
-    );
-}
-
-function scheduledLegKey(leg) {
-    return [
-        String(leg?.from || '').toUpperCase(),
-        String(leg?.to || '').toUpperCase(),
-        leg?.windowStart || '',
-        leg?.windowEnd || ''
-    ].join('|');
-}
-
-function subscriptionTimestamp(subscription) {
-    const updated = Date.parse(subscription?.updatedAt || '');
-    if (Number.isFinite(updated)) return updated;
-    const created = Date.parse(subscription?.createdAt || '');
-    return Number.isFinite(created) ? created : 0;
 }
 
 function hasPlatform(dep) {

@@ -7,6 +7,15 @@ struct ProfileView: View {
     @State private var showUpdateDeleteDialog = false
     @State private var viewingScheduledRoute: IdentifiableScheduledRoute? = nil
     @State private var viewingLiveSession: NotificationSubscription? = nil
+    @State private var journeyUpdatesNow = Date()
+
+    private var sortedJourneyUpdates: [NotificationSubscription] {
+        JourneyUpdateOrdering.sorted(
+            notificationStore.combinedSubscriptions,
+            scheduledIDs: Set(notificationStore.subscriptions.map(\.id)),
+            now: journeyUpdatesNow
+        )
+    }
 
     var body: some View {
         Form {
@@ -58,7 +67,7 @@ struct ProfileView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(notificationStore.combinedSubscriptions) { sub in
+                    ForEach(sortedJourneyUpdates) { sub in
                         journeyUpdateCard(for: sub)
                             .listRowSeparator(.hidden)
                             .listRowBackground(Color.clear)
@@ -72,6 +81,16 @@ struct ProfileView: View {
             await notificationStore.refresh()
             try? await StationsService.shared.loadStations()
         }
+        .task {
+            while !Task.isCancelled {
+                journeyUpdatesNow = Date()
+                do {
+                    try await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+                } catch {
+                    break
+                }
+            }
+        }
         .alert("Delete journey update?", isPresented: $showUpdateDeleteDialog, presenting: pendingDeleteUpdate) { sub in
             Button("Delete", role: .destructive) {
                 deleteUpdate(sub)
@@ -83,7 +102,11 @@ struct ProfileView: View {
                 : "This will stop live journey update notifications.")
         }
         .sheet(item: $viewingScheduledRoute) { route in
-            NotificationScheduleView(group: route.group, reverseGroup: route.reverseGroup)
+            NotificationScheduleView(
+                group: route.group,
+                reverseGroup: route.reverseGroup,
+                existingSubscription: route.subscription
+            )
                 .environmentObject(notificationStore)
         }
         .sheet(item: $viewingLiveSession) { session in
@@ -119,7 +142,11 @@ struct ProfileView: View {
         HStack(alignment: .center, spacing: 0) {
             Button {
                 if scheduled, let route = resolvedScheduledRoute(for: sub) {
-                    viewingScheduledRoute = IdentifiableScheduledRoute(group: route.group, reverseGroup: route.reverseGroup)
+                    viewingScheduledRoute = IdentifiableScheduledRoute(
+                        group: route.group,
+                        reverseGroup: route.reverseGroup,
+                        subscription: sub
+                    )
                 } else if !scheduled {
                     viewingLiveSession = sub
                 }
@@ -130,7 +157,12 @@ struct ProfileView: View {
                             Divider()
                                 .padding(.leading, 14)
                         }
-                        legContent(leg: leg, scheduled: scheduled, active: active)
+                        legContent(
+                            leg: leg,
+                            subscription: sub,
+                            scheduled: scheduled,
+                            active: active
+                        )
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -159,7 +191,12 @@ struct ProfileView: View {
     }
 
     @ViewBuilder
-    private func legContent(leg: NotificationLeg, scheduled: Bool, active: Bool) -> some View {
+    private func legContent(
+        leg: NotificationLeg,
+        subscription: NotificationSubscription,
+        scheduled: Bool,
+        active: Bool
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(leg.fromName ?? leg.from) → \(leg.toName ?? leg.to)")
                 .font(.subheadline)
@@ -170,7 +207,14 @@ struct ProfileView: View {
                     .font(.caption)
                     .foregroundStyle(scheduled ? .blue : .orange)
                 if leg.enabled {
-                    Text("• \(leg.windowStart)–\(leg.windowEnd)")
+                    Text(
+                        JourneyUpdateSchedulePresentation.detail(
+                            for: leg,
+                            subscription: subscription,
+                            scheduled: scheduled,
+                            now: journeyUpdatesNow
+                        )
+                    )
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -238,6 +282,11 @@ struct ProfileView: View {
     private func chronologicalLegs(from legs: [NotificationLeg]) -> [NotificationLeg] {
         legs.enumerated()
             .sorted { lhs, rhs in
+                if let lhsDate = lhs.element.travelDate,
+                   let rhsDate = rhs.element.travelDate,
+                   lhsDate != rhsDate {
+                    return lhsDate < rhsDate
+                }
                 let lhsMinutes = minutesSinceMidnight(lhs.element.windowStart)
                 let rhsMinutes = minutesSinceMidnight(rhs.element.windowStart)
                 switch (lhsMinutes, rhsMinutes) {
@@ -300,6 +349,248 @@ struct ProfileView: View {
     }
 }
 
+enum JourneyUpdateOrdering {
+    static func sorted(
+        _ subscriptions: [NotificationSubscription],
+        scheduledIDs: Set<String>,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> [NotificationSubscription] {
+        subscriptions.enumerated()
+            .sorted { lhs, rhs in
+                let lhsDate = nextDate(
+                    for: lhs.element,
+                    isScheduled: scheduledIDs.contains(lhs.element.id),
+                    now: now,
+                    calendar: calendar
+                )
+                let rhsDate = nextDate(
+                    for: rhs.element,
+                    isScheduled: scheduledIDs.contains(rhs.element.id),
+                    now: now,
+                    calendar: calendar
+                )
+                switch (lhsDate, rhsDate) {
+                case let (lhsDate?, rhsDate?) where lhsDate != rhsDate:
+                    return lhsDate < rhsDate
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                default:
+                    return lhs.offset < rhs.offset
+                }
+            }
+            .map(\.element)
+    }
+
+    private static func nextDate(
+        for subscription: NotificationSubscription,
+        isScheduled: Bool,
+        now: Date,
+        calendar: Calendar
+    ) -> Date? {
+        guard isScheduled else {
+            guard subscription.activeUntil.map({ $0 > now }) ?? true else { return nil }
+            return now
+        }
+
+        let enabledLegs = subscription.legs.filter(\.enabled)
+        if subscription.scheduleKind == .oneOff || enabledLegs.contains(where: { $0.travelDate != nil }) {
+            return enabledLegs.compactMap {
+                nextOneOffDate(for: $0, now: now, calendar: calendar)
+            }.min()
+        }
+
+        return enabledLegs.compactMap {
+            nextRegularDate(
+                for: $0,
+                days: Set(subscription.daysOfWeek),
+                now: now,
+                calendar: calendar
+            )
+        }.min()
+    }
+
+    private static func nextRegularDate(
+        for leg: NotificationLeg,
+        days: Set<DayOfWeek>,
+        now: Date,
+        calendar: Calendar
+    ) -> Date? {
+        guard let startTime = timeComponents(from: leg.windowStart),
+              let endTime = timeComponents(from: leg.windowEnd),
+              !days.isEmpty else {
+            return nil
+        }
+
+        let today = calendar.startOfDay(for: now)
+        for dayOffset in 0...7 {
+            guard let day = calendar.date(byAdding: .day, value: dayOffset, to: today),
+                  let weekday = dayOfWeek(for: day, calendar: calendar),
+                  days.contains(weekday),
+                  let start = calendar.date(bySettingHour: startTime.hour, minute: startTime.minute, second: 0, of: day),
+                  let end = calendar.date(bySettingHour: endTime.hour, minute: endTime.minute, second: 0, of: day) else {
+                continue
+            }
+            if end >= now {
+                return start
+            }
+        }
+        return nil
+    }
+
+    private static func nextOneOffDate(
+        for leg: NotificationLeg,
+        now: Date,
+        calendar: Calendar
+    ) -> Date? {
+        guard let travelDate = leg.travelDate,
+              let dateComponents = dateComponents(from: travelDate),
+              let startTime = timeComponents(from: leg.windowStart),
+              let endTime = timeComponents(from: leg.windowEnd) else {
+            return nil
+        }
+
+        var startComponents = dateComponents
+        startComponents.hour = startTime.hour
+        startComponents.minute = startTime.minute
+        var endComponents = dateComponents
+        endComponents.hour = endTime.hour
+        endComponents.minute = endTime.minute
+        guard let start = calendar.date(from: startComponents),
+              let end = calendar.date(from: endComponents),
+              end >= now else {
+            return nil
+        }
+        return start
+    }
+
+    private static func dayOfWeek(for date: Date, calendar: Calendar) -> DayOfWeek? {
+        switch calendar.component(.weekday, from: date) {
+        case 1: return .sun
+        case 2: return .mon
+        case 3: return .tue
+        case 4: return .wed
+        case 5: return .thu
+        case 6: return .fri
+        case 7: return .sat
+        default: return nil
+        }
+    }
+
+    private static func timeComponents(from value: String) -> (hour: Int, minute: Int)? {
+        let parts = value.split(separator: ":", maxSplits: 1)
+        guard parts.count == 2,
+              let hour = Int(parts[0]),
+              let minute = Int(parts[1]),
+              (0...23).contains(hour),
+              (0...59).contains(minute) else {
+            return nil
+        }
+        return (hour, minute)
+    }
+
+    private static func dateComponents(from value: String) -> DateComponents? {
+        let parts = value.split(separator: "-", maxSplits: 2)
+        guard parts.count == 3,
+              let year = Int(parts[0]),
+              let month = Int(parts[1]),
+              let day = Int(parts[2]) else {
+            return nil
+        }
+        return DateComponents(year: year, month: month, day: day)
+    }
+}
+
+enum JourneyUpdateSchedulePresentation {
+    static func detail(
+        for leg: NotificationLeg,
+        subscription: NotificationSubscription,
+        scheduled: Bool,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String {
+        let window = "• \(leg.windowStart) - \(leg.windowEnd)"
+        guard scheduled else { return window }
+
+        let activeDays: String?
+        if subscription.scheduleKind == .oneOff || leg.travelDate != nil {
+            activeDays = leg.travelDate.flatMap {
+                relativeTravelDate($0, now: now, calendar: calendar)
+            }
+        } else {
+            activeDays = regularDays(subscription.daysOfWeek)
+        }
+
+        guard let activeDays, !activeDays.isEmpty else { return window }
+        return "\(window) \(activeDays)"
+    }
+
+    static func regularDays(_ days: [DayOfWeek]) -> String? {
+        let selected = Set(days)
+        guard !selected.isEmpty else { return nil }
+        if selected == Set(DayOfWeek.allCases) { return "every day" }
+        if selected == Set([.mon, .tue, .wed, .thu, .fri]) { return "weekdays" }
+        if selected == Set([.sat, .sun]) { return "weekends" }
+
+        let names = DayOfWeek.allCases
+            .filter(selected.contains)
+            .map(pluralName(for:))
+        if names.count == 1 { return names[0] }
+        if names.count == 2 { return names.joined(separator: " and ") }
+        return "\(names.dropLast().joined(separator: ", ")) and \(names.last!)"
+    }
+
+    static func relativeTravelDate(
+        _ value: String,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> String? {
+        guard let date = date(from: value, calendar: calendar) else { return nil }
+        let today = calendar.startOfDay(for: now)
+        let travelDay = calendar.startOfDay(for: date)
+        let dayOffset = calendar.dateComponents([.day], from: today, to: travelDay).day
+        switch dayOffset {
+        case 0: return "today"
+        case 1: return "tomorrow"
+        default:
+            let formatter = DateFormatter()
+            formatter.calendar = calendar
+            formatter.locale = .current
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .none
+            return formatter.string(from: date)
+        }
+    }
+
+    private nonisolated static func pluralName(for day: DayOfWeek) -> String {
+        switch day {
+        case .mon: return "Mondays"
+        case .tue: return "Tuesdays"
+        case .wed: return "Wednesdays"
+        case .thu: return "Thursdays"
+        case .fri: return "Fridays"
+        case .sat: return "Saturdays"
+        case .sun: return "Sundays"
+        }
+    }
+
+    private static func date(from value: String, calendar: Calendar) -> Date? {
+        let parts = value.split(separator: "-", maxSplits: 2)
+        guard parts.count == 3,
+              let year = Int(parts[0]),
+              let month = Int(parts[1]),
+              let day = Int(parts[2]) else {
+            return nil
+        }
+        var components = DateComponents(year: year, month: month, day: day)
+        components.calendar = calendar
+        components.timeZone = calendar.timeZone
+        return calendar.date(from: components)
+    }
+}
+
 private struct ProfileResolvedScheduledRoute {
     let group: JourneyGroup
     let reverseGroup: JourneyGroup?
@@ -309,6 +600,7 @@ private struct IdentifiableScheduledRoute: Identifiable {
     let id = UUID()
     let group: JourneyGroup
     let reverseGroup: JourneyGroup?
+    let subscription: NotificationSubscription
 }
 
 private struct LiveSessionInfoSheet: View {

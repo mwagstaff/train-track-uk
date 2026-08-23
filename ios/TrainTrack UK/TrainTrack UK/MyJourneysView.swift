@@ -22,7 +22,7 @@ struct MyJourneysView: View {
     @State private var isSelecting = false
     @State private var selectedJourneyIds: Set<UUID> = []
     @State private var showMultiDeleteDialog = false
-    @State private var scheduleGroup: JourneyGroup?
+    @State private var scheduleDestination: NotificationScheduleDestination?
     @State private var liveActionGroupIDs: Set<UUID> = []
     @State private var expandedJourneyIDs: Set<UUID> = []
     @State private var reversedJourneyIDs: Set<UUID> = []
@@ -234,8 +234,12 @@ struct MyJourneysView: View {
         } message: { journey in
             Text("Add \(journey.displayTitle) to favourites?")
         }
-        .sheet(item: $scheduleGroup) { group in
-            NotificationScheduleView(group: group, reverseGroup: store.reverseGroup(for: group))
+        .sheet(item: $scheduleDestination) { destination in
+            NotificationScheduleView(
+                group: destination.group,
+                reverseGroup: destination.reverseGroup,
+                existingSubscription: destination.existingSubscription
+            )
         }
     }
 
@@ -575,6 +579,7 @@ private extension MyJourneysView {
         let reverseGroup = store.reverseGroup(for: group)
         let isReversed = reversedJourneyIDs.contains(group.id) && reverseGroup != nil
         let displayedGroup = isReversed ? (reverseGroup ?? group) : group
+        let schedules = scheduledSubscriptions(for: displayedGroup)
 
         return HStack(spacing: 12) {
             if isSelecting {
@@ -587,7 +592,8 @@ private extension MyJourneysView {
                     journeyCount: visibleJourneys.count
                 ),
                 isLiveActive: liveSession(for: displayedGroup) != nil,
-                isScheduled: scheduledSubscription(for: displayedGroup) != nil,
+                scheduledSubscriptions: schedules,
+                canAddSchedule: notificationStore.canCreateNew,
                 isBusy: liveActionGroupIDs.contains(displayedGroup.id),
                 isInteractive: !isSelecting,
                 isExpanded: expandedJourneyIDs.contains(group.id),
@@ -616,7 +622,20 @@ private extension MyJourneysView {
                     showFavDialog = true
                 },
                 onToggleJourneyUpdates: { toggleJourneyUpdates(for: displayedGroup) },
-                onScheduleJourneyUpdates: { scheduleGroup = displayedGroup },
+                onAddJourneySchedule: {
+                    scheduleDestination = NotificationScheduleDestination(
+                        group: displayedGroup,
+                        reverseGroup: store.reverseGroup(for: displayedGroup),
+                        existingSubscription: nil
+                    )
+                },
+                onEditJourneySchedule: { schedule in
+                    scheduleDestination = NotificationScheduleDestination(
+                        group: displayedGroup,
+                        reverseGroup: store.reverseGroup(for: displayedGroup),
+                        existingSubscription: schedule
+                    )
+                },
                 onRemoveJourney: {
                     journeyPendingDelete = displayedGroup
                     showDeleteDialog = true
@@ -664,7 +683,11 @@ private extension MyJourneysView {
     }
 
     private func scheduledSubscription(for group: JourneyGroup) -> NotificationSubscription? {
-        notificationStore.subscription(for: JourneyUpdateActions.scheduledRouteKey(for: group))
+        scheduledSubscriptions(for: group).first
+    }
+
+    private func scheduledSubscriptions(for group: JourneyGroup) -> [NotificationSubscription] {
+        notificationStore.subscriptions(for: JourneyUpdateActions.scheduledRouteKey(for: group))
     }
 
     private func liveSession(for group: JourneyGroup) -> NotificationSubscription? {

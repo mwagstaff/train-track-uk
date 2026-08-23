@@ -603,6 +603,7 @@ app.post('/api/v2/notifications/subscriptions', async (req, res) => {
         device_id,
         push_token,
         route_key,
+        schedule_type,
         days_of_week,
         notification_types,
         legs,
@@ -615,6 +616,7 @@ app.post('/api/v2/notifications/subscriptions', async (req, res) => {
         device_id,
         route_key,
         subscription_id,
+        schedule_type,
         days_of_week,
         notification_types,
         use_sandbox: Boolean(use_sandbox),
@@ -643,6 +645,7 @@ app.post('/api/v2/notifications/subscriptions', async (req, res) => {
             deviceId: device_id,
             pushToken: push_token,
             routeKey: route_key,
+            scheduleKind: schedule_type,
             daysOfWeek: days_of_week,
             notificationTypes: notification_types,
             legs,
@@ -1339,7 +1342,7 @@ app.get('/api/v2/stations', async (req, res) => {
 // V2 API - Client configuration endpoint
 // Returns server-side limits so clients can stay in sync without app updates.
 app.get('/api/v2/config', (req, res) => {
-    const maxPerDevice = Number(process.env.NOTIFICATION_MAX_SUBSCRIPTIONS || '5');
+    const maxPerDevice = Number(process.env.NOTIFICATION_MAX_SUBSCRIPTIONS || '3');
     res.json({
         max_subscriptions_per_device: maxPerDevice,
         max_live_sessions_per_device: maxPerDevice,

@@ -74,6 +74,148 @@ struct TrainTrack_UKTests {
         #expect(legacyLiveSession.liveSessionOrigin == nil)
     }
 
+    @Test func oneOffScheduleDecodesTravelDates() throws {
+        let data = Data("""
+        {
+          "id": "one-off",
+          "device_id": "device-1",
+          "route_key": "KTH-VIC",
+          "schedule_type": "one_off",
+          "days_of_week": [],
+          "notification_types": ["delays"],
+          "legs": [{
+            "from": "KTH",
+            "to": "VIC",
+            "enabled": true,
+            "window_start": "07:00",
+            "window_end": "09:00",
+            "travel_date": "2026-08-21"
+          }]
+        }
+        """.utf8)
+
+        let subscription = try JSONDecoder().decode(NotificationSubscription.self, from: data)
+
+        #expect(subscription.scheduleKind == .oneOff)
+        #expect(subscription.daysOfWeek.isEmpty)
+        #expect(subscription.legs.first?.travelDate == "2026-08-21")
+    }
+
+    @Test func journeyUpdatesSortByTheirNextTravelWindow() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/London")!
+        let now = ISO8601DateFormatter().date(from: "2026-08-21T18:40:00Z")!
+        let morning = scheduledJourneyUpdate(
+            id: "morning",
+            days: [.fri],
+            windows: [("07:00", "09:00"), ("16:00", "18:00")]
+        )
+        let alreadyPassed = scheduledJourneyUpdate(
+            id: "already-passed",
+            days: [.fri],
+            windows: [("18:50", "18:52"), ("18:55", "19:00")]
+        )
+        let next = scheduledJourneyUpdate(
+            id: "next",
+            days: [.fri],
+            windows: [("19:41", "19:43"), ("19:45", "19:47")]
+        )
+        let oneOffTomorrow = scheduledJourneyUpdate(
+            id: "one-off-tomorrow",
+            days: [],
+            windows: [("06:00", "06:30"), ("17:00", "17:30")],
+            scheduleKind: .oneOff,
+            travelDates: ["2026-08-22", "2026-08-22"]
+        )
+
+        let sorted = JourneyUpdateOrdering.sorted(
+            [morning, alreadyPassed, next, oneOffTomorrow],
+            scheduledIDs: [morning.id, alreadyPassed.id, next.id, oneOffTomorrow.id],
+            now: now,
+            calendar: calendar
+        )
+
+        #expect(sorted.map(\.id) == ["next", "one-off-tomorrow", "morning", "already-passed"])
+        #expect(sorted.first?.legs.map(\.windowStart) == ["19:41", "19:45"])
+    }
+
+    @Test func datedJourneyUpdatesSortBeforeTheNextWeekdaySchedule() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/London")!
+        let now = ISO8601DateFormatter().date(from: "2026-08-21T19:02:00Z")!
+        let weekdays = scheduledJourneyUpdate(
+            id: "weekdays",
+            days: [.mon, .tue, .wed, .thu, .fri],
+            windows: [("07:00", "09:00"), ("16:00", "18:00")]
+        )
+        let tomorrow = scheduledJourneyUpdate(
+            id: "tomorrow",
+            days: [],
+            windows: [("08:45", "10:45"), ("18:00", "20:00")],
+            scheduleKind: nil,
+            travelDates: ["2026-08-22", "2026-08-22"]
+        )
+
+        let sorted = JourneyUpdateOrdering.sorted(
+            [weekdays, tomorrow],
+            scheduledIDs: [weekdays.id, tomorrow.id],
+            now: now,
+            calendar: calendar
+        )
+
+        #expect(sorted.map(\.id) == ["tomorrow", "weekdays"])
+    }
+
+    @Test func journeyUpdateScheduleDetailsUseHumanFriendlyDaysAndDates() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/London")!
+        let now = ISO8601DateFormatter().date(from: "2026-08-21T19:02:00Z")!
+        let weekdays = scheduledJourneyUpdate(
+            id: "weekdays",
+            days: [.mon, .tue, .wed, .thu, .fri],
+            windows: [("07:00", "09:00")]
+        )
+        let tomorrow = scheduledJourneyUpdate(
+            id: "tomorrow",
+            days: [],
+            windows: [("08:45", "10:45")],
+            scheduleKind: .oneOff,
+            travelDates: ["2026-08-22"]
+        )
+
+        #expect(JourneyUpdateSchedulePresentation.detail(
+            for: weekdays.legs[0],
+            subscription: weekdays,
+            scheduled: true,
+            now: now,
+            calendar: calendar
+        ) == "• 07:00 - 09:00 weekdays")
+        #expect(JourneyUpdateSchedulePresentation.detail(
+            for: tomorrow.legs[0],
+            subscription: tomorrow,
+            scheduled: true,
+            now: now,
+            calendar: calendar
+        ) == "• 08:45 - 10:45 tomorrow")
+    }
+
+    @Test func oneOffScheduleExpiresAfterItsFinalReturnWindow() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/London")!
+        let schedule = scheduledJourneyUpdate(
+            id: "one-off",
+            days: [],
+            windows: [("19:41", "19:43"), ("19:45", "19:47")],
+            scheduleKind: .oneOff,
+            travelDates: ["2026-08-21", "2026-08-21"]
+        )
+        let finalWindowEnd = ISO8601DateFormatter().date(from: "2026-08-21T18:47:00Z")!
+        let minuteAfter = ISO8601DateFormatter().date(from: "2026-08-21T18:48:00Z")!
+
+        #expect(!NotificationScheduleExpiry.isExpired(schedule, now: finalWindowEnd, calendar: calendar))
+        #expect(NotificationScheduleExpiry.isExpired(schedule, now: minuteAfter, calendar: calendar))
+    }
+
     @Test @MainActor func journeyDepartureSnapshotDecodesFreshnessMetadata() throws {
         let data = Data("""
         {
@@ -699,6 +841,46 @@ struct TrainTrack_UKTests {
         )
     }
 
+}
+
+private func scheduledJourneyUpdate(
+    id: String,
+    days: [DayOfWeek],
+    windows: [(start: String, end: String)],
+    scheduleKind: NotificationScheduleKind? = .regular,
+    travelDates: [String?] = []
+) -> NotificationSubscription {
+    let routes = [("KTH", "VIC"), ("VIC", "KTH")]
+    let legs = windows.enumerated().map { index, window in
+        let route = routes[index]
+        return NotificationLeg(
+            from: route.0,
+            to: route.1,
+            fromName: route.0,
+            toName: route.1,
+            enabled: true,
+            windowStart: window.start,
+            windowEnd: window.end,
+            travelDate: travelDates.indices.contains(index) ? travelDates[index] : nil
+        )
+    }
+    return NotificationSubscription(
+        id: id,
+        deviceId: "device-1",
+        routeKey: "KTH-VIC",
+        scheduleKind: scheduleKind,
+        daysOfWeek: days,
+        notificationTypes: [.delays],
+        legs: legs,
+        muteOnArrival: true,
+        source: .scheduled,
+        liveSessionOrigin: nil,
+        activeUntil: nil,
+        mutedByLegDay: nil,
+        mutedAtByLegDay: nil,
+        createdAt: nil,
+        updatedAt: nil
+    )
 }
 
 private func notificationSubscription(

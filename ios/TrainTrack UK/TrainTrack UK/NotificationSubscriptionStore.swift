@@ -135,6 +135,7 @@ final class NotificationSubscriptionStore: ObservableObject {
     private var hasLoadedRemoteState = false
 
     private let service = NotificationSubscriptionService.shared
+    private var oneOffExpirationTask: Task<Void, Never>?
 
     // Forward ServerConfigStore changes through this store so that computed
     // properties like canCreateNew (which read from ServerConfigStore) cause
@@ -184,6 +185,7 @@ final class NotificationSubscriptionStore: ObservableObject {
             let fetched = try await scheduledTask
             let fetchedLive = try await liveSessionsTask
             subscriptions = await reconcileSubscriptions(fetched)
+            rescheduleOneOffExpiration()
             liveSessions = fetchedLive
             hasLoadedRemoteState = true
             hasLoadedOnce = true
@@ -192,6 +194,46 @@ final class NotificationSubscriptionStore: ObservableObject {
             await syncGeofences()
         } catch {
             lastError = error.localizedDescription
+        }
+    }
+
+    private func rescheduleOneOffExpiration() {
+        oneOffExpirationTask?.cancel()
+
+        let now = Date()
+        let expiredIDs = Set(subscriptions.compactMap { subscription in
+            NotificationScheduleExpiry.isExpired(subscription, now: now) ? subscription.id : nil
+        })
+        if !expiredIDs.isEmpty {
+            subscriptions.removeAll { expiredIDs.contains($0.id) }
+            var known = knownSubscriptionIDs
+            known.subtract(expiredIDs)
+            knownSubscriptionIDs = known
+            Task { [weak self] in
+                guard let self else { return }
+                for id in expiredIDs {
+                    try? await self.service.deleteSubscription(id: id)
+                }
+            }
+        }
+
+        let nextExpiration = subscriptions.compactMap {
+            NotificationScheduleExpiry.expirationDate(for: $0)
+        }.filter { $0 > now }.min()
+        guard let nextExpiration else {
+            oneOffExpirationTask = nil
+            return
+        }
+
+        let delay = min(nextExpiration.timeIntervalSince(now), 24 * 60 * 60)
+        oneOffExpirationTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            self?.rescheduleOneOffExpiration()
         }
     }
 
@@ -236,6 +278,7 @@ final class NotificationSubscriptionStore: ObservableObject {
     func delete(id: String) async throws {
         try await service.deleteSubscription(id: id)
         subscriptions.removeAll { $0.id == id }
+        rescheduleOneOffExpiration()
         var known = knownSubscriptionIDs
         known.remove(id)
         knownSubscriptionIDs = known
@@ -244,7 +287,13 @@ final class NotificationSubscriptionStore: ObservableObject {
     }
 
     func subscription(for routeKey: String) -> NotificationSubscription? {
-        subscriptions.first { $0.routeKey == routeKey }
+        subscriptions(for: routeKey).first
+    }
+
+    func subscriptions(for routeKey: String) -> [NotificationSubscription] {
+        subscriptions.filter {
+            $0.routeKey == routeKey && !NotificationScheduleExpiry.isExpired($0)
+        }
     }
 
     func upsertLiveSession(
@@ -345,7 +394,7 @@ final class NotificationSubscriptionStore: ObservableObject {
 
     var combinedSubscriptions: [NotificationSubscription] {
         Self.subscriptionsForJourneyUpdates(
-            scheduled: subscriptions,
+            scheduled: subscriptions.filter { !NotificationScheduleExpiry.isExpired($0) },
             liveSessions: liveSessions
         )
     }
@@ -361,7 +410,10 @@ final class NotificationSubscriptionStore: ObservableObject {
         hasLoadedOnce && lastError == nil
     }
 
-    var canCreateNew: Bool { subscriptions.count < ServerConfigStore.shared.maxSubscriptionsPerDevice }
+    var canCreateNew: Bool {
+        subscriptions.lazy.filter { !NotificationScheduleExpiry.isExpired($0) }.count
+            < ServerConfigStore.shared.maxSubscriptionsPerDevice
+    }
     var canCreateNewLiveSession: Bool { liveSessions.count < ServerConfigStore.shared.maxLiveSessionsPerDevice }
 
     func syncGeofencesNow() async {
@@ -370,7 +422,7 @@ final class NotificationSubscriptionStore: ObservableObject {
     }
 
     func applyGlobalNotificationTypes() async throws {
-        let scheduled = subscriptions
+        let scheduled = subscriptions.filter { !NotificationScheduleExpiry.isExpired($0) }
         let live = liveSessions
         guard !(scheduled.isEmpty && live.isEmpty) else { return }
 
@@ -395,6 +447,7 @@ final class NotificationSubscriptionStore: ObservableObject {
                 deviceId: DeviceIdentity.deviceToken,
                 pushToken: pushToken,
                 routeKey: subscription.routeKey,
+                scheduleKind: subscription.scheduleKind ?? .regular,
                 daysOfWeek: subscription.daysOfWeek,
                 notificationTypes: scheduledTypes,
                 legs: subscription.legs,
@@ -458,6 +511,7 @@ final class NotificationSubscriptionStore: ObservableObject {
                 id: session.id,
                 deviceId: session.deviceId,
                 routeKey: session.routeKey,
+                scheduleKind: session.scheduleKind,
                 daysOfWeek: session.daysOfWeek,
                 notificationTypes: session.notificationTypes,
                 legs: activeLegs,
