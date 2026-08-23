@@ -36,49 +36,31 @@ enum ServiceProgressEstimator {
             return .unavailable
         }
 
-        let lastActualIndex = validIndices.last { hasActualTime(stations[$0].at) }
-
-        for index in validIndices {
-            let station = stations[index]
-            if hasActualTime(station.at) { continue }
-            guard let stationTime = effectiveDates[index] else { continue }
-            let arrivalTime = stationTime.addingTimeInterval(-30)
-
-            if now < arrivalTime {
-                guard let previousIndex = validIndices.last(where: { $0 < index }) else {
-                    return atStation(firstValidIndex)
-                }
-                let departureTime = departureDate(
-                    for: stations[previousIndex],
-                    expectedDate: effectiveDates[previousIndex],
-                    calendar: calendar
-                )
-                guard let departureTime else { return atStation(previousIndex) }
-                if now <= departureTime { return atStation(previousIndex) }
-                let duration = arrivalTime.timeIntervalSince(departureTime)
-                guard duration > 0 else { return atStation(previousIndex) }
-                return ServiceProgressEstimate(
-                    previousStationIndex: previousIndex,
-                    nextStationIndex: index,
-                    fraction: min(max(now.timeIntervalSince(departureTime) / duration, 0), 1)
-                )
-            }
-
-            if now < stationTime {
-                return atStation(index)
-            }
+        guard let lastActualIndex = validIndices.last(where: { hasActualTime(stations[$0].at) }) else {
+            return atStation(firstValidIndex)
         }
-
-        if let lastActualIndex, lastActualIndex < lastValidIndex {
-            let hasUnknownDelayAhead = validIndices.contains { index in
-                index > lastActualIndex
-                    && stations[index].et?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "delayed"
-            }
-            if hasUnknownDelayAhead {
-                return atStation(lastActualIndex)
-            }
+        guard let nextIndex = validIndices.first(where: { $0 > lastActualIndex }) else {
+            return atStation(lastValidIndex)
         }
-        return atStation(lastValidIndex)
+        guard let arrivalTime = effectiveDates[nextIndex] else {
+            return atStation(lastActualIndex)
+        }
+        let departureTime = departureDate(
+            for: stations[lastActualIndex],
+            expectedDate: effectiveDates[lastActualIndex],
+            calendar: calendar
+        )
+        guard let departureTime, now > departureTime else {
+            return atStation(lastActualIndex)
+        }
+        let duration = arrivalTime.timeIntervalSince(departureTime)
+        guard duration > 0 else { return atStation(lastActualIndex) }
+        guard now < arrivalTime else { return atStation(nextIndex) }
+        return ServiceProgressEstimate(
+            previousStationIndex: lastActualIndex,
+            nextStationIndex: nextIndex,
+            fraction: min(max(now.timeIntervalSince(departureTime) / duration, 0), 1)
+        )
     }
 
     private static func atStation(_ index: Int) -> ServiceProgressEstimate {

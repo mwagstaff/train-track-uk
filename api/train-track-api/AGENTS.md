@@ -15,21 +15,18 @@ Always make code changes to the local files in this repository. Never edit files
 
 This is a Node.js Express API that provides train schedule data for the TrainTrack UK mobile app. The API integrates with UK Rail Data APIs to fetch real-time departure information and service details.
 
-### Past Departures Cache
+### Recent Departures Cache
 
-For all departures requested, the API will populate a lightweight in-memory cache that holds the following data:
- - From station
- - To station
- - Scheduled departure time
- - Estimated departure time
- - Cancellation status
- - Platform
- - Length of train
- - Service ID
+Departure observations for watched journey pairs are persisted in the Mongo
+`recent_departures` collection. Records contain only public route/service data:
+station pairs, service ID/type, scheduled/estimated/actual departure, platform,
+cancellation state, observation time, and an absolute TTL expiry. They never
+contain device IDs, subscription IDs, or user locations.
 
-This in-memory cache is used to provide past departures for the "from" and "to" stations when an API call is made to get all past departures for specific stations.
-
-The cache is populated each time the `GET /api/v1/departures/from/:fromStation/to/:toStation` endpoint is called. Each time a request is made to this endpoint, a cache entry is either added or updated as apppropriate with the latest data for the attributes listed above.
+The fixed picker window is the previous two hours plus the next ten minutes.
+Mongo's `expiresAt` TTL index removes records two hours after actual departure
+when known, otherwise two hours after scheduled departure. Clients should also
+filter by the same window because Mongo TTL deletion is asynchronous.
 
 To assist with debugging, the contents of the cache showing past journeys only can be retrieved by calling the `GET /api/v1/departures/past` endpoint.
 
@@ -39,7 +36,9 @@ The `GET /api/v1/departures/past/from/:fromStation/to/:toStation` endpoint can b
 
 This is so users can lookup service details and view the app service details screen for departures that have aleady left the "from" station.
 
-The cache should only hold journeys where the departure time is 2 hours or less in the past. There should be a regular cache cleanup job that runs every hour or so to remove any expired data. It is also not designed to be persistent or survive a server restart.
+The V2 batched endpoint is
+`GET /api/v2/departures/recent/from/:fromStation/to/:toStation...`. It refreshes
+the bounded upstream past window before returning Mongo-backed observations.
 
 ### Core Structure
 
@@ -54,8 +53,8 @@ The cache should only hold journeys where the departure time is 2 hours or less 
 
 - `GET /api/v1/departures/from/:fromStation` - Get all upcoming departures from a station.
 - `GET /api/v1/departures/from/:fromStation/to/:toStation` - Get all upcoming departures between specific stations.
-- `GET /api/v1/departures/past/from/:fromStation/to/:toStation` - Get all past departures stored in the in-memory cache between specific stations.
-- `GET /api/v1/departures/past` - Returns all past departures stored in the in-memory cache (used for debugging purposes only).
+- `GET /api/v1/departures/past/from/:fromStation/to/:toStation` - Get all past departures stored in the short-lived Mongo recent-departures store between specific stations.
+- `GET /api/v1/departures/past` - Returns past departures stored in the short-lived Mongo recent-departures store (used for debugging purposes only).
 - `GET /api/v1/service_details/:serviceId` - Get detailed information for a specific service
 - `GET /api/v1/xbar/from/:fromStation/to/:toStation/max_departures/:maxDepartures/return_after/:returnAfter?` - Get xbar-formatted output
 

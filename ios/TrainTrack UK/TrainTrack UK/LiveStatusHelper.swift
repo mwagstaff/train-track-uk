@@ -7,7 +7,12 @@ struct LiveStatusInfo {
 
 // Compute live status using the same time-window interpolation used by the Service Map
 // Optional fromCRS/toCRS constrain evaluation to a sub-segment of the service
-func computeLiveStatus(from serviceDetails: ServiceDetails, within fromCRS: String? = nil, toCRS: String? = nil) -> LiveStatusInfo? {
+func computeLiveStatus(
+    from serviceDetails: ServiceDetails,
+    within fromCRS: String? = nil,
+    toCRS: String? = nil,
+    at now: Date = Date()
+) -> LiveStatusInfo? {
     if serviceDetails.serviceType.lowercased() != "train" { return nil }
 
     let stations = serviceDetails.allStations
@@ -29,7 +34,7 @@ func computeLiveStatus(from serviceDetails: ServiceDetails, within fromCRS: Stri
         guard let t = t, !t.isEmpty, t != "On time", t != "Cancelled" else { return nil }
         let parts = t.split(separator: ":")
         guard parts.count == 2, let hour = Int(parts[0]), let minute = Int(parts[1]) else { return nil }
-        var comps = Calendar.current.dateComponents([.year, .month, .day], from: Date())
+        var comps = Calendar.current.dateComponents([.year, .month, .day], from: now)
         comps.hour = hour
         comps.minute = minute
         return Calendar.current.date(from: comps)
@@ -51,8 +56,6 @@ func computeLiveStatus(from serviceDetails: ServiceDetails, within fromCRS: Stri
         return 0
     }
 
-    let now = Date()
-
     // Pre-departure guard: if no station along the entire service has an actual time yet,
     // the service hasn't started from its true origin. Use the first station of the FULL route
     // (not the constrained window) so we don't incorrectly reference the "prev-of-origin"
@@ -69,6 +72,22 @@ func computeLiveStatus(from serviceDetails: ServiceDetails, within fromCRS: Stri
         } else {
             let phrasing = d == 0 ? "on time" : "\(d) minute\(d == 1 ? "" : "s") late"
             return LiveStatusInfo(text: "Scheduled to depart \(first.locationName) \(phrasing)", delayMinutes: d)
+        }
+    }
+
+    // Keep the status text aligned with the map when live data has not confirmed departure.
+    let progress = ServiceProgressEstimator.estimate(for: stations, at: now)
+    if progress.previousStationIndex == progress.nextStationIndex,
+       stations.indices.contains(progress.previousStationIndex) {
+        let station = stations[progress.previousStationIndex]
+        if station.at == nil,
+           window.contains(where: { $0.crs.caseInsensitiveCompare(station.crs) == .orderedSame }) {
+            let d = delayMinutes(for: station)
+            let lateText = d == 0 ? "on time" : "\(d) minute\(d == 1 ? "" : "s") late"
+            return LiveStatusInfo(
+                text: "Currently \(lateText), at \(station.locationName)",
+                delayMinutes: d
+            )
         }
     }
 
@@ -138,7 +157,7 @@ func computeLiveStatus(from serviceDetails: ServiceDetails, within fromCRS: Stri
                                         prev = stations[prevIdx]
                                     }
                                     if let prevAt = prev.at, prevAt != "Cancelled", let prevET = effectiveTime(prev) {
-                                        if Date() <= prevET.addingTimeInterval(atGraceWindow) {
+                                        if now <= prevET.addingTimeInterval(atGraceWindow) {
                                             let dPrev = delayMinutes(for: prev)
                                             let latePrev = dPrev == 0 ? "on time" : "\(dPrev) minute\(dPrev == 1 ? "" : "s") late"
                                             return LiveStatusInfo(text: "Currently \(latePrev), at \(prev.locationName)", delayMinutes: dPrev)

@@ -247,6 +247,14 @@ final class DeparturesStore: ObservableObject {
                 fetchedDepartures,
                 existing: existingDepartures
             )
+            let stations = key.split(separator: "_", maxSplits: 1).map(String.init)
+            if stations.count == 2 {
+                RecentServiceStore.shared.observe(
+                    nextDepartures[key] ?? fetchedDepartures,
+                    fromCRS: stations[0],
+                    toCRS: stations[1]
+                )
+            }
             nextAvailability[key] = JourneyDataAvailability(
                 status: snapshot.dataStatus,
                 lastSuccessfulUpdate: snapshot.lastSuccessfulUpdate

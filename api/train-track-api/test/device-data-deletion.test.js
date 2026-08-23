@@ -11,7 +11,7 @@ import {
     referencesDeletedDevice
 } from '../lib/device-data-deletion-state.js';
 
-test('delete-all removes direct and indirectly associated device data from every server collection', async () => {
+test('delete-all removes device data while retaining shared recent departures', async () => {
     const deviceId = 'installation-1';
     const notificationToken = 'notification-token-1234567890';
     const liveActivityToken = 'live-activity-token-1234567890';
@@ -58,6 +58,9 @@ test('delete-all removes direct and indirectly associated device data from every
         [COLLECTIONS.holidayMode]: [
             { _id: deviceId, deviceId },
             { _id: 'installation-2', deviceId: 'installation-2' }
+        ],
+        [COLLECTIONS.recentDepartures]: [
+            { _id: 'KTH:VIC:service-1', serviceID: 'service-1', fromCRS: 'KTH', toCRS: 'VIC' }
         ]
     });
     const calls = [];
@@ -103,7 +106,7 @@ test('delete-all removes direct and indirectly associated device data from every
     assert.equal(calls.at(-2), `metrics:${deviceId}`);
     assert.equal(calls.at(-1), `finish:${deviceId}`);
 
-    for (const collectionName of Object.values(COLLECTIONS)) {
+    for (const collectionName of Object.values(COLLECTIONS).filter((name) => name !== COLLECTIONS.recentDepartures)) {
         assert.equal(
             JSON.stringify(database.documents(collectionName)).includes(deviceId),
             false,
@@ -112,6 +115,7 @@ test('delete-all removes direct and indirectly associated device data from every
     }
     assert.equal(database.documents(COLLECTIONS.notificationSubscriptions).length, 1);
     assert.equal(database.documents(COLLECTIONS.pushAuditEvents).length, 1);
+    assert.equal(database.documents(COLLECTIONS.recentDepartures).length, 1);
 });
 
 test('delete-all rejects an empty device identifier before touching storage', async () => {
@@ -146,7 +150,10 @@ test('concurrent delete-all requests for one installation share a single sweep',
     assert.deepEqual(first, second);
     assert.equal(marks, 1);
     assert.equal(finishes, 1);
-    assert.equal(calls.filter((call) => call.startsWith('delete:')).length, Object.keys(COLLECTIONS).length);
+    assert.equal(
+        calls.filter((call) => call.startsWith('delete:')).length,
+        Object.keys(COLLECTIONS).length - 1
+    );
 });
 
 test('Mongo and audit-log failures retain association sources for a complete retry', async () => {

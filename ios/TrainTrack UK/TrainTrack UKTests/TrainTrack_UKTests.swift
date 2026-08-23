@@ -247,10 +247,35 @@ struct TrainTrack_UKTests {
         #expect(snapshot.lastSuccessfulUpdate == nil)
     }
 
-    @Test func tabsHaveAStablePagingOrderAndPresentation() {
-        #expect(Tab.allCases == [.favourites, .myJourneys, .addJourney, .history, .profile])
-        #expect(Tab.allCases.map(\.title) == ["Favourites", "My Journeys", "Add Journey", "History", "Profile"])
-        #expect(Tab.allCases.map(\.systemImage) == ["heart.fill", "list.bullet", "plus.circle", "clock.arrow.circlepath", "person.circle"])
+    @Test @MainActor func recentDepartureDecodesAbsoluteServerTimes() throws {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let departure = try decoder.decode(RecentDepartureV2.self, from: Data(#"""
+        {
+          "serviceID":"service-1",
+          "serviceType":"train",
+          "fromCRS":"KTH",
+          "toCRS":"VIC",
+          "scheduledDeparture":"10:42",
+          "estimatedDeparture":"10:44",
+          "actualDeparture":"10:45",
+          "scheduledDepartureAt":"2026-08-23T09:42:00.000Z",
+          "estimatedDepartureAt":"2026-08-23T09:44:00.000Z",
+          "actualDepartureAt":"2026-08-23T09:45:00.000Z",
+          "platform":"2",
+          "isCancelled":false,
+          "lastObservedAt":"2026-08-23T09:45:30.000Z"
+        }
+        """#.utf8))
+
+        #expect(departure.actualDeparture == "10:45")
+        #expect(departure.platform == "2")
+    }
+
+    @Test @MainActor func tabsHaveAStablePagingOrderAndPresentation() {
+        #expect(Tab.allCases == [.favourites, .myJourneys, .inProgress, .addJourney, .history, .profile])
+        #expect(Tab.allCases.map(\.title) == ["Favourites", "My Journeys", "In Progress", "Add Journey", "History", "Profile"])
+        #expect(Tab.allCases.map(\.systemImage) == ["heart.fill", "list.bullet", "location.fill", "plus.circle", "clock.arrow.circlepath", "person.circle"])
     }
 
     @Test @MainActor func historyDeepLinkSelectsTheHistoryRoot() throws {
@@ -274,6 +299,45 @@ struct TrainTrack_UKTests {
         #expect(tabRouter.selected == .history)
         #expect(tabRouter.navigationResetTrigger == resetTrigger + 1)
         #expect(deepLinkRouter.routeMapDestination == nil)
+    }
+
+    @Test @MainActor func inProgressDeepLinkSelectsTheInProgressRoot() throws {
+        let tabRouter = TabRouter.shared
+        let deepLinkRouter = DeepLinkRouter.shared
+        let previousTab = tabRouter.selected
+        let previousResetTrigger = tabRouter.navigationResetTrigger
+        let previousRouteMapDestination = deepLinkRouter.routeMapDestination
+        defer {
+            tabRouter.selected = previousTab
+            tabRouter.navigationResetTrigger = previousResetTrigger
+            deepLinkRouter.routeMapDestination = previousRouteMapDestination
+        }
+
+        tabRouter.selected = .myJourneys
+        let resetTrigger = tabRouter.navigationResetTrigger
+        let url = try #require(URL(string: "traintrack://in-progress"))
+
+        deepLinkRouter.handle(url: url)
+
+        #expect(tabRouter.selected == .inProgress)
+        #expect(tabRouter.navigationResetTrigger == resetTrigger + 1)
+        #expect(deepLinkRouter.routeMapDestination == nil)
+    }
+
+    @Test @MainActor func journeyHistoryNavigationTargetsTheRequestedRecord() {
+        let tabRouter = TabRouter.shared
+        let previousTab = tabRouter.selected
+        let previousTarget = tabRouter.historyTarget
+        defer {
+            tabRouter.selected = previousTab
+            tabRouter.historyTarget = previousTarget
+        }
+
+        let recordID = UUID()
+        tabRouter.openHistoryRecord(id: recordID)
+
+        #expect(tabRouter.selected == .history)
+        #expect(tabRouter.historyTarget?.recordID == recordID)
     }
 
     @Test func journeyStopPlacementPreservesTheCurrentDestination() {

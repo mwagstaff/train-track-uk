@@ -318,6 +318,29 @@ final class NetworkServicePhone {
         return try jsonDecoder.decode([String: JourneyDeparturesSnapshot].self, from: data)
     }
 
+    func fetchRecentDepartures(
+        pairs: [(from: String, to: String)]
+    ) async throws -> [String: [RecentDepartureV2]] {
+        guard !pairs.isEmpty else { return [:] }
+        let path = pairs.map { "from/\($0.from)/to/\($0.to)" }.joined(separator: "/")
+        guard let url = URL(string: "\(base)/departures/recent/\(path)") else {
+            throw PhoneNetworkError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw PhoneNetworkError.noData
+        }
+        if let items = try? jsonDecoder.decode([[String: [RecentDepartureV2]]].self, from: data) {
+            return items.reduce(into: [:]) { result, item in
+                for (key, departures) in item { result[key] = departures }
+            }
+        }
+        return try jsonDecoder.decode([String: [RecentDepartureV2]].self, from: data)
+    }
+
     private func sleepBeforeDepartureBatch() async throws {
         let delayMs = UInt64.random(in: departureBatchDelayRangeMs)
         if delayMs == 0 {

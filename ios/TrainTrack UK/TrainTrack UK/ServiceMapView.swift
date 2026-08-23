@@ -37,6 +37,7 @@ struct ServiceMapView: View {
     let isHistorical: Bool
     let fallbackCallingPoints: [CallingPoint]
     let historicalArrivalTime: String?
+    let isCompact: Bool
 
     @EnvironmentObject var depStore: DeparturesStore
     @EnvironmentObject private var notificationStore: NotificationSubscriptionStore
@@ -71,7 +72,8 @@ struct ServiceMapView: View {
         destinationName: String,
         isHistorical: Bool = false,
         fallbackCallingPoints: [CallingPoint] = [],
-        historicalArrivalTime: String? = nil
+        historicalArrivalTime: String? = nil,
+        isCompact: Bool = false
     ) {
         self.serviceID = serviceID
         self.fromCRS = fromCRS
@@ -81,6 +83,7 @@ struct ServiceMapView: View {
         self.isHistorical = isHistorical
         self.fallbackCallingPoints = fallbackCallingPoints
         self.historicalArrivalTime = historicalArrivalTime
+        self.isCompact = isCompact
     }
 
     private var hasCallingPoints: Bool {
@@ -192,7 +195,9 @@ struct ServiceMapView: View {
                     fromCRS: fromCRS,
                     toCRS: toCRS,
                     highlightedTravelRange: highlightedTravelRange,
-                    historicalArrivalTime: historicalArrivalTime
+                    historicalArrivalTime: historicalArrivalTime,
+                    followsTrain: isCompact,
+                    showsChrome: !isCompact
                 )
                 .onAppear {
                     RailwayMapPresentationGate.markMapPresented()
@@ -229,7 +234,7 @@ struct ServiceMapView: View {
         .disablesHorizontalTabSwipe()
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                if !isMapLoading {
+                if !isMapLoading && !isCompact {
                     Button {
                         isShowingTrainInfo = true
                     } label: {
@@ -246,7 +251,7 @@ struct ServiceMapView: View {
                 .presentationDragIndicator(.visible)
         }
         .overlay(alignment: .bottom) {
-            if isShowingEstimateNotice && !isHistorical {
+            if isShowingEstimateNotice && !isHistorical && !isCompact {
                 estimateNoticeBanner
                     .transition(.opacity)
             }

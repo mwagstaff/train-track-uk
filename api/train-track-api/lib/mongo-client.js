@@ -17,7 +17,8 @@ export const COLLECTIONS = Object.freeze({
     liveActivityPayloads: 'live_activity_payloads',
     subscriptionAuditEvents: 'subscription_audit_events',
     geofenceEvents: 'geofence_events',
-    holidayMode: 'holiday_mode'
+    holidayMode: 'holiday_mode',
+    recentDepartures: 'recent_departures'
 });
 
 export async function getMongoClient() {
@@ -106,6 +107,13 @@ async function createIndexes() {
             { key: { received_at: 1 }, name: 'received_at_ttl', expireAfterSeconds: ttlSeconds('ADMIN_GEOFENCE_LOG_TTL_SECONDS', 30) },
             { key: { received_at: -1 }, name: 'received_at_desc' },
             { key: { device_id: 1, received_at: -1 }, name: 'device_received_at' }
+        ]),
+        db.collection(COLLECTIONS.recentDepartures).createIndexes([
+            {
+                key: { fromCRS: 1, toCRS: 1, scheduledDepartureAt: -1 },
+                name: 'route_scheduled_departure'
+            },
+            { key: { expiresAt: 1 }, name: 'expires_at_ttl', expireAfterSeconds: 0 }
         ])
     ]);
     console.log('[mongo] indexes ready');

@@ -113,6 +113,8 @@ struct JourneyCard: View {
     let onAddJourneySchedule: () -> Void
     let onEditJourneySchedule: (NotificationSubscription) -> Void
     let onRemoveJourney: () -> Void
+    var showsHeader: Bool = true
+    var allowsExpansion: Bool = true
 
     @EnvironmentObject private var depStore: DeparturesStore
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -147,7 +149,7 @@ struct JourneyCard: View {
     }
 
     private var canExpand: Bool {
-        summaries.count > defaultDepartureCount
+        allowsExpansion && summaries.count > defaultDepartureCount
     }
 
     private var firstSummary: Summary? { summaries.first }
@@ -161,11 +163,13 @@ struct JourneyCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-                .padding(16)
+            if showsHeader {
+                header
+                    .padding(16)
 
-            Divider()
-                .padding(.horizontal, 16)
+                Divider()
+                    .padding(.horizontal, 16)
+            }
 
             if dataAvailability.status != .live {
                 dataAvailabilityNotice

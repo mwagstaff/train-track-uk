@@ -13,10 +13,12 @@ final class JourneyTrackingCoordinator: ObservableObject {
     static let expectedStationRadiusMeters: CLLocationDistance = 250
     static let unexpectedStationDwellSeconds: TimeInterval = 90
     static let maximumActiveJourneyDuration: TimeInterval = 24 * 60 * 60
+    static let completedJourneyDisplayDuration: TimeInterval = 60 * 60
 
     @Published private(set) var armedCandidates: [ArmedJourneyHistoryCandidate] = []
     @Published private(set) var activeJourney: ActiveJourneyHistoryCheckpoint?
     @Published private(set) var recentlyCompletedJourney: ActiveJourneyHistoryCheckpoint?
+    @Published private(set) var recentlyCompleted: RecentlyCompletedJourneyCheckpoint?
 
     private let defaults = UserDefaults(suiteName: "group.dev.skynolimit.traintrack") ?? .standard
     private let checkpointKey = "journeyHistoryTrackingCheckpointV1"
@@ -26,6 +28,9 @@ final class JourneyTrackingCoordinator: ObservableObject {
     }
 
     var hasActiveJourney: Bool { activeJourney != nil }
+    var hasPresentableJourney: Bool {
+        !armedCandidates.isEmpty || activeJourney != nil || recentlyCompleted != nil
+    }
 
     #if DEBUG
     private static let debugSimulationSubscriptionID = "debug-journey-simulation"
@@ -75,12 +80,19 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 now: now
             )
         case .arrived:
-            recentlyCompletedJourney = debugSimulationCheckpoint(
+            let checkpoint = debugSimulationCheckpoint(
                 group: group,
                 departure: departure,
                 arrived: true,
                 arrivalDelayMinutes: arrivalDelayMinutes,
                 now: now
+            )
+            recentlyCompletedJourney = checkpoint
+            recentlyCompleted = RecentlyCompletedJourneyCheckpoint(
+                checkpoint: checkpoint,
+                outcome: .completed,
+                completedAt: now,
+                autoDismissAt: now.addingTimeInterval(Self.completedJourneyDisplayDuration)
             )
         }
     }
@@ -92,6 +104,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
         }
         if recentlyCompletedJourney?.subscriptionId == Self.debugSimulationSubscriptionID {
             recentlyCompletedJourney = nil
+            recentlyCompleted = nil
         }
     }
 
@@ -161,8 +174,194 @@ final class JourneyTrackingCoordinator: ObservableObject {
         await finishJourney(outcome: .endedEarly, completedAt: Date())
     }
 
+    func manuallyConfirmOriginArrival(subscriptionID: String) async {
+        await handleOriginArrival(subscriptionID: subscriptionID)
+    }
+
+    func manuallyBoard(subscriptionID: String, departure: DepartureV2) async {
+        if armedCandidates.first(where: { $0.subscriptionId == subscriptionID })?.originArrivedAt == nil {
+            await handleOriginArrival(subscriptionID: subscriptionID)
+        }
+        guard let candidate = armedCandidates.first(where: { $0.subscriptionId == subscriptionID }),
+              candidate.stations.count >= 2 else { return }
+        await handleOriginDeparture(
+            subscriptionID: subscriptionID,
+            from: candidate.stations[0].crs,
+            to: candidate.stations[1].crs,
+            preferredDeparture: departure
+        )
+    }
+
+    func manuallyBoardWithoutMatchedService(subscriptionID: String) async {
+        if armedCandidates.first(where: { $0.subscriptionId == subscriptionID })?.originArrivedAt == nil {
+            await handleOriginArrival(subscriptionID: subscriptionID)
+        }
+        guard let candidate = armedCandidates.first(where: { $0.subscriptionId == subscriptionID }),
+              candidate.stations.count >= 2 else { return }
+        await handleOriginDeparture(
+            subscriptionID: subscriptionID,
+            from: candidate.stations[0].crs,
+            to: candidate.stations[1].crs,
+            forceUnmatchedService: true
+        )
+    }
+
+    func manuallyConfirmNextLegEndpoint() async {
+        guard let active = activeJourney else { return }
+        let station = active.currentPlannedLegDestination
+        if active.plannedLegIndex == active.plannedStations.count - 2 {
+            await completeJourney(at: station, detectedAt: Date())
+        } else {
+            await handleExpectedStationArrival(station, detectedAt: Date())
+        }
+    }
+
+    func manuallyBoardNextLeg(departure: DepartureV2) async {
+        guard let active = activeJourney, active.phase == .atInterchange else { return }
+        await startNextPlannedLeg(
+            from: active.currentPlannedLegDestination,
+            detectedAt: Date(),
+            preferredDeparture: departure
+        )
+        if let updated = activeJourney {
+            await LiveActivityManager.shared.updateJourneyPhase(
+                .enRoute,
+                startStation: updated.plannedOrigin,
+                destinationStation: updated.plannedDestination,
+                checkpoint: updated
+            )
+        }
+    }
+
+    func manuallyBoardNextLegWithoutMatchedService() async {
+        guard let active = activeJourney, active.phase == .atInterchange else { return }
+        await startNextPlannedLeg(
+            from: active.currentPlannedLegDestination,
+            detectedAt: Date(),
+            forceUnmatchedService: true
+        )
+        if let updated = activeJourney {
+            await LiveActivityManager.shared.updateJourneyPhase(
+                .enRoute,
+                startStation: updated.plannedOrigin,
+                destinationStation: updated.plannedDestination,
+                checkpoint: updated
+            )
+        }
+    }
+
+    func manuallyReplaceCurrentService(with departure: DepartureV2) async {
+        guard var active = activeJourney, let index = active.legs.indices.last else { return }
+        let previousBackendSessionID = active.backendSessionID
+        active.backendSessionID = nil
+        active.legs[index].serviceID = departure.serviceID
+        active.legs[index].operatorName = nil
+        active.legs[index].operatorCode = nil
+        active.legs[index].callingPoints = []
+        active.legs[index].serviceCallingPoints = nil
+        active.legs[index].scheduledDepartureAt = JourneyHistoryTime.date(
+            for: departure.departureTime.scheduled,
+            near: active.detectedDepartureAt
+        )
+        active.legs[index].estimatedDepartureTime = departure.departureTime.estimated
+        active.legs[index].actualDepartureAt = nil
+        active.legs[index].outcome = .active
+        active.serviceMatchConfidence = 1
+        active.updatedAt = Date()
+        activeJourney = active
+
+        let context = ServiceDetailsLookupContext(
+            fromCRS: active.legs[index].fromStation.crs,
+            toCRS: active.legs[index].toStation.crs,
+            originCRS: departure.origin?.first?.crs,
+            operator: nil,
+            destinationCRSs: departure.destination.compactMap(\.crs),
+            length: departure.length
+        )
+        _ = await DeparturesStore.shared.ensureServiceDetails(
+            for: [departure.serviceID],
+            force: true,
+            context: context
+        )
+        if let details = DeparturesStore.shared.serviceDetailsById[departure.serviceID],
+           var updated = activeJourney {
+            populate(&updated.legs[index], from: details, reference: updated.detectedDepartureAt)
+            activeJourney = updated
+            active = updated
+        }
+        persistCheckpoint()
+
+        if let previousBackendSessionID {
+            await JourneyTrackingService.shared.stop(sessionID: previousBackendSessionID)
+        }
+        do {
+            if let sessionID = try await JourneyTrackingService.shared.register(checkpoint: active),
+               var updated = activeJourney {
+                updated.backendSessionID = sessionID
+                activeJourney = updated
+                persistCheckpoint()
+            }
+        } catch {
+            log("manual_service_registration_failed", "Manual service correction could not register backend tracking", metadata: [
+                "journey_id": active.id.uuidString,
+                "service_id": departure.serviceID,
+                "error": error.localizedDescription
+            ])
+        }
+        if let updated = activeJourney {
+            await LiveActivityManager.shared.updateJourneyPhase(
+                .enRoute,
+                startStation: updated.plannedOrigin,
+                destinationStation: updated.plannedDestination,
+                checkpoint: updated
+            )
+        }
+        await refreshMonitoringConditions()
+    }
+
+    func manuallyUseUnlistedService() async {
+        guard var active = activeJourney, let index = active.legs.indices.last else { return }
+        let previousBackendSessionID = active.backendSessionID
+        active.backendSessionID = nil
+        active.legs[index].serviceID = nil
+        active.legs[index].operatorName = nil
+        active.legs[index].operatorCode = nil
+        active.legs[index].callingPoints = []
+        active.legs[index].serviceCallingPoints = nil
+        active.legs[index].scheduledDepartureAt = nil
+        active.legs[index].estimatedDepartureTime = nil
+        active.legs[index].actualDepartureAt = nil
+        active.legs[index].scheduledArrivalAt = nil
+        active.legs[index].actualArrivalAt = nil
+        active.legs[index].outcome = .uncertain
+        active.serviceMatchConfidence = 0
+        active.updatedAt = Date()
+        activeJourney = active
+        persistCheckpoint()
+
+        if let previousBackendSessionID {
+            await JourneyTrackingService.shared.stop(sessionID: previousBackendSessionID)
+        }
+        await LiveActivityManager.shared.updateJourneyPhase(
+            .enRoute,
+            startStation: active.plannedOrigin,
+            destinationStation: active.plannedDestination,
+            checkpoint: active
+        )
+        await refreshMonitoringConditions()
+    }
+
     func clearRecentlyCompletedJourney() {
         recentlyCompletedJourney = nil
+        recentlyCompleted = nil
+        persistCheckpoint()
+    }
+
+    func pruneExpiredCompletion(now: Date = Date()) {
+        guard let recentlyCompleted, recentlyCompleted.autoDismissAt <= now else { return }
+        self.recentlyCompleted = nil
+        recentlyCompletedJourney = nil
+        persistCheckpoint()
     }
 
     func boardingNotificationBody(from: String, to: String) -> String? {
@@ -221,6 +420,10 @@ final class JourneyTrackingCoordinator: ObservableObject {
     }
 
     func arm(subscription: NotificationSubscription, source: JourneyHistorySource) async {
+        pruneExpiredCompletion()
+        if recentlyCompleted?.checkpoint.subscriptionId == subscription.id {
+            return
+        }
         if StationsService.shared.stations.isEmpty {
             do {
                 try await StationsService.shared.loadStations()
@@ -263,6 +466,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
         armedCandidates.append(candidate)
         armedCandidates = Array(armedCandidates.filter(\.isCurrent).suffix(5))
         recentlyCompletedJourney = nil
+        recentlyCompleted = nil
         persistCheckpoint()
         log("candidate_armed", "Armed \(source.displayName.lowercased()) journey history for \(stations.map(\.crs).joined(separator: "→"))", metadata: [
             "subscription_id": subscription.id,
@@ -349,7 +553,9 @@ final class JourneyTrackingCoordinator: ObservableObject {
         subscriptionID: String,
         from: String,
         to: String,
-        detectedAt: Date = Date()
+        detectedAt: Date = Date(),
+        preferredDeparture: DepartureV2? = nil,
+        forceUnmatchedService: Bool = false
     ) async {
         guard activeJourney == nil else {
             log("origin_departure_ignored", "Ignored \(from)→\(to) departure because another journey is already active", metadata: [
@@ -414,7 +620,9 @@ final class JourneyTrackingCoordinator: ObservableObject {
         await matchCurrentLeg(
             cachedDepartures: candidate.candidateDepartures,
             detectedAt: detectedAt,
-            reboundFromServiceID: nil
+            reboundFromServiceID: nil,
+            preferredDeparture: preferredDeparture,
+            forceUnmatchedService: forceUnmatchedService
         )
         if let activeJourney {
             await LiveActivityManager.shared.updateJourneyPhase(
@@ -722,16 +930,20 @@ final class JourneyTrackingCoordinator: ObservableObject {
         cachedDepartures: [DepartureV2],
         detectedAt: Date,
         reboundFromServiceID: String?,
-        fromOverride: Station? = nil
+        fromOverride: Station? = nil,
+        preferredDeparture: DepartureV2? = nil,
+        forceUnmatchedService: Bool = false
     ) async {
         guard var active = activeJourney else { return }
         let from = fromOverride ?? active.plannedStations[active.plannedLegIndex]
         let to = active.currentPlannedLegDestination
         let previousBackendSessionID = active.backendSessionID
         active.backendSessionID = nil
-        var departures = cachedDepartures
-        var departureSource = departures.isEmpty ? "network" : "origin_cache"
-        if departures.isEmpty {
+        var departures = forceUnmatchedService ? [] : cachedDepartures
+        var departureSource = forceUnmatchedService
+            ? "manual_unlisted"
+            : (departures.isEmpty ? "network" : "origin_cache")
+        if departures.isEmpty && !forceUnmatchedService {
             do {
                 let snapshots = try await NetworkServicePhone.shared.fetchDeparturesAggregated(
                     pairs: [(from: from.crs, to: to.crs)],
@@ -763,7 +975,14 @@ final class JourneyTrackingCoordinator: ObservableObject {
         let viable = departures.filter { !$0.isCancelled }
         let selected: DepartureV2?
         let confidence: Double
-        if let preferredServiceID,
+        if forceUnmatchedService {
+            selected = nil
+            confidence = 0
+        } else if let preferredDeparture,
+           !preferredDeparture.isCancelled {
+            selected = preferredDeparture
+            confidence = 1
+        } else if let preferredServiceID,
            let preferred = viable.first(where: { $0.serviceID == preferredServiceID }) {
             selected = preferred
             confidence = 0.98
@@ -910,7 +1129,12 @@ final class JourneyTrackingCoordinator: ObservableObject {
         await refreshMonitoringConditions()
     }
 
-    private func startNextPlannedLeg(from station: Station, detectedAt: Date) async {
+    private func startNextPlannedLeg(
+        from station: Station,
+        detectedAt: Date,
+        preferredDeparture: DepartureV2? = nil,
+        forceUnmatchedService: Bool = false
+    ) async {
         guard var active = activeJourney else { return }
         if let previousIndex = active.legs.indices.last,
            let serviceID = active.legs[previousIndex].serviceID {
@@ -933,7 +1157,13 @@ final class JourneyTrackingCoordinator: ObservableObject {
             "previous_service_id": previousServiceID,
             "detected_at": detectedAt
         ])
-        await matchCurrentLeg(cachedDepartures: [], detectedAt: detectedAt, reboundFromServiceID: previousServiceID)
+        await matchCurrentLeg(
+            cachedDepartures: preferredDeparture.map { [$0] } ?? [],
+            detectedAt: detectedAt,
+            reboundFromServiceID: previousServiceID,
+            preferredDeparture: preferredDeparture,
+            forceUnmatchedService: forceUnmatchedService
+        )
         await refreshMonitoringConditions()
     }
 
@@ -1082,7 +1312,13 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 "destination_crs": active.plannedDestination.crs
             ])
         }
-        recentlyCompletedJourney = outcome == .completed ? active : nil
+        recentlyCompletedJourney = active
+        recentlyCompleted = RecentlyCompletedJourneyCheckpoint(
+            checkpoint: active,
+            outcome: outcome,
+            completedAt: completedAt,
+            autoDismissAt: completedAt.addingTimeInterval(Self.completedJourneyDisplayDuration)
+        )
         activeJourney = nil
         persistCheckpoint()
         await refreshMonitoringConditions()
@@ -1352,7 +1588,8 @@ final class JourneyTrackingCoordinator: ObservableObject {
     private func persistCheckpoint() {
         let envelope = JourneyHistoryCheckpointEnvelope(
             armedCandidates: armedCandidates,
-            activeJourney: activeJourney
+            activeJourney: activeJourney,
+            recentlyCompleted: recentlyCompleted
         )
         do {
             let data = try JSONEncoder().encode(envelope)
@@ -1373,6 +1610,9 @@ final class JourneyTrackingCoordinator: ObservableObject {
         }
         armedCandidates = envelope.armedCandidates.filter(\.isCurrent)
         activeJourney = envelope.activeJourney
+        recentlyCompleted = envelope.recentlyCompleted
+        recentlyCompletedJourney = envelope.recentlyCompleted?.checkpoint
+        pruneExpiredCompletion()
     }
 
     private func log(_ event: String, _ message: String, metadata: [String: Any?] = [:]) {

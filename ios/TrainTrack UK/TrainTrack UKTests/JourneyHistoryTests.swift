@@ -47,6 +47,7 @@ struct JourneyHistoryTests {
 
     @Test @MainActor func activeJourneyMonitoringHasASafetyExpiry() {
         #expect(JourneyTrackingCoordinator.maximumActiveJourneyDuration == 24 * 60 * 60)
+        #expect(JourneyTrackingCoordinator.completedJourneyDisplayDuration == 60 * 60)
     }
 
     @Test func boardingNotificationUsesScheduledTimeAndKnownDelay() {

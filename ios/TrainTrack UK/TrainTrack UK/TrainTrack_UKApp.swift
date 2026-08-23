@@ -28,6 +28,7 @@ struct TrainTrackUKApp: App {
                 .environmentObject(ToastStore.shared)
                 .environmentObject(HolidayModeStore.shared)
                 .environmentObject(JourneyHistoryStore.shared)
+                .environmentObject(RecentServiceStore.shared)
                 .environmentObject(deepLink)
                 .onAppear {
                     // Defer to next runloop to avoid "Publishing changes from within view updates" warnings

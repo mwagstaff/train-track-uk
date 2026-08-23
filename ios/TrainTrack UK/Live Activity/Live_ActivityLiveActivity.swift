@@ -476,19 +476,17 @@ private let appIconBlue = colorFromHex("#0047F8")
 
 private func deepLinkHost(for phase: JourneyActivityAttributes.JourneyPhase) -> String {
     switch phase {
-    case .enRoute:
-        return "journey-route"
+    case .pendingStart, .atStart, .enRoute:
+        return "in-progress"
     case .arrived:
         return "history"
-    case .pendingStart, .atStart:
-        return "journey"
     }
 }
 
 private func callToActionTitle(for state: JourneyActivityAttributes.ContentState) -> String {
     state.journeyPhase == .arrived
         ? "Tap to view journey history"
-        : "Tap to view route"
+        : "Tap to view journey"
 }
 
 private func primaryTimeLabel(for state: JourneyActivityAttributes.ContentState) -> String {

@@ -37,8 +37,14 @@ final class DeepLinkRouter: ObservableObject {
             return
         }
 
+        if host == "in-progress" {
+            openInProgress()
+            return
+        }
+
         // Supported: traintrack://journey?from=VIC&to=KTH
         //            traintrack://journey-route?from=VIC&to=KTH
+        //            traintrack://in-progress
         //            traintrack://history
         guard host == "journey" || host == "journey-route" else { return }
 
@@ -61,6 +67,12 @@ final class DeepLinkRouter: ObservableObject {
     func openHistory() {
         routeMapDestination = nil
         TabRouter.shared.selected = .history
+        TabRouter.shared.navigationResetTrigger += 1
+    }
+
+    func openInProgress() {
+        routeMapDestination = nil
+        TabRouter.shared.selected = .inProgress
         TabRouter.shared.navigationResetTrigger += 1
     }
 

@@ -485,6 +485,66 @@ struct RailwayRoutingTests {
         #expect(station.platform == "3")
     }
 
+    @Test func liveStatusKeepsTrainAtStationUntilDepartureIsConfirmed() throws {
+        let details = ServiceDetails(
+            previousCallingPoints: [CallingPointList(
+                callingPoint: [
+                    callingPoint(
+                        name: "Tulse Hill",
+                        crs: "TUH",
+                        scheduled: "20:20",
+                        actual: "20:21"
+                    )
+                ],
+                serviceType: nil,
+                serviceChangeRequired: nil,
+                assocIsCancelled: nil
+            )],
+            subsequentCallingPoints: [CallingPointList(
+                callingPoint: [
+                    callingPoint(
+                        name: "Loughborough Junction",
+                        crs: "LGJ",
+                        scheduled: "20:31",
+                        estimated: "20:33"
+                    )
+                ],
+                serviceType: nil,
+                serviceChangeRequired: nil,
+                assocIsCancelled: nil
+            )],
+            generatedAt: "2026-08-23T19:28:00Z",
+            serviceType: "train",
+            locationName: "Herne Hill",
+            crs: "HNH",
+            operator: "Thameslink",
+            operatorCode: "TL",
+            isCancelled: false,
+            length: 8,
+            detachFront: false,
+            isReverseFormation: false,
+            platform: "1",
+            sta: "20:26",
+            eta: "20:28",
+            ata: nil,
+            std: "20:26",
+            etd: "20:28",
+            atd: nil,
+            delayReason: nil,
+            cancelReason: nil
+        )
+        let now = try #require(
+            Calendar.current.date(bySettingHour: 20, minute: 28, second: 0, of: Date())
+        )
+
+        let status = try #require(
+            computeLiveStatus(from: details, within: "HNH", toCRS: "LGJ", at: now)
+        )
+
+        #expect(status.text == "Currently 2 minutes late, at Herne Hill")
+        #expect(status.delayMinutes == 2)
+    }
+
     @Test func dividingServiceKeepsEachDestinationAsAnIndependentBranch() {
         let details = ServiceDetails(
             previousCallingPoints: [CallingPointList(
@@ -557,7 +617,7 @@ struct RailwayRoutingTests {
 
         #expect(estimate.previousStationIndex == 0)
         #expect(estimate.nextStationIndex == 1)
-        #expect((0.47...0.49).contains(estimate.fraction))
+        #expect((0.45...0.46).contains(estimate.fraction))
     }
 
     @Test func progressHandlesAServiceCrossingMidnight() {
@@ -573,7 +633,7 @@ struct RailwayRoutingTests {
 
         #expect(estimate.previousStationIndex == 0)
         #expect(estimate.nextStationIndex == 1)
-        #expect((0.52...0.54).contains(estimate.fraction))
+        #expect(estimate.fraction == 0.5)
     }
 
     @Test func unknownDelayHoldsTheEstimateAtTheLastActualStation() {
@@ -589,6 +649,39 @@ struct RailwayRoutingTests {
 
         #expect(estimate.previousStationIndex == 0)
         #expect(estimate.nextStationIndex == 0)
+        #expect(estimate.fraction == 0)
+    }
+
+    @Test func unconfirmedDepartureDoesNotMoveTrainBeyondTheStation() {
+        let now = date(year: 2026, month: 8, day: 15, hour: 20, minute: 28)
+        let estimate = ServiceProgressEstimator.estimate(
+            for: [
+                callingPoint(crs: "HH", scheduled: "20:26", estimated: "20:28"),
+                callingPoint(crs: "LJ", scheduled: "20:31", estimated: "20:33")
+            ],
+            at: now,
+            calendar: calendar
+        )
+
+        #expect(estimate.previousStationIndex == 0)
+        #expect(estimate.nextStationIndex == 0)
+        #expect(estimate.fraction == 0)
+    }
+
+    @Test func stalePredictionsDoNotMoveTrainPastTheNextUnconfirmedStation() {
+        let now = date(year: 2026, month: 8, day: 15, hour: 12, minute: 20)
+        let estimate = ServiceProgressEstimator.estimate(
+            for: [
+                callingPoint(crs: "AAA", scheduled: "12:00", actual: "12:02"),
+                callingPoint(crs: "BBB", scheduled: "12:10", estimated: "12:12"),
+                callingPoint(crs: "CCC", scheduled: "12:18", estimated: "12:20")
+            ],
+            at: now,
+            calendar: calendar
+        )
+
+        #expect(estimate.previousStationIndex == 1)
+        #expect(estimate.nextStationIndex == 1)
         #expect(estimate.fraction == 0)
     }
 

@@ -564,6 +564,8 @@ struct ServiceRailwayMapView: View {
     let toCRS: String
     let highlightedTravelRange: ClosedRange<Int>?
     let historicalArrivalTime: String?
+    let followsTrain: Bool
+    let showsChrome: Bool
 
     @State private var cameraPosition: MapCameraPosition = .automatic
     @State private var hasCenteredOnTrain = false
@@ -586,7 +588,9 @@ struct ServiceRailwayMapView: View {
         fromCRS: String,
         toCRS: String,
         highlightedTravelRange: ClosedRange<Int>? = nil,
-        historicalArrivalTime: String? = nil
+        historicalArrivalTime: String? = nil,
+        followsTrain: Bool = false,
+        showsChrome: Bool = true
     ) {
         self.route = route
         self.stations = stations
@@ -598,10 +602,12 @@ struct ServiceRailwayMapView: View {
         self.toCRS = toCRS
         self.highlightedTravelRange = highlightedTravelRange
         self.historicalArrivalTime = historicalArrivalTime
+        self.followsTrain = followsTrain
+        self.showsChrome = showsChrome
     }
 
     var body: some View {
-        Map(position: $cameraPosition, interactionModes: .all) {
+        Map(position: $cameraPosition, interactionModes: showsChrome ? .all : []) {
             if isMapContentReady {
                 MapPolyline(coordinates: route.coordinates)
                     .stroke(.secondary.opacity(0.45), lineWidth: 8)
@@ -659,20 +665,22 @@ struct ServiceRailwayMapView: View {
             refreshStationLabelVisibility(in: mapView)
         })
         .overlay(alignment: .topTrailing) {
-            Button {
-                centerOnTrainOrFrameRoute()
-            } label: {
-                Label(trainCoordinate == nil ? "Frame route" : "Center on train", systemImage: "scope")
-                    .labelStyle(.iconOnly)
-                    .frame(width: 38, height: 38)
+            if showsChrome {
+                Button {
+                    centerOnTrainOrFrameRoute()
+                } label: {
+                    Label(trainCoordinate == nil ? "Frame route" : "Center on train", systemImage: "scope")
+                        .labelStyle(.iconOnly)
+                        .frame(width: 38, height: 38)
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.circle)
+                .background(.regularMaterial, in: Circle())
+                .padding(12)
+                .accessibilityLabel(
+                    trainCoordinate == nil ? "Frame complete service route" : "Center on estimated train location"
+                )
             }
-            .buttonStyle(.bordered)
-            .buttonBorderShape(.circle)
-            .background(.regularMaterial, in: Circle())
-            .padding(12)
-            .accessibilityLabel(
-                trainCoordinate == nil ? "Frame complete service route" : "Center on estimated train location"
-            )
         }
         .overlay(alignment: .bottomTrailing) {
             Link(
@@ -690,7 +698,7 @@ struct ServiceRailwayMapView: View {
             centerOnTrainOrFrameRoute()
         }
         .onChange(of: trainCoordinateKey) { _, _ in
-            guard !hasCenteredOnTrain, trainCoordinate != nil else { return }
+            guard (followsTrain || !hasCenteredOnTrain), trainCoordinate != nil else { return }
             centerOnTrainOrFrameRoute()
         }
         .onChange(of: routeKey) { _, _ in
@@ -701,19 +709,21 @@ struct ServiceRailwayMapView: View {
             refreshStationLabelVisibility()
         }
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    shareCurrentMapView()
-                } label: {
-                    if isPreparingShare {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Label("Share route map", systemImage: "square.and.arrow.up")
+            if showsChrome {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        shareCurrentMapView()
+                    } label: {
+                        if isPreparingShare {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Label("Share route map", systemImage: "square.and.arrow.up")
+                        }
                     }
+                    .disabled(isPreparingShare || !isMapViewResolved)
+                    .accessibilityHint("Shares an image of the currently visible route map")
                 }
-                .disabled(isPreparingShare || !isMapViewResolved)
-                .accessibilityHint("Shares an image of the currently visible route map")
             }
         }
         .sheet(item: $shareItem) { item in
@@ -1069,6 +1079,9 @@ struct ServiceRailwayMapView: View {
     }
 
     private func stationLabel(for item: RailwayMapStationItem) -> String {
+        if !showsChrome {
+            return item.station.locationName
+        }
         if let labelOverride = item.labelOverride {
             return labelOverride
         }
@@ -1146,8 +1159,8 @@ struct ServiceRailwayMapView: View {
         }
         cameraPosition = .region(MKCoordinateRegion(
             center: trainCoordinate,
-            latitudinalMeters: 4_500,
-            longitudinalMeters: 4_500
+            latitudinalMeters: showsChrome ? 4_500 : 3_000,
+            longitudinalMeters: showsChrome ? 4_500 : 3_000
         ))
         hasCenteredOnTrain = true
     }

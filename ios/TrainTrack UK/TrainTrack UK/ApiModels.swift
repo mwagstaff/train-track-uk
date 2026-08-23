@@ -183,6 +183,26 @@ struct JourneyDeparturesSnapshot: Decodable, Hashable {
     }
 }
 
+struct RecentDepartureV2: Codable, Identifiable, Hashable {
+    let serviceID: String
+    let serviceType: String
+    let fromCRS: String
+    let toCRS: String
+    let scheduledDeparture: String
+    let estimatedDeparture: String?
+    let actualDeparture: String?
+    let scheduledDepartureAt: Date
+    let estimatedDepartureAt: Date?
+    let actualDepartureAt: Date?
+    let platform: String?
+    let isCancelled: Bool
+    let lastObservedAt: Date
+
+    var id: String {
+        "\(fromCRS.uppercased()):\(toCRS.uppercased()):\(serviceID):\(scheduledDepartureAt.timeIntervalSince1970)"
+    }
+}
+
 struct JourneyDataAvailability: Hashable {
     let status: JourneyDataStatus
     let lastSuccessfulUpdate: Date?

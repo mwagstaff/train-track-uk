@@ -394,7 +394,7 @@ private struct JourneyHistoryArrivalStatusLabel: View {
     }
 }
 
-private struct JourneyHistoryDelayRepayActions: View {
+struct JourneyHistoryDelayRepayActions: View {
     let record: JourneyHistoryRecord
     @EnvironmentObject private var historyStore: JourneyHistoryStore
     @Environment(\.openURL) private var openURL
@@ -750,6 +750,27 @@ private struct JourneyHistoryDelayMetric: View {
                 .foregroundStyle(delayMinutes == nil ? Color.secondary : Color.primary)
         }
         .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+struct JourneyHistoryRecordDestination: View {
+    let recordID: UUID
+    @EnvironmentObject private var historyStore: JourneyHistoryStore
+
+    private var record: JourneyHistoryRecord? {
+        historyStore.records.first { $0.id == recordID }
+    }
+
+    var body: some View {
+        if let record {
+            JourneyHistoryDetailView(record: record)
+        } else {
+            ContentUnavailableView(
+                "Journey unavailable",
+                systemImage: "clock.badge.questionmark",
+                description: Text("This journey is no longer available in your history.")
+            )
+        }
     }
 }
 

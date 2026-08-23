@@ -2,7 +2,7 @@ import moment from 'moment';
 import { getWithRetry } from './upstream-api-client.js';
 import { testServiceHarness } from './test-service-harness.js';
 
-import { pastDeparturesCache } from './past-departures-cache.js';
+import { recentDeparturesRepository } from './recent-departures-repository.js';
 
 // Cache the most recent known platform for a service so we can keep showing it
 // when upstream drops platform data very close to departure.
@@ -79,6 +79,7 @@ export async function getTrainTimes(from, to) {
 const inFlightPastRefreshes = new Map();
 const lastPastRefresh = new Map();
 const REFRESH_COOLDOWN_MS = 30_000; // throttle per route
+const PAST_DEPARTURE_OFFSETS = [-120, -90, -60, -30];
 
 // Lightweight refresher for the past departures cache that only calls the
 // "past" offset and updates the cache. Safe, deduplicated, and can be fired
@@ -97,10 +98,13 @@ export function refreshPastDepartures(from, to) {
     const promise = (async () => {
         try {
             if (!from || !to) return;
-            const result = await getLiveDepartureBoard(from, to, -60);
-            if (result && result.departures) {
-                result.departures.forEach(dep => pastDeparturesCache.addOrUpdateDeparture(from, to, dep));
-            }
+            const results = await Promise.all(
+                PAST_DEPARTURE_OFFSETS.map((offset) => getLiveDepartureBoard(from, to, offset))
+            );
+            const departures = results.flatMap((result) => (
+                Array.isArray(result?.departures) ? result.departures : []
+            ));
+            await recentDeparturesRepository.recordDepartures(from, to, departures);
         } catch (error) {
             const status = error?.response?.status;
             const statusText = error?.response?.statusText;
@@ -195,6 +199,11 @@ async function fetchJourneyResult(from, to) {
     const uniqueDepartures = Array.from(uniqueByService.values());
 
     applyPlatformFallbackCache(uniqueDepartures, from, to);
+    try {
+        await recentDeparturesRepository.recordDepartures(from, to, uniqueDepartures);
+    } catch (error) {
+        console.warn(`Failed to persist recent departures for ${from} -> ${to}: ${error?.message || error}`);
+    }
 
     return {
         ...result,
@@ -283,7 +292,8 @@ export async function parseResponseDataLiveDepartureBoard(data) {
                 return {
                     departure_time: {
                         scheduled: trainService.std,
-                        estimated: getEstimatedDepartureTime(trainService.std, trainService.etd)
+                        estimated: getEstimatedDepartureTime(trainService.std, trainService.etd),
+                        ...(trainService.atd ? { actual: trainService.atd } : {})
                     },
                     operator: trainService.operator,
                     serviceType: trainService.serviceType,
@@ -308,7 +318,8 @@ export async function parseResponseDataLiveDepartureBoard(data) {
                 return {
                     departure_time: {
                         scheduled: busService.std,
-                        estimated: getEstimatedDepartureTime(busService.std, busService.etd)
+                        estimated: getEstimatedDepartureTime(busService.std, busService.etd),
+                        ...(busService.atd ? { actual: busService.atd } : {})
                     },
                     serviceType: busService.serviceType,
                     delayReason: busService.delayReason,

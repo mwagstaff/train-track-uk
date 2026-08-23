@@ -4,7 +4,7 @@ import fs from 'fs';
 import { getTrainTimes, refreshPastDepartures } from './lib/realtime-trains-api.js';
 import { getServiceDetails, getServiceDetailsWithContext } from './lib/service-details.js';
 import { getXbarOutput } from './lib/xbar.js';
-import { pastDeparturesCache } from './lib/past-departures-cache.js';
+import { recentDeparturesRepository } from './lib/recent-departures-repository.js';
 import {
     metricsMiddleware,
     getMetrics,
@@ -1144,6 +1144,32 @@ app.get('/api/v2/departures/from/:fromStation/to/:toStation/at/:departureTime', 
     }
 });
 
+app.get('/api/v2/departures/recent/from/:fromStation/to/:toStation*', async (req, res) => {
+    const pathParts = req.path.split('/').filter(Boolean);
+    const journeyPairs = [];
+    let currentFrom = null;
+    for (let index = 0; index < pathParts.length; index += 1) {
+        if (pathParts[index] === 'from' && index + 1 < pathParts.length) {
+            currentFrom = pathParts[index + 1];
+            index += 1;
+        } else if (pathParts[index] === 'to' && index + 1 < pathParts.length && currentFrom) {
+            journeyPairs.push({ from: currentFrom, to: pathParts[index + 1] });
+            currentFrom = null;
+            index += 1;
+        }
+    }
+    if (journeyPairs.length === 0) {
+        return res.status(400).json({ error: 'No valid from/to pairs found in request' });
+    }
+
+    await Promise.all(journeyPairs.map(({ from, to }) => refreshPastDepartures(from, to)));
+    const results = await Promise.all(journeyPairs.map(async ({ from, to }) => ({
+        [`${from.toUpperCase()}_${to.toUpperCase()}`]: await recentDeparturesRepository.recentDepartures(from, to)
+    })));
+    res.set('Cache-Control', 'private, no-store');
+    return res.json(results);
+});
+
 // V2 API - New array format supporting multiple journeys
 app.get('/api/v2/departures/from/:fromStation/to/:toStation*', async (req, res) => {
     const path = req.path;
@@ -1215,30 +1241,27 @@ app.get('/api/v2/departures/from/:fromStation/to/:toStation*', async (req, res) 
 app.get('/api/v1/departures/past/from/:fromStation/to/:toStation', async (req, res) => {
     const from = req.params.fromStation;
     const to = req.params.toStation;
-    // Serve immediately from cache to avoid client timeouts/cancellations
-    const pastDepartures = pastDeparturesCache.getPastDepartures(from, to);
-    res.json({ departures: pastDepartures });
-    // Kick off a lightweight, deduped background refresh of the cache
-    refreshPastDepartures(from, to).catch((e) => {
-        const message = e?.message || e;
-        console.error(`Background refresh for past departures failed ${from} -> ${to}: ${message}`);
-    });
+    await refreshPastDepartures(from, to);
+    const departures = await recentDeparturesRepository.recentDepartures(from, to);
+    res.json({ departures: departures.filter((departure) => (
+        new Date(departure.actualDepartureAt || departure.scheduledDepartureAt) < new Date()
+    )) });
 });
 
 app.get('/api/v1/departures/past', async (req, res) => {
-    const allPastDepartures = pastDeparturesCache.getAllPastDepartures();
+    const allPastDepartures = await recentDeparturesRepository.debugDepartures({ pastOnly: true });
     res.json({ 
         departures: allPastDepartures,
-        cacheSize: pastDeparturesCache.getCacheSize(),
+        cacheSize: allPastDepartures.length,
         timestamp: new Date().toISOString()
     });
 });
 
 app.get('/api/v1/departures/past/all', async (req, res) => {
-    const allCacheContents = pastDeparturesCache.getAllCacheContents();
+    const allCacheContents = await recentDeparturesRepository.debugDepartures();
     res.json({ 
         departures: allCacheContents,
-        cacheSize: pastDeparturesCache.getCacheSize(),
+        cacheSize: allCacheContents.length,
         timestamp: new Date().toISOString()
     });
 });

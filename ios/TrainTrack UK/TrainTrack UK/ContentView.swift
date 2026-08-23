@@ -13,16 +13,31 @@ struct ContentView: View {
     @EnvironmentObject var depStore: DeparturesStore
     @EnvironmentObject var toastStore: ToastStore
     @EnvironmentObject var deepLink: DeepLinkRouter
+    @ObservedObject private var trackingCoordinator = JourneyTrackingCoordinator.shared
 
     // Navigation paths for each tab to enable programmatic pop-to-root
     @State private var favouritesPath = NavigationPath()
     @State private var myJourneysPath = NavigationPath()
+    @State private var inProgressPath = NavigationPath()
     @State private var historyPath = NavigationPath()
     @State private var profilePath = NavigationPath()
     @State private var tabSelectionFeedbackTrigger = 0
     @State private var horizontalSwipeDisabledTabs: Set<Tab> = []
 
-    private let visibleTabs: [Tab] = [.favourites, .myJourneys, .history, .profile]
+    private var hasInProgressTab: Bool {
+        trackingCoordinator.hasPresentableJourney
+    }
+
+    private var showsInProgressBadge: Bool {
+        trackingCoordinator.recentlyCompleted == nil
+            && (trackingCoordinator.activeJourney != nil || !trackingCoordinator.armedCandidates.isEmpty)
+    }
+
+    private var visibleTabs: [Tab] {
+        hasInProgressTab
+            ? [.favourites, .myJourneys, .inProgress, .history, .profile]
+            : [.favourites, .myJourneys, .history, .profile]
+    }
 
     private var tabSelection: Binding<Tab> {
         Binding(
@@ -83,7 +98,21 @@ struct ContentView: View {
                 .tabItem { Label("My Journeys", systemImage: "list.bullet") }
                 .tag(Tab.myJourneys)
 
-            NavigationStack(path: $historyPath) { MyJourneyHistoryView() }
+            if hasInProgressTab {
+                NavigationStack(path: $inProgressPath) { InProgressJourneyView() }
+                    .modifier(JourneyUpdatesChrome(includeToast: true))
+                    .horizontalTabSwipeDisabled(horizontalSwipeDisabledBinding(for: .inProgress))
+                    .tabItem { Label("In Progress", systemImage: "location.fill") }
+                    .modifier(InProgressBadgeModifier(isVisible: showsInProgressBadge))
+                    .tag(Tab.inProgress)
+            }
+
+            NavigationStack(path: $historyPath) {
+                MyJourneyHistoryView()
+                    .navigationDestination(for: JourneyHistoryNavigationTarget.self) { target in
+                        JourneyHistoryRecordDestination(recordID: target.recordID)
+                    }
+            }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
                 .horizontalTabSwipeDisabled(horizontalSwipeDisabledBinding(for: .history))
                 .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
@@ -111,6 +140,7 @@ struct ContentView: View {
         .onAppear {
             // Ensure polling starts even if App.onAppear wasn't fired
             depStore.startPolling(journeyStore: journeyStore)
+            trackingCoordinator.pruneExpiredCompletion()
         }
         .onChange(of: router.selected) { _, newTab in
             // Remember the last tab that isn't Add Journey so we can return there
@@ -120,8 +150,32 @@ struct ContentView: View {
             // Pop all navigation stacks to root when triggered
             favouritesPath = NavigationPath()
             myJourneysPath = NavigationPath()
+            inProgressPath = NavigationPath()
             historyPath = NavigationPath()
             profilePath = NavigationPath()
+        }
+        .onChange(of: router.historyTarget) { _, target in
+            guard let target else { return }
+            historyPath = NavigationPath()
+            historyPath.append(target)
+        }
+        .onChange(of: hasInProgressTab) { _, isVisible in
+            if !isVisible, router.selected == .inProgress {
+                router.selected = .history
+            }
+        }
+    }
+}
+
+private struct InProgressBadgeModifier: ViewModifier {
+    let isVisible: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isVisible {
+            content.badge("•")
+        } else {
+            content
         }
     }
 }

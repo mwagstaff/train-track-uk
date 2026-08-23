@@ -216,9 +216,17 @@ struct ActiveJourneyHistoryCheckpoint: Codable, Hashable, Identifiable {
     var currentLeg: JourneyHistoryLeg? { legs.last }
 }
 
+struct RecentlyCompletedJourneyCheckpoint: Codable, Hashable {
+    let checkpoint: ActiveJourneyHistoryCheckpoint
+    let outcome: JourneyHistoryOutcome
+    let completedAt: Date
+    let autoDismissAt: Date
+}
+
 struct JourneyHistoryCheckpointEnvelope: Codable {
     var armedCandidates: [ArmedJourneyHistoryCandidate]
     var activeJourney: ActiveJourneyHistoryCheckpoint?
+    var recentlyCompleted: RecentlyCompletedJourneyCheckpoint? = nil
 }
 
 struct JourneyHistoryLocationCondition: Hashable {
