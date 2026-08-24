@@ -964,7 +964,10 @@ export class NotificationSubscriptionManager {
         // killed app never runs Activity.activityUpdates and the server has no
         // token to send update pushes — leaving the widget frozen at launch state.
         if (activeSubscription.pushToken) {
-            const wakePayload = buildNotificationPayload(null, null, { context: 'live_activity_wake' }, 'live_activity_wake');
+            const wakePayload = buildNotificationPayload(null, null, {
+                context: 'live_activity_wake',
+                ...buildLegMeta(activeSubscription, leg, 'scheduled_live_activity_start')
+            }, 'live_activity_wake');
             const sendWakePush = (attempt, delayMs = 0) => {
                 const send = () => {
                     this.pushClient.sendNotification(

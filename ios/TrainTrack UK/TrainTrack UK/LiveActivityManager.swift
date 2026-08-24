@@ -1945,6 +1945,11 @@ final class LiveActivityManager: ObservableObject {
             return
         }
 
+        _ = await NotificationSubscriptionStore.shared.armScheduledJourneyFromCache(
+            from: fromCRS,
+            to: toCRS
+        )
+
         if StationsService.shared.stations.isEmpty {
             try? await StationsService.shared.loadStations()
         }
@@ -2004,16 +2009,18 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func stationName(for crs: String) -> String? {
-        StationsService.shared.stations.first {
+        NotificationSubscriptionStore.shared.locallyCachedScheduledStations[crs.uppercased()]?.name
+            ?? StationsService.shared.stations.first {
             $0.crs.caseInsensitiveCompare(crs) == .orderedSame
-        }?.name
+            }?.name
     }
 
     /// Scans all active system activities and registers any that aren't yet tracked.
     /// Called from the background notification handler so push-to-start activities
     /// get their update tokens registered with the server without requiring the user
     /// to foreground the app.
-    func registerAnyUnregisteredActivities() async {
+    @discardableResult
+    func registerAnyUnregisteredActivities() async -> Bool {
         let systemActivities = currentSystemActivities()
         let unregistered = systemActivities.filter { activity in
             guard trackedActivities[activity.id] == nil else { return false }
@@ -2058,6 +2065,7 @@ final class LiveActivityManager: ObservableObject {
             await ensureScheduledJourneyUpdatesActiveIfNeeded(activity, fromCRS: fromCRS, toCRS: toCRS)
             await ensureNotificationLiveSessionForRemoteStartedActivity(activity, fromCRS: fromCRS, toCRS: toCRS)
         }
+        return !unregistered.isEmpty
     }
 
     private func replaceScheduledActivityIfNeeded(with activity: Activity<JourneyActivityAttributes>) async {

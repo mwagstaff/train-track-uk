@@ -123,6 +123,11 @@ final class NotificationSubscriptionService {
     }
 }
 
+private struct PersistedScheduledJourneyActivation: Codable {
+    let subscription: NotificationSubscription
+    let stations: [Station]
+}
+
 @MainActor
 final class NotificationSubscriptionStore: ObservableObject {
     static let shared = NotificationSubscriptionStore()
@@ -136,6 +141,10 @@ final class NotificationSubscriptionStore: ObservableObject {
 
     private let service = NotificationSubscriptionService.shared
     private var oneOffExpirationTask: Task<Void, Never>?
+    private let activationDefaults = UserDefaults(suiteName: "group.dev.skynolimit.traintrack") ?? .standard
+    private let scheduledActivationsKey = "scheduledJourneyActivationsV1"
+    private var cachedScheduledActivations: [PersistedScheduledJourneyActivation] = []
+    private(set) var hasAuthoritativeScheduledActivationCache = false
 
     // Forward ServerConfigStore changes through this store so that computed
     // properties like canCreateNew (which read from ServerConfigStore) cause
@@ -164,6 +173,7 @@ final class NotificationSubscriptionStore: ObservableObject {
     // MARK: - Init
 
     private init() {
+        loadScheduledActivations()
         // When the server config updates (e.g. limit changes), forward the
         // change through this store so that computed properties like
         // canCreateNew cause SwiftUI views to re-render automatically.
@@ -185,6 +195,7 @@ final class NotificationSubscriptionStore: ObservableObject {
             let fetched = try await scheduledTask
             let fetchedLive = try await liveSessionsTask
             subscriptions = await reconcileSubscriptions(fetched)
+            await refreshScheduledActivationCache()
             rescheduleOneOffExpiration()
             liveSessions = fetchedLive
             hasLoadedRemoteState = true
@@ -271,6 +282,10 @@ final class NotificationSubscriptionStore: ObservableObject {
         known.insert(subscription.id)
         knownSubscriptionIDs = known
         hasLoadedRemoteState = true
+        subscriptions.removeAll { $0.id == subscription.id }
+        subscriptions.append(subscription)
+        await refreshScheduledActivationCache()
+        await syncGeofences()
         await refresh()
         return subscriptions.first(where: { $0.id == subscription.id }) ?? subscription
     }
@@ -278,6 +293,7 @@ final class NotificationSubscriptionStore: ObservableObject {
     func delete(id: String) async throws {
         try await service.deleteSubscription(id: id)
         subscriptions.removeAll { $0.id == id }
+        await refreshScheduledActivationCache()
         rescheduleOneOffExpiration()
         var known = knownSubscriptionIDs
         known.remove(id)
@@ -334,7 +350,20 @@ final class NotificationSubscriptionStore: ObservableObject {
             category: "Mute"
         )
         hasLoadedRemoteState = true
-        await JourneyTrackingCoordinator.shared.arm(subscription: subscription, source: historySource)
+        let enabledLegs = subscription.legs.filter(\.enabled)
+        let alreadyArmedFromSchedule = historySource == .scheduled
+            && JourneyTrackingCoordinator.shared.armedCandidates.contains { candidate in
+                guard candidate.source == .scheduled else { return false }
+                return enabledLegs.contains { leg in
+                    zip(candidate.stations, candidate.stations.dropFirst()).contains { from, to in
+                        from.crs.caseInsensitiveCompare(leg.from) == .orderedSame
+                            && to.crs.caseInsensitiveCompare(leg.to) == .orderedSame
+                    }
+                }
+            }
+        if !alreadyArmedFromSchedule {
+            await JourneyTrackingCoordinator.shared.arm(subscription: subscription, source: historySource)
+        }
         await syncGeofences()
         return subscription
     }
@@ -421,6 +450,96 @@ final class NotificationSubscriptionStore: ObservableObject {
         await syncGeofences()
     }
 
+    var locallyCachedMonitoringSubscriptions: [NotificationSubscription] {
+        monitoringSubscriptions()
+    }
+
+    var locallyCachedScheduledStations: [String: Station] {
+        cachedScheduledActivations.reduce(into: [String: Station]()) { result, activation in
+            for station in activation.stations where station.hasUsableCoordinate {
+                result[station.crs.uppercased()] = station
+            }
+        }
+    }
+
+    @discardableResult
+    func armScheduledJourneyFromCache(
+        subscriptionID: String? = nil,
+        from: String,
+        to: String,
+        now: Date = Date()
+    ) async -> Bool {
+        var resolvedActivation: (activation: PersistedScheduledJourneyActivation, legs: [NotificationLeg])?
+        for activation in cachedScheduledActivations {
+            if let subscriptionID, activation.subscription.id != subscriptionID {
+                continue
+            }
+            let legs = ScheduledJourneyActivationResolver.legs(
+                for: activation.subscription,
+                matchingFrom: from,
+                to: to,
+                now: now
+            )
+            if !legs.isEmpty {
+                resolvedActivation = (activation, legs)
+                break
+            }
+        }
+        guard let resolvedActivation else {
+            return false
+        }
+
+        let activation = resolvedActivation.activation
+        let activeSubscription = subscription(activation.subscription, replacingLegsWith: resolvedActivation.legs)
+        let expectedRoute = [resolvedActivation.legs[0].from.uppercased()]
+            + resolvedActivation.legs.map { $0.to.uppercased() }
+
+        let coordinator = JourneyTrackingCoordinator.shared
+        if coordinator.armedCandidates.contains(where: {
+            $0.subscriptionId == activation.subscription.id
+                && $0.stations.map { $0.crs.uppercased() } == expectedRoute
+        }) {
+            return true
+        }
+
+        let stationsByCRS = Dictionary(uniqueKeysWithValues: activation.stations.map {
+            ($0.crs.uppercased(), $0)
+        })
+        await coordinator.arm(
+            subscription: activeSubscription,
+            source: .scheduled,
+            cachedStationsByCRS: stationsByCRS
+        )
+        await syncGeofences()
+        return coordinator.armedCandidates.contains {
+            $0.subscriptionId == activation.subscription.id
+                && $0.stations.map { $0.crs.uppercased() } == expectedRoute
+        }
+    }
+
+    private func subscription(
+        _ subscription: NotificationSubscription,
+        replacingLegsWith legs: [NotificationLeg]
+    ) -> NotificationSubscription {
+        NotificationSubscription(
+            id: subscription.id,
+            deviceId: subscription.deviceId,
+            routeKey: subscription.routeKey,
+            scheduleKind: subscription.scheduleKind,
+            daysOfWeek: subscription.daysOfWeek,
+            notificationTypes: subscription.notificationTypes,
+            legs: legs,
+            muteOnArrival: subscription.muteOnArrival,
+            source: subscription.source,
+            liveSessionOrigin: subscription.liveSessionOrigin,
+            activeUntil: subscription.activeUntil,
+            mutedByLegDay: subscription.mutedByLegDay,
+            mutedAtByLegDay: subscription.mutedAtByLegDay,
+            createdAt: subscription.createdAt,
+            updatedAt: subscription.updatedAt
+        )
+    }
+
     func applyGlobalNotificationTypes() async throws {
         let scheduled = subscriptions.filter { !NotificationScheduleExpiry.isExpired($0) }
         let live = liveSessions
@@ -492,14 +611,53 @@ final class NotificationSubscriptionStore: ObservableObject {
     }
 
     private func syncGeofences() async {
-        let eligible = geofenceEligibleLiveSessions
+        let eligible = monitoringSubscriptions()
         logGeofenceEligibility(eligible: eligible)
         await NotificationGeofenceManager.shared.sync(subscriptions: eligible)
     }
 
+    private func monitoringSubscriptions() -> [NotificationSubscription] {
+        var byID: [String: NotificationSubscription] = [:]
+        for subscription in cachedScheduledActivations.map(\.subscription)
+            where !NotificationScheduleExpiry.isExpired(subscription) {
+            byID[subscription.id] = subscription
+        }
+        for subscription in subscriptions where !NotificationScheduleExpiry.isExpired(subscription) {
+            byID[subscription.id] = subscription
+        }
+        for subscription in geofenceEligibleLiveSessions {
+            if subscription.liveSessionOrigin == .scheduled,
+               hasCachedScheduledRoute(matching: subscription) {
+                continue
+            }
+            byID[subscription.id] = subscription
+        }
+        return byID.values.sorted { lhs, rhs in
+            nextMonitoringStart(for: lhs) < nextMonitoringStart(for: rhs)
+        }
+    }
+
+    private func nextMonitoringStart(for subscription: NotificationSubscription) -> Date {
+        subscription.legs
+            .filter(\.enabled)
+            .compactMap { NotificationScheduleActivationPolicy.nextStart(for: subscription, leg: $0) }
+            .min() ?? .distantFuture
+    }
+
+    private func hasCachedScheduledRoute(matching session: NotificationSubscription) -> Bool {
+        let sessionLegs = session.legs.filter(\.enabled)
+        return cachedScheduledActivations.contains { activation in
+            activation.subscription.legs.filter(\.enabled).contains { scheduledLeg in
+                sessionLegs.contains {
+                    $0.from.caseInsensitiveCompare(scheduledLeg.from) == .orderedSame
+                        && $0.to.caseInsensitiveCompare(scheduledLeg.to) == .orderedSame
+                }
+            }
+        }
+    }
+
     private var geofenceEligibleLiveSessions: [NotificationSubscription] {
         return liveSessions.compactMap { session in
-            guard session.muteOnArrival != false else { return nil }
             if let activeUntil = session.activeUntil, activeUntil <= Date() {
                 return nil
             }
@@ -527,9 +685,54 @@ final class NotificationSubscriptionStore: ObservableObject {
         }
     }
 
+    private func loadScheduledActivations() {
+        guard let data = activationDefaults.data(forKey: scheduledActivationsKey),
+              let decoded = try? JSONDecoder().decode([PersistedScheduledJourneyActivation].self, from: data) else {
+            return
+        }
+        hasAuthoritativeScheduledActivationCache = true
+        cachedScheduledActivations = decoded.filter {
+            !NotificationScheduleExpiry.isExpired($0.subscription)
+        }
+    }
+
+    private func refreshScheduledActivationCache() async {
+        if StationsService.shared.stations.isEmpty {
+            try? await StationsService.shared.loadStations()
+        }
+
+        let currentStations = StationsService.shared.stations.reduce(into: [String: Station]()) { result, station in
+            if result[station.crs.uppercased()] == nil {
+                result[station.crs.uppercased()] = station
+            }
+        }
+        let previousByID = Dictionary(uniqueKeysWithValues: cachedScheduledActivations.map {
+            ($0.subscription.id, $0)
+        })
+        cachedScheduledActivations = subscriptions
+            .filter { !NotificationScheduleExpiry.isExpired($0) }
+            .map { subscription in
+                let previousStations = Dictionary(uniqueKeysWithValues: (previousByID[subscription.id]?.stations ?? []).map {
+                    ($0.crs.uppercased(), $0)
+                })
+                let requiredCodes = Set(subscription.legs.flatMap {
+                    [$0.from.uppercased(), $0.to.uppercased()]
+                })
+                let stations = requiredCodes.compactMap { currentStations[$0] ?? previousStations[$0] }
+                    .filter(\.hasUsableCoordinate)
+                return PersistedScheduledJourneyActivation(
+                    subscription: subscription,
+                    stations: stations
+                )
+            }
+
+        guard let data = try? JSONEncoder().encode(cachedScheduledActivations) else { return }
+        activationDefaults.set(data, forKey: scheduledActivationsKey)
+        hasAuthoritativeScheduledActivationCache = true
+    }
+
     private func logGeofenceEligibility(eligible: [NotificationSubscription]) {
         let now = Date()
-        let muteDisabledCount = liveSessions.filter { $0.muteOnArrival == false }.count
         let expiredCount = liveSessions.filter { session in
             guard let activeUntil = session.activeUntil else { return false }
             return activeUntil <= now
@@ -552,17 +755,18 @@ final class NotificationSubscriptionStore: ObservableObject {
         DebugLogStore.shared.log(
             """
             Geofence eligibility
+            Scheduled: \(cachedScheduledActivations.count)
             Live sessions: \(liveSessions.count)
             Eligible: \(eligible.count)
-            Skipped: muteOff=\(muteDisabledCount), expired=\(expiredCount), noEnabledLegs=\(noEnabledLegsCount)
+            Skipped: expired=\(expiredCount), noEnabledLegs=\(noEnabledLegsCount)
             \(sessionSummaries.isEmpty ? "Sessions: none" : sessionSummaries)
             """,
             category: "Geofence"
         )
         ClientDiagnosticsLogger.log("geofence", "eligibility", metadata: [
+            "scheduled_count": cachedScheduledActivations.count,
             "live_session_count": liveSessions.count,
             "eligible_count": eligible.count,
-            "skipped_mute_off": muteDisabledCount,
             "skipped_expired": expiredCount,
             "skipped_no_enabled_legs": noEnabledLegsCount,
             "sessions": liveSessions.prefix(6).map { session in
@@ -586,9 +790,6 @@ final class NotificationSubscriptionStore: ObservableObject {
         enabledLegs: [NotificationLeg]
     ) -> [String] {
         var reasons: [String] = []
-        if session.muteOnArrival == false {
-            reasons.append("muteOff")
-        }
         if let activeUntil = session.activeUntil, activeUntil <= now {
             reasons.append("expired")
         }

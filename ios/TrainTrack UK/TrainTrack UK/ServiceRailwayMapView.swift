@@ -385,6 +385,98 @@ private enum RailwayMapAnnotationIdentifier {
     }
 }
 
+enum RailwayOnboardLocationResolver {
+    static let maximumLocationAge: TimeInterval = 2 * 60
+    static let maximumHorizontalAccuracy: CLLocationAccuracy = 200
+    static let maximumAPIDivergence: CLLocationDistance = 10_000
+    private static let minimumRouteTolerance: CLLocationDistance = 250
+    private static let additionalAccuracyTolerance: CLLocationDistance = 100
+
+    static func coordinate(
+        apiCoordinate: CLLocationCoordinate2D?,
+        userLocation: CLLocation?,
+        routeCoordinates: [CLLocationCoordinate2D],
+        now: Date = Date()
+    ) -> CLLocationCoordinate2D? {
+        guard let userLocation,
+              userLocation.horizontalAccuracy >= 0,
+              userLocation.horizontalAccuracy <= maximumHorizontalAccuracy else {
+            return apiCoordinate
+        }
+        let locationAge = now.timeIntervalSince(userLocation.timestamp)
+        guard locationAge >= -30, locationAge <= maximumLocationAge else {
+            return apiCoordinate
+        }
+        let routeTolerance = max(
+            minimumRouteTolerance,
+            userLocation.horizontalAccuracy + additionalAccuracyTolerance
+        )
+        guard distanceFromRoute(
+            userLocation.coordinate,
+            routeCoordinates: routeCoordinates
+        ) <= routeTolerance else {
+            return apiCoordinate
+        }
+        if let apiCoordinate,
+           userLocation.distance(from: CLLocation(
+               latitude: apiCoordinate.latitude,
+               longitude: apiCoordinate.longitude
+           )) > maximumAPIDivergence {
+            return apiCoordinate
+        }
+        return userLocation.coordinate
+    }
+
+    private static func distanceFromRoute(
+        _ coordinate: CLLocationCoordinate2D,
+        routeCoordinates: [CLLocationCoordinate2D]
+    ) -> CLLocationDistance {
+        guard let first = routeCoordinates.first else { return .infinity }
+        guard routeCoordinates.count >= 2 else {
+            return CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+                .distance(from: CLLocation(latitude: first.latitude, longitude: first.longitude))
+        }
+
+        let metresPerDegreeLatitude = 111_132.0
+        let metresPerDegreeLongitude = 111_320.0 * cos(coordinate.latitude * .pi / 180)
+        func localPoint(_ routeCoordinate: CLLocationCoordinate2D) -> (x: Double, y: Double) {
+            (
+                x: (routeCoordinate.longitude - coordinate.longitude) * metresPerDegreeLongitude,
+                y: (routeCoordinate.latitude - coordinate.latitude) * metresPerDegreeLatitude
+            )
+        }
+
+        var minimumDistance = CLLocationDistance.infinity
+        for index in routeCoordinates.indices.dropLast() {
+            let start = localPoint(routeCoordinates[index])
+            let end = localPoint(routeCoordinates[index + 1])
+            let deltaX = end.x - start.x
+            let deltaY = end.y - start.y
+            let squaredLength = (deltaX * deltaX) + (deltaY * deltaY)
+            let fraction: Double
+            if squaredLength > 0 {
+                fraction = min(max(
+                    -((start.x * deltaX) + (start.y * deltaY)) / squaredLength,
+                    0
+                ), 1)
+            } else {
+                fraction = 0
+            }
+            minimumDistance = min(
+                minimumDistance,
+                hypot(start.x + (deltaX * fraction), start.y + (deltaY * fraction))
+            )
+        }
+        return minimumDistance
+    }
+}
+
+enum RailwayMapAnnotationPriority {
+    static let userLocation = MKAnnotationViewZPriority.min
+    static let estimatedTrain = MKAnnotationViewZPriority(750)
+    static let station = MKAnnotationViewZPriority.max
+}
+
 private struct RailwayMapAnnotationZOrderConfigurator: UIViewRepresentable {
     let onMapViewResolved: (MKMapView) -> Void
 
@@ -442,15 +534,22 @@ private final class RailwayMapAnnotationZOrderView: UIView {
         }
 
         for annotation in mapView.annotations {
-            guard let identifier = annotation.title ?? nil,
-                  let annotationView = mapView.view(for: annotation) else { continue }
+            guard let annotationView = mapView.view(for: annotation) else { continue }
+
+            if annotation is MKUserLocation {
+                annotationView.zPriority = RailwayMapAnnotationPriority.userLocation
+                annotationView.selectedZPriority = RailwayMapAnnotationPriority.userLocation
+                continue
+            }
+
+            guard let identifier = annotation.title ?? nil else { continue }
 
             if identifier.hasPrefix("railway-station-") {
-                annotationView.zPriority = .max
-                annotationView.selectedZPriority = .max
+                annotationView.zPriority = RailwayMapAnnotationPriority.station
+                annotationView.selectedZPriority = RailwayMapAnnotationPriority.station
             } else if identifier == RailwayMapAnnotationIdentifier.estimatedTrain {
-                annotationView.zPriority = .min
-                annotationView.selectedZPriority = .min
+                annotationView.zPriority = RailwayMapAnnotationPriority.estimatedTrain
+                annotationView.selectedZPriority = RailwayMapAnnotationPriority.estimatedTrain
             }
         }
     }
@@ -559,6 +658,7 @@ struct ServiceRailwayMapView: View {
     let additionalRoutes: [ServiceRailwayMapBranch]
     let progress: ServiceProgressEstimate
     let estimatedTrainCoordinate: CLLocationCoordinate2D?
+    let onboardLocation: CLLocation?
     let currentDelayMinutes: Int?
     let fromCRS: String
     let toCRS: String
@@ -584,6 +684,7 @@ struct ServiceRailwayMapView: View {
         additionalRoutes: [ServiceRailwayMapBranch] = [],
         progress: ServiceProgressEstimate,
         estimatedTrainCoordinate: CLLocationCoordinate2D?,
+        onboardLocation: CLLocation? = nil,
         currentDelayMinutes: Int?,
         fromCRS: String,
         toCRS: String,
@@ -597,6 +698,7 @@ struct ServiceRailwayMapView: View {
         self.additionalRoutes = additionalRoutes
         self.progress = progress
         self.estimatedTrainCoordinate = estimatedTrainCoordinate
+        self.onboardLocation = onboardLocation
         self.currentDelayMinutes = currentDelayMinutes
         self.fromCRS = fromCRS
         self.toCRS = toCRS
@@ -918,7 +1020,7 @@ struct ServiceRailwayMapView: View {
         "\(prefix)-\(index)-\(station.crs)"
     }
 
-    private var trainCoordinate: CLLocationCoordinate2D? {
+    private var apiTrainCoordinate: CLLocationCoordinate2D? {
         if let estimatedTrainCoordinate {
             return estimatedTrainCoordinate
         }
@@ -927,6 +1029,14 @@ struct ServiceRailwayMapView: View {
             fromStation: progress.previousStationIndex,
             toStation: progress.nextStationIndex,
             progress: progress.fraction
+        )
+    }
+
+    private var trainCoordinate: CLLocationCoordinate2D? {
+        RailwayOnboardLocationResolver.coordinate(
+            apiCoordinate: apiTrainCoordinate,
+            userLocation: onboardLocation,
+            routeCoordinates: route.coordinates
         )
     }
 

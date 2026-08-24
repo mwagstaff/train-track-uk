@@ -332,7 +332,9 @@ private struct JourneyHistoryRow: View {
                 Text(record.detectedDepartureAt, style: .time)
                 Image(systemName: "arrow.right")
                     .accessibilityHidden(true)
-                if let arrival = record.detectedArrivalAt {
+                if let arrival = record.deviceBasedArrivalAt {
+                    Text("\(arrival.formatted(date: .omitted, time: .shortened)) (based on device location)")
+                } else if let arrival = record.detectedArrivalAt {
                     Text(arrival, style: .time)
                 } else {
                     Text(record.outcome.displayName)
@@ -793,33 +795,28 @@ private struct JourneyHistoryDetailView: View {
                 LabeledContent("Source", value: record.source.displayName)
                 LabeledContent("Outcome", value: record.outcome.displayName)
                 LabeledContent("Departed", value: record.detectedDepartureAt.formatted(date: .abbreviated, time: .shortened))
-                if let arrival = record.detectedArrivalAt {
-                    LabeledContent("Arrived", value: arrival.formatted(date: .abbreviated, time: .shortened))
-                }
             }
 
-            Section("Official arrival") {
+            Section("Arrival") {
                 if let scheduled = record.scheduledArrivalAt {
                     LabeledContent("Scheduled", value: scheduled.formatted(date: .omitted, time: .shortened))
                 }
                 if let actual = record.actualArrivalAt {
-                    LabeledContent("Actual", value: actual.formatted(date: .omitted, time: .shortened))
+                    LabeledContent("Posted arrival time", value: actual.formatted(date: .omitted, time: .shortened))
                 } else if let detectedArrival = record.detectedArrivalAt,
                           JourneyHistoryOfficialArrivalPolicy.isUnavailable(
                             actualArrival: record.actualArrivalAt,
                             detectedArrival: detectedArrival
                           ) {
-                    Text(JourneyHistoryArrivalStatusText.text(
-                        actualArrival: nil,
-                        detectedArrival: detectedArrival,
-                        delayMinutes: nil,
-                        outcome: record.outcome
-                    ))
-                    .foregroundStyle(.secondary)
+                    LabeledContent("Posted arrival time", value: "Could not be determined")
                 } else {
-                    Text("Awaiting confirmed official arrival")
-                        .foregroundStyle(.secondary)
+                    LabeledContent("Posted arrival time", value: "Awaiting confirmation")
                 }
+                LabeledContent(
+                    "Device based arrival time",
+                    value: record.deviceBasedArrivalAt?.formatted(date: .omitted, time: .shortened)
+                        ?? "Could not be determined"
+                )
                 if let delay = record.delayMinutes {
                     LabeledContent("Delay", value: delay == 0 ? "On time" : "\(delay) min")
                 }

@@ -275,6 +275,191 @@ enum NotificationScheduleExpiry {
     }
 }
 
+enum NotificationScheduleActivationPolicy {
+    static func isActive(
+        scheduleKind: NotificationScheduleKind?,
+        daysOfWeek: [DayOfWeek],
+        windowStart: String,
+        windowEnd: String,
+        travelDate: String?,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Bool {
+        activationIntervals(
+            scheduleKind: scheduleKind,
+            daysOfWeek: daysOfWeek,
+            windowStart: windowStart,
+            windowEnd: windowEnd,
+            travelDate: travelDate,
+            around: now,
+            calendar: calendar
+        ).contains { $0.start <= now && now <= $0.end }
+    }
+
+    static func nextStart(
+        for subscription: NotificationSubscription,
+        leg: NotificationLeg,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Date? {
+        activationIntervals(
+            scheduleKind: subscription.scheduleKind,
+            daysOfWeek: subscription.daysOfWeek,
+            windowStart: leg.windowStart,
+            windowEnd: leg.windowEnd,
+            travelDate: leg.travelDate,
+            around: now,
+            calendar: calendar
+        )
+        .filter { $0.end >= now }
+        .map(\.start)
+        .min()
+    }
+
+    private static func activationIntervals(
+        scheduleKind: NotificationScheduleKind?,
+        daysOfWeek: [DayOfWeek],
+        windowStart: String,
+        windowEnd: String,
+        travelDate: String?,
+        around now: Date,
+        calendar: Calendar
+    ) -> [DateInterval] {
+        guard let startTime = timeComponents(from: windowStart),
+              let endTime = timeComponents(from: windowEnd) else {
+            return []
+        }
+
+        if scheduleKind == .oneOff {
+            guard let travelDate,
+                  let day = date(from: travelDate, calendar: calendar),
+                  let interval = interval(
+                    on: day,
+                    startTime: startTime,
+                    endTime: endTime,
+                    calendar: calendar
+                  ) else {
+                return []
+            }
+            return [interval]
+        }
+
+        let allowedDays = Set(daysOfWeek)
+        guard !allowedDays.isEmpty else { return [] }
+        let startOfToday = calendar.startOfDay(for: now)
+        return (-1...7).compactMap { offset in
+            guard let day = calendar.date(byAdding: .day, value: offset, to: startOfToday),
+                  allowedDays.contains(dayOfWeek(for: day, calendar: calendar)) else {
+                return nil
+            }
+            return interval(on: day, startTime: startTime, endTime: endTime, calendar: calendar)
+        }
+    }
+
+    private static func interval(
+        on day: Date,
+        startTime: (hour: Int, minute: Int),
+        endTime: (hour: Int, minute: Int),
+        calendar: Calendar
+    ) -> DateInterval? {
+        guard let start = calendar.date(
+            bySettingHour: startTime.hour,
+            minute: startTime.minute,
+            second: 0,
+            of: day
+        ), var end = calendar.date(
+            bySettingHour: endTime.hour,
+            minute: endTime.minute,
+            second: 0,
+            of: day
+        ) else {
+            return nil
+        }
+        if end < start {
+            end = calendar.date(byAdding: .day, value: 1, to: end) ?? end
+        }
+        return DateInterval(start: start, end: end)
+    }
+
+    private static func timeComponents(from value: String) -> (hour: Int, minute: Int)? {
+        let parts = value.split(separator: ":", maxSplits: 1)
+        guard parts.count == 2,
+              let hour = Int(parts[0]),
+              let minute = Int(parts[1]),
+              (0...23).contains(hour),
+              (0...59).contains(minute) else {
+            return nil
+        }
+        return (hour, minute)
+    }
+
+    private static func date(from value: String, calendar: Calendar) -> Date? {
+        let parts = value.split(separator: "-", maxSplits: 2)
+        guard parts.count == 3,
+              let year = Int(parts[0]),
+              let month = Int(parts[1]),
+              let day = Int(parts[2]) else {
+            return nil
+        }
+        return calendar.date(from: DateComponents(year: year, month: month, day: day))
+    }
+
+    private static func dayOfWeek(for date: Date, calendar: Calendar) -> DayOfWeek {
+        switch calendar.component(.weekday, from: date) {
+        case 1: return .sun
+        case 2: return .mon
+        case 3: return .tue
+        case 4: return .wed
+        case 5: return .thu
+        case 6: return .fri
+        default: return .sat
+        }
+    }
+}
+
+enum ScheduledJourneyActivationResolver {
+    static func legs(
+        for subscription: NotificationSubscription,
+        matchingFrom from: String,
+        to: String,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> [NotificationLeg] {
+        let fromCode = from.uppercased()
+        let toCode = to.uppercased()
+        let enabledLegs = subscription.legs.filter(\.enabled)
+        guard let startIndex = enabledLegs.firstIndex(where: { leg in
+            leg.from.uppercased() == fromCode
+                && leg.to.uppercased() == toCode
+                && NotificationScheduleActivationPolicy.isActive(
+                    scheduleKind: subscription.scheduleKind,
+                    daysOfWeek: subscription.daysOfWeek,
+                    windowStart: leg.windowStart,
+                    windowEnd: leg.windowEnd,
+                    travelDate: leg.travelDate,
+                    now: now,
+                    calendar: calendar
+                )
+        }) else {
+            return []
+        }
+
+        var result = [enabledLegs[startIndex]]
+        var visitedStations = Set([fromCode, toCode])
+        for leg in enabledLegs.dropFirst(startIndex + 1) {
+            let legFrom = leg.from.uppercased()
+            let legTo = leg.to.uppercased()
+            guard legFrom == result.last?.to.uppercased(),
+                  !visitedStations.contains(legTo) else {
+                break
+            }
+            result.append(leg)
+            visitedStations.insert(legTo)
+        }
+        return result
+    }
+}
+
 struct NotificationSubscriptionRequest: Codable {
     let subscriptionId: String?
     let deviceId: String

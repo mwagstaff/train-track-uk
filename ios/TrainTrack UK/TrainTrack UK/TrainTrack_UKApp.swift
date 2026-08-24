@@ -75,6 +75,9 @@ struct TrainTrackUKApp: App {
                 debugLog("📍 [App] App became active - refreshing notification subscriptions & geofences")
                 Task {
                     NotificationMuteRequestSender.shared.retryPendingMuteRequests(trigger: "app-active")
+                    await NotificationGeofenceManager.shared.reconcileAfterBackgroundWake(
+                        trigger: "foreground"
+                    )
                     await NotificationSubscriptionStore.shared.refresh()
                 }
 

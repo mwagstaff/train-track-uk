@@ -9,6 +9,75 @@ private final class HorizontalTabSwipeDisabledState {
 }
 
 struct HorizontalTabSwipeTests {
+    @Test
+    func contentOffsetTracksTheDragAndResistsUnavailableEdges() {
+        #expect(
+            HorizontalTabSwipeMotion.visualOffset(
+                for: -72,
+                hasAdjacentTab: true,
+                reduceMotion: false
+            ) == -72
+        )
+
+        let resistedOffset = HorizontalTabSwipeMotion.visualOffset(
+            for: 72,
+            hasAdjacentTab: false,
+            reduceMotion: false
+        )
+        #expect(abs(resistedOffset - 12.96) < 0.001)
+    }
+
+    @Test
+    func reducedMotionLimitsInteractiveTravel() {
+        let offset = HorizontalTabSwipeMotion.visualOffset(
+            for: -72,
+            hasAdjacentTab: true,
+            reduceMotion: true
+        )
+
+        #expect(abs(offset - -15.84) < 0.001)
+    }
+
+    @Test
+    func commitRequiresHorizontalIntentAndAConsistentProjection() {
+        #expect(HorizontalTabSwipeMotion.shouldCommit(
+            translationWidth: -50,
+            translationHeight: 12,
+            predictedEndTranslationWidth: -70,
+            commitDistance: 44,
+            projectedCommitDistance: 90
+        ))
+        #expect(!HorizontalTabSwipeMotion.shouldCommit(
+            translationWidth: -50,
+            translationHeight: 80,
+            predictedEndTranslationWidth: -140,
+            commitDistance: 44,
+            projectedCommitDistance: 90
+        ))
+        #expect(!HorizontalTabSwipeMotion.shouldCommit(
+            translationWidth: -24,
+            translationHeight: 4,
+            predictedEndTranslationWidth: 140,
+            commitDistance: 44,
+            projectedCommitDistance: 90
+        ))
+        #expect(HorizontalTabSwipeMotion.shouldCommit(
+            translationWidth: -24,
+            translationHeight: 4,
+            predictedEndTranslationWidth: -140,
+            commitDistance: 44,
+            projectedCommitDistance: 90
+        ))
+        #expect(!HorizontalTabSwipeMotion.hasHorizontalIntent(
+            translationWidth: 11,
+            translationHeight: 10
+        ))
+        #expect(HorizontalTabSwipeMotion.hasHorizontalIntent(
+            translationWidth: 12,
+            translationHeight: 10
+        ))
+    }
+
     @Test @MainActor
     func routeMapExclusionDisablesSwipeOnlyWhileVisible() async throws {
         let state = HorizontalTabSwipeDisabledState()

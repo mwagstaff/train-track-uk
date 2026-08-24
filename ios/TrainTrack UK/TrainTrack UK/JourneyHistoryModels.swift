@@ -195,6 +195,7 @@ struct ActiveJourneyHistoryCheckpoint: Codable, Hashable, Identifiable {
     var originArrivedAt: Date?
     var detectedDepartureAt: Date
     var detectedArrivalAt: Date?
+    var deviceBasedArrivalAt: Date? = nil
     var lastConfirmedOnRouteStation: Station
     var nextExpectedCallingPointIndex: Int
     var legs: [JourneyHistoryLeg]
@@ -258,6 +259,7 @@ final class JourneyHistoryRecord {
     var recordedDestinationName: String
     var detectedDepartureAt: Date
     var detectedArrivalAt: Date?
+    var deviceBasedArrivalAt: Date?
     var scheduledArrivalAt: Date?
     var actualArrivalAt: Date?
     var delayMinutes: Int?
@@ -287,6 +289,7 @@ final class JourneyHistoryRecord {
         recordedDestinationName = recordedDestination.name
         detectedDepartureAt = checkpoint.detectedDepartureAt
         detectedArrivalAt = checkpoint.detectedArrivalAt
+        deviceBasedArrivalAt = checkpoint.deviceBasedArrivalAt
         scheduledArrivalAt = finalLeg?.scheduledArrivalAt
         actualArrivalAt = finalLeg?.actualArrivalAt
         delayMinutes = JourneyHistoryDelayPolicy.confirmedDelayMinutes(

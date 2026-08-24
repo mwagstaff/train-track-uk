@@ -210,7 +210,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
         guard let active = activeJourney else { return }
         let station = active.currentPlannedLegDestination
         if active.plannedLegIndex == active.plannedStations.count - 2 {
-            await completeJourney(at: station, detectedAt: Date())
+            await completeJourney(at: station, detectedAt: Date(), isDeviceBased: false)
         } else {
             await handleExpectedStationArrival(station, detectedAt: Date())
         }
@@ -419,12 +419,13 @@ final class JourneyTrackingCoordinator: ObservableObject {
         ])
     }
 
-    func arm(subscription: NotificationSubscription, source: JourneyHistorySource) async {
+    func arm(
+        subscription: NotificationSubscription,
+        source: JourneyHistorySource,
+        cachedStationsByCRS: [String: Station] = [:]
+    ) async {
         pruneExpiredCompletion()
-        if recentlyCompleted?.checkpoint.subscriptionId == subscription.id {
-            return
-        }
-        if StationsService.shared.stations.isEmpty {
+        if StationsService.shared.stations.isEmpty && cachedStationsByCRS.isEmpty {
             do {
                 try await StationsService.shared.loadStations()
             } catch {
@@ -443,14 +444,32 @@ final class JourneyTrackingCoordinator: ObservableObject {
             return
         }
 
-        var stations = [station(crs: first.from, fallbackName: first.fromName)]
-        stations.append(contentsOf: enabledLegs.map { station(crs: $0.to, fallbackName: $0.toName) })
-        guard stations.count >= 2 else {
+        var stations = [station(
+            crs: first.from,
+            fallbackName: first.fromName,
+            cachedStationsByCRS: cachedStationsByCRS
+        )]
+        stations.append(contentsOf: enabledLegs.map {
+            station(crs: $0.to, fallbackName: $0.toName, cachedStationsByCRS: cachedStationsByCRS)
+        })
+        guard stations.count >= 2, stations.allSatisfy(\.hasUsableCoordinate) else {
             log("candidate_arm_skipped", "Journey history was not armed because fewer than two stations were resolved", metadata: [
                 "subscription_id": subscription.id,
                 "source": source.rawValue
             ])
             return
+        }
+
+        let stationCodes = stations.map { $0.crs.uppercased() }
+        if let completed = recentlyCompleted?.checkpoint,
+           completed.subscriptionId == subscription.id,
+           completed.plannedStations.map({ $0.crs.uppercased() }) == stationCodes {
+            return
+        }
+
+        let previousCandidate = armedCandidates.first {
+            $0.subscriptionId == subscription.id
+                && $0.stations.map { $0.crs.uppercased() } == stationCodes
         }
 
         let candidate = ArmedJourneyHistoryCandidate(
@@ -459,8 +478,8 @@ final class JourneyTrackingCoordinator: ObservableObject {
             stations: stations,
             createdAt: subscription.createdAt ?? Date(),
             activeUntil: subscription.activeUntil,
-            originArrivedAt: armedCandidates.first(where: { $0.subscriptionId == subscription.id })?.originArrivedAt,
-            candidateDepartures: armedCandidates.first(where: { $0.subscriptionId == subscription.id })?.candidateDepartures ?? []
+            originArrivedAt: previousCandidate?.originArrivedAt,
+            candidateDepartures: previousCandidate?.candidateDepartures ?? []
         )
         armedCandidates.removeAll { $0.subscriptionId == subscription.id }
         armedCandidates.append(candidate)
@@ -504,7 +523,11 @@ final class JourneyTrackingCoordinator: ObservableObject {
             ])
             return
         }
+        if armedCandidates[index].originArrivedAt != nil {
+            return
+        }
         armedCandidates[index].originArrivedAt = detectedAt
+        persistCheckpoint()
         let first = armedCandidates[index].stations[0]
         let second = armedCandidates[index].stations[1]
         log("origin_arrival_detected", "Detected arrival at \(first.crs); capturing departures towards \(second.crs)", metadata: [
@@ -535,7 +558,6 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 "error": error.localizedDescription
             ])
         }
-        persistCheckpoint()
         let destination = armedCandidates.first { $0.subscriptionId == subscriptionID }?.stations.last ?? second
         await LiveActivityManager.shared.updateJourneyPhase(
             .atStart,
@@ -617,6 +639,10 @@ final class JourneyTrackingCoordinator: ObservableObject {
             "cached_departure_count": candidate.candidateDepartures.count
         ])
 
+        // Install the minimum durable destination/interchange conditions before
+        // service matching performs any optional network work.
+        await refreshMonitoringConditions()
+
         await matchCurrentLeg(
             cachedDepartures: candidate.candidateDepartures,
             detectedAt: detectedAt,
@@ -697,7 +723,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
             return true
         case .arrival:
             guard active.plannedLegIndex == active.plannedStations.count - 2 else { return true }
-            await completeJourney(at: station, detectedAt: detectedAt)
+            await completeJourney(at: station, detectedAt: detectedAt, isDeviceBased: false)
         case .station:
             await handleExpectedStationArrival(station, detectedAt: detectedAt)
         }
@@ -730,7 +756,10 @@ final class JourneyTrackingCoordinator: ObservableObject {
     func evaluateLocation(_ location: CLLocation, detectedAt: Date = Date()) async {
         guard var active = activeJourney,
               location.horizontalAccuracy >= 0,
-              location.horizontalAccuracy <= 200 else { return }
+              location.horizontalAccuracy <= RailwayOnboardLocationResolver.maximumHorizontalAccuracy else { return }
+        let locationAge = detectedAt.timeIntervalSince(location.timestamp)
+        guard locationAge >= -30,
+              locationAge <= RailwayOnboardLocationResolver.maximumLocationAge else { return }
         if detectedAt.timeIntervalSince(active.detectedDepartureAt) > Self.maximumActiveJourneyDuration {
             log("journey_safety_expired", "Journey monitoring exceeded its 24-hour safety limit", metadata: [
                 "journey_id": active.id.uuidString,
@@ -743,9 +772,10 @@ final class JourneyTrackingCoordinator: ObservableObject {
 
         if active.plannedDestination.distance(from: location) <= Self.destinationArrivalRadiusMeters,
            active.plannedLegIndex == active.plannedStations.count - 2 {
-            _ = await handleConditionEntry(
-                identifier: historyIdentifier(kind: .arrival, journeyID: active.id, stationCRS: active.plannedDestination.crs),
-                detectedAt: detectedAt
+            await completeJourney(
+                at: active.plannedDestination,
+                detectedAt: detectedAt,
+                isDeviceBased: true
             )
             return
         }
@@ -1232,7 +1262,11 @@ final class JourneyTrackingCoordinator: ObservableObject {
         await finishJourney(outcome: .offCourse, completedAt: detectedAt)
     }
 
-    private func completeJourney(at station: Station, detectedAt: Date) async {
+    private func completeJourney(
+        at station: Station,
+        detectedAt: Date,
+        isDeviceBased: Bool
+    ) async {
         guard var active = activeJourney else { return }
         log("destination_arrival_detected", "Detected final arrival at \(station.crs)", metadata: [
             "journey_id": active.id.uuidString,
@@ -1242,6 +1276,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
         ])
         active.lastConfirmedOnRouteStation = station
         active.detectedArrivalAt = detectedAt
+        active.deviceBasedArrivalAt = isDeviceBased ? detectedAt : nil
         active.stationEvents.append(JourneyHistoryStationEvent(station: station, kind: .arrival, detectedAt: detectedAt))
         if let index = active.legs.indices.last {
             active.legs[index].detectedArrivalAt = detectedAt
@@ -1531,8 +1566,12 @@ final class JourneyTrackingCoordinator: ObservableObject {
         await NotificationGeofenceManager.shared.refreshJourneyConditions()
     }
 
-    private func station(crs: String, fallbackName: String?) -> Station {
-        StationsService.shared.stations.first {
+    private func station(
+        crs: String,
+        fallbackName: String?,
+        cachedStationsByCRS: [String: Station] = [:]
+    ) -> Station {
+        cachedStationsByCRS[crs.uppercased()] ?? StationsService.shared.stations.first {
             $0.crs.caseInsensitiveCompare(crs) == .orderedSame
         } ?? Station(
             crs: crs.uppercased(),

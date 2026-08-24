@@ -585,9 +585,9 @@ struct NotificationScheduleView: View {
             }
 
             let autoMuteOnArrival = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
-            if autoMuteOnArrival {
-                NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
-            }
+            // Journey detection uses location even when the user does not want notification
+            // muting, so establish the durable authorization goal for every schedule.
+            NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
 
             let pushToStartReady = await activityMgr.ensurePushToStartTokenRegistered()
             guard pushToStartReady else {

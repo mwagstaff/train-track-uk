@@ -398,6 +398,57 @@ struct RailwayRoutingTests {
         #expect(
             stationView.selectedZPriority.rawValue > trainView.selectedZPriority.rawValue
         )
+        #expect(
+            trainView.zPriority.rawValue
+                > RailwayMapAnnotationPriority.userLocation.rawValue
+        )
+    }
+
+    @Test func onboardLocationOverridesAReasonablyDivergentAPIEstimate() throws {
+        let now = Date()
+        let userLocation = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 51.4534, longitude: -0.1026),
+            altitude: 0,
+            horizontalAccuracy: 25,
+            verticalAccuracy: -1,
+            timestamp: now
+        )
+        let coordinate = try #require(RailwayOnboardLocationResolver.coordinate(
+            apiCoordinate: CLLocationCoordinate2D(latitude: 51.4664, longitude: -0.1024),
+            userLocation: userLocation,
+            routeCoordinates: [
+                CLLocationCoordinate2D(latitude: 51.4530, longitude: -0.1028),
+                CLLocationCoordinate2D(latitude: 51.4668, longitude: -0.1023),
+            ],
+            now: now
+        ))
+
+        #expect(coordinate.latitude == userLocation.coordinate.latitude)
+        #expect(coordinate.longitude == userLocation.coordinate.longitude)
+    }
+
+    @Test func onboardLocationDoesNotOverrideStronglyDivergentAPIData() throws {
+        let now = Date()
+        let apiCoordinate = CLLocationCoordinate2D(latitude: 51.60, longitude: -0.10)
+        let userLocation = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 51.4534, longitude: -0.1026),
+            altitude: 0,
+            horizontalAccuracy: 25,
+            verticalAccuracy: -1,
+            timestamp: now
+        )
+        let coordinate = try #require(RailwayOnboardLocationResolver.coordinate(
+            apiCoordinate: apiCoordinate,
+            userLocation: userLocation,
+            routeCoordinates: [
+                CLLocationCoordinate2D(latitude: 51.4530, longitude: -0.1028),
+                CLLocationCoordinate2D(latitude: 51.6000, longitude: -0.1000),
+            ],
+            now: now
+        ))
+
+        #expect(coordinate.latitude == apiCoordinate.latitude)
+        #expect(coordinate.longitude == apiCoordinate.longitude)
     }
 
     @Test @MainActor func denseMapCollapsesOnlySecondaryStationLabels() async throws {

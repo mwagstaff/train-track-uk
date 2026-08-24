@@ -38,6 +38,7 @@ struct ServiceMapView: View {
     let fallbackCallingPoints: [CallingPoint]
     let historicalArrivalTime: String?
     let isCompact: Bool
+    let onboardLocation: CLLocation?
 
     @EnvironmentObject var depStore: DeparturesStore
     @EnvironmentObject private var notificationStore: NotificationSubscriptionStore
@@ -73,7 +74,8 @@ struct ServiceMapView: View {
         isHistorical: Bool = false,
         fallbackCallingPoints: [CallingPoint] = [],
         historicalArrivalTime: String? = nil,
-        isCompact: Bool = false
+        isCompact: Bool = false,
+        onboardLocation: CLLocation? = nil
     ) {
         self.serviceID = serviceID
         self.fromCRS = fromCRS
@@ -84,6 +86,7 @@ struct ServiceMapView: View {
         self.fallbackCallingPoints = fallbackCallingPoints
         self.historicalArrivalTime = historicalArrivalTime
         self.isCompact = isCompact
+        self.onboardLocation = onboardLocation
     }
 
     private var hasCallingPoints: Bool {
@@ -191,6 +194,7 @@ struct ServiceMapView: View {
                     additionalRoutes: additionalRailwayRoutes,
                     progress: railwayMapProgress,
                     estimatedTrainCoordinate: estimatedTrainCoordinateOutsideRailwayRoute,
+                    onboardLocation: onboardLocation,
                     currentDelayMinutes: currentDelayMinutes,
                     fromCRS: fromCRS,
                     toCRS: toCRS,

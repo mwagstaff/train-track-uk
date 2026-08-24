@@ -10,6 +10,7 @@ struct InProgressJourneyView: View {
     @EnvironmentObject private var historyStore: JourneyHistoryStore
     @EnvironmentObject private var router: TabRouter
     @ObservedObject private var coordinator = JourneyTrackingCoordinator.shared
+    @StateObject private var location = LocationManagerPhone()
 
     @AppStorage("inProgressSelectedSubscriptionID") private var selectedSubscriptionID = ""
     @State private var mapSelection: InProgressMapSelection?
@@ -140,7 +141,7 @@ struct InProgressJourneyView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { journeyChooserToolbar }
         .sheet(item: $mapSelection) { selection in
-            ExpandedInProgressMap(selection: selection)
+            ExpandedInProgressMap(selection: selection, location: location)
         }
         .sheet(isPresented: $isShowingServicePicker) {
             if let departureContextJourney {
@@ -171,6 +172,21 @@ struct InProgressJourneyView: View {
             Text("The current journey will be recorded as ended early.")
         }
         .task(id: refreshKey) { await refreshContent() }
+        .task(id: onboardLocationServiceID) {
+            guard onboardLocationServiceID != nil else {
+                location.cancel()
+                return
+            }
+            defer { location.cancel() }
+            while !Task.isCancelled {
+                location.request(forceFresh: true)
+                do {
+                    try await Task.sleep(for: .seconds(20))
+                } catch {
+                    return
+                }
+            }
+        }
         .task(id: coordinator.recentlyCompleted?.autoDismissAt) {
             guard let expiry = coordinator.recentlyCompleted?.autoDismissAt else { return }
             let delay = expiry.timeIntervalSinceNow
@@ -286,7 +302,8 @@ struct InProgressJourneyView: View {
                 selection: mapSelection(
                     for: departure,
                     journey: journey,
-                    fallback: historyCallingPoints(active.currentLeg)
+                    fallback: historyCallingPoints(active.currentLeg),
+                    usesOnboardLocation: true
                 ),
                 title: "Current train location",
                 caption: serviceCaption(departure, destination: journey.toStation.name),
@@ -442,7 +459,8 @@ struct InProgressJourneyView: View {
                     departureTime: selection.departureTime,
                     destinationName: selection.destinationName,
                     fallbackCallingPoints: selection.fallbackCallingPoints,
-                    isCompact: true
+                    isCompact: true,
+                    onboardLocation: selection.usesOnboardLocation ? location.lastLocation : nil
                 )
                 .frame(height: 220)
                 .allowsHitTesting(false)
@@ -722,6 +740,14 @@ struct InProgressJourneyView: View {
         return "\(effectiveSubscriptionID ?? "none"):\(currentLegIndex):\(phase):\(groupKey)"
     }
 
+    private var onboardLocationServiceID: String? {
+        guard let active = coordinator.activeJourney,
+              active.phase == .inTransit || active.phase == .arriving else {
+            return nil
+        }
+        return active.currentLeg?.serviceID
+    }
+
     private func refreshContent() async {
         guard let group = selectedGroup else { return }
         for journey in group.legs.dropFirst(currentLegIndex) {
@@ -822,7 +848,8 @@ struct InProgressJourneyView: View {
     private func mapSelection(
         for departure: DepartureV2,
         journey: Journey,
-        fallback: [CallingPoint] = []
+        fallback: [CallingPoint] = [],
+        usesOnboardLocation: Bool = false
     ) -> InProgressMapSelection {
         InProgressMapSelection(
             serviceID: departure.serviceID,
@@ -830,7 +857,8 @@ struct InProgressJourneyView: View {
             toCRS: journey.toStation.crs,
             departureTime: JourneyItineraryBuilder.departureDisplayTime(departure),
             destinationName: journey.toStation.name,
-            fallbackCallingPoints: fallback
+            fallbackCallingPoints: fallback,
+            usesOnboardLocation: usesOnboardLocation
         )
     }
 
@@ -976,12 +1004,14 @@ private struct InProgressMapSelection: Identifiable {
     let departureTime: String
     let destinationName: String
     let fallbackCallingPoints: [CallingPoint]
+    let usesOnboardLocation: Bool
 
     var id: String { "\(serviceID):\(fromCRS):\(toCRS)" }
 }
 
 private struct ExpandedInProgressMap: View {
     let selection: InProgressMapSelection
+    @ObservedObject var location: LocationManagerPhone
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -992,7 +1022,8 @@ private struct ExpandedInProgressMap: View {
                 toCRS: selection.toCRS,
                 departureTime: selection.departureTime,
                 destinationName: selection.destinationName,
-                fallbackCallingPoints: selection.fallbackCallingPoints
+                fallbackCallingPoints: selection.fallbackCallingPoints,
+                onboardLocation: selection.usesOnboardLocation ? location.lastLocation : nil
             )
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {

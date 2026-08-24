@@ -16,6 +16,13 @@ private struct StationArrivalTarget: Codable {
     let to: String
     let station: Station
     let activeUntil: Date?
+    let muteOnArrival: Bool?
+    let isScheduledActivation: Bool?
+    let scheduleKind: NotificationScheduleKind?
+    let daysOfWeek: [DayOfWeek]?
+    let windowStart: String?
+    let windowEnd: String?
+    let travelDate: String?
 
     func distance(from location: CLLocation) -> CLLocationDistance {
         station.distance(from: location)
@@ -117,7 +124,6 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     private var conditionMonitor: CLMonitor?
     private var conditionEventsTask: Task<Void, Never>?
     private var monitoredConditionIdentifiers: [String] = []
-    private var lastSyncedSubscriptions: [NotificationSubscription] = []
 
     private var hasLocationTrackingWork: Bool {
         !monitoredTargets.isEmpty || JourneyTrackingCoordinator.shared.hasActiveJourney
@@ -135,7 +141,8 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     //   3. UIBackgroundModes includes "location" in Info.plist ✓
     //   4. Background App Refresh enabled on device (Settings > General > Background App Refresh)
     //      — this is a user-facing setting; the app cannot enable it programmatically.
-    //   5. App was NOT force-quit by the user — user swipe-close prevents re-launch.
+    //   5. Delivery remains under system control; the app must recover idempotently whenever
+    //      iOS next launches or wakes it rather than assuming a particular trigger fired.
     private var locationServiceSession: Any?
     private var locationServiceDiagnosticsTask: Task<Void, Never>?
 
@@ -169,7 +176,18 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         enriched["background_location_enabled"] = manager.allowsBackgroundLocationUpdates
         enriched["background_activity_active"] = backgroundActivitySession != nil
         enriched["location_service_session_active"] = locationServiceSession != nil
+        enriched["background_refresh_status"] = backgroundRefreshStatusDescription
+        enriched["application_state"] = UIApplication.shared.applicationState.rawValue
         ClientDiagnosticsLogger.log("geofence", event, metadata: enriched)
+    }
+
+    private var backgroundRefreshStatusDescription: String {
+        switch UIApplication.shared.backgroundRefreshStatus {
+        case .available: return "available"
+        case .denied: return "denied"
+        case .restricted: return "restricted"
+        @unknown default: return "unknown"
+        }
     }
 
     @available(iOS 18.0, *)
@@ -239,15 +257,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         if hasLocationTrackingWork {
             ensureLocationServiceSessionIfNeeded()
         }
-        _ = await startConditionMonitorIfNeeded()
+        await reconcilePersistedMonitoring(trigger: trigger)
         guard hasLocationTrackingWork || !monitoredConditionIdentifiers.isEmpty else { return }
         ensureLocationServiceSessionIfNeeded()
         updateBackgroundLocationState(hasActiveGeofences: true)
         if hasLocationTrackingWork {
             startLowSensitivityTrackingIfNeeded(reason: "launch-\(trigger)")
-        }
-        for region in manager.monitoredRegions where isManagedRegion(region.identifier) {
-            manager.requestState(for: region)
         }
         NotificationMuteRequestSender.shared.retryPendingMuteRequests(trigger: "launch-\(trigger)")
         logGeofenceDiagnostic("monitoring_restored_after_launch", metadata: [
@@ -257,7 +272,6 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     func sync(subscriptions: [NotificationSubscription]) async {
-        lastSyncedSubscriptions = subscriptions
         guard isGeofencingSupported else {
             logGeofenceDiagnostic("sync_skipped_ios_app_on_mac", metadata: [
                 "subscription_count": subscriptions.count
@@ -307,7 +321,6 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         guard canMonitorWithCurrentAuthorization else {
             await stopMonitoring(existingConditionIdentifiers, with: monitor)
             stopMonitoring(Array(legacyRegions))
-            clearArrivalMonitoringState()
             stopLocationUpdatesIfNeeded(reason: "missing location authorization")
             updateBackgroundLocationState(hasActiveGeofences: false)
             let syncMsg = "Geofence sync skipped: location authorization not granted"
@@ -322,13 +335,15 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             return
         }
 
-        if StationsService.shared.stations.isEmpty {
+        if StationsService.shared.stations.isEmpty
+            && NotificationSubscriptionStore.shared.locallyCachedScheduledStations.isEmpty {
             try? await StationsService.shared.loadStations()
         }
-        let stationsByCrs = StationsService.shared.stations.reduce(into: [String: Station]()) { result, station in
+        var stationsByCrs = NotificationSubscriptionStore.shared.locallyCachedScheduledStations
+        for station in StationsService.shared.stations {
             let key = station.crs.uppercased()
-            if result[key] == nil {
-                result[key] = station
+            if stationsByCrs[key] == nil {
+                stationsByCrs[key] = station
             }
         }
 
@@ -428,7 +443,127 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     func refreshJourneyConditions() async {
-        await sync(subscriptions: lastSyncedSubscriptions)
+        await reconcilePersistedMonitoring(trigger: "journey-conditions")
+    }
+
+    func reconcileAfterBackgroundWake(trigger: String) async {
+        await reconcilePersistedMonitoring(trigger: trigger)
+    }
+
+    /// Repairs the durable Core Location state from locally persisted targets and the
+    /// active journey checkpoint. This is safe to run on every launch, wake, or phase change.
+    private func reconcilePersistedMonitoring(trigger: String) async {
+        guard isGeofencingSupported,
+              CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else { return }
+
+        restoreExpectedTargetsFromScheduleCache()
+        let monitor = await startConditionMonitorIfNeeded()
+        let existing = Set(await monitor.identifiers.filter(isManagedRegion))
+        let journeyConditions = JourneyTrackingCoordinator.shared.locationConditions()
+        var desired: [String: CLCircularRegion] = [:]
+        for condition in journeyConditions {
+            let region = CLCircularRegion(
+                center: condition.station.coordinate,
+                radius: condition.radius,
+                identifier: condition.identifier
+            )
+            region.notifyOnEntry = true
+            region.notifyOnExit = condition.kind == .station
+            desired[condition.identifier] = region
+        }
+
+        let arrivalPlan = desiredRegions(
+            targets: monitoredTargets,
+            conditionLimit: max(0, StationDetectionPolicy.maximumMonitoredConditions - desired.count)
+        )
+        for (identifier, region) in arrivalPlan.regions {
+            desired[identifier] = region
+        }
+
+        var added = 0
+        var removed = 0
+        var replaced = 0
+        var identifiersToReplace = Set<String>()
+        for (identifier, region) in desired where existing.contains(identifier) {
+            guard let condition = await monitor.record(for: identifier)?.condition
+                    as? CLMonitor.CircularGeographicCondition else {
+                identifiersToReplace.insert(identifier)
+                continue
+            }
+            let coordinatesMatch = abs(condition.center.latitude - region.center.latitude) < 0.000_001
+                && abs(condition.center.longitude - region.center.longitude) < 0.000_001
+            let radiusMatches = abs(condition.radius - region.radius) < 0.5
+            if !coordinatesMatch || !radiusMatches {
+                identifiersToReplace.insert(identifier)
+            }
+        }
+        for identifier in existing where desired[identifier] == nil {
+            await monitor.remove(identifier)
+            removed += 1
+        }
+        for identifier in identifiersToReplace {
+            await monitor.remove(identifier)
+            replaced += 1
+        }
+        for (identifier, region) in desired
+            where !existing.contains(identifier) || identifiersToReplace.contains(identifier) {
+            await monitor.add(
+                CLMonitor.CircularGeographicCondition(center: region.center, radius: region.radius),
+                identifier: identifier,
+                assuming: .unsatisfied
+            )
+            added += 1
+        }
+        monitoredConditionIdentifiers = await monitor.identifiers.filter(isManagedRegion)
+
+        // CLMonitor records persist across process death. Re-evaluate satisfied records so
+        // arming while already inside a station does not depend on a future boundary event.
+        for identifier in desired.keys {
+            guard let event = await monitor.record(for: identifier)?.lastEvent else { continue }
+            if case .satisfied = event.state {
+                handleConditionMonitorEvent(event)
+            }
+        }
+
+        stopMonitoring(Array(manager.monitoredRegions.filter { isManagedRegion($0.identifier) }))
+        updateBackgroundLocationState(hasActiveGeofences: !desired.isEmpty)
+        if !desired.isEmpty {
+            startLowSensitivityTrackingIfNeeded(reason: "reconcile-\(trigger)")
+            manager.requestLocation()
+        }
+        logGeofenceDiagnostic("monitoring_reconciled", metadata: [
+            "trigger": trigger,
+            "expected_region_count": desired.count,
+            "actual_region_count": monitoredConditionIdentifiers.count,
+            "added_region_count": added,
+            "removed_region_count": removed,
+            "replaced_region_count": replaced,
+            "target_count": monitoredTargets.count,
+            "journey_condition_count": journeyConditions.count
+        ])
+    }
+
+    private func restoreExpectedTargetsFromScheduleCache() {
+        let store = NotificationSubscriptionStore.shared
+        let subscriptions = store.locallyCachedMonitoringSubscriptions
+        let stations = store.locallyCachedScheduledStations
+        let scheduledTargets = desiredTargets(subscriptions: subscriptions, stationsByCrs: stations)
+
+        // Keep active live-session targets and a scheduled target that is already waiting
+        // for station exit. Otherwise the durable schedule cache is authoritative.
+        monitoredTargets = monitoredTargets.filter { _, target in
+            !store.hasAuthoritativeScheduledActivationCache
+                || target.isScheduledActivation != true
+                || NotificationMuteStorage.hasPendingStationDepartureCleanup(from: target.from, to: target.to)
+        }
+        for (identifier, target) in scheduledTargets {
+            monitoredTargets[identifier] = target
+            if confirmationStates[identifier] == nil {
+                confirmationStates[identifier] = StationArrivalConfirmationState()
+            }
+        }
+        confirmationStates = confirmationStates.filter { monitoredTargets[$0.key] != nil }
+        persistMonitoredTargets()
     }
 
     private func stopMonitoring(_ regions: [CLRegion]) {
@@ -743,7 +878,15 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                     from: leg.from.uppercased(),
                     to: leg.to.uppercased(),
                     station: station,
-                    activeUntil: subscription.activeUntil
+                    activeUntil: subscription.activeUntil,
+                    muteOnArrival: subscription.muteOnArrival,
+                    isScheduledActivation: subscription.source == .scheduled
+                        || (subscription.liveSessionOrigin == nil && subscription.activeUntil == nil),
+                    scheduleKind: subscription.scheduleKind,
+                    daysOfWeek: subscription.daysOfWeek,
+                    windowStart: leg.windowStart,
+                    windowEnd: leg.windowEnd,
+                    travelDate: leg.travelDate
                 )
             }
         }
@@ -761,6 +904,10 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             let lhsAwaitingExit = NotificationMuteStorage.hasPendingStationDepartureCleanup(from: lhs.from, to: lhs.to)
             let rhsAwaitingExit = NotificationMuteStorage.hasPendingStationDepartureCleanup(from: rhs.from, to: rhs.to)
             if lhsAwaitingExit != rhsAwaitingExit { return lhsAwaitingExit }
+
+            let lhsActive = isTargetActiveNow(lhs)
+            let rhsActive = isTargetActiveNow(rhs)
+            if lhsActive != rhsActive { return lhsActive }
 
             if let currentLocation {
                 let lhsDistance = lhs.distance(from: currentLocation)
@@ -834,6 +981,19 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         }
 
         return (regions, selectedTargets, max(0, targets.count - selectedTargets.count))
+    }
+
+    private func isTargetActiveNow(_ target: StationArrivalTarget, now: Date = Date()) -> Bool {
+        guard target.isScheduledActivation == true else { return true }
+        guard let windowStart = target.windowStart, let windowEnd = target.windowEnd else { return false }
+        return NotificationScheduleActivationPolicy.isActive(
+            scheduleKind: target.scheduleKind,
+            daysOfWeek: target.daysOfWeek ?? [],
+            windowStart: windowStart,
+            windowEnd: windowEnd,
+            travelDate: target.travelDate,
+            now: now
+        )
     }
 
     private func syncMonitoredTargets(_ desired: [String: StationArrivalTarget]) {
@@ -952,34 +1112,66 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         identifier: String,
         parsed: (subscriptionId: String, from: String, to: String)
     ) async -> StationArrivalTarget? {
-        if let existing = monitoredTargets[identifier] {
-            return existing
-        }
-
-        // Region callbacks have a short background execution window. Never put a station
-        // API request in that path; active targets are persisted during sync specifically so
-        // a cold launch can resolve them without connectivity.
-        guard let station = StationsService.shared.stations.first(where: {
-            $0.crs.caseInsensitiveCompare(parsed.from) == .orderedSame
-        }) else {
-            let msg = "Unable to resolve station \(parsed.from) locally for region hint \(identifier)"
-            DebugLogStore.shared.log(msg, category: "Error")
-            debugLog("❌ \(msg)")
+        guard let target = monitoredTargets[identifier],
+              target.subscriptionId == parsed.subscriptionId,
+              target.from.caseInsensitiveCompare(parsed.from) == .orderedSame,
+              target.to.caseInsensitiveCompare(parsed.to) == .orderedSame else {
+            // Persisted expected targets are authoritative. Reconstructing a missing target
+            // from a callback identifier could let a stale condition advance the wrong leg.
+            logGeofenceDiagnostic("stale_condition_ignored", metadata: [
+                "region_id": identifier,
+                "subscription_id": parsed.subscriptionId,
+                "from": parsed.from,
+                "to": parsed.to
+            ])
             return nil
         }
 
-        let target = StationArrivalTarget(
-            identifier: identifier,
-            subscriptionId: parsed.subscriptionId,
-            from: parsed.from.uppercased(),
-            to: parsed.to.uppercased(),
-            station: station,
-            activeUntil: nil
-        )
-        monitoredTargets[identifier] = target
-        if confirmationStates[identifier] == nil {
-            confirmationStates[identifier] = StationArrivalConfirmationState()
+        let now = Date()
+        if let activeUntil = target.activeUntil, activeUntil <= now {
+            logGeofenceDiagnostic("expired_condition_ignored", metadata: ["region_id": identifier])
+            return nil
         }
+
+        let isAwaitingDeparture = NotificationMuteStorage.hasPendingStationDepartureCleanup(
+            from: target.from,
+            to: target.to
+        )
+        if target.isScheduledActivation == true, !isAwaitingDeparture {
+            guard let windowStart = target.windowStart,
+                  let windowEnd = target.windowEnd,
+                  NotificationScheduleActivationPolicy.isActive(
+                    scheduleKind: target.scheduleKind,
+                    daysOfWeek: target.daysOfWeek ?? [],
+                    windowStart: windowStart,
+                    windowEnd: windowEnd,
+                    travelDate: target.travelDate,
+                    now: now
+                  ) else {
+                logGeofenceDiagnostic("scheduled_condition_outside_window", metadata: [
+                    "region_id": identifier,
+                    "subscription_id": target.subscriptionId
+                ])
+                return nil
+            }
+
+            let armed = await NotificationSubscriptionStore.shared.armScheduledJourneyFromCache(
+                subscriptionID: target.subscriptionId,
+                from: target.from,
+                to: target.to,
+                now: now
+            )
+            let matchesActiveJourney = JourneyTrackingCoordinator.shared.activeJourney?.subscriptionId
+                == target.subscriptionId
+            guard armed || matchesActiveJourney else {
+                logGeofenceDiagnostic("scheduled_condition_arm_failed", metadata: [
+                    "region_id": identifier,
+                    "subscription_id": target.subscriptionId
+                ])
+                return nil
+            }
+        }
+
         return target
     }
 
@@ -1051,6 +1243,18 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         for target in monitoredTargets.values.sorted(by: { $0.identifier < $1.identifier }) {
             if NotificationMuteStorage.hasPendingStationDepartureCleanup(from: target.from, to: target.to) {
                 evaluateDeparture(using: location, for: target, source: source)
+            } else if target.isScheduledActivation == true,
+                      let windowStart = target.windowStart,
+                      let windowEnd = target.windowEnd,
+                      !NotificationScheduleActivationPolicy.isActive(
+                        scheduleKind: target.scheduleKind,
+                        daysOfWeek: target.daysOfWeek ?? [],
+                        windowStart: windowStart,
+                        windowEnd: windowEnd,
+                        travelDate: target.travelDate,
+                        now: Date()
+                      ) {
+                continue
             } else {
                 evaluateArrival(using: location, for: target, source: source)
             }
@@ -1112,18 +1316,20 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 to: target.to,
                 detectedAt: Date()
             )
-            await self.triggerMuteFlow(
-                subscriptionId: target.subscriptionId,
-                from: target.from,
-                to: target.to,
-                simulate: false,
-                endLiveActivity: false,
-                detectionSource: "location_fallback",
-                journeyNotificationBody: JourneyTrackingCoordinator.shared.boardingNotificationBody(
+            if target.muteOnArrival != false {
+                await self.triggerMuteFlow(
+                    subscriptionId: target.subscriptionId,
                     from: target.from,
-                    to: target.to
+                    to: target.to,
+                    simulate: false,
+                    endLiveActivity: false,
+                    detectionSource: "location_fallback",
+                    journeyNotificationBody: JourneyTrackingCoordinator.shared.boardingNotificationBody(
+                        from: target.from,
+                        to: target.to
+                    )
                 )
-            )
+            }
         }
     }
 
@@ -1355,6 +1561,9 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 self.logGeofenceDiagnostic("journey_history_condition_entered", metadata: [
                     "region_id": circular.identifier
                 ])
+                if let location = manager.location {
+                    await JourneyTrackingCoordinator.shared.evaluateLocation(location)
+                }
                 _ = await JourneyTrackingCoordinator.shared.handleConditionEntry(identifier: circular.identifier)
             }
             return
@@ -1378,12 +1587,6 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         let muteFlowToken = AppBackgroundTaskToken(name: "geofence-entry-mute-flow")
 
         if tier == .inner {
-            // Save the transition before hopping to the main actor. A cold-woken process may
-            // be suspended at any point after this delegate method returns.
-            if !NotificationMuteStorage.isMutedToday(from: parsed.from, to: parsed.to) {
-                NotificationMuteStorage.clearArrivalDetectionPending(from: parsed.from, to: parsed.to)
-                NotificationMuteStorage.markPendingStationDepartureCleanup(from: parsed.from, to: parsed.to)
-            }
             // Entering the tight arrival ring IS the arrival. Confirm directly — no dependency
             // on continuous background updates surviving the approach (the root cause of
             // silent misses). The arrival confirmation is idempotent, so this coexists safely
@@ -1404,15 +1607,18 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             return
         }
 
-        // Outer "approach" ring. Record that the user physically reached the origin station.
-        // If arrival is never confirmed (e.g. background location suspended before the inner
-        // ring fires), this marker lets us surface a "couldn't detect your arrival"
-        // notification rather than failing silently. Cleared once arrival is confirmed.
-        NotificationMuteStorage.markArrivalDetectionPending(from: parsed.from, to: parsed.to)
-
         let message = "Entered region: \(circular.identifier)\nSub: \(parsed.subscriptionId)\nFrom: \(parsed.from.uppercased()) To: \(parsed.to.uppercased())"
         Task { @MainActor in
             defer { muteFlowToken.end() }
+            let targetIdentifier = self.regionIdentifier(
+                subscriptionId: parsed.subscriptionId,
+                from: parsed.from,
+                to: parsed.to
+            )
+            guard await self.ensureTargetExists(identifier: targetIdentifier, parsed: parsed) != nil else { return }
+            // Record that the user physically reached the origin station only after the
+            // persisted target and schedule window have been validated.
+            NotificationMuteStorage.markArrivalDetectionPending(from: parsed.from, to: parsed.to)
             self.outerRegionInsideStates[circular.identifier] = true
             DebugLogStore.shared.log(message, category: "Geofence")
             self.logGeofenceDiagnostic("region_entered", metadata: [
@@ -1430,6 +1636,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     /// Distinct from the homing heuristic: a region crossing is itself the confirmation, so
     /// there is no distance/dwell evaluation here.
     private func confirmArrivalFromRegion(parsed: (subscriptionId: String, from: String, to: String), source: String) async {
+        let targetIdentifier = regionIdentifier(
+            subscriptionId: parsed.subscriptionId,
+            from: parsed.from,
+            to: parsed.to
+        )
+        guard await ensureTargetExists(identifier: targetIdentifier, parsed: parsed) != nil else { return }
         guard !NotificationMuteStorage.isMutedToday(from: parsed.from, to: parsed.to) else { return }
 
         let msg = "Arrival confirmed via tight geofence for \(parsed.from)→\(parsed.to)"
@@ -1461,6 +1673,15 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         guard !NotificationMuteStorage.isMutedToday(from: fromCode, to: toCode) else { return }
 
         NotificationMuteStorage.clearArrivalDetectionPending(from: fromCode, to: toCode)
+        let alreadyAwaitingDeparture = NotificationMuteStorage.hasPendingStationDepartureCleanup(
+            from: fromCode,
+            to: toCode
+        )
+        if !alreadyAwaitingDeparture {
+            // Persist the transition before any departure-board request. A background wake
+            // may end while the optional snapshot is still in flight.
+            _ = NotificationMuteStorage.markPendingStationDepartureCleanup(from: fromCode, to: toCode)
+        }
         await JourneyTrackingCoordinator.shared.handleOriginArrival(
             subscriptionID: subscriptionId,
             detectedAt: Date()
@@ -1473,7 +1694,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         }
         finishPrecisionSamplingBurst(reason: "arrival-confirmed")
 
-        if NotificationMuteStorage.hasPendingStationDepartureCleanup(from: fromCode, to: toCode) {
+        if alreadyAwaitingDeparture {
             let duplicateMsg = "Station arrival already confirmed for \(fromCode)→\(toCode); waiting for station exit"
             DebugLogStore.shared.log(duplicateMsg, category: "Geofence")
             logGeofenceDiagnostic("station_departure_cleanup_already_armed", metadata: [
@@ -1486,7 +1707,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             return
         }
 
-        let dateKey = NotificationMuteStorage.markPendingStationDepartureCleanup(from: fromCode, to: toCode)
+        let dateKey = currentDateKey()
         let msg = "Station arrival confirmed for \(fromCode)→\(toCode); journey updates continue until leaving the \(Int(Self.regionRadiusMeters))m station area"
         DebugLogStore.shared.log(msg, category: "Geofence")
         logGeofenceDiagnostic("station_departure_cleanup_armed", metadata: [
@@ -1578,6 +1799,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             ])
 
             guard tier == .outer else { return }
+            let targetIdentifier = self.regionIdentifier(
+                subscriptionId: parsed.subscriptionId,
+                from: parsed.from,
+                to: parsed.to
+            )
+            guard let target = await self.ensureTargetExists(identifier: targetIdentifier, parsed: parsed) else { return }
             self.outerRegionInsideStates[circular.identifier] = false
 
             if await self.isStillInsideStationArea(parsed: parsed, exitingRegionId: circular.identifier) {
@@ -1613,18 +1840,22 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 to: parsed.to
             )
 
-            let endMsg = "Geofence exit for \(parsed.from)→\(parsed.to) — muting notifications and tracking the train journey"
+            let endMsg = target.muteOnArrival == false
+                ? "Geofence exit for \(parsed.from)→\(parsed.to) — tracking the train journey"
+                : "Geofence exit for \(parsed.from)→\(parsed.to) — muting notifications and tracking the train journey"
             DebugLogStore.shared.log(endMsg, category: "Geofence")
             debugLog("🏁 \(endMsg)")
-            await self.triggerMuteFlow(
-                subscriptionId: parsed.subscriptionId,
-                from: parsed.from,
-                to: parsed.to,
-                simulate: false,
-                endLiveActivity: false,
-                detectionSource: "geofence",
-                journeyNotificationBody: journeyNotificationBody
-            )
+            if target.muteOnArrival != false {
+                await self.triggerMuteFlow(
+                    subscriptionId: parsed.subscriptionId,
+                    from: parsed.from,
+                    to: parsed.to,
+                    simulate: false,
+                    endLiveActivity: false,
+                    detectionSource: "geofence",
+                    journeyNotificationBody: journeyNotificationBody
+                )
+            }
         }
         debugLog("📍 \(message)")
     }
@@ -1668,7 +1899,6 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         source: String = "foreground-proximity"
     ) {
         guard isGeofencingSupported else { return }
-        guard subscription.muteOnArrival != false else { return }
         if let activeUntil = subscription.activeUntil, activeUntil <= Date() {
             return
         }
@@ -1684,7 +1914,15 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             from: from,
             to: to,
             station: station,
-            activeUntil: subscription.activeUntil
+            activeUntil: subscription.activeUntil,
+            muteOnArrival: subscription.muteOnArrival,
+            isScheduledActivation: subscription.source == .scheduled
+                || (subscription.liveSessionOrigin == nil && subscription.activeUntil == nil),
+            scheduleKind: subscription.scheduleKind,
+            daysOfWeek: subscription.daysOfWeek,
+            windowStart: leg.windowStart,
+            windowEnd: leg.windowEnd,
+            travelDate: leg.travelDate
         )
 
         monitoredTargets[identifier] = target
@@ -1746,6 +1984,9 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 self.logGeofenceDiagnostic("journey_history_condition_state_inside", metadata: [
                     "region_id": circular.identifier
                 ])
+                if let location = manager.location {
+                    await JourneyTrackingCoordinator.shared.evaluateLocation(location)
+                }
                 _ = await JourneyTrackingCoordinator.shared.handleConditionEntry(identifier: circular.identifier)
             }
             return
@@ -1782,17 +2023,17 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
         let muteFlowToken = AppBackgroundTaskToken(name: "geofence-state-mute-flow")
 
-        if tier == .inner,
-           !NotificationMuteStorage.isMutedToday(from: parsed.from, to: parsed.to) {
-            NotificationMuteStorage.clearArrivalDetectionPending(from: parsed.from, to: parsed.to)
-            NotificationMuteStorage.markPendingStationDepartureCleanup(from: parsed.from, to: parsed.to)
-        }
-
         Task { @MainActor in
             defer { muteFlowToken.end() }
             if tier == .inner {
                 await self.confirmArrivalFromRegion(parsed: parsed, source: "arrival-region-inside")
             } else {
+                let targetIdentifier = self.regionIdentifier(
+                    subscriptionId: parsed.subscriptionId,
+                    from: parsed.from,
+                    to: parsed.to
+                )
+                guard await self.ensureTargetExists(identifier: targetIdentifier, parsed: parsed) != nil else { return }
                 NotificationMuteStorage.markArrivalDetectionPending(from: parsed.from, to: parsed.to)
                 await self.handleRegionHint(identifier: circular.identifier, parsed: parsed, source: "inside")
             }
@@ -1996,8 +2237,10 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             // A one-shot request normally completes quickly. Keep a short background token
             // so the callback has time to arrive; evaluateArrival escalates to a bounded
             // precision burst only when the result is near a station decision.
-            try? await Task.sleep(nanoseconds: 6_000_000_000)
-            token.end()
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 6_000_000_000)
+                token.end()
+            }
         }
 
         await evaluateMissedArrivals(trigger: trigger)
@@ -2080,6 +2323,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
             if self.canMonitorWithCurrentAuthorization {
                 self.requestTemporaryFullAccuracyIfNeeded()
+                await self.reconcileAfterBackgroundWake(trigger: "authorization-changed")
                 await NotificationSubscriptionStore.shared.refresh()
             } else if !self.monitoredTargets.isEmpty {
                 self.stopLocationUpdatesIfNeeded(reason: "authorization-changed")

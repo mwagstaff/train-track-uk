@@ -102,6 +102,14 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
             await NotificationGeofenceManager.shared.restoreAfterLaunch(
                 trigger: locationLaunch ? "location" : "application"
             )
+            // A push-to-start Live Activity may have launched this process without the
+            // separate best-effort silent wake. Reconcile ActivityKit immediately.
+            for delay in [0, 750_000_000, 1_500_000_000] as [UInt64] {
+                try? await Task.sleep(nanoseconds: delay)
+                if await LiveActivityManager.shared.registerAnyUnregisteredActivities() {
+                    break
+                }
+            }
         }
         return true
     }
@@ -157,15 +165,22 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
             ])
             let journeyTrackingUpdated = await JourneyTrackingCoordinator.shared.handleRemoteNotification(userInfo)
             let started = await ScheduledLiveActivityAutoStartManager.shared.handleRemoteNotification(userInfo: userInfo)
+            await NotificationGeofenceManager.shared.reconcileAfterBackgroundWake(
+                trigger: "remote-notification"
+            )
 
             // For push-to-start notifications (content-available: 1 is included in the
             // payload), iOS wakes the app in background. The new Activity can take a
             // moment to appear in Activity.activities, so probe a few times during the
             // runtime iOS grants us instead of betting the whole hand on a single 750ms
             // lookup.
-            for delay in [750_000_000, 1_500_000_000, 3_000_000_000] as [UInt64] {
+            var activityReconciled = false
+            for delay in [0, 750_000_000, 1_500_000_000] as [UInt64] {
                 try? await Task.sleep(nanoseconds: delay)
-                await LiveActivityManager.shared.registerAnyUnregisteredActivities()
+                if await LiveActivityManager.shared.registerAnyUnregisteredActivities() {
+                    activityReconciled = true
+                    break
+                }
             }
 
             // Use this background wake as a fresh chance to confirm station arrival and to
@@ -176,9 +191,10 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
             ClientDiagnosticsLogger.log("notifications", "remote_notification_handled", metadata: [
                 "started_scheduled_live_activity": started,
                 "journey_tracking_updated": journeyTrackingUpdated,
-                "completion": (started || journeyTrackingUpdated) ? "newData" : "noData"
+                "activity_reconciled": activityReconciled,
+                "completion": (started || journeyTrackingUpdated || activityReconciled) ? "newData" : "noData"
             ])
-            completionHandler((started || journeyTrackingUpdated) ? .newData : .noData)
+            completionHandler((started || journeyTrackingUpdated || activityReconciled) ? .newData : .noData)
         }
     }
 
@@ -582,6 +598,20 @@ final class ScheduledLiveActivityAutoStartManager {
         inFlightKeys.insert(scheduleKey)
         defer { inFlightKeys.remove(scheduleKey) }
 
+        // Arm the locally persisted route before ActivityKit or server registration work.
+        // This is the critical operation for a short background wake.
+        let trackingArmed = await NotificationSubscriptionStore.shared.armScheduledJourneyFromCache(
+            subscriptionID: trigger.subscriptionId,
+            from: trigger.from,
+            to: trigger.to
+        )
+        ClientDiagnosticsLogger.log("scheduled_live_activity", "local_tracking_arm_finished", metadata: [
+            "subscription_id": trigger.subscriptionId,
+            "from": trigger.from,
+            "to": trigger.to,
+            "armed": trackingArmed
+        ])
+
         var records = pruneStaleRecords(loadRecords())
         if let existing = records.first(where: { $0.scheduleKey == scheduleKey }) {
             let existingIsActive = hasActiveActivity(id: existing.activityID)
@@ -754,6 +784,12 @@ final class ScheduledLiveActivityAutoStartManager {
     }
 
     private func makeJourney(from: String, to: String) async -> Journey? {
+        let cached = NotificationSubscriptionStore.shared.locallyCachedScheduledStations
+        if let fromStation = cached[from.uppercased()],
+           let toStation = cached[to.uppercased()] {
+            return Journey(fromStation: fromStation, toStation: toStation, favorite: false)
+        }
+
         if StationsService.shared.stations.isEmpty {
             try? await StationsService.shared.loadStations()
         }

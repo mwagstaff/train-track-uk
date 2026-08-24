@@ -267,6 +267,7 @@ struct JourneyHistoryTests {
             originArrivedAt: departure,
             detectedDepartureAt: departure,
             detectedArrivalAt: legs.last?.detectedArrivalAt,
+            deviceBasedArrivalAt: legs.last?.detectedArrivalAt,
             lastConfirmedOnRouteStation: farringdon,
             nextExpectedCallingPointIndex: 1,
             legs: legs,
@@ -286,6 +287,7 @@ struct JourneyHistoryTests {
             completedAt: legs.last?.detectedArrivalAt ?? departure
         )
 
+        #expect(record.deviceBasedArrivalAt == checkpoint.deviceBasedArrivalAt)
         let responsibleLeg = try #require(JourneyHistoryDelayPolicy.responsibleOperatorLeg(in: record))
         #expect(responsibleLeg.operatorCode == "SE")
     }
