@@ -12,6 +12,30 @@ import JourneyActivityShared
 
 struct TrainTrack_UKTests {
 
+    @Test func journeyCompletionCanReplaceAPendingBoardingMuteRequest() {
+        let subscriptionID = "test-\(UUID().uuidString)"
+        let dateKey = NotificationMuteStorage.currentDateKey()
+        NotificationMuteStorage.upsertPendingMuteRequest(
+            subscriptionId: subscriptionID,
+            from: "KTH",
+            to: "VIC",
+            dateKey: dateKey,
+            delayMinutes: 0,
+            reason: "station_exit"
+        )
+
+        NotificationMuteStorage.removePendingMuteRequests(
+            subscriptionId: subscriptionID,
+            from: "KTH",
+            to: "VIC",
+            dateKey: dateKey
+        )
+
+        #expect(NotificationMuteStorage.pendingMuteRequests().contains {
+            $0.subscriptionId == subscriptionID
+        } == false)
+    }
+
     @Test func journeyStatusMessagesCoverEachTrackingPhase() {
         let phases = JourneyActivityAttributes.JourneyPhase.self
 
@@ -348,6 +372,22 @@ struct TrainTrack_UKTests {
     @Test func journeyStopPlacementCanExtendBeyondTheCurrentDestination() {
         #expect(JourneyStopPlacement.destination.insertionIndex(existingStopCount: 1) == 1)
         #expect(JourneyStopPlacement.destination.insertionIndex(existingStopCount: 3) == 3)
+    }
+
+    @Test func oneOffJourneyRequiresImmediateUpdatesAndCannotBeScheduled() {
+        var options = AddJourneyOptions()
+
+        options.setOneOff(true)
+        #expect(options.oneOff == false)
+
+        options.setSchedule(true)
+        options.setStartNow(true)
+        options.setOneOff(true)
+        #expect(options.oneOff)
+        #expect(options.schedule == false)
+
+        options.setStartNow(false)
+        #expect(options.oneOff == false)
     }
 
     @Test func stationCatalogueIncludesCambridgeSouthUntilTheAPIIsUpdated() throws {

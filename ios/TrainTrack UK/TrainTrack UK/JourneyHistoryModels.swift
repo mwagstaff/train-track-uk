@@ -363,6 +363,34 @@ extension JourneyHistoryRecord {
     }
 }
 
+struct JourneyHistoryRowArrival: Equatable {
+    let date: Date
+    let qualifier: String?
+}
+
+enum JourneyHistoryClockTime {
+    static func text(_ date: Date, calendar: Calendar = .current) -> String {
+        let components = calendar.dateComponents([.hour, .minute], from: date)
+        return String(format: "%02d:%02d", components.hour ?? 0, components.minute ?? 0)
+    }
+}
+
+enum JourneyHistoryRowArrivalPolicy {
+    static func resolve(
+        postedArrival: Date?,
+        deviceBasedArrival: Date?,
+        detectedArrival: Date?
+    ) -> JourneyHistoryRowArrival? {
+        if let postedArrival {
+            return JourneyHistoryRowArrival(date: postedArrival, qualifier: "posted arrival time")
+        }
+        if let deviceBasedArrival {
+            return JourneyHistoryRowArrival(date: deviceBasedArrival, qualifier: "based on device location")
+        }
+        return detectedArrival.map { JourneyHistoryRowArrival(date: $0, qualifier: nil) }
+    }
+}
+
 enum JourneyHistoryOperatorSummary {
     static func text(for operatorNames: [String?]) -> String {
         var seen = Set<String>()
@@ -572,7 +600,7 @@ enum JourneyHistoryArrivalStatusText {
         calendar: Calendar = .current
     ) -> String {
         if let actualArrival {
-            let time = timeLabel(actualArrival, calendar: calendar)
+            let time = JourneyHistoryClockTime.text(actualArrival, calendar: calendar)
             guard let delayMinutes else { return "Arrived at \(time)" }
             if delayMinutes == 0 {
                 return "Arrived on time, at \(time)"
@@ -581,7 +609,7 @@ enum JourneyHistoryArrivalStatusText {
             return "Arrived \(delayMinutes) \(unit) late, at \(time)"
         }
         if let detectedArrival {
-            let time = timeLabel(detectedArrival, calendar: calendar)
+            let time = JourneyHistoryClockTime.text(detectedArrival, calendar: calendar)
             if JourneyHistoryOfficialArrivalPolicy.isUnavailable(
                 actualArrival: actualArrival,
                 detectedArrival: detectedArrival,
@@ -594,10 +622,6 @@ enum JourneyHistoryArrivalStatusText {
         return outcome.displayName
     }
 
-    private static func timeLabel(_ date: Date, calendar: Calendar) -> String {
-        let components = calendar.dateComponents([.hour, .minute], from: date)
-        return String(format: "%02d:%02d", components.hour ?? 0, components.minute ?? 0)
-    }
 }
 
 enum JourneyHistoryOfficialArrivalPolicy {

@@ -1334,6 +1334,9 @@ final class JourneyTrackingCoordinator: ObservableObject {
             completedAt: completedAt
         )
         JourneyHistoryStore.shared.add(record)
+        if outcome == .completed {
+            reconcileScheduledNotificationMuteAfterCompletion(active)
+        }
         let isAwaitingOfficialArrival = outcome == .completed
             && record.actualArrivalAt == nil
             && active.backendSessionID != nil
@@ -1370,6 +1373,37 @@ final class JourneyTrackingCoordinator: ObservableObject {
         } else {
             await postTrackingStoppedNotification(active, outcome: outcome)
         }
+    }
+
+    private func reconcileScheduledNotificationMuteAfterCompletion(
+        _ active: ActiveJourneyHistoryCheckpoint
+    ) {
+        guard active.source == .scheduled, let leg = active.currentLeg else { return }
+
+        let from = leg.fromStation.crs.uppercased()
+        let to = leg.toStation.crs.uppercased()
+        NotificationMuteStorage.removePendingMuteRequests(
+            subscriptionId: active.subscriptionId,
+            from: from,
+            to: to
+        )
+        NotificationMuteStorage.markMuted(from: from, to: to)
+        NotificationMuteStorage.clearArrivalDetectionPending(from: from, to: to)
+        NotificationMuteStorage.clearPendingStationDepartureCleanup(from: from, to: to)
+        NotificationMuteRequestSender.shared.enqueueMute(
+            subscriptionId: active.subscriptionId,
+            from: from,
+            to: to,
+            reason: "journey_completed_reconciliation",
+            transition: "station_exit",
+            detectionSource: "journey_tracking"
+        )
+        log("scheduled_notification_mute_reconciled", "Reconciled scheduled notifications after completing \(from)→\(to)", metadata: [
+            "journey_id": active.id.uuidString,
+            "subscription_id": active.subscriptionId,
+            "from": from,
+            "to": to
+        ])
     }
 
     private func populate(_ leg: inout JourneyHistoryLeg, from details: ServiceDetails, reference: Date) {

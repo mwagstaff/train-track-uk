@@ -273,6 +273,23 @@ nonisolated enum NotificationMuteStorage {
         savePendingMuteRequests(requests, defaults: sharedDefaults)
     }
 
+    static func removePendingMuteRequests(
+        subscriptionId: String,
+        from: String,
+        to: String,
+        dateKey: String? = nil
+    ) {
+        guard let sharedDefaults = UserDefaults(suiteName: suiteName) else { return }
+        let targetLegKey = legKey(from: from, to: to)
+        let targetDateKey = dateKey ?? currentDateKey()
+        let requests = loadPendingMuteRequests(defaults: sharedDefaults).filter { request in
+            request.subscriptionId != subscriptionId
+                || legKey(from: request.from, to: request.to) != targetLegKey
+                || request.dateKey != targetDateKey
+        }
+        savePendingMuteRequests(requests, defaults: sharedDefaults)
+    }
+
     private static func pendingMuteRequestId(
         subscriptionId: String,
         from: String,

@@ -4,9 +4,19 @@ struct AddJourneyView: View {
     @State private var fromInput = StationInput()
     @State private var stopInputs: [StationInput] = [StationInput()]
     @State private var markAsFavorite: Bool = false
+    @State private var options = AddJourneyOptions()
     @State private var scrollTarget: UUID? = nil
+    @State private var scheduleDestination: NotificationScheduleDestination?
+    @State private var postScheduleTab: Tab?
+    @State private var isSaving = false
+    @State private var isStartingOneOff = false
 
     @EnvironmentObject var router: TabRouter
+    @EnvironmentObject var depStore: DeparturesStore
+    @EnvironmentObject var activityMgr: LiveActivityManager
+    @EnvironmentObject var notificationStore: NotificationSubscriptionStore
+
+    @AppStorage("liveActivityDurationMinutes") private var liveActivityDurationMinutes: Int = 60
 
     @FocusState private var focusedField: Field?
 
@@ -27,9 +37,9 @@ struct AddJourneyView: View {
         return [from] + stopStations
     }
 
-    private var canSave: Bool {
-        guard let stations = resolvedStations else { return false }
-        return !JourneyStore.shared.groupExists(for: stations)
+    private var canSubmit: Bool {
+        guard let stations = resolvedStations, !isSaving, !isStartingOneOff else { return false }
+        return options.oneOff || !JourneyStore.shared.groupExists(for: stations)
     }
 
     private var journeyExists: Bool {
@@ -73,7 +83,7 @@ struct AddJourneyView: View {
                     }
                 }
 
-                if journeyExists {
+                if journeyExists && !options.oneOff && !isSaving {
                     Section {
                         Label("This journey already exists", systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.orange)
@@ -81,16 +91,47 @@ struct AddJourneyView: View {
                 }
 
                 Section("Options") {
+                    Toggle("Start journey now", isOn: Binding(
+                        get: { options.startNow },
+                        set: { options.setStartNow($0) }
+                    ))
+
+                    Toggle("Don't save, this is a one-off", isOn: Binding(
+                        get: { options.oneOff },
+                        set: { isOn in
+                            options.setOneOff(isOn)
+                            if isOn {
+                                markAsFavorite = false
+                            }
+                        }
+                    ))
+                    .disabled(!options.canSelectOneOff)
+
+                    Toggle("Schedule journey", isOn: Binding(
+                        get: { options.schedule },
+                        set: { options.setSchedule($0) }
+                    ))
+                    .disabled(options.oneOff)
+
                     Toggle("Mark as favourite", isOn: $markAsFavorite)
+                        .disabled(options.oneOff)
                 }
 
                 Section {
                     Button {
                         save()
                     } label: {
-                        Label("Save", systemImage: "tray.and.arrow.down")
+                        if isSaving || isStartingOneOff {
+                            ProgressView()
+                                .frame(maxWidth: .infinity)
+                        } else {
+                            Label(
+                                options.oneOff ? "Start one-off journey" : "Save",
+                                systemImage: options.oneOff ? "play.fill" : "tray.and.arrow.down"
+                            )
+                        }
                     }
-                    .disabled(!canSave)
+                    .disabled(!canSubmit)
                 }
             }
             .onAppear {
@@ -116,7 +157,15 @@ struct AddJourneyView: View {
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { cancel() }
+                    .disabled(isSaving || isStartingOneOff)
             }
+        }
+        .sheet(item: $scheduleDestination, onDismiss: finishScheduling) { destination in
+            NotificationScheduleView(
+                group: destination.group,
+                reverseGroup: destination.reverseGroup,
+                existingSubscription: destination.existingSubscription
+            )
         }
         .onChange(of: router.selected) { _, selectedTab in
             updateFocus(for: selectedTab)
@@ -150,16 +199,106 @@ struct AddJourneyView: View {
     }
 
     private func save() {
-        guard let stations = resolvedStations else { return }
+        guard let stations = resolvedStations, !isSaving, !isStartingOneOff else { return }
+
+        if options.oneOff {
+            startOneOffJourney(stations: stations)
+            return
+        }
+
+        isSaving = true
         let favorite = markAsFavorite
         let targetTab: Tab = favorite ? .favourites : .myJourneys
-        leaveAddJourney(for: targetTab) {
-            JourneyStore.shared.addJourneyGroup(
-                stations: stations,
-                favorite: favorite,
-                saveReturn: true
+        JourneyStore.shared.addJourneyGroup(
+            stations: stations,
+            favorite: favorite,
+            saveReturn: true
+        )
+
+        guard let group = savedGroup(for: stations) else {
+            isSaving = false
+            return
+        }
+
+        if options.startNow {
+            startJourneyUpdates(for: group)
+        }
+
+        if options.schedule {
+            postScheduleTab = targetTab
+            scheduleDestination = NotificationScheduleDestination(
+                group: group,
+                reverseGroup: JourneyStore.shared.reverseGroup(for: group),
+                existingSubscription: nil
+            )
+        } else {
+            leaveAddJourney(for: targetTab)
+        }
+    }
+
+    private func startOneOffJourney(stations: [Station]) {
+        guard let group = transientGroup(for: stations) else { return }
+        isStartingOneOff = true
+        Task {
+            let started = await JourneyUpdateActions.start(
+                group: group,
+                scheduledSubscription: nil,
+                liveSession: nil,
+                liveActivityDurationMinutes: liveActivityDurationMinutes,
+                notificationStore: notificationStore,
+                activityManager: activityMgr,
+                departuresStore: depStore
+            )
+            isStartingOneOff = false
+            if started {
+                leaveAddJourney(for: .inProgress)
+            }
+        }
+    }
+
+    private func startJourneyUpdates(for group: JourneyGroup) {
+        Task {
+            _ = await JourneyUpdateActions.start(
+                group: group,
+                scheduledSubscription: nil,
+                liveSession: nil,
+                liveActivityDurationMinutes: liveActivityDurationMinutes,
+                notificationStore: notificationStore,
+                activityManager: activityMgr,
+                departuresStore: depStore
             )
         }
+    }
+
+    private func savedGroup(for stations: [Station]) -> JourneyGroup? {
+        let stationCodes = stations.map { $0.crs.uppercased() }
+        return JourneyStore.shared.journeyGroups().first { group in
+            group.stationSequence.map { $0.crs.uppercased() } == stationCodes
+        }
+    }
+
+    private func transientGroup(for stations: [Station]) -> JourneyGroup? {
+        guard stations.count >= 2 else { return nil }
+        let groupID = UUID()
+        let createdAt = Date()
+        let legs = stations.indices.dropLast().map { index in
+            Journey(
+                id: UUID(),
+                groupId: groupID,
+                legIndex: index,
+                fromStation: stations[index],
+                toStation: stations[index + 1],
+                createdAt: createdAt,
+                favorite: false
+            )
+        }
+        return JourneyGroup(id: groupID, legs: legs)
+    }
+
+    private func finishScheduling() {
+        guard let targetTab = postScheduleTab else { return }
+        postScheduleTab = nil
+        leaveAddJourney(for: targetTab)
     }
 
     private func cancel() {
@@ -329,6 +468,33 @@ enum JourneyStopPlacement {
             return max(existingStopCount - 1, 0)
         case .destination:
             return existingStopCount
+        }
+    }
+}
+
+struct AddJourneyOptions: Equatable {
+    private(set) var startNow = false
+    private(set) var schedule = false
+    private(set) var oneOff = false
+
+    var canSelectOneOff: Bool { startNow }
+
+    mutating func setStartNow(_ isOn: Bool) {
+        startNow = isOn
+        if !isOn {
+            oneOff = false
+        }
+    }
+
+    mutating func setSchedule(_ isOn: Bool) {
+        guard !oneOff else { return }
+        schedule = isOn
+    }
+
+    mutating func setOneOff(_ isOn: Bool) {
+        oneOff = isOn && startNow
+        if oneOff {
+            schedule = false
         }
     }
 }

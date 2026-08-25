@@ -38,8 +38,8 @@ final class TrainTrack_UKUITests: XCTestCase {
 
         XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.tabBars.count, 1)
-        XCTAssertEqual(app.tabBars.buttons.count, 4)
-        XCTAssertFalse(app.tabBars.buttons["Add Journey"].exists)
+        XCTAssertEqual(app.tabBars.buttons.count, 5)
+        XCTAssertTrue(app.tabBars.buttons["Add Journey"].exists)
 
         app.swipeLeft()
 
@@ -77,6 +77,40 @@ final class TrainTrack_UKUITests: XCTestCase {
         XCTAssertEqual(app.tabBars.count, 1)
         XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.tabBars.buttons["Favourites"].isSelected)
+    }
+
+    @MainActor
+    func testAddJourneyTabShowsDependentJourneyOptions() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
+        app.tabBars.buttons["Add Journey"].tap()
+
+        XCTAssertTrue(app.navigationBars["Add Journey"].waitForExistence(timeout: 2))
+
+        let startNow = app.switches["Start journey now"]
+        let schedule = app.switches["Schedule journey"]
+        let oneOff = app.switches["Don't save, this is a one-off"]
+        XCTAssertTrue(startNow.waitForExistence(timeout: 2))
+        XCTAssertTrue(schedule.exists)
+        XCTAssertTrue(oneOff.exists)
+        XCTAssertFalse(oneOff.isEnabled)
+
+        app.swipeUp()
+        startNow.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        expectation(
+            for: NSPredicate(format: "isEnabled == true"),
+            evaluatedWith: oneOff
+        )
+        waitForExpectations(timeout: 2)
+
+        oneOff.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        let disabled = NSPredicate(format: "isEnabled == false")
+        expectation(for: disabled, evaluatedWith: schedule)
+        expectation(for: disabled, evaluatedWith: app.switches["Mark as favourite"])
+        waitForExpectations(timeout: 2)
+        XCTAssertTrue(app.buttons["Start one-off journey"].exists)
     }
 
     private func horizontalSwipe(

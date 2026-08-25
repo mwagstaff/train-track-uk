@@ -329,13 +329,17 @@ private struct JourneyHistoryRow: View {
             }
 
             HStack(spacing: 6) {
-                Text(record.detectedDepartureAt, style: .time)
+                Text(JourneyHistoryClockTime.text(record.detectedDepartureAt))
                 Image(systemName: "arrow.right")
                     .accessibilityHidden(true)
-                if let arrival = record.deviceBasedArrivalAt {
-                    Text("\(arrival.formatted(date: .omitted, time: .shortened)) (based on device location)")
-                } else if let arrival = record.detectedArrivalAt {
-                    Text(arrival, style: .time)
+                if let arrival = JourneyHistoryRowArrivalPolicy.resolve(
+                    postedArrival: record.actualArrivalAt,
+                    deviceBasedArrival: record.deviceBasedArrivalAt,
+                    detectedArrival: record.detectedArrivalAt
+                ) {
+                    Text(arrival.qualifier.map {
+                        "\(JourneyHistoryClockTime.text(arrival.date)) (\($0))"
+                    } ?? JourneyHistoryClockTime.text(arrival.date))
                 } else {
                     Text(record.outcome.displayName)
                 }

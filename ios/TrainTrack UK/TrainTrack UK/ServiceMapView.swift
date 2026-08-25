@@ -26,7 +26,7 @@ private enum RailwayMapPresentationGate {
 }
 
 struct ServiceMapView: View {
-    private static let trainLocationEstimateMessage = "Train locations are estimates only"
+    private static let trainLocationEstimateMessage = "Train locations are approximate only"
     private static let initialServiceDetailsFreshness: TimeInterval = 15
 
     let serviceID: String

@@ -110,6 +110,10 @@ struct ContentView: View {
                     .tag(Tab.inProgress)
             }
 
+            Color.clear
+                .tabItem { Label("Add Journey", systemImage: "plus") }
+                .tag(Tab.addJourney)
+
             NavigationStack(path: $historyPath) {
                 MyJourneyHistoryView()
                     .navigationDestination(for: JourneyHistoryNavigationTarget.self) { target in

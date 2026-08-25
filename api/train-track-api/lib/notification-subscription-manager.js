@@ -13,7 +13,8 @@ import { allowDeviceData } from './device-data-deletion-state.js';
 import {
     buildMuteNotificationPlan,
     resolveDetectionSource,
-    resolveMuteTransition
+    resolveMuteTransition,
+    shouldSendMuteNotifications
 } from './notification-mute-policy.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.NOTIFICATION_POLL_INTERVAL_SECONDS || '30');
@@ -1389,7 +1390,11 @@ export class NotificationSubscriptionManager {
 
         // When muting for today (i.e. triggered by geofence arrival), send a
         // confirmation push so the user knows notifications have been muted.
-        if (dateKey === todayKey && !this.isHolidayModeEnabled(subscription.deviceId)) {
+        if (
+            dateKey === todayKey
+            && !this.isHolidayModeEnabled(subscription.deviceId)
+            && shouldSendMuteNotifications({ reason: muteReason })
+        ) {
             let snapshot = null;
             if (!isStationExit) {
                 try {
@@ -1450,7 +1455,25 @@ export class NotificationSubscriptionManager {
             }));
         }
 
-        if (this.subscriptionSource(subscription) === LIVE_SESSION_SOURCE) {
+        const source = this.subscriptionSource(subscription);
+        if (source === SCHEDULED_SOURCE) {
+            await this.muteScheduledLegsForToday({
+                deviceId: subscription.deviceId,
+                legs: [leg],
+                reason: isStationExit
+                    ? 'scheduled_leg_muted_on_station_exit'
+                    : 'scheduled_leg_muted_on_arrival',
+                metadata: {
+                    requested_subscription_id: subscription.id,
+                    date: dateKey,
+                    trigger_reason: muteReason,
+                    transition: muteTransition,
+                    detection_source: muteDetectionSource
+                }
+            });
+        }
+
+        if (source === LIVE_SESSION_SOURCE) {
             const liveSessionMuteReason = isStationExit
                 ? 'live_session_muted_on_station_exit'
                 : 'live_session_muted_on_arrival';

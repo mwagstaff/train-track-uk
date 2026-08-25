@@ -37,11 +37,32 @@ test('updates only the schedule identified by subscription id', async () => {
     assert.deepEqual(schedules.find((schedule) => schedule.id === second.id)?.days_of_week, ['sat']);
 });
 
+test('muting a scheduled leg mutes the same leg in every schedule for the device', async () => {
+    const manager = testManager();
+    manager.pushClient.sendNotification = async () => ({ status: 200 });
+
+    const first = await manager.upsertSubscription(registration({ daysOfWeek: ['mon'] }));
+    const second = await manager.upsertSubscription(registration({ daysOfWeek: ['sat'] }));
+
+    await manager.muteLegForDate({
+        deviceId: 'device-1',
+        subscriptionId: first.id,
+        from: 'KTH',
+        to: 'VIC',
+        reason: 'station_exit',
+        transition: 'station_exit'
+    });
+
+    assert.equal(manager.isMutedToday(manager.subscriptions.get(first.id), 'KTH-VIC'), true);
+    assert.equal(manager.isMutedToday(manager.subscriptions.get(second.id), 'KTH-VIC'), true);
+});
+
 function testManager() {
     const manager = new NotificationSubscriptionManager();
     manager._saveSubscription = async () => {};
     manager.recordSubscriptionAudit = async () => {};
     manager.auditScheduledPushToStartReadiness = async () => {};
+    manager.logSendEvent = () => {};
     return manager;
 }
 

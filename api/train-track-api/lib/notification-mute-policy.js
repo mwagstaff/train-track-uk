@@ -4,6 +4,8 @@ const LEGACY_STATION_EXIT_REASONS = new Set([
     'location_exit_fallback'
 ]);
 
+export const JOURNEY_COMPLETION_RECONCILIATION_REASON = 'journey_completed_reconciliation';
+
 function normalizeValue(value) {
     return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
@@ -28,6 +30,10 @@ export function resolveDetectionSource({ detectionSource = null, reason = 'mute_
     default:
         return null;
     }
+}
+
+export function shouldSendMuteNotifications({ reason = 'mute_on_arrival' } = {}) {
+    return normalizeValue(reason) !== JOURNEY_COMPLETION_RECONCILIATION_REASON;
 }
 
 export function buildMuteNotificationPlan({

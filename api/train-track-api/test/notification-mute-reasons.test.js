@@ -4,7 +4,8 @@ import test from 'node:test';
 import {
     buildMuteNotificationPlan,
     resolveDetectionSource,
-    resolveMuteTransition
+    resolveMuteTransition,
+    shouldSendMuteNotifications
 } from '../lib/notification-mute-policy.js';
 
 test('legacy location fallback is treated as a station exit', () => {
@@ -61,4 +62,11 @@ test('arrival mute retains the welcome and status pair', () => {
     assert.equal(plan.length, 2);
     assert.equal(plan[0].body, 'Welcome to London Victoria station');
     assert.equal(plan[1].type, 'muted_status');
+});
+
+test('journey completion reconciliation is silent', () => {
+    assert.equal(shouldSendMuteNotifications({
+        reason: 'journey_completed_reconciliation'
+    }), false);
+    assert.equal(shouldSendMuteNotifications({ reason: 'station_exit' }), true);
 });

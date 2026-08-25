@@ -3,6 +3,42 @@ import Testing
 @testable import TrainTrack_UK
 
 struct JourneyHistoryTests {
+    @Test @MainActor func historyRowPrefersPostedArrivalAndRetainsLocationFallbacks() throws {
+        let detected = Date(timeIntervalSince1970: 1_000)
+        let deviceBased = Date(timeIntervalSince1970: 2_000)
+        let posted = Date(timeIntervalSince1970: 3_000)
+
+        #expect(JourneyHistoryRowArrivalPolicy.resolve(
+            postedArrival: posted,
+            deviceBasedArrival: deviceBased,
+            detectedArrival: detected
+        ) == JourneyHistoryRowArrival(date: posted, qualifier: "posted arrival time"))
+        #expect(JourneyHistoryRowArrivalPolicy.resolve(
+            postedArrival: nil,
+            deviceBasedArrival: deviceBased,
+            detectedArrival: detected
+        ) == JourneyHistoryRowArrival(date: deviceBased, qualifier: "based on device location"))
+        #expect(JourneyHistoryRowArrivalPolicy.resolve(
+            postedArrival: nil,
+            deviceBasedArrival: nil,
+            detectedArrival: detected
+        ) == JourneyHistoryRowArrival(date: detected, qualifier: nil))
+    }
+
+    @Test @MainActor func historyClockTimesUseTwentyFourHourFormatWithLeadingZero() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try #require(TimeZone(secondsFromGMT: 0))
+        let time = try #require(calendar.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: 25,
+            hour: 8,
+            minute: 3
+        )))
+
+        #expect(JourneyHistoryClockTime.text(time, calendar: calendar) == "08:03")
+    }
+
     @Test func delayRepayRequiresConfirmedActualArrival() {
         let scheduled = Date(timeIntervalSince1970: 1_000_000)
 

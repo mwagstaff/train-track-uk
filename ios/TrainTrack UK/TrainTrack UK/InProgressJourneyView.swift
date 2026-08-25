@@ -15,6 +15,7 @@ struct InProgressJourneyView: View {
     @AppStorage("inProgressSelectedSubscriptionID") private var selectedSubscriptionID = ""
     @State private var mapSelection: InProgressMapSelection?
     @State private var isShowingServicePicker = false
+    @State private var stageAdvanceConfirmation: StageAdvanceConfirmation?
     @State private var isShowingEndConfirmation = false
     @State private var replacementChoice: JourneyChoice?
     @State private var isWorking = false
@@ -125,6 +126,7 @@ struct InProgressJourneyView: View {
                         underwayContent(group: group)
                     }
                     manualActions
+                    endJourneyLink
                 } else {
                     ContentUnavailableView(
                         "No journey in progress",
@@ -156,7 +158,20 @@ struct InProgressJourneyView: View {
             Button("End journey", role: .destructive) { endJourney() }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This records the journey as ended early and stops live updates.")
+            Text(endJourneyConfirmationMessage)
+        }
+        .alert(
+            stageAdvanceConfirmation?.title ?? "Advance journey?",
+            isPresented: Binding(
+                get: { stageAdvanceConfirmation != nil },
+                set: { if !$0 { stageAdvanceConfirmation = nil } }
+            ),
+            presenting: stageAdvanceConfirmation
+        ) { confirmation in
+            Button("Yes, I’m here") { confirmStageAdvance(confirmation) }
+            Button("Cancel", role: .cancel) { }
+        } message: { confirmation in
+            Text(confirmation.message)
         }
         .alert(
             "Start a different journey?",
@@ -482,7 +497,10 @@ struct InProgressJourneyView: View {
             if let candidate = selectedCandidate, coordinator.activeJourney == nil {
                 if candidate.originArrivedAt == nil {
                     actionButton("I’m at \(candidate.stations.first?.name ?? "the station")", icon: "mappin.and.ellipse") {
-                        run { await coordinator.manuallyConfirmOriginArrival(subscriptionID: candidate.subscriptionId) }
+                        stageAdvanceConfirmation = .originArrival(
+                            subscriptionID: candidate.subscriptionId,
+                            stationName: candidate.stations.first?.name ?? "the station"
+                        )
                     }
                 } else {
                     actionButton("Choose the train I caught", icon: "train.side.front.car") {
@@ -496,16 +514,29 @@ struct InProgressJourneyView: View {
                     }
                 } else {
                     actionButton("I’ve arrived at \(active.currentPlannedLegDestination.name)", icon: "checkmark.circle.fill") {
-                        run { await coordinator.manuallyConfirmNextLegEndpoint() }
+                        stageAdvanceConfirmation = .legArrival(
+                            subscriptionID: active.subscriptionId,
+                            stationCRS: active.currentPlannedLegDestination.crs,
+                            stationName: active.currentPlannedLegDestination.name
+                        )
                     }
                     Button("Change the train I’m on") { isShowingServicePicker = true }
                         .buttonStyle(.bordered)
                 }
-                Button("End journey", role: .destructive) { isShowingEndConfirmation = true }
-                    .font(.subheadline.weight(.semibold))
             }
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private var endJourneyLink: some View {
+        Button("End journey") { isShowingEndConfirmation = true }
+            .buttonStyle(.plain)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .underline()
+            .frame(maxWidth: .infinity)
+            .padding(.top, 12)
+            .padding(.bottom, 4)
     }
 
     private func actionButton(
@@ -823,16 +854,54 @@ struct InProgressJourneyView: View {
     }
 
     private func endJourney() {
-        guard let active = coordinator.activeJourney else { return }
+        if let active = coordinator.activeJourney {
+            run {
+                if let session = notificationStore.liveSessions.first(where: { $0.id == active.subscriptionId }) {
+                    try? await notificationStore.deleteLiveSession(id: session.id)
+                }
+                await activityManager.stopJourneyActivities(
+                    deepLinkFromCRS: active.plannedOrigin.crs,
+                    deepLinkToCRS: active.plannedDestination.crs
+                )
+                await coordinator.endActiveJourney()
+            }
+            return
+        }
+
+        guard let subscriptionID = effectiveSubscriptionID,
+              let group = selectedGroup else { return }
         run {
-            if let session = notificationStore.liveSessions.first(where: { $0.id == active.subscriptionId }) {
+            if let session = notificationStore.liveSessions.first(where: { $0.id == subscriptionID }) {
                 try? await notificationStore.deleteLiveSession(id: session.id)
             }
+            if coordinator.armedCandidates.contains(where: { $0.subscriptionId == subscriptionID }) {
+                coordinator.disarm(subscriptionID: subscriptionID)
+            }
             await activityManager.stopJourneyActivities(
-                deepLinkFromCRS: active.plannedOrigin.crs,
-                deepLinkToCRS: active.plannedDestination.crs
+                deepLinkFromCRS: group.startStation.crs,
+                deepLinkToCRS: group.endStation.crs
             )
-            await coordinator.endActiveJourney()
+        }
+    }
+
+    private var endJourneyConfirmationMessage: String {
+        if coordinator.activeJourney != nil {
+            return "This records the journey as ended early and stops live updates."
+        }
+        return "This stops live updates and removes the journey from In Progress."
+    }
+
+    private func confirmStageAdvance(_ confirmation: StageAdvanceConfirmation) {
+        stageAdvanceConfirmation = nil
+        switch confirmation {
+        case let .originArrival(subscriptionID, _):
+            guard coordinator.armedCandidates.contains(where: { $0.subscriptionId == subscriptionID }) else { return }
+            run { await coordinator.manuallyConfirmOriginArrival(subscriptionID: subscriptionID) }
+        case let .legArrival(subscriptionID, stationCRS, _):
+            guard let active = coordinator.activeJourney,
+                  active.subscriptionId == subscriptionID,
+                  active.currentPlannedLegDestination.crs.caseInsensitiveCompare(stationCRS) == .orderedSame else { return }
+            run { await coordinator.manuallyConfirmNextLegEndpoint() }
         }
     }
 
@@ -969,6 +1038,27 @@ struct InProgressJourneyView: View {
 
     private func clockTime(_ date: Date) -> String {
         date.formatted(date: .omitted, time: .shortened)
+    }
+}
+
+private enum StageAdvanceConfirmation {
+    case originArrival(subscriptionID: String, stationName: String)
+    case legArrival(subscriptionID: String, stationCRS: String, stationName: String)
+
+    var title: String {
+        "Are you at \(stationName)?"
+    }
+
+    var message: String {
+        "This will record your arrival and update your journey progress."
+    }
+
+    private var stationName: String {
+        switch self {
+        case let .originArrival(_, stationName),
+             let .legArrival(_, _, stationName):
+            stationName
+        }
     }
 }
 
