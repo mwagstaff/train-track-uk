@@ -54,9 +54,12 @@ struct NotificationGeofenceDebugSnapshot {
     let monitoredTargetCount: Int
     let trackingMode: String
     let authorizationStatus: String
+    let accuracyAuthorization: String
+    let backgroundRefreshStatus: String
     let backgroundLocationEnabled: Bool
     let backgroundActivityActive: Bool
     let locationServiceSessionActive: Bool
+    let lastLocation: CLLocation?
 }
 
 // MARK: - Geofence Manager
@@ -720,16 +723,25 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         debugLog("📍 \(msg)")
     }
 
-    private func startHighSensitivityTracking(reason: String) {
+    func startJourneyArrivalPrecisionSampling(reason: String) {
+        startHighSensitivityTracking(reason: reason, duration: 2 * 60)
+    }
+
+    private func startHighSensitivityTracking(
+        reason: String,
+        duration requestedDuration: TimeInterval? = nil
+    ) {
         guard isGeofencingSupported else { return }
         guard hasLocationTrackingWork else { return }
         guard canMonitorWithCurrentAuthorization else { return }
 
         updateBackgroundLocationState(hasActiveGeofences: true)
         requestTemporaryFullAccuracyIfNeeded()
+        let duration = requestedDuration ?? ArrivalConfig.precisionSamplingBurstSeconds
 
+        let wasAlreadyHighSensitivity = trackingMode == .highSensitivity
+        precisionSamplingTask?.cancel()
         if trackingMode != .highSensitivity {
-            precisionSamplingTask?.cancel()
             manager.stopMonitoringSignificantLocationChanges()
             configureHighSensitivityTrackingProfile()
             manager.allowsBackgroundLocationUpdates = true
@@ -737,23 +749,24 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             ensureBackgroundActivitySessionIfNeeded()
             manager.startUpdatingLocation()
             trackingMode = .highSensitivity
-
-            precisionSamplingTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(
-                    nanoseconds: UInt64(ArrivalConfig.precisionSamplingBurstSeconds * 1_000_000_000)
-                )
-                guard !Task.isCancelled else { return }
-                self?.finishPrecisionSamplingBurst(reason: "burst-timeout")
-            }
-
-            let msg = "Started high-sensitivity station-arrival tracking (\(reason))"
-            DebugLogStore.shared.log(msg, category: "Geofence")
-            logGeofenceDiagnostic("tracking_started", metadata: [
-                "mode": "high",
-                "reason": reason
-            ])
-            debugLog("📍 \(msg)")
         }
+
+        precisionSamplingTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(
+                nanoseconds: UInt64(duration * 1_000_000_000)
+            )
+            guard !Task.isCancelled else { return }
+            self?.finishPrecisionSamplingBurst(reason: "burst-timeout")
+        }
+
+        let msg = "\(wasAlreadyHighSensitivity ? "Extended" : "Started") high-sensitivity station-arrival tracking (\(reason))"
+        DebugLogStore.shared.log(msg, category: "Geofence")
+        logGeofenceDiagnostic(wasAlreadyHighSensitivity ? "tracking_extended" : "tracking_started", metadata: [
+            "mode": "high",
+            "reason": reason,
+            "duration_seconds": duration
+        ])
+        debugLog("📍 \(msg)")
 
         manager.requestLocation()
     }
@@ -1310,7 +1323,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             "source": source
         ])
         Task { @MainActor in
-            await JourneyTrackingCoordinator.shared.handleOriginDeparture(
+            let journeyNotificationBody = await JourneyTrackingCoordinator.shared.handleOriginDeparture(
                 subscriptionID: target.subscriptionId,
                 from: target.from,
                 to: target.to,
@@ -1324,10 +1337,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                     simulate: false,
                     endLiveActivity: false,
                     detectionSource: "location_fallback",
-                    journeyNotificationBody: JourneyTrackingCoordinator.shared.boardingNotificationBody(
-                        from: target.from,
-                        to: target.to
-                    )
+                    journeyNotificationBody: journeyNotificationBody
                 )
             }
         }
@@ -1829,15 +1839,11 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             }
             NotificationMuteStorage.clearArrivalDetectionPending(from: parsed.from, to: parsed.to)
 
-            await JourneyTrackingCoordinator.shared.handleOriginDeparture(
+            let journeyNotificationBody = await JourneyTrackingCoordinator.shared.handleOriginDeparture(
                 subscriptionID: parsed.subscriptionId,
                 from: parsed.from,
                 to: parsed.to,
                 detectedAt: Date()
-            )
-            let journeyNotificationBody = JourneyTrackingCoordinator.shared.boardingNotificationBody(
-                from: parsed.from,
-                to: parsed.to
             )
 
             let endMsg = target.muteOnArrival == false
@@ -1874,9 +1880,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             monitoredTargetCount: monitoredTargets.count,
             trackingMode: trackingModeDescription,
             authorizationStatus: authorizationStatusDescription(manager.authorizationStatus),
+            accuracyAuthorization: accuracyAuthorizationDescription,
+            backgroundRefreshStatus: backgroundRefreshStatusDescription,
             backgroundLocationEnabled: manager.allowsBackgroundLocationUpdates,
             backgroundActivityActive: backgroundActivitySession != nil,
-            locationServiceSessionActive: locationServiceSession != nil
+            locationServiceSessionActive: locationServiceSession != nil,
+            lastLocation: manager.location
         )
     }
 
@@ -2044,6 +2053,24 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         guard isGeofencingSupported else { return }
         guard let location = locations.last else { return }
         Task { @MainActor in
+            self.logGeofenceDiagnostic("location_update_received", metadata: [
+                "batch_count": locations.count,
+                "latitude": location.coordinate.latitude,
+                "longitude": location.coordinate.longitude,
+                "altitude_m": location.altitude,
+                "horizontal_accuracy_m": location.horizontalAccuracy,
+                "vertical_accuracy_m": location.verticalAccuracy,
+                "speed_mps": location.speed,
+                "speed_accuracy_mps": location.speedAccuracy,
+                "course_degrees": location.course,
+                "course_accuracy_degrees": location.courseAccuracy,
+                "location_timestamp": location.timestamp,
+                "location_age_seconds": Date().timeIntervalSince(location.timestamp),
+                "active_journey_id": JourneyTrackingCoordinator.shared.activeJourney?.id.uuidString,
+                "active_journey_phase": JourneyTrackingCoordinator.shared.activeJourney?.phase.rawValue,
+                "active_destination_crs": JourneyTrackingCoordinator.shared.activeJourney?.plannedDestination.crs,
+                "condition_ids": self.monitoredRegionIdentifiers
+            ])
             self.evaluateArrival(using: location, source: "continuous")
             await JourneyTrackingCoordinator.shared.evaluateLocation(location)
         }
@@ -2053,6 +2080,13 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         guard isGeofencingSupported else { return }
         let nsError = error as NSError
         if nsError.domain == kCLErrorDomain, nsError.code == CLError.locationUnknown.rawValue {
+            Task { @MainActor in
+                self.logGeofenceDiagnostic("location_updates_temporarily_unavailable", metadata: [
+                    "error_domain": nsError.domain,
+                    "error_code": nsError.code,
+                    "error": error.localizedDescription
+                ])
+            }
             return
         }
         let msg = "Location updates failed: \(error.localizedDescription)"

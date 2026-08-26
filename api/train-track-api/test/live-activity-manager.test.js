@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { minutesUntilDeparture } from '../lib/live-activity-departure-order.js';
-import { liveActivityManager } from '../lib/live-activity-manager.js';
+import { LiveActivityManager, liveActivityManager } from '../lib/live-activity-manager.js';
 
 test('live activity departures remain chronological across midnight', () => {
     const nowMinutes = 21 * 60 + 16;
@@ -96,4 +96,38 @@ test('arrived live activity content shows actual arrival and Delay Repay eligibi
     assert.equal(content.statusText, null);
     assert.equal(content.arrivalDelayMinutes, 15);
     assert.equal(content.delayMinutes, 15);
+});
+
+test('journey phase pins the live activity to the service matched on device', async () => {
+    const manager = new LiveActivityManager();
+    const subscription = {
+        deviceId: 'device-1',
+        activityId: 'activity-1',
+        fromStation: 'KTH',
+        toStation: 'VIC',
+        preferredServiceId: 'subsequent-service',
+        lastSnapshot: {
+            departures: [
+                { serviceID: 'boarded-service', scheduled: '07:42' },
+                { serviceID: 'subsequent-service', scheduled: '07:57' }
+            ]
+        }
+    };
+    manager.subscriptions.set('device-1:activity-1', subscription);
+    manager.saveSubscriptionToMongo = async () => {};
+    manager.pollSubscription = async (updatedSubscription) => {
+        assert.equal(updatedSubscription.preferredServiceId, 'boarded-service');
+        return { sent: true };
+    };
+
+    const result = await manager.handleJourneyPhase('device-1', {
+        fromStation: 'KTH',
+        toStation: 'VIC',
+        phase: 'en_route',
+        preferredServiceId: 'boarded-service'
+    });
+
+    assert.equal(subscription.preferredServiceId, 'boarded-service');
+    assert.equal(subscription.preferredDepartureSnapshot.serviceID, 'boarded-service');
+    assert.deepEqual(result, { updated: 1, pushed: 1 });
 });

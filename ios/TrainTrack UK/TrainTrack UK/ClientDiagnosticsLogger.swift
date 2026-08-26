@@ -4,7 +4,7 @@ nonisolated enum ClientDiagnosticsLogger {
     #if DEBUG
     private static let suiteName = "group.dev.skynolimit.traintrack"
     private static let queue = DispatchQueue(label: "dev.skynolimit.traintrack.client-diagnostics")
-    private static let maxFileBytes = 512 * 1024
+    private static let maxFileBytes = 2 * 1024 * 1024
     #endif
 
     static func log(
@@ -54,19 +54,21 @@ nonisolated enum ClientDiagnosticsLogger {
 
     static func exportStoredLogs() -> String {
         #if DEBUG
-        [
-            ("Client Diagnostics", appLogURL()),
-            ("Notification Service Extension Diagnostics", notificationServiceLogURL())
-        ].map { title, url in
-            let body: String
-            if let url, let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8), !text.isEmpty {
-                body = text
-            } else {
-                body = "(no entries)"
+        queue.sync {
+            [
+                ("Client Diagnostics", appLogURL()),
+                ("Notification Service Extension Diagnostics", notificationServiceLogURL())
+            ].map { title, url in
+                let body: String
+                if let url, let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8), !text.isEmpty {
+                    body = text
+                } else {
+                    body = "(no entries)"
+                }
+                return "## \(title)\n\(body)"
             }
-            return "## \(title)\n\(body)"
+            .joined(separator: "\n\n")
         }
-        .joined(separator: "\n\n")
         #else
         ""
         #endif
@@ -74,9 +76,11 @@ nonisolated enum ClientDiagnosticsLogger {
 
     static func clearStoredLogs() {
         #if DEBUG
-        [appLogURL(), notificationServiceLogURL()].forEach { url in
-            guard let url else { return }
-            try? FileManager.default.removeItem(at: url)
+        queue.sync {
+            [appLogURL(), notificationServiceLogURL()].forEach { url in
+                guard let url else { return }
+                try? FileManager.default.removeItem(at: url)
+            }
         }
         #endif
     }

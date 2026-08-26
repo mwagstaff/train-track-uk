@@ -16,7 +16,7 @@ const DEFAULT_STALE_DATE_REFRESH_SECONDS = Number(process.env.LIVE_ACTIVITY_STAL
 const APP_CHECKIN_WARNING_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_APP_CHECKIN_WARNING_AFTER_SECONDS || '120');
 const DEFAULT_MAX_ACTIVE_PER_DEVICE = Number(process.env.LIVE_ACTIVITY_MAX_ACTIVE_PER_DEVICE || '5');
 
-class LiveActivityManager {
+export class LiveActivityManager {
     constructor() {
         this.subscriptions = new Map();
         this.pushClient = new LiveActivityPushClient();
@@ -1600,6 +1600,7 @@ class LiveActivityManager {
         fromStation = null,
         toStation = null,
         phase,
+        preferredServiceId = null,
         fallbackDeviceIds = []
     } = {}) {
         const validPhases = new Set(['pending_start', 'at_start', 'en_route', 'arrived']);
@@ -1608,6 +1609,9 @@ class LiveActivityManager {
         const candidateDeviceIds = this.uniqueDeviceIds([deviceId, ...fallbackDeviceIds]);
         const fromCode = typeof fromStation === 'string' ? fromStation.trim().toUpperCase() : null;
         const toCode = typeof toStation === 'string' ? toStation.trim().toUpperCase() : null;
+        const matchedServiceId = typeof preferredServiceId === 'string'
+            ? preferredServiceId.trim()
+            : '';
         const subscriptions = this.findSubscriptionsByDeviceIds(candidateDeviceIds).filter((subscription) => {
             const subscriptionFrom = String(
                 subscription.deepLinkFromStation || subscription.fromStation || ''
@@ -1623,9 +1627,16 @@ class LiveActivityManager {
             subscription.journeyPhase = phase;
             subscription.autoEndOnDeparture = false;
             if (phase === 'en_route' || phase === 'arrived') {
-                subscription.preferredServiceId = subscription.preferredServiceId
+                const previousServiceId = subscription.preferredServiceId;
+                subscription.preferredServiceId = matchedServiceId
+                    || previousServiceId
                     || subscription.lastSnapshot?.departures?.[0]?.serviceID
                     || null;
+                if (matchedServiceId && matchedServiceId !== previousServiceId) {
+                    subscription.preferredDepartureSnapshot = subscription.lastSnapshot?.departures?.find(
+                        (departure) => departure.serviceID === matchedServiceId
+                    ) || null;
+                }
             }
             await this.saveSubscriptionToMongo(subscription);
             const result = await this.pollSubscription(subscription, { force: true });

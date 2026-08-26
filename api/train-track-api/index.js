@@ -35,6 +35,20 @@ import {
 } from './lib/device-data-deletion-state.js';
 import path from 'path';
 
+journeyTrackingManager.setJourneyCompletionHandler(async (completion) => {
+    await notificationSubscriptionManager.reconcileJourneyCompletion({
+        deviceId: completion.deviceId,
+        subscriptionId: completion.subscriptionId,
+        from: completion.from,
+        to: completion.to,
+        metadata: {
+            journey_id: completion.journeyId,
+            service_id: completion.serviceId,
+            actual_arrival: completion.actualArrival
+        }
+    });
+});
+
 function isLiveActivityLoggingEnabled() {
     const flag = process.env.DEBUG_CONSOLE_LOGGING_APNS;
     return typeof flag === 'string' && flag.toLowerCase() === 'true';
@@ -969,7 +983,7 @@ app.delete('/api/v2/journey_tracking/sessions/:id', (req, res) => {
 });
 
 app.post('/api/v2/live_activities/status', async (req, res) => {
-    const { device_id, from, to, phase } = req.body || {};
+    const { device_id, from, to, phase, service_id } = req.body || {};
     const { canonicalDeviceId, fallbackDeviceIds } = resolveRequestDeviceIds(req, device_id);
     const validPhases = new Set(['pending_start', 'at_start', 'en_route', 'arrived']);
     if (!canonicalDeviceId || !validPhases.has(phase)) {
@@ -981,6 +995,7 @@ app.post('/api/v2/live_activities/status', async (req, res) => {
             fromStation: from || null,
             toStation: to || null,
             phase,
+            preferredServiceId: typeof service_id === 'string' ? service_id : null,
             fallbackDeviceIds
         });
         res.json({

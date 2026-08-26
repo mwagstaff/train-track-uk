@@ -89,6 +89,15 @@ struct JourneyHistoryCallingPoint: Codable, Hashable, Identifiable {
     var id: String { "\(crs)-\(scheduledTime)" }
 }
 
+struct JourneyHistoryPrecedingCancellation: Codable, Hashable, Identifiable {
+    let serviceID: String
+    let scheduledDepartureAt: Date
+    let scheduledDepartureTime: String
+    let minutesBeforeCaughtService: Int
+
+    var id: String { "\(serviceID)-\(scheduledDepartureAt.timeIntervalSince1970)" }
+}
+
 struct JourneyHistoryLeg: Codable, Hashable, Identifiable {
     let id: UUID
     let plannedLegIndex: Int
@@ -106,6 +115,7 @@ struct JourneyHistoryLeg: Codable, Hashable, Identifiable {
     var actualDepartureAt: Date?
     var scheduledArrivalAt: Date?
     var actualArrivalAt: Date?
+    var precedingCancellation: JourneyHistoryPrecedingCancellation?
     var outcome: JourneyHistoryLegOutcome
     var reboundFromServiceID: String?
 
@@ -126,6 +136,7 @@ struct JourneyHistoryLeg: Codable, Hashable, Identifiable {
         actualDepartureAt: Date? = nil,
         scheduledArrivalAt: Date? = nil,
         actualArrivalAt: Date? = nil,
+        precedingCancellation: JourneyHistoryPrecedingCancellation? = nil,
         outcome: JourneyHistoryLegOutcome = .active,
         reboundFromServiceID: String? = nil
     ) {
@@ -145,6 +156,7 @@ struct JourneyHistoryLeg: Codable, Hashable, Identifiable {
         self.actualDepartureAt = actualDepartureAt
         self.scheduledArrivalAt = scheduledArrivalAt
         self.actualArrivalAt = actualArrivalAt
+        self.precedingCancellation = precedingCancellation
         self.outcome = outcome
         self.reboundFromServiceID = reboundFromServiceID
     }
@@ -322,8 +334,19 @@ extension JourneyHistoryRecord {
     }
 
     var isDelayRepay15Plus: Bool {
-        guard let delayMinutes else { return false }
-        return delayMinutes >= JourneyHistoryDelayPolicy.delayRepayThresholdMinutes
+        guard let delayRepayEligibleDelayMinutes else { return false }
+        return delayRepayEligibleDelayMinutes >= JourneyHistoryDelayPolicy.delayRepayThresholdMinutes
+    }
+
+    var delayRepayEligibleDelayMinutes: Int? {
+        JourneyHistoryCancellationPolicy.eligibleDelayMinutes(
+            arrivalDelayMinutes: delayMinutes,
+            precedingCancellations: legs.compactMap(\.precedingCancellation)
+        )
+    }
+
+    var hasPrecedingCancellation: Bool {
+        legs.contains { $0.precedingCancellation != nil }
     }
 
     var delayRepayClaimStatus: JourneyHistoryDelayRepayClaimStatus? {
@@ -417,6 +440,7 @@ struct JourneyHistoryDelayRepayLegAssessment: Hashable, Identifiable {
     let leg: JourneyHistoryLeg
     let departureDelayMinutes: Int?
     let arrivalDelayMinutes: Int?
+    let precedingCancellationDelayMinutes: Int?
 
     var id: UUID { leg.id }
     var legNumber: Int { leg.plannedLegIndex + 1 }
@@ -481,7 +505,8 @@ enum JourneyHistoryDelayPolicy {
                 arrivalDelayMinutes: confirmedDelayMinutes(
                     scheduledArrival: leg.scheduledArrivalAt,
                     actualArrival: leg.actualArrivalAt
-                )
+                ),
+                precedingCancellationDelayMinutes: leg.precedingCancellation?.minutesBeforeCaughtService
             )
         }
         let recommendation = recommendation(for: assessments)
@@ -546,7 +571,8 @@ enum JourneyHistoryDelayPolicy {
         var missedConnectionLegIDs = Set<UUID>()
         for (index, assessment) in assessments.enumerated() {
             let previousDelay = index > 0 ? assessments[index - 1].arrivalDelayMinutes ?? 0 : 0
-            let currentDelay = assessment.arrivalDelayMinutes ?? assessment.departureDelayMinutes ?? previousDelay
+            let serviceDelay = assessment.arrivalDelayMinutes ?? assessment.departureDelayMinutes ?? previousDelay
+            let currentDelay = max(serviceDelay, assessment.precedingCancellationDelayMinutes ?? 0)
             let increase = max(0, currentDelay - previousDelay)
 
             if index > 0,
@@ -572,7 +598,9 @@ enum JourneyHistoryDelayPolicy {
         }?.element ?? assessments[0]
         let legNumber = recommended.legNumber
         let reason: String
-        if missedConnectionLegIDs.contains(recommended.leg.id) {
+        if recommended.precedingCancellationDelayMinutes != nil {
+            reason = "The service immediately before Leg \(legNumber) was cancelled."
+        } else if missedConnectionLegIDs.contains(recommended.leg.id) {
             reason = "Leg \(legNumber) arrived after Leg \(legNumber + 1) was scheduled to depart."
         } else {
             reason = "Leg \(legNumber) shows the largest increase in recorded delay."
@@ -587,6 +615,55 @@ enum JourneyHistoryDelayPolicy {
             .filter { !$0.isEmpty }
             .joined(separator: " ")
         return value.isEmpty ? nil : value
+    }
+}
+
+enum JourneyHistoryCancellationPolicy {
+    static func immediatelyPrecedingCancellation(
+        caughtServiceID: String,
+        caughtScheduledDepartureAt: Date,
+        departures: [RecentDepartureV2]
+    ) -> JourneyHistoryPrecedingCancellation? {
+        let precedingDepartures = departures
+            .filter {
+                $0.serviceID != caughtServiceID
+                    && $0.scheduledDepartureAt < caughtScheduledDepartureAt
+            }
+            .sorted { $0.scheduledDepartureAt > $1.scheduledDepartureAt }
+
+        for departure in precedingDepartures {
+            if departure.isCancelled {
+                let minutes = max(
+                    0,
+                    Int(caughtScheduledDepartureAt.timeIntervalSince(departure.scheduledDepartureAt) / 60)
+                )
+                return JourneyHistoryPrecedingCancellation(
+                    serviceID: departure.serviceID,
+                    scheduledDepartureAt: departure.scheduledDepartureAt,
+                    scheduledDepartureTime: departure.scheduledDeparture,
+                    minutesBeforeCaughtService: minutes
+                )
+            }
+
+            let effectiveDeparture = departure.actualDepartureAt ?? departure.estimatedDepartureAt
+            guard let effectiveDeparture,
+                  effectiveDeparture >= caughtScheduledDepartureAt else {
+                return nil
+            }
+        }
+        return nil
+    }
+
+    static func eligibleDelayMinutes(
+        arrivalDelayMinutes: Int?,
+        precedingCancellations: [JourneyHistoryPrecedingCancellation]
+    ) -> Int? {
+        guard let cancellationDelay = precedingCancellations
+            .map(\.minutesBeforeCaughtService)
+            .max() else {
+            return arrivalDelayMinutes
+        }
+        return cancellationDelay + max(0, arrivalDelayMinutes ?? 0)
     }
 }
 
@@ -663,8 +740,11 @@ enum JourneyHistoryNotificationText {
         "Welcome to \(destinationName), arrived \(timeLabel(for: detectedAt, calendar: calendar))"
     }
 
-    static func delayRepay(delayMinutes: Int) -> String {
-        "Arrival was \(delayMinutes) minutes late, so you may be eligible for Delay Repay."
+    static func delayRepay(delayMinutes: Int, includesPrecedingCancellation: Bool = false) -> String {
+        if includesPrecedingCancellation {
+            return "A cancelled service added to your journey delay, so you may be eligible for Delay Repay."
+        }
+        return "Arrival was \(delayMinutes) minutes late, so you may be eligible for Delay Repay."
     }
 
     private static func departureDelayMinutes(scheduled: String, estimated: String?) -> Int? {

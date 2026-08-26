@@ -4,11 +4,57 @@ import Foundation
 import JourneyActivityShared
 import UserNotifications
 
+struct JourneyArrivalLocationEvaluation: Equatable {
+    let rawDistance: CLLocationDistance
+    let compensatedDistance: CLLocationDistance
+    let candidateDistance: CLLocationDistance
+    let locationAge: TimeInterval
+    let isAccepted: Bool
+    let rejectionReason: String?
+}
+
+enum JourneyArrivalLocationPolicy {
+    static func evaluate(
+        rawDistance: CLLocationDistance,
+        horizontalAccuracy: CLLocationAccuracy,
+        locationAge: TimeInterval,
+        arrivalRadius: CLLocationDistance,
+        maximumHorizontalAccuracy: CLLocationAccuracy,
+        maximumLocationAge: TimeInterval
+    ) -> JourneyArrivalLocationEvaluation {
+        let compensatedDistance = max(0, rawDistance - max(horizontalAccuracy, 0))
+        let candidateDistance = min(rawDistance, compensatedDistance)
+        let rejectionReason: String?
+        if horizontalAccuracy < 0 {
+            rejectionReason = "invalid_accuracy"
+        } else if horizontalAccuracy > maximumHorizontalAccuracy {
+            rejectionReason = "poor_accuracy"
+        } else if locationAge < -30 {
+            rejectionReason = "future_timestamp"
+        } else if locationAge > maximumLocationAge {
+            rejectionReason = "stale_location"
+        } else if candidateDistance > arrivalRadius {
+            rejectionReason = "outside_arrival_radius"
+        } else {
+            rejectionReason = nil
+        }
+        return JourneyArrivalLocationEvaluation(
+            rawDistance: rawDistance,
+            compensatedDistance: compensatedDistance,
+            candidateDistance: candidateDistance,
+            locationAge: locationAge,
+            isAccepted: rejectionReason == nil,
+            rejectionReason: rejectionReason
+        )
+    }
+}
+
 @MainActor
 final class JourneyTrackingCoordinator: ObservableObject {
     static let shared = JourneyTrackingCoordinator()
 
     static let destinationArrivalRadiusMeters: CLLocationDistance = 150
+    static let destinationApproachRadiusMeters: CLLocationDistance = 500
     static let arrivalNotificationBufferSeconds: TimeInterval = 90
     static let expectedStationRadiusMeters: CLLocationDistance = 250
     static let unexpectedStationDwellSeconds: TimeInterval = 90
@@ -291,6 +337,13 @@ final class JourneyTrackingCoordinator: ObservableObject {
         }
         persistCheckpoint()
 
+        LiveActivityJourneyStatusSender.shared.send(
+            phase: .enRoute,
+            from: active.plannedOrigin.crs,
+            to: active.plannedDestination.crs,
+            serviceID: departure.serviceID
+        )
+
         if let previousBackendSessionID {
             await JourneyTrackingService.shared.stop(sessionID: previousBackendSessionID)
         }
@@ -397,8 +450,11 @@ final class JourneyTrackingCoordinator: ObservableObject {
             "Last confirmed station: \(active?.lastConfirmedOnRouteStation.crs ?? "none")",
             "History conditions: \(conditions.map(\.identifier).joined(separator: ", "))",
             "Location authorization: \(geofence.authorizationStatus)",
+            "Location accuracy authorization: \(geofence.accuracyAuthorization)",
+            "Background refresh: \(geofence.backgroundRefreshStatus)",
             "Notification authorization: \(notificationAuthorizationDescription(notificationSettings.authorizationStatus))",
-            "Tracking mode: \(geofence.trackingMode)"
+            "Tracking mode: \(geofence.trackingMode)",
+            "Last location: \(geofence.lastLocation.map { "\($0.coordinate.latitude),\($0.coordinate.longitude) ±\(Int($0.horizontalAccuracy))m @ \($0.timestamp)" } ?? "none")"
         ].joined(separator: "\n")
         log("diagnostic_snapshot", message, metadata: [
             "reason": reason,
@@ -412,9 +468,23 @@ final class JourneyTrackingCoordinator: ObservableObject {
             "last_confirmed_station_crs": active?.lastConfirmedOnRouteStation.crs,
             "history_condition_ids": conditions.map(\.identifier),
             "monitored_condition_ids": geofence.monitoredRegionIdentifiers,
+            "monitored_target_count": geofence.monitoredTargetCount,
             "location_authorization": geofence.authorizationStatus,
+            "location_accuracy_authorization": geofence.accuracyAuthorization,
+            "background_refresh_status": geofence.backgroundRefreshStatus,
             "notification_authorization": notificationAuthorizationDescription(notificationSettings.authorizationStatus),
             "tracking_mode": geofence.trackingMode,
+            "background_location_enabled": geofence.backgroundLocationEnabled,
+            "background_activity_active": geofence.backgroundActivityActive,
+            "location_service_session_active": geofence.locationServiceSessionActive,
+            "last_location_latitude": geofence.lastLocation?.coordinate.latitude,
+            "last_location_longitude": geofence.lastLocation?.coordinate.longitude,
+            "last_location_horizontal_accuracy_m": geofence.lastLocation?.horizontalAccuracy,
+            "last_location_vertical_accuracy_m": geofence.lastLocation?.verticalAccuracy,
+            "last_location_speed_mps": geofence.lastLocation?.speed,
+            "last_location_course_degrees": geofence.lastLocation?.course,
+            "last_location_timestamp": geofence.lastLocation?.timestamp,
+            "last_location_age_seconds": geofence.lastLocation.map { Date().timeIntervalSince($0.timestamp) },
             "notification_push_token_present": !(NotificationPushTokenStore.token ?? "").isEmpty
         ])
     }
@@ -571,6 +641,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
         )
     }
 
+    @discardableResult
     func handleOriginDeparture(
         subscriptionID: String,
         from: String,
@@ -578,21 +649,38 @@ final class JourneyTrackingCoordinator: ObservableObject {
         detectedAt: Date = Date(),
         preferredDeparture: DepartureV2? = nil,
         forceUnmatchedService: Bool = false
-    ) async {
-        guard activeJourney == nil else {
-            log("origin_departure_ignored", "Ignored \(from)→\(to) departure because another journey is already active", metadata: [
+    ) async -> String? {
+        if let activeJourney {
+            let isSameDeparture = activeJourney.subscriptionId == subscriptionID
+                && activeJourney.plannedOrigin.crs.caseInsensitiveCompare(from) == .orderedSame
+                && activeJourney.currentPlannedLegDestination.crs.caseInsensitiveCompare(to) == .orderedSame
+            guard isSameDeparture else {
+                log("origin_departure_ignored", "Ignored \(from)→\(to) departure because another journey is already active", metadata: [
+                    "subscription_id": subscriptionID,
+                    "active_journey_id": activeJourney.id.uuidString,
+                    "active_subscription_id": activeJourney.subscriptionId
+                ])
+                return nil
+            }
+
+            if let body = boardingNotificationBody(from: from, to: to) {
+                return body
+            }
+            guard activeJourney.phase == .matchingService else { return nil }
+            log("origin_departure_waiting_for_match", "A duplicate departure callback is waiting for the active service match", metadata: [
                 "subscription_id": subscriptionID,
-                "active_journey_id": activeJourney?.id.uuidString,
-                "active_subscription_id": activeJourney?.subscriptionId
+                "active_journey_id": activeJourney.id.uuidString,
+                "from": from,
+                "to": to
             ])
-            return
+            return await waitForBoardingNotificationBody(from: from, to: to)
         }
         guard let candidate = armedCandidates.first(where: { $0.subscriptionId == subscriptionID }) else {
             log("origin_departure_ignored", "Ignored \(from)→\(to) departure because its history candidate was not found", metadata: [
                 "subscription_id": subscriptionID,
                 "armed_candidate_count": armedCandidates.count
             ])
-            return
+            return nil
         }
         guard candidate.stations.first?.crs.caseInsensitiveCompare(from) == .orderedSame else {
             log("origin_departure_ignored", "Ignored departure because detected origin \(from) did not match planned origin \(candidate.stations.first?.crs ?? "unknown")", metadata: [
@@ -600,7 +688,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 "detected_from": from,
                 "planned_from": candidate.stations.first?.crs
             ])
-            return
+            return nil
         }
 
         let origin = candidate.stations[0]
@@ -657,19 +745,39 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 destinationStation: activeJourney.plannedDestination,
                 checkpoint: activeJourney
             )
-            LiveActivityJourneyStatusSender.shared.send(
-                phase: .enRoute,
-                from: activeJourney.plannedOrigin.crs,
-                to: activeJourney.plannedDestination.crs
-            )
         }
         await refreshMonitoringConditions()
+        return boardingNotificationBody(from: from, to: to)
+    }
+
+    private func waitForBoardingNotificationBody(from: String, to: String) async -> String? {
+        let deadline = Date().addingTimeInterval(20)
+        while Date() < deadline {
+            if let body = boardingNotificationBody(from: from, to: to) {
+                return body
+            }
+            guard activeJourney?.phase == .matchingService else { return nil }
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        log("origin_departure_match_timeout", "Timed out waiting for matched-service boarding copy for \(from)→\(to)", metadata: [
+            "subscription_id": activeJourney?.subscriptionId,
+            "from": from,
+            "to": to
+        ])
+        return nil
     }
 
     func locationConditions() -> [JourneyHistoryLocationCondition] {
         guard let active = activeJourney else { return [] }
         let destination = active.plannedDestination
         var conditions = [
+            JourneyHistoryLocationCondition(
+                identifier: historyIdentifier(kind: .approach, journeyID: active.id, stationCRS: destination.crs),
+                kind: .approach,
+                journeyID: active.id,
+                station: destination,
+                radius: Self.destinationApproachRadiusMeters
+            ),
             JourneyHistoryLocationCondition(
                 identifier: historyIdentifier(kind: .arrival, journeyID: active.id, stationCRS: destination.crs),
                 kind: .arrival,
@@ -718,8 +826,9 @@ final class JourneyTrackingCoordinator: ObservableObject {
         ])
         switch parsed.kind {
         case .approach:
-            // Kept for checkpoint and already-monitored-region compatibility. Approach
-            // notifications were replaced by a buffered, confirmed-arrival message.
+            NotificationGeofenceManager.shared.startJourneyArrivalPrecisionSampling(
+                reason: "destination-approach-\(station.crs)"
+            )
             return true
         case .arrival:
             guard active.plannedLegIndex == active.plannedStations.count - 2 else { return true }
@@ -754,12 +863,61 @@ final class JourneyTrackingCoordinator: ObservableObject {
     }
 
     func evaluateLocation(_ location: CLLocation, detectedAt: Date = Date()) async {
-        guard var active = activeJourney,
-              location.horizontalAccuracy >= 0,
-              location.horizontalAccuracy <= RailwayOnboardLocationResolver.maximumHorizontalAccuracy else { return }
+        guard var active = activeJourney else {
+            ClientDiagnosticsLogger.log("journey_location", "location_ignored_no_active_journey", metadata: [
+                "latitude": location.coordinate.latitude,
+                "longitude": location.coordinate.longitude,
+                "horizontal_accuracy_m": location.horizontalAccuracy,
+                "location_timestamp": location.timestamp,
+                "detected_at": detectedAt
+            ])
+            return
+        }
         let locationAge = detectedAt.timeIntervalSince(location.timestamp)
-        guard locationAge >= -30,
-              locationAge <= RailwayOnboardLocationResolver.maximumLocationAge else { return }
+        let destinationDistance = active.plannedDestination.distance(from: location)
+        let destinationEvaluation = JourneyArrivalLocationPolicy.evaluate(
+            rawDistance: destinationDistance,
+            horizontalAccuracy: location.horizontalAccuracy,
+            locationAge: locationAge,
+            arrivalRadius: Self.destinationArrivalRadiusMeters,
+            maximumHorizontalAccuracy: RailwayOnboardLocationResolver.maximumHorizontalAccuracy,
+            maximumLocationAge: RailwayOnboardLocationResolver.maximumLocationAge
+        )
+        log("location_evaluated", "Evaluated journey location for \(active.plannedDestination.crs)", metadata: [
+            "journey_id": active.id.uuidString,
+            "subscription_id": active.subscriptionId,
+            "phase": active.phase.rawValue,
+            "planned_leg_index": active.plannedLegIndex,
+            "planned_station_count": active.plannedStations.count,
+            "current_service_id": active.currentLeg?.serviceID,
+            "latitude": location.coordinate.latitude,
+            "longitude": location.coordinate.longitude,
+            "altitude_m": location.altitude,
+            "horizontal_accuracy_m": location.horizontalAccuracy,
+            "vertical_accuracy_m": location.verticalAccuracy,
+            "speed_mps": location.speed,
+            "course_degrees": location.course,
+            "location_timestamp": location.timestamp,
+            "location_age_seconds": destinationEvaluation.locationAge,
+            "detected_at": detectedAt,
+            "destination_crs": active.plannedDestination.crs,
+            "destination_latitude": active.plannedDestination.coordinate.latitude,
+            "destination_longitude": active.plannedDestination.coordinate.longitude,
+            "destination_raw_distance_m": destinationEvaluation.rawDistance,
+            "destination_compensated_distance_m": destinationEvaluation.compensatedDistance,
+            "destination_candidate_distance_m": destinationEvaluation.candidateDistance,
+            "destination_arrival_radius_m": Self.destinationArrivalRadiusMeters,
+            "arrival_candidate": destinationEvaluation.isAccepted,
+            "rejection_reason": destinationEvaluation.rejectionReason,
+            "next_expected_calling_point_index": active.nextExpectedCallingPointIndex,
+            "last_confirmed_station_crs": active.lastConfirmedOnRouteStation.crs
+        ])
+        guard destinationEvaluation.rejectionReason != "invalid_accuracy",
+              destinationEvaluation.rejectionReason != "poor_accuracy",
+              destinationEvaluation.rejectionReason != "future_timestamp",
+              destinationEvaluation.rejectionReason != "stale_location" else {
+            return
+        }
         if detectedAt.timeIntervalSince(active.detectedDepartureAt) > Self.maximumActiveJourneyDuration {
             log("journey_safety_expired", "Journey monitoring exceeded its 24-hour safety limit", metadata: [
                 "journey_id": active.id.uuidString,
@@ -770,7 +928,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
             return
         }
 
-        if active.plannedDestination.distance(from: location) <= Self.destinationArrivalRadiusMeters,
+        if destinationEvaluation.isAccepted,
            active.plannedLegIndex == active.plannedStations.count - 2 {
             await completeJourney(
                 at: active.plannedDestination,
@@ -868,9 +1026,12 @@ final class JourneyTrackingCoordinator: ObservableObject {
 
         if var active = activeJourney, active.id == journeyUUID {
             let reference = active.detectedArrivalAt ?? active.detectedDepartureAt
+            let journeyEvent = userInfo["journey_event"] as? String
+            var confirmedArrivalDate: Date?
             if let actualArrival = userInfo["actual_arrival"] as? String,
                let index = active.legs.indices.last {
-                active.legs[index].actualArrivalAt = JourneyHistoryTime.date(for: actualArrival, near: reference)
+                confirmedArrivalDate = JourneyHistoryTime.date(for: actualArrival, near: reference)
+                active.legs[index].actualArrivalAt = confirmedArrivalDate
             }
             if let scheduledArrival = userInfo["scheduled_arrival"] as? String,
                let index = active.legs.indices.last {
@@ -885,7 +1046,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 active.legs[index].operatorCode = operatorCode
             }
             if let stationCRS = userInfo["station_crs"] as? String,
-               (userInfo["journey_event"] as? String) == "station_departed" {
+               journeyEvent == "station_departed" {
                 active.serviceDepartedStationCRS = stationCRS.uppercased()
                 active.serviceDepartedStationAt = Date()
             }
@@ -895,6 +1056,32 @@ final class JourneyTrackingCoordinator: ObservableObject {
             log("remote_update_applied", "Applied journey progress update \(userInfo["journey_event"] as? String ?? "unknown") at \(userInfo["station_crs"] as? String ?? "unknown station")", metadata: remoteNotificationMetadata(userInfo).merging([
                 "active_phase": active.phase.rawValue
             ]) { _, new in new })
+
+            let destinationMatches = (userInfo["destination_crs"] as? String).map {
+                $0.caseInsensitiveCompare(active.plannedDestination.crs) == .orderedSame
+            } ?? true
+            if Self.shouldCompleteJourneyFromRemoteUpdate(
+                event: journeyEvent,
+                destinationMatches: destinationMatches,
+                isFinalLeg: active.plannedLegIndex == active.plannedStations.count - 2,
+                hasConfirmedArrival: confirmedArrivalDate != nil
+            ), let confirmedArrivalDate {
+                log("remote_destination_arrival_confirmed", "Completing journey from confirmed backend arrival at \(active.plannedDestination.crs)", metadata: remoteNotificationMetadata(userInfo).merging([
+                    "active_phase": active.phase.rawValue,
+                    "confirmed_arrival_at": confirmedArrivalDate
+                ]) { _, new in new })
+                await completeJourney(
+                    at: active.plannedDestination,
+                    detectedAt: confirmedArrivalDate,
+                    isDeviceBased: false
+                )
+            } else if journeyEvent == "service_completed" {
+                log("remote_destination_arrival_ignored", "Backend completion could not safely complete the active journey", metadata: remoteNotificationMetadata(userInfo).merging([
+                    "destination_matches": destinationMatches,
+                    "is_final_leg": active.plannedLegIndex == active.plannedStations.count - 2,
+                    "confirmed_arrival_present": confirmedArrivalDate != nil
+                ]) { _, new in new })
+            }
             return true
         }
 
@@ -928,6 +1115,18 @@ final class JourneyTrackingCoordinator: ObservableObject {
             await postDelayRepayNotification(for: updated)
         }
         return true
+    }
+
+    static func shouldCompleteJourneyFromRemoteUpdate(
+        event: String?,
+        destinationMatches: Bool,
+        isFinalLeg: Bool,
+        hasConfirmedArrival: Bool
+    ) -> Bool {
+        event == "service_completed"
+            && destinationMatches
+            && isFinalLeg
+            && hasConfirmedArrival
     }
 
     func restoreAfterLaunch() async {
@@ -1000,6 +1199,12 @@ final class JourneyTrackingCoordinator: ObservableObject {
             "candidate_count": departures.count,
             "candidates": departureDiagnosticSummary(departures)
         ])
+        RecentServiceStore.shared.observe(
+            departures,
+            fromCRS: from.crs,
+            toCRS: to.crs,
+            now: detectedAt
+        )
 
         let preferredServiceID = LiveActivityManager.shared.preferredServiceID(fromCRS: from.crs, toCRS: to.crs)
         let viable = departures.filter { !$0.isCancelled }
@@ -1045,14 +1250,31 @@ final class JourneyTrackingCoordinator: ObservableObject {
             "rebound_from_service_id": reboundFromServiceID
         ])
 
+        let selectedScheduledDepartureAt = selected.flatMap {
+            JourneyHistoryTime.date(for: $0.departureTime.scheduled, near: detectedAt)
+        }
+        let precedingCancellation = selected.flatMap { selected in
+            selectedScheduledDepartureAt.flatMap { scheduledDepartureAt in
+                JourneyHistoryCancellationPolicy.immediatelyPrecedingCancellation(
+                    caughtServiceID: selected.serviceID,
+                    caughtScheduledDepartureAt: scheduledDepartureAt,
+                    departures: RecentServiceStore.shared.departures(
+                        fromCRS: from.crs,
+                        toCRS: to.crs,
+                        now: detectedAt
+                    )
+                )
+            }
+        }
         var leg = JourneyHistoryLeg(
             plannedLegIndex: active.plannedLegIndex,
             fromStation: from,
             toStation: to,
             serviceID: selected?.serviceID,
             detectedDepartureAt: detectedAt,
-            scheduledDepartureAt: selected.flatMap { JourneyHistoryTime.date(for: $0.departureTime.scheduled, near: detectedAt) },
+            scheduledDepartureAt: selectedScheduledDepartureAt,
             estimatedDepartureTime: selected?.departureTime.estimated,
+            precedingCancellation: precedingCancellation,
             outcome: selected == nil ? .uncertain : .active,
             reboundFromServiceID: reboundFromServiceID
         )
@@ -1104,6 +1326,30 @@ final class JourneyTrackingCoordinator: ObservableObject {
         activeJourney = active
         persistCheckpoint()
 
+        if let selected, let selectedScheduledDepartureAt {
+            let journeyID = active.id
+            let legID = leg.id
+            let fromCRS = from.crs
+            let toCRS = to.crs
+            Task { @MainActor [weak self] in
+                await self?.refreshPrecedingCancellation(
+                    journeyID: journeyID,
+                    legID: legID,
+                    caughtServiceID: selected.serviceID,
+                    caughtScheduledDepartureAt: selectedScheduledDepartureAt,
+                    fromCRS: fromCRS,
+                    toCRS: toCRS
+                )
+            }
+        }
+
+        LiveActivityJourneyStatusSender.shared.send(
+            phase: .enRoute,
+            from: active.plannedOrigin.crs,
+            to: active.plannedDestination.crs,
+            serviceID: active.currentLeg?.serviceID
+        )
+
         if let previousBackendSessionID {
             await JourneyTrackingService.shared.stop(sessionID: previousBackendSessionID)
         }
@@ -1121,6 +1367,63 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 "error": error.localizedDescription
             ])
         }
+    }
+
+    private func refreshPrecedingCancellation(
+        journeyID: UUID,
+        legID: UUID,
+        caughtServiceID: String,
+        caughtScheduledDepartureAt: Date,
+        fromCRS: String,
+        toCRS: String
+    ) async {
+        await RecentServiceStore.shared.refresh(fromCRS: fromCRS, toCRS: toCRS)
+        let recentDepartures = RecentServiceStore.shared.departures(
+            fromCRS: fromCRS,
+            toCRS: toCRS
+        )
+        let cancellation = JourneyHistoryCancellationPolicy.immediatelyPrecedingCancellation(
+            caughtServiceID: caughtServiceID,
+            caughtScheduledDepartureAt: caughtScheduledDepartureAt,
+            departures: recentDepartures
+        )
+
+        var updatedActiveCheckpoint = false
+        if var active = activeJourney,
+           active.id == journeyID,
+           let index = active.legs.firstIndex(where: { $0.id == legID }),
+           active.legs[index].precedingCancellation != cancellation {
+            active.legs[index].precedingCancellation = cancellation
+            active.updatedAt = Date()
+            activeJourney = active
+            persistCheckpoint()
+            updatedActiveCheckpoint = true
+        }
+        let updatedHistoryRecord = JourneyHistoryStore.shared.setPrecedingCancellation(
+            cancellation,
+            journeyID: journeyID,
+            legID: legID
+        )
+        log(
+            cancellation == nil ? "preceding_service_not_cancelled" : "preceding_service_cancelled",
+            cancellation.map {
+                "The \($0.scheduledDepartureTime) service immediately before the caught service was cancelled"
+            } ?? "The service immediately before the caught service was not cancelled",
+            metadata: [
+                "journey_id": journeyID.uuidString,
+                "leg_id": legID.uuidString,
+                "from": fromCRS,
+                "to": toCRS,
+                "caught_service_id": caughtServiceID,
+                "caught_scheduled_departure": caughtScheduledDepartureAt,
+                "recent_departure_count": recentDepartures.count,
+                "cancelled_service_id": cancellation?.serviceID,
+                "cancelled_scheduled_departure": cancellation?.scheduledDepartureTime,
+                "cancellation_delay_minutes": cancellation?.minutesBeforeCaughtService,
+                "updated_active_checkpoint": updatedActiveCheckpoint,
+                "updated_history_record": updatedHistoryRecord
+            ]
+        )
     }
 
     private func handleExpectedStationArrival(_ station: Station, detectedAt: Date) async {
@@ -1299,7 +1602,8 @@ final class JourneyTrackingCoordinator: ObservableObject {
         LiveActivityJourneyStatusSender.shared.send(
             phase: .arrived,
             from: active.plannedOrigin.crs,
-            to: active.plannedDestination.crs
+            to: active.plannedDestination.crs,
+            serviceID: active.currentLeg?.serviceID
         )
         log("destination_arrival_correlated", "Final arrival correlated with official timing data", metadata: [
             "journey_id": active.id.uuidString,
@@ -1508,13 +1812,16 @@ final class JourneyTrackingCoordinator: ObservableObject {
     }
 
     private func postDelayRepayNotification(for record: JourneyHistoryRecord) async {
-        guard let delayMinutes = record.delayMinutes,
+        guard let delayMinutes = record.delayRepayEligibleDelayMinutes,
               delayMinutes >= JourneyHistoryDelayPolicy.delayRepayThresholdMinutes else {
             return
         }
         let content = UNMutableNotificationContent()
         content.title = "Journey delay"
-        content.body = JourneyHistoryNotificationText.delayRepay(delayMinutes: delayMinutes)
+        content.body = JourneyHistoryNotificationText.delayRepay(
+            delayMinutes: delayMinutes,
+            includesPrecedingCancellation: record.hasPrecedingCancellation
+        )
         content.sound = .default
         content.categoryIdentifier = NotificationCategoryId.journeyHistory
         content.userInfo = [

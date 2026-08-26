@@ -56,6 +56,150 @@ struct JourneyHistoryTests {
         ) == JourneyHistoryDelayPolicy.delayRepayThresholdMinutes)
     }
 
+    @Test func immediatelyPrecedingCancelledServiceIsCapturedWithoutAnOriginArrivalTime() throws {
+        let caughtAt = Date(timeIntervalSince1970: 2_000_000_000)
+        let departures = [
+            recentDeparture(id: "cancelled-1712", minutesBeforeCaught: 30, isCancelled: true, caughtAt: caughtAt),
+            recentDeparture(id: "cancelled-1727", minutesBeforeCaught: 15, isCancelled: true, caughtAt: caughtAt)
+        ]
+
+        let cancellation = try #require(
+            JourneyHistoryCancellationPolicy.immediatelyPrecedingCancellation(
+                caughtServiceID: "caught-1742",
+                caughtScheduledDepartureAt: caughtAt,
+                departures: departures
+            )
+        )
+
+        #expect(cancellation.serviceID == "cancelled-1727")
+        #expect(cancellation.scheduledDepartureTime == "17:27")
+        #expect(cancellation.minutesBeforeCaughtService == 15)
+    }
+
+    @Test func anOlderCancellationDoesNotApplyWhenTheImmediatelyPrecedingServiceRan() {
+        let caughtAt = Date(timeIntervalSince1970: 2_000_000_000)
+        let departures = [
+            recentDeparture(id: "cancelled", minutesBeforeCaught: 30, isCancelled: true, caughtAt: caughtAt),
+            recentDeparture(id: "ran", minutesBeforeCaught: 15, isCancelled: false, caughtAt: caughtAt)
+        ]
+
+        #expect(JourneyHistoryCancellationPolicy.immediatelyPrecedingCancellation(
+            caughtServiceID: "caught",
+            caughtScheduledDepartureAt: caughtAt,
+            departures: departures
+        ) == nil)
+    }
+
+    @Test func cancellationStillAppliesWhenTheInterveningServiceWasNotDueBeforeTheCaughtTrain() throws {
+        let caughtAt = Date(timeIntervalSince1970: 2_000_000_000)
+        let departures = [
+            recentDeparture(id: "cancelled-1712", minutesBeforeCaught: 30, isCancelled: true, caughtAt: caughtAt),
+            recentDeparture(
+                id: "delayed-1727",
+                minutesBeforeCaught: 15,
+                isCancelled: false,
+                caughtAt: caughtAt,
+                effectiveMinutesBeforeCaught: 0
+            )
+        ]
+
+        let cancellation = try #require(
+            JourneyHistoryCancellationPolicy.immediatelyPrecedingCancellation(
+                caughtServiceID: "caught-1742",
+                caughtScheduledDepartureAt: caughtAt,
+                departures: departures
+            )
+        )
+
+        #expect(cancellation.serviceID == "cancelled-1712")
+        #expect(cancellation.scheduledDepartureTime == "17:12")
+        #expect(cancellation.minutesBeforeCaughtService == 30)
+    }
+
+    @Test func precedingCancellationContributesToDelayRepayEligibility() {
+        let cancellation = JourneyHistoryPrecedingCancellation(
+            serviceID: "cancelled",
+            scheduledDepartureAt: Date(timeIntervalSince1970: 1_000),
+            scheduledDepartureTime: "17:27",
+            minutesBeforeCaughtService: 15
+        )
+
+        #expect(JourneyHistoryCancellationPolicy.eligibleDelayMinutes(
+            arrivalDelayMinutes: 0,
+            precedingCancellations: [cancellation]
+        ) == 15)
+        #expect(JourneyHistoryCancellationPolicy.eligibleDelayMinutes(
+            arrivalDelayMinutes: nil,
+            precedingCancellations: [cancellation]
+        ) == 15)
+        #expect(JourneyHistoryCancellationPolicy.eligibleDelayMinutes(
+            arrivalDelayMinutes: 14,
+            precedingCancellations: []
+        ) == 14)
+    }
+
+    @Test func historyRecordEnablesDelayRepayForAnOnTimeCaughtServiceAfterACancellation() throws {
+        let caughtAt = Date(timeIntervalSince1970: 2_000_000_000)
+        let arrivalAt = caughtAt.addingTimeInterval(20 * 60)
+        let victoria = station(crs: "VIC", name: "London Victoria")
+        let kentHouse = station(crs: "KTH", name: "Kent House")
+        let cancellation = JourneyHistoryPrecedingCancellation(
+            serviceID: "cancelled-1727",
+            scheduledDepartureAt: caughtAt.addingTimeInterval(-15 * 60),
+            scheduledDepartureTime: "17:27",
+            minutesBeforeCaughtService: 15
+        )
+        let leg = JourneyHistoryLeg(
+            plannedLegIndex: 0,
+            fromStation: victoria,
+            toStation: kentHouse,
+            serviceID: "caught-1742",
+            operatorName: "Southeastern",
+            operatorCode: "SE",
+            detectedDepartureAt: caughtAt,
+            scheduledDepartureAt: caughtAt,
+            scheduledArrivalAt: arrivalAt,
+            actualArrivalAt: arrivalAt,
+            precedingCancellation: cancellation,
+            outcome: .completed
+        )
+        let checkpoint = ActiveJourneyHistoryCheckpoint(
+            id: UUID(),
+            subscriptionId: "cancellation-delay-repay",
+            source: .scheduled,
+            plannedStations: [victoria, kentHouse],
+            createdAt: caughtAt.addingTimeInterval(-60 * 60),
+            phase: .arriving,
+            plannedLegIndex: 0,
+            originArrivedAt: nil,
+            detectedDepartureAt: caughtAt,
+            detectedArrivalAt: arrivalAt,
+            deviceBasedArrivalAt: nil,
+            lastConfirmedOnRouteStation: kentHouse,
+            nextExpectedCallingPointIndex: 1,
+            legs: [leg],
+            stationEvents: [],
+            approachNotificationSent: true,
+            backendSessionID: nil,
+            serviceMatchConfidence: 1,
+            unexpectedStation: nil,
+            unexpectedStationObservedAt: nil,
+            serviceDepartedStationCRS: nil,
+            serviceDepartedStationAt: nil,
+            updatedAt: arrivalAt
+        )
+        let record = JourneyHistoryRecord(
+            checkpoint: checkpoint,
+            outcome: .completed,
+            completedAt: arrivalAt
+        )
+
+        #expect(record.delayMinutes == 0)
+        #expect(record.delayRepayEligibleDelayMinutes == 15)
+        #expect(record.isDelayRepay15Plus)
+        #expect(JourneyHistoryDelayPolicy.responsibleOperatorLeg(in: record)?.operatorCode == "SE")
+    }
+
     @Test func journeyTimesResolveAcrossMidnight() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try #require(TimeZone(identifier: "Europe/London"))
@@ -84,6 +228,83 @@ struct JourneyHistoryTests {
     @Test @MainActor func activeJourneyMonitoringHasASafetyExpiry() {
         #expect(JourneyTrackingCoordinator.maximumActiveJourneyDuration == 24 * 60 * 60)
         #expect(JourneyTrackingCoordinator.completedJourneyDisplayDuration == 60 * 60)
+        #expect(
+            JourneyTrackingCoordinator.destinationApproachRadiusMeters
+                > JourneyTrackingCoordinator.destinationArrivalRadiusMeters
+        )
+    }
+
+    @Test func finalArrivalCompensatesForAValidCoarseLocationFix() {
+        let evaluation = JourneyArrivalLocationPolicy.evaluate(
+            rawDistance: 210,
+            horizontalAccuracy: 80,
+            locationAge: 4,
+            arrivalRadius: 150,
+            maximumHorizontalAccuracy: 200,
+            maximumLocationAge: 120
+        )
+
+        #expect(evaluation.rawDistance == 210)
+        #expect(evaluation.compensatedDistance == 130)
+        #expect(evaluation.isAccepted)
+        #expect(evaluation.rejectionReason == nil)
+    }
+
+    @Test func finalArrivalRejectsStaleOrUnreliableLocations() {
+        let poorAccuracy = JourneyArrivalLocationPolicy.evaluate(
+            rawDistance: 100,
+            horizontalAccuracy: 250,
+            locationAge: 4,
+            arrivalRadius: 150,
+            maximumHorizontalAccuracy: 200,
+            maximumLocationAge: 120
+        )
+        let stale = JourneyArrivalLocationPolicy.evaluate(
+            rawDistance: 100,
+            horizontalAccuracy: 20,
+            locationAge: 121,
+            arrivalRadius: 150,
+            maximumHorizontalAccuracy: 200,
+            maximumLocationAge: 120
+        )
+
+        #expect(!poorAccuracy.isAccepted)
+        #expect(poorAccuracy.rejectionReason == "poor_accuracy")
+        #expect(!stale.isAccepted)
+        #expect(stale.rejectionReason == "stale_location")
+    }
+
+    @Test @MainActor func confirmedBackendCompletionEndsOnlyTheFinalMatchingLeg() {
+        #expect(JourneyTrackingCoordinator.shouldCompleteJourneyFromRemoteUpdate(
+            event: "service_completed",
+            destinationMatches: true,
+            isFinalLeg: true,
+            hasConfirmedArrival: true
+        ))
+        #expect(!JourneyTrackingCoordinator.shouldCompleteJourneyFromRemoteUpdate(
+            event: "station_departed",
+            destinationMatches: true,
+            isFinalLeg: true,
+            hasConfirmedArrival: true
+        ))
+        #expect(!JourneyTrackingCoordinator.shouldCompleteJourneyFromRemoteUpdate(
+            event: "service_completed",
+            destinationMatches: false,
+            isFinalLeg: true,
+            hasConfirmedArrival: true
+        ))
+        #expect(!JourneyTrackingCoordinator.shouldCompleteJourneyFromRemoteUpdate(
+            event: "service_completed",
+            destinationMatches: true,
+            isFinalLeg: false,
+            hasConfirmedArrival: true
+        ))
+        #expect(!JourneyTrackingCoordinator.shouldCompleteJourneyFromRemoteUpdate(
+            event: "service_completed",
+            destinationMatches: true,
+            isFinalLeg: true,
+            hasConfirmedArrival: false
+        ))
     }
 
     @Test func boardingNotificationUsesScheduledTimeAndKnownDelay() {
@@ -423,5 +644,35 @@ struct JourneyHistoryTests {
 
     private func station(crs: String, name: String) -> Station {
         Station(crs: crs, name: name, longitude: "0", latitude: "0")
+    }
+
+    private func recentDeparture(
+        id: String,
+        minutesBeforeCaught: Int,
+        isCancelled: Bool,
+        caughtAt: Date,
+        effectiveMinutesBeforeCaught: Int? = nil
+    ) -> RecentDepartureV2 {
+        let scheduledAt = caughtAt.addingTimeInterval(-Double(minutesBeforeCaught) * 60)
+        let effectiveDepartureAt = effectiveMinutesBeforeCaught.map {
+            caughtAt.addingTimeInterval(-Double($0) * 60)
+        }
+        let hour = 17
+        let minute = 42 - minutesBeforeCaught
+        return RecentDepartureV2(
+            serviceID: id,
+            serviceType: "train",
+            fromCRS: "VIC",
+            toCRS: "KTH",
+            scheduledDeparture: String(format: "%02d:%02d", hour, minute),
+            estimatedDeparture: isCancelled ? "Cancelled" : effectiveDepartureAt.map { _ in "17:42" },
+            actualDeparture: nil,
+            scheduledDepartureAt: scheduledAt,
+            estimatedDepartureAt: effectiveDepartureAt,
+            actualDepartureAt: nil,
+            platform: "2",
+            isCancelled: isCancelled,
+            lastObservedAt: caughtAt
+        )
     }
 }

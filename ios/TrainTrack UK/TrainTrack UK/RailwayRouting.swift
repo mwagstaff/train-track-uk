@@ -49,6 +49,27 @@ nonisolated struct ServiceRailwayRoute: Sendable {
         return coordinate(atDistance: startDistance + ((endDistance - startDistance) * clampedProgress))
     }
 
+    func floatingStationIndex(closestTo coordinate: CLLocationCoordinate2D) -> Double? {
+        guard coordinates.count >= 2, stationCount >= 2,
+              let projectedDistance = distanceAlongRoute(closestTo: coordinate) else {
+            return stationCount == 1 ? 0 : nil
+        }
+
+        for upperStation in 1..<stationCount {
+            let lowerDistance = cumulativeDistances[stationCoordinateIndices[upperStation - 1]]
+            let upperDistance = cumulativeDistances[stationCoordinateIndices[upperStation]]
+            guard projectedDistance <= upperDistance else { continue }
+            let segmentLength = upperDistance - lowerDistance
+            guard segmentLength > 0 else { return Double(upperStation) }
+            let fraction = min(max(
+                (projectedDistance - lowerDistance) / segmentLength,
+                0
+            ), 1)
+            return Double(upperStation - 1) + fraction
+        }
+        return Double(stationCount - 1)
+    }
+
     func coordinates(fromStation start: Int, throughStation end: Int) -> [CLLocationCoordinate2D] {
         guard stationCount > 0 else { return [] }
         let lowerStation = min(max(min(start, end), 0), stationCount - 1)
@@ -57,6 +78,43 @@ nonisolated struct ServiceRailwayRoute: Sendable {
         let upperCoordinate = stationCoordinateIndices[upperStation]
         guard lowerCoordinate <= upperCoordinate else { return [] }
         return Array(coordinates[lowerCoordinate...upperCoordinate])
+    }
+
+    private func distanceAlongRoute(
+        closestTo coordinate: CLLocationCoordinate2D
+    ) -> CLLocationDistance? {
+        guard coordinates.count >= 2 else { return nil }
+        let metresPerDegreeLatitude = 111_132.0
+        let metresPerDegreeLongitude = 111_320.0 * cos(coordinate.latitude * .pi / 180)
+        func localPoint(_ routeCoordinate: CLLocationCoordinate2D) -> (x: Double, y: Double) {
+            (
+                x: (routeCoordinate.longitude - coordinate.longitude) * metresPerDegreeLongitude,
+                y: (routeCoordinate.latitude - coordinate.latitude) * metresPerDegreeLatitude
+            )
+        }
+
+        var closestDistance = CLLocationDistance.infinity
+        var closestDistanceAlongRoute: CLLocationDistance?
+        for index in coordinates.indices.dropLast() {
+            let start = localPoint(coordinates[index])
+            let end = localPoint(coordinates[index + 1])
+            let deltaX = end.x - start.x
+            let deltaY = end.y - start.y
+            let squaredLength = (deltaX * deltaX) + (deltaY * deltaY)
+            let fraction = squaredLength > 0
+                ? min(max(-((start.x * deltaX) + (start.y * deltaY)) / squaredLength, 0), 1)
+                : 0
+            let distance = hypot(
+                start.x + (deltaX * fraction),
+                start.y + (deltaY * fraction)
+            )
+            if distance < closestDistance {
+                closestDistance = distance
+                let segmentLength = cumulativeDistances[index + 1] - cumulativeDistances[index]
+                closestDistanceAlongRoute = cumulativeDistances[index] + (segmentLength * fraction)
+            }
+        }
+        return closestDistanceAlongRoute
     }
 
     private func coordinate(atDistance distance: CLLocationDistance) -> CLLocationCoordinate2D? {

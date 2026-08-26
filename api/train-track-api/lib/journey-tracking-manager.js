@@ -15,12 +15,17 @@ export class JourneyTrackingManager {
         this.getDetails = options.getDetails || getServiceDetailsWithContext;
         this.pushClient = options.pushClient || new NotificationPushClient();
         this.recordAudit = options.recordAudit || null;
+        this.onJourneyCompleted = options.onJourneyCompleted || null;
         this.now = options.now || (() => new Date());
         this.pollIntervalMs = options.pollIntervalMs
             || Math.max(5, DEFAULT_POLL_INTERVAL_SECONDS) * 1000;
         this.pollTimer = null;
         this.isPolling = false;
         this.deletedDeviceIds = new Set();
+    }
+
+    setJourneyCompletionHandler(handler) {
+        this.onJourneyCompleted = typeof handler === 'function' ? handler : null;
     }
 
     startPollingLoop() {
@@ -180,6 +185,29 @@ export class JourneyTrackingManager {
             });
         }
 
+        let completionReconciliationError = null;
+        if (progress.actualArrival) {
+            try {
+                await this.onJourneyCompleted?.({
+                    deviceId: session.deviceId,
+                    subscriptionId: session.subscriptionId,
+                    from: session.from,
+                    to: session.to,
+                    journeyId: session.journeyId,
+                    serviceId: session.serviceId,
+                    actualArrival: progress.actualArrival
+                });
+            } catch (error) {
+                completionReconciliationError = error;
+                this.audit('journey_tracking_completion_reconciliation_failed', session, {
+                    station_crs: progress.stationCRS,
+                    scheduled_arrival: progress.scheduledArrival,
+                    actual_arrival: progress.actualArrival,
+                    error: error?.message || String(error)
+                });
+            }
+        }
+
         const payload = buildProgressPayload(session, details, progress);
         const result = await this.pushClient.sendNotification(session.pushToken, payload, {
             useSandbox: session.useSandbox,
@@ -194,6 +222,13 @@ export class JourneyTrackingManager {
 
         if (result?.isBadToken) {
             this.audit('journey_tracking_push_bad_token', session, pushAuditMetadata(result, progress));
+            if (completionReconciliationError) {
+                return {
+                    status: 'completion_reconciliation_failed',
+                    progress,
+                    push: result
+                };
+            }
             this.sessions.delete(session.id);
             return { status: 'bad_token', progress, push: result };
         }
@@ -204,6 +239,10 @@ export class JourneyTrackingManager {
                 this.audit('journey_tracking_push_failed', session, pushAuditMetadata(result, progress));
             }
             return { status: 'push_failed', progress, push: result };
+        }
+
+        if (completionReconciliationError) {
+            return { status: 'completion_reconciliation_failed', progress, push: result };
         }
 
         session.lastPushAuditState = 'succeeded';

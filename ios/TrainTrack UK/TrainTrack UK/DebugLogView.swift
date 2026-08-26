@@ -3,6 +3,7 @@ import SwiftUI
 struct DebugLogView: View {
     @StateObject private var store = DebugLogStore.shared
     @State private var showShareSheet = false
+    @State private var exportURL: URL?
 
     var body: some View {
         NavigationView {
@@ -24,7 +25,6 @@ struct DebugLogView: View {
                     Button("Clear") {
                         store.clear()
                     }
-                    .disabled(store.logs.isEmpty)
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     HStack {
@@ -42,14 +42,21 @@ struct DebugLogView: View {
                         }
 
                         Button("Share") {
-                            showShareSheet = true
+                            Task {
+                                await JourneyTrackingCoordinator.shared.logDiagnosticSnapshot(
+                                    reason: "debug-log-share"
+                                )
+                                exportURL = store.exportFileURL()
+                                showShareSheet = exportURL != nil
+                            }
                         }
-                        .disabled(store.logs.isEmpty)
                     }
                 }
             }
             .sheet(isPresented: $showShareSheet) {
-                ShareSheet(items: [store.exportLogs()])
+                if let exportURL {
+                    ShareSheet(items: [exportURL])
+                }
             }
         }
     }

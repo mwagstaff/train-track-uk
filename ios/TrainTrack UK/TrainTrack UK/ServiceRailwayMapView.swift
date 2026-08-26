@@ -74,7 +74,8 @@ enum RailwayHistoricalStationSemantics {
 enum RailwayStationAnnotationLabel {
     static func text(
         for station: CallingPoint,
-        historicalEvent: RailwayHistoricalStationEvent? = nil
+        historicalEvent: RailwayHistoricalStationEvent? = nil,
+        hasDeparted: Bool = false
     ) -> String {
         if station.isCancelledAtStation {
             return "\(station.locationName) (cancelled)"
@@ -84,29 +85,35 @@ enum RailwayStationAnnotationLabel {
         if let historicalEvent,
            let eventTime = railwayClockTime(historicalEvent.time) {
             let punctuality = punctualityText(time: eventTime, scheduled: scheduledTime)
-            let verb = historicalEvent.kind == .arrived ? "arrived" : "departed"
-            return "\(station.locationName) (\(verb) \(eventTime), \(punctuality))"
+            if historicalEvent.kind == .arrived {
+                return "\(station.locationName) (arrived \(eventTime), \(punctuality))"
+            }
+            return "\(station.locationName) (\(eventTime), \(punctuality))"
         }
         let actual = railwayClockTime(station.at)
         let normalizedActual = station.at?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        if let actual {
+        if let actual, hasDeparted {
             let punctuality = punctualityText(time: actual, scheduled: scheduledTime)
-            return "\(station.locationName) (departed \(actual), \(punctuality))"
+            return "\(station.locationName) (\(actual), \(punctuality))"
         }
-        if normalizedActual == "on time" {
-            return "\(station.locationName) (departed \(scheduledTime), on time)"
+        if normalizedActual == "on time" && hasDeparted {
+            return "\(station.locationName) (\(scheduledTime), on time)"
         }
 
         let estimate = railwayClockTime(station.et)
         if station.et?.trimmingCharacters(in: .whitespacesAndNewlines)
             .caseInsensitiveCompare("Delayed") == .orderedSame {
-            return "\(station.locationName) (due time unavailable, delayed)"
+            let timing = hasDeparted ? "time unavailable" : "due time unavailable"
+            return "\(station.locationName) (\(timing), delayed)"
         }
 
         let dueTime = estimate ?? scheduledTime
         let punctuality = punctualityText(time: dueTime, scheduled: scheduledTime)
+        if hasDeparted {
+            return "\(station.locationName) (\(dueTime), \(punctuality))"
+        }
         return "\(station.locationName) (due \(dueTime), \(punctuality))"
     }
 
@@ -153,7 +160,8 @@ struct RailwayStationInfoPresentation: Equatable {
 
     init(
         station: CallingPoint,
-        historicalEvent: RailwayHistoricalStationEvent? = nil
+        historicalEvent: RailwayHistoricalStationEvent? = nil,
+        hasDeparted: Bool = false
     ) {
         let scheduledTime = railwayClockTime(station.st) ?? station.st
         let expectedTime = railwayClockTime(station.et)
@@ -170,6 +178,15 @@ struct RailwayStationInfoPresentation: Equatable {
                 : "\(verb) \(eventTime) (on time)"
         } else if station.isCancelledAtStation {
             timingText = "Call cancelled (originally scheduled \(scheduledTime))"
+        } else if hasDeparted {
+            let departureTime = railwayClockTime(station.at) ?? expectedTime ?? scheduledTime
+            let delay = departureDelayMinutes(
+                estimated: departureTime,
+                scheduled: scheduledTime
+            ) ?? 0
+            timingText = delay > 0
+                ? "Departed \(departureTime) (\(delay) min\(delay == 1 ? "" : "s") late)"
+                : "Departed \(departureTime) (on time)"
         } else if normalizedEstimate == "on time" || expectedTime == scheduledTime {
             timingText = "Expected \(scheduledTime) (on time)"
         } else if let expectedTime {
@@ -385,6 +402,11 @@ private enum RailwayMapAnnotationIdentifier {
     }
 }
 
+struct RailwayOnboardPosition {
+    let coordinate: CLLocationCoordinate2D
+    let floatingStationIndex: Double
+}
+
 enum RailwayOnboardLocationResolver {
     static let maximumLocationAge: TimeInterval = 2 * 60
     static let maximumHorizontalAccuracy: CLLocationAccuracy = 200
@@ -398,14 +420,53 @@ enum RailwayOnboardLocationResolver {
         routeCoordinates: [CLLocationCoordinate2D],
         now: Date = Date()
     ) -> CLLocationCoordinate2D? {
+        validatedUserCoordinate(
+            apiCoordinate: apiCoordinate,
+            userLocation: userLocation,
+            routeCoordinates: routeCoordinates,
+            now: now
+        ) ?? apiCoordinate
+    }
+
+    static func position(
+        apiCoordinate: CLLocationCoordinate2D?,
+        userLocation: CLLocation?,
+        route: ServiceRailwayRoute,
+        maximumFloatingStationIndex: Double,
+        now: Date = Date()
+    ) -> RailwayOnboardPosition? {
+        guard let coordinate = validatedUserCoordinate(
+            apiCoordinate: apiCoordinate,
+            userLocation: userLocation,
+            routeCoordinates: route.coordinates,
+            now: now
+        ), let projectedIndex = route.floatingStationIndex(closestTo: coordinate) else {
+            return nil
+        }
+        let cappedIndex = min(projectedIndex, maximumFloatingStationIndex)
+        guard let cappedCoordinate = route.coordinate(atFloatingStationIndex: cappedIndex) else {
+            return nil
+        }
+        return RailwayOnboardPosition(
+            coordinate: cappedCoordinate,
+            floatingStationIndex: cappedIndex
+        )
+    }
+
+    private static func validatedUserCoordinate(
+        apiCoordinate: CLLocationCoordinate2D?,
+        userLocation: CLLocation?,
+        routeCoordinates: [CLLocationCoordinate2D],
+        now: Date
+    ) -> CLLocationCoordinate2D? {
         guard let userLocation,
               userLocation.horizontalAccuracy >= 0,
               userLocation.horizontalAccuracy <= maximumHorizontalAccuracy else {
-            return apiCoordinate
+            return nil
         }
         let locationAge = now.timeIntervalSince(userLocation.timestamp)
         guard locationAge >= -30, locationAge <= maximumLocationAge else {
-            return apiCoordinate
+            return nil
         }
         let routeTolerance = max(
             minimumRouteTolerance,
@@ -415,14 +476,14 @@ enum RailwayOnboardLocationResolver {
             userLocation.coordinate,
             routeCoordinates: routeCoordinates
         ) <= routeTolerance else {
-            return apiCoordinate
+            return nil
         }
         if let apiCoordinate,
            userLocation.distance(from: CLLocation(
                latitude: apiCoordinate.latitude,
                longitude: apiCoordinate.longitude
            )) > maximumAPIDivergence {
-            return apiCoordinate
+            return nil
         }
         return userLocation.coordinate
     }
@@ -1032,12 +1093,23 @@ struct ServiceRailwayMapView: View {
         )
     }
 
-    private var trainCoordinate: CLLocationCoordinate2D? {
-        RailwayOnboardLocationResolver.coordinate(
+    private var onboardPosition: RailwayOnboardPosition? {
+        RailwayOnboardLocationResolver.position(
             apiCoordinate: apiTrainCoordinate,
             userLocation: onboardLocation,
-            routeCoordinates: route.coordinates
+            route: route,
+            maximumFloatingStationIndex: ServiceProgressEstimator.maximumPermittedFloatingIndex(
+                for: stations
+            )
         )
+    }
+
+    private var trainCoordinate: CLLocationCoordinate2D? {
+        onboardPosition?.coordinate ?? apiTrainCoordinate
+    }
+
+    private var liveFloatingStationIndex: Double {
+        onboardPosition?.floatingStationIndex ?? progress.floatingIndex
     }
 
     private var trainCoordinateKey: String {
@@ -1123,7 +1195,8 @@ struct ServiceRailwayMapView: View {
         let station = item.station
         let presentation = RailwayStationInfoPresentation(
             station: station,
-            historicalEvent: historicalEvent(for: item)
+            historicalEvent: historicalEvent(for: item),
+            hasDeparted: hasDeparted(item)
         )
         return VStack(alignment: .leading, spacing: 10) {
             Text(station.locationName)
@@ -1199,8 +1272,36 @@ struct ServiceRailwayMapView: View {
         }
         return RailwayStationAnnotationLabel.text(
             for: item.station,
-            historicalEvent: historicalEvent(for: item)
+            historicalEvent: historicalEvent(for: item),
+            hasDeparted: hasDeparted(item)
         )
+    }
+
+    private func hasDeparted(_ item: RailwayMapStationItem) -> Bool {
+        guard highlightedTravelRange == nil else { return false }
+        let actual = item.station.at?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasPostedActual = actual?.isEmpty == false
+            && actual?.caseInsensitiveCompare("Cancelled") != .orderedSame
+
+        if let index = item.primaryIndex {
+            let hasPassedStation = liveFloatingStationIndex > Double(index) + 0.001
+            return (hasPostedActual || hasPassedStation)
+                && ServiceProgressEstimator.isDeparturePermitted(
+                    at: index,
+                    in: stations
+                )
+        }
+
+        return hasPostedActual
+            && ServiceProgressEstimator.isDeparturePermitted(
+                at: item.stationIndex,
+                in: additionalRoutes.first(where: {
+                    $0.stations.indices.contains(item.stationIndex)
+                        && normalizedCRS($0.stations[item.stationIndex].crs)
+                            == normalizedCRS(item.station.crs)
+                })?.stations ?? [item.station]
+            )
     }
 
     private func shouldShowLabel(for item: RailwayMapStationItem) -> Bool {

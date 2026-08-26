@@ -37,6 +37,8 @@ struct PreferencesView: View {
     @State private var showNotificationDeleteDialog = false
     #if DEBUG
     @State private var showDebugLogs = false
+    @State private var showTroubleshootingShare = false
+    @State private var troubleshootingLogURL: URL?
     #endif
     @State private var notificationPreferencesError: String? = nil
     @State private var notificationPreferencesSyncTask: Task<Void, Never>? = nil
@@ -286,10 +288,22 @@ struct PreferencesView: View {
 
             #if DEBUG
             Section("Diagnostics") {
+                Button {
+                    Task {
+                        await JourneyTrackingCoordinator.shared.logDiagnosticSnapshot(
+                            reason: "preferences-share"
+                        )
+                        troubleshootingLogURL = DebugLogStore.shared.exportFileURL()
+                        showTroubleshootingShare = troubleshootingLogURL != nil
+                    }
+                } label: {
+                    Label("Share journey troubleshooting logs", systemImage: "square.and.arrow.up")
+                }
+
                 Button("View Debug Logs") {
                     showDebugLogs = true
                 }
-                Text("Includes app and notification service extension diagnostics stored locally on this device.")
+                Text("DEBUG builds only. Includes journey state, service matching, notification delivery, monitored regions, location authorization and detailed GPS evaluations stored locally on this device.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -327,6 +341,11 @@ struct PreferencesView: View {
         #if DEBUG
         .sheet(isPresented: $showDebugLogs) {
             DebugLogView()
+        }
+        .sheet(isPresented: $showTroubleshootingShare) {
+            if let troubleshootingLogURL {
+                ShareSheet(items: [troubleshootingLogURL])
+            }
         }
         #endif
     }

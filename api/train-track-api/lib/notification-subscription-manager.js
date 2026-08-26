@@ -12,6 +12,7 @@ import { sleep } from './retry-utils.js';
 import { allowDeviceData } from './device-data-deletion-state.js';
 import {
     buildMuteNotificationPlan,
+    JOURNEY_COMPLETION_RECONCILIATION_REASON,
     resolveDetectionSource,
     resolveMuteTransition,
     shouldSendMuteNotifications
@@ -488,6 +489,42 @@ export class NotificationSubscriptionManager {
         }
 
         return muted;
+    }
+
+    async reconcileJourneyCompletion({
+        deviceId,
+        subscriptionId = null,
+        from,
+        to,
+        metadata = null
+    } = {}) {
+        const fromCode = typeof from === 'string' ? from.trim().toUpperCase() : '';
+        const toCode = typeof to === 'string' ? to.trim().toUpperCase() : '';
+        if (!deviceId || !fromCode || !toCode) {
+            return { mutedScheduledLegs: 0, removedLiveSessions: 0 };
+        }
+
+        const leg = { from: fromCode, to: toCode };
+        const muted = await this.muteScheduledLegsForToday({
+            deviceId,
+            legs: [leg],
+            reason: JOURNEY_COMPLETION_RECONCILIATION_REASON,
+            metadata: {
+                ...metadata,
+                source_subscription_id: subscriptionId,
+                detection_source: 'journey_tracking'
+            }
+        });
+        const removedLiveSessions = await this.deleteLiveSessionsForLeg({
+            deviceId,
+            from: fromCode,
+            to: toCode
+        });
+
+        return {
+            mutedScheduledLegs: muted.length,
+            removedLiveSessions
+        };
     }
 
     // Holiday mode: a single on/off flag per device. While enabled, pollSubscription
@@ -1164,16 +1201,32 @@ export class NotificationSubscriptionManager {
             nextState[serviceID] = current;
 
             const prev = previous[serviceID];
+            const isNextDeparture = Boolean(nextDepartureServiceID) && serviceID === nextDepartureServiceID;
+
+            if (
+                notificationTypes.includes('delays')
+                && current.isCancelled
+                && !prev?.isCancelled
+                && (Boolean(prev) || isNextDeparture)
+            ) {
+                const departureIndex = snapshot.departures.findIndex((candidate) => candidate.serviceID === serviceID);
+                const nextAvailable = snapshot.departures
+                    .slice(Math.max(0, departureIndex + 1))
+                    .find((candidate) => !candidate.isCancelled) || null;
+                await this.sendNotification(
+                    subscription,
+                    buildCancellationMessage(subscription, leg, current, nextAvailable),
+                    leg,
+                    updateReason
+                );
+            }
+
             if (!prev) {
                 continue;
             }
 
-            const isNextDeparture = Boolean(nextDepartureServiceID) && serviceID === nextDepartureServiceID;
-
             if (notificationTypes.includes('delays')) {
-                if (current.isCancelled && !prev.isCancelled) {
-                    await this.sendNotification(subscription, buildCancellationMessage(subscription, leg, current), leg, updateReason);
-                } else if (isNextDeparture && current.delayMinutes > 0 && current.delayMinutes !== prev.delayMinutes) {
+                if (!current.isCancelled && isNextDeparture && current.delayMinutes > 0 && current.delayMinutes !== prev.delayMinutes) {
                     await this.sendNotification(subscription, buildDelayMessage(subscription, leg, current), leg, updateReason);
                 }
             }
@@ -1360,6 +1413,23 @@ export class NotificationSubscriptionManager {
         const muteTransition = resolveMuteTransition({ transition, reason: muteReason });
         const muteDetectionSource = resolveDetectionSource({ detectionSource, reason: muteReason });
         const isStationExit = muteTransition === 'station_exit';
+        if (muteReason === JOURNEY_COMPLETION_RECONCILIATION_REASON) {
+            await this.reconcileJourneyCompletion({
+                deviceId,
+                subscriptionId,
+                from: fromCode,
+                to: toCode,
+                metadata: {
+                    transition: muteTransition,
+                    detection_source: muteDetectionSource
+                }
+            });
+            return {
+                date: currentScheduleDateKey(),
+                transition: muteTransition,
+                detectionSource: muteDetectionSource
+            };
+        }
         let subscription = this.subscriptions.get(subscriptionId);
         if (!subscription && isStationExit) {
             subscription = this.findScheduledSubscriptionForLeg({
@@ -1387,6 +1457,25 @@ export class NotificationSubscriptionManager {
         subscription.mutedByLegDay[legKey] = dateKey;
         subscription.mutedAtByLegDay[legKey] = mutedAt;
         await this._saveSubscription(subscription);
+
+        const source = this.subscriptionSource(subscription);
+        if (dateKey === todayKey && (source === SCHEDULED_SOURCE || source === LIVE_SESSION_SOURCE)) {
+            const matchingScheduleMuteReason = source === LIVE_SESSION_SOURCE
+                ? (isStationExit ? 'live_session_muted_on_station_exit' : 'live_session_muted_on_arrival')
+                : (isStationExit ? 'scheduled_leg_muted_on_station_exit' : 'scheduled_leg_muted_on_arrival');
+            await this.muteScheduledLegsForToday({
+                deviceId: subscription.deviceId,
+                legs: [leg],
+                reason: matchingScheduleMuteReason,
+                metadata: {
+                    source_subscription_id: subscription.id,
+                    date: dateKey,
+                    trigger_reason: muteReason,
+                    transition: muteTransition,
+                    detection_source: muteDetectionSource
+                }
+            });
+        }
 
         // When muting for today (i.e. triggered by geofence arrival), send a
         // confirmation push so the user knows notifications have been muted.
@@ -1455,40 +1544,10 @@ export class NotificationSubscriptionManager {
             }));
         }
 
-        const source = this.subscriptionSource(subscription);
-        if (source === SCHEDULED_SOURCE) {
-            await this.muteScheduledLegsForToday({
-                deviceId: subscription.deviceId,
-                legs: [leg],
-                reason: isStationExit
-                    ? 'scheduled_leg_muted_on_station_exit'
-                    : 'scheduled_leg_muted_on_arrival',
-                metadata: {
-                    requested_subscription_id: subscription.id,
-                    date: dateKey,
-                    trigger_reason: muteReason,
-                    transition: muteTransition,
-                    detection_source: muteDetectionSource
-                }
-            });
-        }
-
         if (source === LIVE_SESSION_SOURCE) {
             const liveSessionMuteReason = isStationExit
                 ? 'live_session_muted_on_station_exit'
                 : 'live_session_muted_on_arrival';
-            await this.muteScheduledLegsForToday({
-                deviceId: subscription.deviceId,
-                legs: [leg],
-                reason: liveSessionMuteReason,
-                metadata: {
-                    live_session_id: subscription.id,
-                    date: dateKey,
-                    trigger_reason: muteReason,
-                    transition: muteTransition,
-                    detection_source: muteDetectionSource
-                }
-            });
             this.subscriptions.delete(subscription.id);
             await this._deleteFromMongo(subscription.id);
             await this.recordSubscriptionAudit({
@@ -2161,8 +2220,9 @@ function buildDelayMessage(subscription, leg, dep) {
     return buildNotificationPayload(legRouteTitle(leg), body, buildLegMeta(subscription, leg, 'delay'), 'delay');
 }
 
-function buildCancellationMessage(subscription, leg, dep) {
-    const body = `${dep.scheduled} - cancelled.`;
+function buildCancellationMessage(subscription, leg, dep, nextDeparture = null) {
+    const nextService = nextDeparture ? `, next service ${formatDepartureTime(nextDeparture)}` : '';
+    const body = `‼️ ${formatDepartureTime(dep)} to ${legToLabel(leg)} cancelled${nextService}`;
     return buildNotificationPayload(legRouteTitle(leg), body, buildLegMeta(subscription, leg, 'cancellation'), 'cancellation');
 }
 

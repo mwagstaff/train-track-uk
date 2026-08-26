@@ -131,6 +131,34 @@ final class JourneyHistoryStore: ObservableObject {
     }
 
     @discardableResult
+    func setPrecedingCancellation(
+        _ cancellation: JourneyHistoryPrecedingCancellation?,
+        journeyID: UUID,
+        legID: UUID
+    ) -> Bool {
+        guard let record = records.first(where: { $0.id == journeyID }) else { return false }
+        var legs = record.legs
+        guard let index = legs.firstIndex(where: { $0.id == legID }),
+              legs[index].precedingCancellation != cancellation else {
+            return false
+        }
+        legs[index].precedingCancellation = cancellation
+        record.legsData = (try? JSONEncoder().encode(legs)) ?? record.legsData
+        saveAndReload(
+            event: "preceding_cancellation_updated",
+            message: "Updated preceding cancellation evidence for journey \(journeyID.uuidString)",
+            metadata: [
+                "journey_id": journeyID.uuidString,
+                "leg_id": legID.uuidString,
+                "cancelled_service_id": cancellation?.serviceID,
+                "cancelled_scheduled_departure": cancellation?.scheduledDepartureTime,
+                "cancellation_delay_minutes": cancellation?.minutesBeforeCaughtService
+            ]
+        )
+        return true
+    }
+
+    @discardableResult
     func refreshOfficialArrival(for record: JourneyHistoryRecord) async -> JourneyHistoryRecord? {
         #if DEBUG
         if debugFixtureJourneyID == record.id {
@@ -329,7 +357,7 @@ final class JourneyHistoryStore: ObservableObject {
     private static let vicToOrpingtonDebugCallingPoints: [JourneyHistoryCallingPoint] = [
         debugCallingPoint("London Victoria", "VIC", "17:27", departed: true),
         debugCallingPoint("Brixton", "BRX", "17:34", departed: true),
-        debugCallingPoint("Herne Hill", "HNH", "17:36", departed: true),
+        debugCallingPoint("Herne Hill", "HNH", "17:37", departed: true),
         debugCallingPoint("West Dulwich", "WDU", "17:39", departed: true),
         debugCallingPoint("Sydenham Hill", "SYH", "17:42", departed: true),
         debugCallingPoint("Penge East", "PNE", "17:45", departed: true),

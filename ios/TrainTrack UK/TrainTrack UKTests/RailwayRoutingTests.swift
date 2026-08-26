@@ -240,7 +240,7 @@ struct RailwayRoutingTests {
         ) == .arrived)
     }
 
-    @Test @MainActor func mapLabelsIncludeDueOrDepartedTimesAndPunctuality() {
+    @Test @MainActor func mapLabelsKeepDueForUpcomingCallsAndOmitDepartedForPassedCalls() {
         let onTime = callingPoint(
             name: "East Croydon",
             crs: "ECR",
@@ -264,6 +264,12 @@ struct RailwayRoutingTests {
             scheduled: "08:20",
             actual: "08:21"
         )
+        let delayed = callingPoint(
+            name: "London Victoria",
+            crs: "VIC",
+            scheduled: "08:12",
+            estimated: "Delayed"
+        )
 
         #expect(
             RailwayStationAnnotationLabel.text(for: onTime)
@@ -274,12 +280,24 @@ struct RailwayRoutingTests {
                 == "East Croydon (due 01:48, 1 min late)"
         )
         #expect(
-            RailwayStationAnnotationLabel.text(for: departedOnTime)
-                == "Orpington (departed 08:20, on time)"
+            RailwayStationAnnotationLabel.text(for: departedOnTime, hasDeparted: true)
+                == "Orpington (08:20, on time)"
         )
         #expect(
-            RailwayStationAnnotationLabel.text(for: departedLate)
-                == "Orpington (departed 08:21, 1 min late)"
+            RailwayStationAnnotationLabel.text(for: departedLate, hasDeparted: true)
+                == "Orpington (08:21, 1 min late)"
+        )
+        #expect(
+            RailwayStationAnnotationLabel.text(for: departedOnTime)
+                == "Orpington (due 08:20, on time)"
+        )
+        #expect(
+            RailwayStationAnnotationLabel.text(for: delayed)
+                == "London Victoria (due time unavailable, delayed)"
+        )
+        #expect(
+            RailwayStationAnnotationLabel.text(for: delayed, hasDeparted: true)
+                == "London Victoria (time unavailable, delayed)"
         )
         #expect(
             RailwayStationAnnotationLabel.text(
@@ -291,7 +309,7 @@ struct RailwayRoutingTests {
             RailwayStationAnnotationLabel.text(
                 for: onTime,
                 historicalEvent: RailwayHistoricalStationEvent(kind: .departed, time: "01:47")
-            ) == "East Croydon (departed 01:47, on time)"
+            ) == "East Croydon (01:47, on time)"
         )
         #expect(
             RailwayEstimatedLocationLabel.text(delayMinutes: 26)
@@ -668,7 +686,7 @@ struct RailwayRoutingTests {
 
         #expect(estimate.previousStationIndex == 0)
         #expect(estimate.nextStationIndex == 1)
-        #expect((0.45...0.46).contains(estimate.fraction))
+        #expect((0.42...0.44).contains(estimate.fraction))
     }
 
     @Test func progressHandlesAServiceCrossingMidnight() {
@@ -684,7 +702,89 @@ struct RailwayRoutingTests {
 
         #expect(estimate.previousStationIndex == 0)
         #expect(estimate.nextStationIndex == 1)
-        #expect(estimate.fraction == 0.5)
+        #expect((0.47...0.48).contains(estimate.fraction))
+    }
+
+    @Test func onTimeDepartureWaitsForTheTimetableSafetyInterval() {
+        let stations = [
+            callingPoint(crs: "HNH", scheduled: "17:37", actual: "On time"),
+            callingPoint(crs: "WDU", scheduled: "17:39")
+        ]
+        let beforeSafetyInterval = ServiceProgressEstimator.estimate(
+            for: stations,
+            at: date(year: 2026, month: 8, day: 25, hour: 17, minute: 37, second: 29),
+            calendar: calendar
+        )
+        let afterSafetyInterval = ServiceProgressEstimator.estimate(
+            for: stations,
+            at: date(year: 2026, month: 8, day: 25, hour: 17, minute: 37, second: 31),
+            calendar: calendar
+        )
+
+        #expect(beforeSafetyInterval.previousStationIndex == 0)
+        #expect(beforeSafetyInterval.nextStationIndex == 0)
+        #expect(afterSafetyInterval.previousStationIndex == 0)
+        #expect(afterSafetyInterval.nextStationIndex == 1)
+        #expect(afterSafetyInterval.fraction > 0)
+    }
+
+    @Test func anEarlyPredictionCannotAdvanceTheMapAheadOfTheTimetable() {
+        let estimate = ServiceProgressEstimator.estimate(
+            for: [
+                callingPoint(
+                    crs: "HNH",
+                    scheduled: "17:37",
+                    estimated: "17:36",
+                    actual: "On time"
+                ),
+                callingPoint(crs: "WDU", scheduled: "17:39")
+            ],
+            at: date(year: 2026, month: 8, day: 25, hour: 17, minute: 37, second: 20),
+            calendar: calendar
+        )
+
+        #expect(estimate.previousStationIndex == 0)
+        #expect(estimate.nextStationIndex == 0)
+    }
+
+    @Test func onboardGPSCannotPassAStationBeforeItsTimetableSafetyInterval() throws {
+        let now = date(year: 2026, month: 8, day: 25, hour: 17, minute: 37, second: 20)
+        let route = ServiceRailwayRoute(
+            coordinates: [
+                CLLocationCoordinate2D(latitude: 51.45, longitude: -0.11),
+                CLLocationCoordinate2D(latitude: 51.45, longitude: -0.10),
+                CLLocationCoordinate2D(latitude: 51.45, longitude: -0.09),
+            ],
+            cumulativeDistances: [0, 700, 1_400],
+            stationCoordinateIndices: [0, 1, 2]
+        )
+        let userLocation = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 51.45, longitude: -0.095),
+            altitude: 0,
+            horizontalAccuracy: 15,
+            verticalAccuracy: -1,
+            timestamp: now
+        )
+        let maximumIndex = ServiceProgressEstimator.maximumPermittedFloatingIndex(
+            for: [
+                callingPoint(crs: "BRX", scheduled: "17:34", actual: "On time"),
+                callingPoint(crs: "HNH", scheduled: "17:37", actual: "On time"),
+                callingPoint(crs: "WDU", scheduled: "17:39")
+            ],
+            at: now,
+            calendar: calendar
+        )
+        let position = try #require(RailwayOnboardLocationResolver.position(
+            apiCoordinate: route.coordinate(atStation: 1),
+            userLocation: userLocation,
+            route: route,
+            maximumFloatingStationIndex: maximumIndex,
+            now: now
+        ))
+
+        #expect(maximumIndex == 1)
+        #expect(position.floatingStationIndex == 1)
+        #expect(position.coordinate.longitude == route.coordinate(atStation: 1)?.longitude)
     }
 
     @Test func unknownDelayHoldsTheEstimateAtTheLastActualStation() {
@@ -757,14 +857,16 @@ struct RailwayRoutingTests {
         month: Int,
         day: Int,
         hour: Int,
-        minute: Int
+        minute: Int,
+        second: Int = 0
     ) -> Date {
         calendar.date(from: DateComponents(
             year: year,
             month: month,
             day: day,
             hour: hour,
-            minute: minute
+            minute: minute,
+            second: second
         ))!
     }
 

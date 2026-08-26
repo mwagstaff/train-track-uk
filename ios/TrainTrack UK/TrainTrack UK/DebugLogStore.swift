@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UIKit
 
 @MainActor
 final class DebugLogStore: ObservableObject {
@@ -64,11 +65,31 @@ final class DebugLogStore: ObservableObject {
         }.joined(separator: "\n")
 
         return [
+            environmentSummary(),
             "## Debug Logs\n\(debugLogs.isEmpty ? "(no entries)" : debugLogs)",
             ClientDiagnosticsLogger.exportStoredLogs()
         ].joined(separator: "\n\n")
         #else
         return ""
+        #endif
+    }
+
+    func exportFileURL() -> URL? {
+        #if DEBUG
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("traintrack-journey-troubleshooting-\(formatter.string(from: Date())).txt")
+        do {
+            try exportLogs().write(to: url, atomically: true, encoding: .utf8)
+            return url
+        } catch {
+            log("Could not prepare troubleshooting log export: \(error.localizedDescription)", category: "Error")
+            return nil
+        }
+        #else
+        nil
         #endif
     }
 
@@ -112,6 +133,26 @@ final class DebugLogStore: ObservableObject {
     }
 
     #if DEBUG
+    private func environmentSummary() -> String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = info?["CFBundleVersion"] as? String ?? "unknown"
+        let device = UIDevice.current
+        return [
+            "## Environment",
+            "Generated: \(ISO8601DateFormatter().string(from: Date()))",
+            "App: \(version) (\(build))",
+            "Bundle: \(Bundle.main.bundleIdentifier ?? "unknown")",
+            "Device: \(device.model)",
+            "System: \(device.systemName) \(device.systemVersion)",
+            "Locale: \(Locale.current.identifier)",
+            "Time zone: \(TimeZone.current.identifier)",
+            "Low Power Mode: \(ProcessInfo.processInfo.isLowPowerModeEnabled)",
+            "Application state: \(UIApplication.shared.applicationState.rawValue)",
+            "Background refresh status: \(UIApplication.shared.backgroundRefreshStatus.rawValue)"
+        ].joined(separator: "\n")
+    }
+
     private func serverAuditSummary(_ event: [String: Any]) -> String {
         let recordedAt = event["recorded_at"] as? String ?? "unknown-time"
         let action = event["action"] as? String ?? "unknown-action"

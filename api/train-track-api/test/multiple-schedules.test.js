@@ -39,10 +39,14 @@ test('updates only the schedule identified by subscription id', async () => {
 
 test('muting a scheduled leg mutes the same leg in every schedule for the device', async () => {
     const manager = testManager();
-    manager.pushClient.sendNotification = async () => ({ status: 200 });
 
     const first = await manager.upsertSubscription(registration({ daysOfWeek: ['mon'] }));
     const second = await manager.upsertSubscription(registration({ daysOfWeek: ['sat'] }));
+    manager.pushClient.sendNotification = async () => {
+        assert.equal(manager.isMutedToday(manager.subscriptions.get(first.id), 'KTH-VIC'), true);
+        assert.equal(manager.isMutedToday(manager.subscriptions.get(second.id), 'KTH-VIC'), true);
+        return { status: 200 };
+    };
 
     await manager.muteLegForDate({
         deviceId: 'device-1',
@@ -57,9 +61,45 @@ test('muting a scheduled leg mutes the same leg in every schedule for the device
     assert.equal(manager.isMutedToday(manager.subscriptions.get(second.id), 'KTH-VIC'), true);
 });
 
+test('journey completion mutes schedules and removes every matching live session', async () => {
+    const manager = testManager();
+    manager.pushClient.sendNotification = async () => {
+        assert.fail('journey completion reconciliation must be silent');
+    };
+    const schedule = await manager.upsertSubscription(registration());
+    const firstLiveSession = await manager.upsertSubscription(registration({
+        source: 'live_session',
+        daysOfWeek: [],
+        notificationTypes: ['delays'],
+        liveSessionOrigin: 'scheduled'
+    }));
+    const secondLiveSession = await manager.upsertSubscription(registration({
+        source: 'live_session',
+        daysOfWeek: [],
+        notificationTypes: ['platform'],
+        liveSessionOrigin: 'manual'
+    }));
+
+    const result = await manager.muteLegForDate({
+        deviceId: 'device-1',
+        subscriptionId: 'already-finished-live-session',
+        from: 'KTH',
+        to: 'VIC',
+        reason: 'journey_completed_reconciliation',
+        transition: 'station_exit',
+        detectionSource: 'journey_tracking'
+    });
+
+    assert.equal(result.transition, 'station_exit');
+    assert.equal(manager.isMutedToday(manager.subscriptions.get(schedule.id), 'KTH-VIC'), true);
+    assert.equal(manager.subscriptions.has(firstLiveSession.id), false);
+    assert.equal(manager.subscriptions.has(secondLiveSession.id), false);
+});
+
 function testManager() {
     const manager = new NotificationSubscriptionManager();
     manager._saveSubscription = async () => {};
+    manager._deleteFromMongo = async () => {};
     manager.recordSubscriptionAudit = async () => {};
     manager.auditScheduledPushToStartReadiness = async () => {};
     manager.logSendEvent = () => {};

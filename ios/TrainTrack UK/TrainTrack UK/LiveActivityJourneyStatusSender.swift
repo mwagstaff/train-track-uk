@@ -22,7 +22,8 @@ final class LiveActivityJourneyStatusSender: NSObject, URLSessionTaskDelegate {
     func send(
         phase: JourneyActivityAttributes.JourneyPhase,
         from: String,
-        to: String
+        to: String,
+        serviceID: String? = nil
     ) {
         guard let url = URL(string: "\(ApiHostPreference.currentBaseURL)/live_activities/status") else {
             return
@@ -33,12 +34,15 @@ final class LiveActivityJourneyStatusSender: NSObject, URLSessionTaskDelegate {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(DeviceIdentity.deviceToken, forHTTPHeaderField: "X-Device-Token")
 
-        let payload = [
+        var payload = [
             "device_id": DeviceIdentity.deviceToken,
             "from": from.uppercased(),
             "to": to.uppercased(),
             "phase": phase.rawValue
         ]
+        if let serviceID, !serviceID.isEmpty {
+            payload["service_id"] = serviceID
+        }
         guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
 
         let task = session.uploadTask(with: request, from: body)

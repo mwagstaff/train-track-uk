@@ -93,6 +93,13 @@ struct MyJourneyHistoryView: View {
                                     } label: {
                                         JourneyHistoryRow(record: record)
                                     }
+                                    if record.hasPrecedingCancellation {
+                                        Divider()
+                                            .padding(.top, 4)
+                                        JourneyHistoryPrecedingCancellationNotice(record: record)
+                                            .padding(.top, 8)
+                                            .padding(.bottom, 4)
+                                    }
                                     if record.isDelayRepay15Plus {
                                         Divider()
                                             .padding(.top, 4)
@@ -400,6 +407,47 @@ private struct JourneyHistoryArrivalStatusLabel: View {
     }
 }
 
+private struct JourneyHistoryPrecedingCancellationNotice: View {
+    let record: JourneyHistoryRecord
+
+    private var affectedLegs: [JourneyHistoryLeg] {
+        record.legs.filter { $0.precedingCancellation != nil }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(affectedLegs) { leg in
+                if let cancellation = leg.precedingCancellation {
+                    Label {
+                        Text(message(for: cancellation, leg: leg))
+                            .fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                    }
+                }
+            }
+        }
+        .font(.footnote.weight(.medium))
+        .foregroundStyle(record.isDelayRepay15Plus ? Color.red : Color.orange)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func message(
+        for cancellation: JourneyHistoryPrecedingCancellation,
+        leg: JourneyHistoryLeg
+    ) -> String {
+        let caughtTime = leg.scheduledDepartureAt.map { JourneyHistoryClockTime.text($0) } ?? "the service"
+        let route = record.legs.count > 1
+            ? " from \(leg.fromStation.name) to \(leg.toStation.name)"
+            : ""
+        let eligibility = record.isDelayRepay15Plus
+            ? " This disruption makes the journey eligible for Delay Repay."
+            : ""
+        return "The \(cancellation.scheduledDepartureTime) service before the \(caughtTime) service you caught\(route) was cancelled, adding \(cancellation.minutesBeforeCaughtService) minutes to your journey.\(eligibility)"
+    }
+}
+
 struct JourneyHistoryDelayRepayActions: View {
     let record: JourneyHistoryRecord
     @EnvironmentObject private var historyStore: JourneyHistoryStore
@@ -505,7 +553,8 @@ struct JourneyHistoryDelayRepayActions: View {
         }
         .sheet(isPresented: $isChoosingClaimOperator) {
             JourneyHistoryDelayRepayOperatorPicker(
-                finalDelayMinutes: record.delayMinutes,
+                eligibleDelayMinutes: record.delayRepayEligibleDelayMinutes,
+                includesPrecedingCancellation: record.hasPrecedingCancellation,
                 options: operatorOptions
             ) { option in
                 isChoosingClaimOperator = false
@@ -579,7 +628,8 @@ struct JourneyHistoryDelayRepayActions: View {
 }
 
 private struct JourneyHistoryDelayRepayOperatorPicker: View {
-    let finalDelayMinutes: Int?
+    let eligibleDelayMinutes: Int?
+    let includesPrecedingCancellation: Bool
     let options: [JourneyHistoryDelayRepayOperatorOption]
     let onSelect: (JourneyHistoryDelayRepayOperatorOption) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -593,14 +643,16 @@ private struct JourneyHistoryDelayRepayOperatorPicker: View {
             List {
                 Section {
                     VStack(alignment: .leading, spacing: 12) {
-                        if let finalDelayMinutes {
+                        if let eligibleDelayMinutes {
                             Label(
-                                "Final arrival \(delayText(finalDelayMinutes))",
+                                includesPrecedingCancellation
+                                    ? "Qualifying disruption: \(durationText(eligibleDelayMinutes))"
+                                    : "Final arrival \(delayText(eligibleDelayMinutes))",
                                 systemImage: "clock.badge.exclamationmark"
                             )
                             .font(.headline)
                             .foregroundStyle(
-                                finalDelayMinutes >= JourneyHistoryDelayPolicy.delayRepayThresholdMinutes
+                                eligibleDelayMinutes >= JourneyHistoryDelayPolicy.delayRepayThresholdMinutes
                                     ? Color.red
                                     : Color.primary
                             )
@@ -664,6 +716,10 @@ private struct JourneyHistoryDelayRepayOperatorPicker: View {
     private func delayText(_ minutes: Int) -> String {
         minutes == 1 ? "1 minute late" : "\(minutes) minutes late"
     }
+
+    private func durationText(_ minutes: Int) -> String {
+        minutes == 1 ? "1 minute" : "\(minutes) minutes"
+    }
 }
 
 private struct JourneyHistoryDelayRepayOperatorRow: View {
@@ -711,6 +767,14 @@ private struct JourneyHistoryDelayRepayOperatorRow: View {
                                 delayMinutes: assessment.arrivalDelayMinutes
                             )
                         }
+                    }
+                    if let cancellation = assessment.leg.precedingCancellation {
+                        Label(
+                            "Previous \(cancellation.scheduledDepartureTime) service cancelled",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.red)
                     }
                 }
                 .padding(10)
@@ -787,6 +851,9 @@ private struct JourneyHistoryDetailView: View {
     @State private var shareItem: JourneyHistoryShareItem?
     @State private var exportError: String?
     @State private var isShowingRemovalConfirmation = false
+    #if DEBUG
+    @State private var debugEditedLeg: JourneyHistoryLeg?
+    #endif
 
     var body: some View {
         List {
@@ -826,6 +893,12 @@ private struct JourneyHistoryDetailView: View {
                 }
             }
 
+            if record.hasPrecedingCancellation {
+                Section("Disruption") {
+                    JourneyHistoryPrecedingCancellationNotice(record: record)
+                }
+            }
+
             ForEach(Array(record.legs.enumerated()), id: \.element.id) { index, leg in
                 Section(legSectionTitle(for: leg, index: index)) {
                     if record.legs.count > 1 {
@@ -845,6 +918,26 @@ private struct JourneyHistoryDetailView: View {
                     }
                 }
             }
+
+            #if DEBUG
+            Section("Testing") {
+                ForEach(Array(record.legs.enumerated()), id: \.element.id) { index, leg in
+                    Button {
+                        debugEditedLeg = leg
+                    } label: {
+                        Label(
+                            record.legs.count > 1
+                                ? "Edit cancelled service for Leg \(index + 1)"
+                                : "Edit intended cancelled service",
+                            systemImage: "pencil"
+                        )
+                    }
+                }
+                Text("Debug only. Use this to test cancellation-based Delay Repay eligibility without changing live rail data.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            #endif
 
             Section {
                 Button("Remove this journey", role: .destructive) {
@@ -873,6 +966,20 @@ private struct JourneyHistoryDetailView: View {
         .sheet(item: $shareItem) { item in
             JourneyHistoryShareSheet(url: item.url)
         }
+        #if DEBUG
+        .sheet(item: $debugEditedLeg) { leg in
+            JourneyHistoryDebugCancellationEditor(
+                leg: leg,
+                onSave: { cancellation in
+                    _ = historyStore.setPrecedingCancellation(
+                        cancellation,
+                        journeyID: record.id,
+                        legID: leg.id
+                    )
+                }
+            )
+        }
+        #endif
         .alert("Unable to share journey", isPresented: Binding(
             get: { exportError != nil },
             set: { if !$0 { exportError = nil } }
@@ -1044,6 +1151,94 @@ struct JourneyHistoryRouteMapLeg: Identifiable {
         value.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
     }
 }
+
+#if DEBUG
+private struct JourneyHistoryDebugCancellationEditor: View {
+    let leg: JourneyHistoryLeg
+    let onSave: (JourneyHistoryPrecedingCancellation?) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var cancelledDepartureAt: Date
+
+    private var caughtDepartureAt: Date {
+        leg.scheduledDepartureAt ?? leg.detectedDepartureAt ?? Date()
+    }
+
+    private var selectableRange: ClosedRange<Date> {
+        caughtDepartureAt.addingTimeInterval(-2 * 60 * 60)...caughtDepartureAt.addingTimeInterval(-60)
+    }
+
+    init(
+        leg: JourneyHistoryLeg,
+        onSave: @escaping (JourneyHistoryPrecedingCancellation?) -> Void
+    ) {
+        self.leg = leg
+        self.onSave = onSave
+        let caught = leg.scheduledDepartureAt ?? leg.detectedDepartureAt ?? Date()
+        _cancelledDepartureAt = State(initialValue:
+            leg.precedingCancellation?.scheduledDepartureAt
+                ?? caught.addingTimeInterval(-30 * 60)
+        )
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Service times") {
+                    LabeledContent(
+                        "Service caught",
+                        value: JourneyHistoryClockTime.text(caughtDepartureAt)
+                    )
+                    DatePicker(
+                        "Intended cancelled service",
+                        selection: $cancelledDepartureAt,
+                        in: selectableRange,
+                        displayedComponents: .hourAndMinute
+                    )
+                }
+
+                Section {
+                    Text("For today’s example, set this to 17:12. Saving records that service as cancelled and recalculates the History notice and Delay Repay action.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
+                if leg.precedingCancellation != nil {
+                    Section {
+                        Button("Remove cancellation test data", role: .destructive) {
+                            onSave(nil)
+                            dismiss()
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Edit Cancellation")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        let minutes = max(
+                            0,
+                            Int(caughtDepartureAt.timeIntervalSince(cancelledDepartureAt) / 60)
+                        )
+                        onSave(JourneyHistoryPrecedingCancellation(
+                            serviceID: "debug-cancelled-\(Int(cancelledDepartureAt.timeIntervalSince1970))",
+                            scheduledDepartureAt: cancelledDepartureAt,
+                            scheduledDepartureTime: JourneyHistoryClockTime.text(cancelledDepartureAt),
+                            minutesBeforeCaughtService: minutes
+                        ))
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+    }
+}
+#endif
 
 private struct JourneyHistoryCombinedRouteMapView: View {
     let legs: [JourneyHistoryRouteMapLeg]

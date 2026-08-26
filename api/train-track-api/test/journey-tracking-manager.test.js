@@ -59,6 +59,78 @@ test('confirmed destination actual time completes and removes a tracking session
     assert.deepEqual(manager.listSessions('device-1'), []);
 });
 
+test('confirmed destination arrival reconciles notification subscriptions before completing', async () => {
+    const completions = [];
+    const manager = new JourneyTrackingManager({
+        pushClient: pushRecorder(),
+        getDetails: async () => serviceDetails({
+            callingPoints: [callingPoint('London Victoria', 'VIC', '10:20', '10:36')]
+        }),
+        onJourneyCompleted: async (completion) => completions.push(completion),
+        now: () => new Date('2026-08-17T10:00:00Z')
+    });
+    const session = manager.upsertSession(registration());
+
+    const result = await manager.pollSession(session.id);
+
+    assert.equal(result.status, 'completed');
+    assert.deepEqual(completions, [{
+        deviceId: 'device-1',
+        subscriptionId: 'subscription-1',
+        from: 'ECR',
+        to: 'VIC',
+        journeyId: 'journey-1',
+        serviceId: 'service-1',
+        actualArrival: '10:36'
+    }]);
+});
+
+test('failed completion reconciliation remains eligible for retry', async () => {
+    let attempts = 0;
+    const manager = new JourneyTrackingManager({
+        pushClient: pushRecorder(),
+        getDetails: async () => serviceDetails({
+            callingPoints: [callingPoint('London Victoria', 'VIC', '10:20', '10:36')]
+        }),
+        onJourneyCompleted: async () => {
+            attempts += 1;
+            if (attempts === 1) throw new Error('temporary cleanup failure');
+        },
+        now: () => new Date('2026-08-17T10:00:00Z')
+    });
+    const session = manager.upsertSession(registration());
+
+    assert.equal((await manager.pollSession(session.id)).status, 'completion_reconciliation_failed');
+    assert.equal(manager.listSessions('device-1').length, 1);
+    assert.equal((await manager.pollSession(session.id)).status, 'completed');
+    assert.equal(manager.listSessions('device-1').length, 0);
+});
+
+test('confirmed arrival reconciliation does not depend on push delivery', async () => {
+    let reconciled = false;
+    const manager = new JourneyTrackingManager({
+        pushClient: {
+            async sendNotification() {
+                return { status: 503, isBadToken: false };
+            }
+        },
+        getDetails: async () => serviceDetails({
+            callingPoints: [callingPoint('London Victoria', 'VIC', '10:20', '10:36')]
+        }),
+        onJourneyCompleted: async () => {
+            reconciled = true;
+        },
+        now: () => new Date('2026-08-17T10:00:00Z')
+    });
+    const session = manager.upsertSession(registration());
+
+    const result = await manager.pollSession(session.id);
+
+    assert.equal(result.status, 'push_failed');
+    assert.equal(reconciled, true);
+    assert.equal(manager.listSessions('device-1').length, 1);
+});
+
 test('estimated destination time is not treated as a confirmed actual arrival', async () => {
     const pushClient = pushRecorder();
     const manager = managerWithDetails({

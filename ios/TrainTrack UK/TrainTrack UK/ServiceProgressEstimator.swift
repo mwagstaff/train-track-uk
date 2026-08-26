@@ -23,6 +23,8 @@ struct ServiceProgressEstimate: Equatable, Sendable {
 }
 
 enum ServiceProgressEstimator {
+    static let departureSafetyInterval: TimeInterval = 30
+
     static func estimate(
         for stations: [CallingPoint],
         at now: Date = Date(),
@@ -63,6 +65,34 @@ enum ServiceProgressEstimator {
         )
     }
 
+    static func maximumPermittedFloatingIndex(
+        for stations: [CallingPoint],
+        at now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Double {
+        guard !stations.isEmpty else { return -1 }
+        let scheduledDates = resolvedScheduledDates(for: stations, near: now, calendar: calendar)
+        for index in stations.indices where !stations[index].isCancelledAtStation {
+            guard let scheduledDate = scheduledDates[index] else { continue }
+            if now < scheduledDate.addingTimeInterval(departureSafetyInterval) {
+                return Double(index)
+            }
+        }
+        return Double(stations.count - 1)
+    }
+
+    static func isDeparturePermitted(
+        at stationIndex: Int,
+        in stations: [CallingPoint],
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Bool {
+        guard stations.indices.contains(stationIndex) else { return false }
+        let scheduledDates = resolvedScheduledDates(for: stations, near: now, calendar: calendar)
+        guard let scheduledDate = scheduledDates[stationIndex] else { return false }
+        return now >= scheduledDate.addingTimeInterval(departureSafetyInterval)
+    }
+
     private static func atStation(_ index: Int) -> ServiceProgressEstimate {
         ServiceProgressEstimate(
             previousStationIndex: index,
@@ -81,13 +111,52 @@ enum ServiceProgressEstimator {
         near now: Date,
         calendar: Calendar
     ) -> [Date?] {
+        resolvedDates(
+            for: stations,
+            near: now,
+            calendar: calendar,
+            timeline: .effective
+        )
+    }
+
+    private static func resolvedScheduledDates(
+        for stations: [CallingPoint],
+        near now: Date,
+        calendar: Calendar
+    ) -> [Date?] {
+        resolvedDates(
+            for: stations,
+            near: now,
+            calendar: calendar,
+            timeline: .scheduled
+        )
+    }
+
+    private enum Timeline {
+        case effective
+        case scheduled
+    }
+
+    private static func resolvedDates(
+        for stations: [CallingPoint],
+        near now: Date,
+        calendar: Calendar,
+        timeline: Timeline
+    ) -> [Date?] {
         var absoluteMinutes = Array<Int?>(repeating: nil, count: stations.count)
         var dayOffset = 0
         var previousMinutes: Int?
 
         for (index, station) in stations.enumerated() {
-            guard let minutes = effectiveMinutes(for: station) else { continue }
-            var candidate = minutes + (dayOffset * 24 * 60)
+            let stationMinutes: Int?
+            switch timeline {
+            case .effective:
+                stationMinutes = effectiveMinutes(for: station)
+            case .scheduled:
+                stationMinutes = clockMinutes(station.st)
+            }
+            guard let stationMinutes else { continue }
+            var candidate = stationMinutes + (dayOffset * 24 * 60)
             if let previousMinutes, candidate < previousMinutes - (12 * 60) {
                 dayOffset += 1
                 candidate += 24 * 60
@@ -128,12 +197,19 @@ enum ServiceProgressEstimator {
     }
 
     private static func effectiveMinutes(for station: CallingPoint) -> Int? {
+        guard let scheduled = clockMinutes(station.st) else { return nil }
         if let estimated = station.et,
            estimated.caseInsensitiveCompare("On time") != .orderedSame,
            estimated.caseInsensitiveCompare("Cancelled") != .orderedSame {
-            return clockMinutes(estimated)
+            guard let estimatedMinutes = clockMinutes(estimated) else { return nil }
+            let forwardDifference = (estimatedMinutes - scheduled + (24 * 60)) % (24 * 60)
+            // Live estimates can be stale or malformed. Never position a service ahead of
+            // the working timetable, while still allowing a genuine delay past midnight.
+            return forwardDifference <= 12 * 60
+                ? scheduled + forwardDifference
+                : scheduled
         }
-        return clockMinutes(station.st)
+        return scheduled
     }
 
     private static func clockMinutes(_ value: String) -> Int? {
@@ -154,19 +230,41 @@ enum ServiceProgressEstimator {
         calendar: Calendar
     ) -> Date? {
         guard let expectedDate else { return nil }
+        let scheduledDate = resolvedClockDate(
+            station.st,
+            closestTo: expectedDate,
+            calendar: calendar
+        ) ?? expectedDate
+        let earliestDeparture = scheduledDate.addingTimeInterval(departureSafetyInterval)
         guard let actual = station.at,
               actual.caseInsensitiveCompare("On time") != .orderedSame,
               actual.caseInsensitiveCompare("Cancelled") != .orderedSame,
-              let actualMinutes = clockMinutes(actual) else {
-            return expectedDate
+              clockMinutes(actual) != nil else {
+            return max(expectedDate, earliestDeparture)
         }
 
-        let expectedDay = calendar.startOfDay(for: expectedDate)
+        guard let actualDate = resolvedClockDate(
+            actual,
+            closestTo: expectedDate,
+            calendar: calendar
+        ) else {
+            return earliestDeparture
+        }
+        return max(actualDate, earliestDeparture)
+    }
+
+    private static func resolvedClockDate(
+        _ value: String,
+        closestTo reference: Date,
+        calendar: Calendar
+    ) -> Date? {
+        guard let minutes = clockMinutes(value) else { return nil }
+        let referenceDay = calendar.startOfDay(for: reference)
         return (-1...1).compactMap { dayDelta -> Date? in
-            calendar.date(byAdding: .day, value: dayDelta, to: expectedDay)?
-                .addingTimeInterval(TimeInterval(actualMinutes * 60))
+            calendar.date(byAdding: .day, value: dayDelta, to: referenceDay)?
+                .addingTimeInterval(TimeInterval(minutes * 60))
         }.min(by: {
-            abs($0.timeIntervalSince(expectedDate)) < abs($1.timeIntervalSince(expectedDate))
+            abs($0.timeIntervalSince(reference)) < abs($1.timeIntervalSince(reference))
         })
     }
 }
