@@ -149,7 +149,7 @@ struct NotificationScheduleView: View {
                 }
 
                 if scheduleKind == .regular {
-                    Section("Days") {
+                    Section {
                         LazyVGrid(
                             columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: DayOfWeek.allCases.count),
                             spacing: 8
@@ -158,11 +158,13 @@ struct NotificationScheduleView: View {
                                 dayCheckbox(day)
                             }
                         }
+                    } header: {
+                        RailwayBackgroundSectionHeader(title: "Days")
                     }
 
                     ForEach(regularLegIndices, id: \.self) { index in
                         let leg = legs[index]
-                        Section("\(legLabel(leg))") {
+                        Section {
                             Toggle("Enabled", isOn: bindingForLegEnabled(index))
                             DatePicker("Start", selection: bindingForStartTime(index), displayedComponents: .hourAndMinute)
                                 .disabled(!leg.enabled)
@@ -174,15 +176,19 @@ struct NotificationScheduleView: View {
                             if showWindowHint.contains(index) {
                                 windowHint
                             }
+                        } header: {
+                            RailwayBackgroundSectionHeader(title: legLabel(leg))
                         }
                     }
                 } else {
-                    Section("Date") {
+                    Section {
                         AutoDismissDatePicker(
                             title: "Day of travel",
                             selection: $outboundTravelDate,
                             minimumDate: Calendar.current.startOfDay(for: Date())
                         )
+                    } header: {
+                        RailwayBackgroundSectionHeader(title: "Date")
                     }
 
                     travelWindowSection(
@@ -206,6 +212,8 @@ struct NotificationScheduleView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .railwayBackgroundPOC()
             .navigationTitle("Schedule journey updates")
             .navigationBarTitleDisplayMode(.inline)
             .onChange(of: outboundTravelDate) { oldDate, newDate in
@@ -351,7 +359,7 @@ struct NotificationScheduleView: View {
     ) -> some View {
         let isEnabled = indices.contains { legs[$0].enabled }
         let hintIsVisible = !showWindowHint.isDisjoint(with: indices)
-        return Section(title) {
+        return Section {
             Toggle("Enabled", isOn: bindingForLegsEnabled(indices))
             if let travelDate {
                 AutoDismissDatePicker(
@@ -376,6 +384,8 @@ struct NotificationScheduleView: View {
             if hintIsVisible {
                 windowHint
             }
+        } header: {
+            RailwayBackgroundSectionHeader(title: title)
         }
     }
 

@@ -88,14 +88,14 @@ struct ContentView: View {
         TabView(selection: tabSelection) {
             NavigationStack(path: $favouritesPath) { FavouritesView() }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
-                .horizontalTabSwipePage()
+                .horizontalTabSwipePage(.favourites)
                 .horizontalTabSwipeDisabled(horizontalSwipeDisabledBinding(for: .favourites))
                 .tabItem { Label("Favourites", systemImage: "heart.fill") }
                 .tag(Tab.favourites)
 
             NavigationStack(path: $myJourneysPath) { MyJourneysView() }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
-                .horizontalTabSwipePage()
+                .horizontalTabSwipePage(.myJourneys)
                 .horizontalTabSwipeDisabled(horizontalSwipeDisabledBinding(for: .myJourneys))
                 .tabItem { Label("My Journeys", systemImage: "list.bullet") }
                 .tag(Tab.myJourneys)
@@ -103,7 +103,7 @@ struct ContentView: View {
             if hasInProgressTab {
                 NavigationStack(path: $inProgressPath) { InProgressJourneyView() }
                     .modifier(JourneyUpdatesChrome(includeToast: true))
-                    .horizontalTabSwipePage()
+                    .horizontalTabSwipePage(.inProgress)
                     .horizontalTabSwipeDisabled(horizontalSwipeDisabledBinding(for: .inProgress))
                     .tabItem { Label("In Progress", systemImage: "location.fill") }
                     .modifier(InProgressBadgeModifier(isVisible: showsInProgressBadge))
@@ -117,14 +117,14 @@ struct ContentView: View {
                     }
             }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
-                .horizontalTabSwipePage()
+                .horizontalTabSwipePage(.history)
                 .horizontalTabSwipeDisabled(horizontalSwipeDisabledBinding(for: .history))
                 .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
                 .tag(Tab.history)
 
             NavigationStack(path: $profilePath) { ProfileView() }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
-                .horizontalTabSwipePage()
+                .horizontalTabSwipePage(.profile)
                 .horizontalTabSwipeDisabled(horizontalSwipeDisabledBinding(for: .profile))
                 .tabItem { Label("Profile", systemImage: "person.circle") }
                 .tag(Tab.profile)

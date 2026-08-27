@@ -1,4 +1,34 @@
 import SwiftUI
+import Observation
+
+@MainActor @Observable
+final class HorizontalTabSwipePresentation {
+    var offset: CGFloat = 0
+    var isInteracting = false
+    var selectedTab: Tab?
+}
+
+struct HorizontalTabSwipePresentationEnvironmentKey: EnvironmentKey {
+    static let defaultValue: HorizontalTabSwipePresentation? = nil
+}
+
+extension EnvironmentValues {
+    var horizontalTabSwipePresentation: HorizontalTabSwipePresentation? {
+        get { self[HorizontalTabSwipePresentationEnvironmentKey.self] }
+        set { self[HorizontalTabSwipePresentationEnvironmentKey.self] = newValue }
+    }
+}
+
+private struct ActiveHorizontalTabSwipePageEnvironmentKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var isActiveHorizontalTabSwipePage: Bool {
+        get { self[ActiveHorizontalTabSwipePageEnvironmentKey.self] }
+        set { self[ActiveHorizontalTabSwipePageEnvironmentKey.self] = newValue }
+    }
+}
 
 struct HorizontalTabSwipeModifier: ViewModifier {
     @Binding var selection: Tab
@@ -10,6 +40,7 @@ struct HorizontalTabSwipeModifier: ViewModifier {
     @State private var dragAxis: DragAxis?
     @State private var isReady = false
     @State private var thresholdFeedbackTrigger = 0
+    @State private var presentation = HorizontalTabSwipePresentation()
 
     private let commitDistance: CGFloat = 44
     private let projectedCommitDistance: CGFloat = 90
@@ -21,17 +52,7 @@ struct HorizontalTabSwipeModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .environment(
-                \.horizontalTabSwipePresentation,
-                HorizontalTabSwipePresentation(
-                    offset: HorizontalTabSwipeMotion.visualOffset(
-                        for: translation,
-                        hasAdjacentTab: adjacentTab(for: translation) != nil,
-                        reduceMotion: accessibilityReduceMotion
-                    ),
-                    isInteracting: dragAxis == .horizontal
-                )
-            )
+            .environment(\.horizontalTabSwipePresentation, presentation)
             .contentShape(Rectangle())
             .simultaneousGesture(swipeGesture, isEnabled: isEnabled)
             .overlay(alignment: hintAlignment) { swipeHint }
@@ -42,12 +63,16 @@ struct HorizontalTabSwipeModifier: ViewModifier {
             }
             .onChange(of: selection) { _, _ in
                 resetSwipeWithoutAnimation()
+                presentation.selectedTab = selection
             }
             .onChange(of: tabs) { _, _ in
                 resetSwipeWithoutAnimation()
             }
             .onDisappear {
                 resetSwipeWithoutAnimation()
+            }
+            .onAppear {
+                presentation.selectedTab = selection
             }
     }
 
@@ -67,6 +92,13 @@ struct HorizontalTabSwipeModifier: ViewModifier {
 
                 guard dragAxis == .horizontal else { return }
                 translation = value.translation.width
+                presentation.selectedTab = selection
+                presentation.offset = HorizontalTabSwipeMotion.visualOffset(
+                    for: value.translation.width,
+                    hasAdjacentTab: adjacentTab(for: value.translation.width) != nil,
+                    reduceMotion: accessibilityReduceMotion
+                )
+                presentation.isInteracting = true
 
                 let newReadyState = HorizontalTabSwipeMotion.hasHorizontalIntent(
                     translationWidth: value.translation.width,
@@ -81,7 +113,10 @@ struct HorizontalTabSwipeModifier: ViewModifier {
                 }
             }
             .onEnded { value in
-                defer { dragAxis = nil }
+                defer {
+                    dragAxis = nil
+                    presentation.isInteracting = false
+                }
                 let horizontal = value.translation.width
                 let shouldCommit = dragAxis == .horizontal
                     && HorizontalTabSwipeMotion.shouldCommit(
@@ -98,12 +133,14 @@ struct HorizontalTabSwipeModifier: ViewModifier {
                     transaction.disablesAnimations = true
                     withTransaction(transaction) {
                         translation = 0
+                        presentation.offset = 0
                         isReady = false
                         selection = target
                     }
                 } else {
                     withAnimation(resetAnimation) {
                         translation = 0
+                        presentation.offset = 0
                     }
                     isReady = false
                 }
@@ -115,6 +152,8 @@ struct HorizontalTabSwipeModifier: ViewModifier {
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             translation = 0
+            presentation.offset = 0
+            presentation.isInteracting = false
             dragAxis = nil
             isReady = false
         }
@@ -234,35 +273,33 @@ enum HorizontalTabSwipeMotion {
     }
 }
 
-private struct HorizontalTabSwipePresentation: Equatable {
-    var offset: CGFloat = 0
-    var isInteracting = false
-}
-
-private struct HorizontalTabSwipePresentationEnvironmentKey: EnvironmentKey {
-    static let defaultValue = HorizontalTabSwipePresentation()
-}
-
-private extension EnvironmentValues {
-    var horizontalTabSwipePresentation: HorizontalTabSwipePresentation {
-        get { self[HorizontalTabSwipePresentationEnvironmentKey.self] }
-        set { self[HorizontalTabSwipePresentationEnvironmentKey.self] = newValue }
-    }
-}
-
 private struct HorizontalTabSwipePageModifier: ViewModifier {
+    let tab: Tab
     @Environment(\.horizontalTabSwipePresentation) private var presentation
 
+    @ViewBuilder
     func body(content: Content) -> some View {
-        content
-            .offset(x: presentation.offset)
-            .allowsHitTesting(!presentation.isInteracting)
+        if let presentation, presentation.selectedTab == tab {
+            ZStack {
+                // A translated NavigationStack clips its own background at the page edge.
+                // Keep a sibling backdrop stationary so a swipe never reveals the tab host.
+                RailwayBackgroundBackdrop()
+
+                content
+                    .environment(\.isActiveHorizontalTabSwipePage, true)
+                    .offset(x: presentation.offset)
+                    .allowsHitTesting(!presentation.isInteracting)
+            }
+        } else {
+            content
+                .environment(\.isActiveHorizontalTabSwipePage, false)
+        }
     }
 }
 
 extension View {
-    func horizontalTabSwipePage() -> some View {
-        modifier(HorizontalTabSwipePageModifier())
+    func horizontalTabSwipePage(_ tab: Tab) -> some View {
+        modifier(HorizontalTabSwipePageModifier(tab: tab))
     }
 
     func horizontalTabSwipe(
@@ -290,14 +327,17 @@ private extension EnvironmentValues {
 }
 
 private struct HorizontalTabSwipeDisabledModifier: ViewModifier {
+    let shouldDisable: Bool
     @Environment(\.horizontalTabSwipeDisabled) private var isDisabled
 
     func body(content: Content) -> some View {
         content
             .onAppear {
+                guard shouldDisable else { return }
                 isDisabled.wrappedValue = true
             }
             .onDisappear {
+                guard shouldDisable else { return }
                 isDisabled.wrappedValue = false
             }
     }
@@ -308,7 +348,7 @@ extension View {
         environment(\.horizontalTabSwipeDisabled, isDisabled)
     }
 
-    func disablesHorizontalTabSwipe() -> some View {
-        modifier(HorizontalTabSwipeDisabledModifier())
+    func disablesHorizontalTabSwipe(_ isDisabled: Bool = true) -> some View {
+        modifier(HorizontalTabSwipeDisabledModifier(shouldDisable: isDisabled))
     }
 }

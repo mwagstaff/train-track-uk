@@ -288,3 +288,6 @@ scripts/.railway-data-cache/
 # Local OpenStreetMap railway preprocessing artifacts and Python environment
 scripts/.osm-routing-cache/
 scripts/.osm-routing-venv/
+
+# Generated railway background deployment bundle
+tools/railway-backgrounds/published/

@@ -464,6 +464,25 @@ struct TrainTrack_UKTests {
         #expect(JourneyCardPresentation.defaultDepartureCount(journeyCount: 6) == 3)
     }
 
+    @Test func inProgressMapUsesTheNextServiceThatHasNotDeparted() throws {
+        let now = try #require(Calendar.current.date(from: DateComponents(
+            year: 2026,
+            month: 8,
+            day: 27,
+            hour: 16,
+            minute: 14
+        )))
+        let departed = departure(at: "16:12", serviceID: "departed")
+        let next = departure(at: "16:27", serviceID: "next")
+
+        let selected = InProgressJourneyPresentation.nextServiceDeparture(
+            from: [departed, next],
+            now: now
+        )
+
+        #expect(selected?.serviceID == "next")
+    }
+
     @Test func singleLegJourneyCardsKeepCancelledDeparturesVisible() {
         let groupID = UUID()
         let directJourney = journey(

@@ -1,6 +1,18 @@
 import CoreLocation
 import SwiftUI
 
+enum InProgressJourneyPresentation {
+    static func nextServiceDeparture(
+        from departures: [DepartureV2],
+        now: Date = Date()
+    ) -> DepartureV2? {
+        departures.first {
+            !JourneyItineraryBuilder.isCancelled($0)
+                && JourneyCardPresentation.isUpcomingDeparture($0, now: now)
+        }
+    }
+}
+
 struct InProgressJourneyView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var depStore: DeparturesStore
@@ -80,7 +92,9 @@ struct InProgressJourneyView: View {
 
     private var nextDeparture: DepartureV2? {
         guard let departureContextJourney else { return nil }
-        return depStore.departures(for: departureContextJourney).first { !$0.isCancelled }
+        return InProgressJourneyPresentation.nextServiceDeparture(
+            from: depStore.departures(for: departureContextJourney)
+        )
     }
 
     private var activeDeparture: DepartureV2? {
@@ -133,12 +147,14 @@ struct InProgressJourneyView: View {
                         systemImage: "location.slash",
                         description: Text("Start journey updates to see live progress here.")
                     )
+                    .padding(.vertical, 20)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
                 }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 20)
         }
-        .background(Color(uiColor: .systemGroupedBackground))
+        .background(Color.clear)
         .navigationTitle("In Progress")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { journeyChooserToolbar }
@@ -173,6 +189,7 @@ struct InProgressJourneyView: View {
         } message: { confirmation in
             Text(confirmation.message)
         }
+        .railwayBackgroundPOC()
         .alert(
             "Start a different journey?",
             isPresented: Binding(

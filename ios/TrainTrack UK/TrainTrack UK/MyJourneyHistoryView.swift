@@ -46,46 +46,56 @@ struct MyJourneyHistoryView: View {
     var body: some View {
         Group {
             if historyStore.records.isEmpty {
-                ContentUnavailableView(
-                    "No journey history",
-                    systemImage: "clock.arrow.circlepath",
-                    description: Text("Completed scheduled and ad hoc journeys will appear here.")
-                )
+                historyUnavailableCard {
+                    ContentUnavailableView(
+                        "No journey history",
+                        systemImage: "clock.arrow.circlepath",
+                        description: Text("Completed scheduled and ad hoc journeys will appear here.")
+                    )
+                }
             } else if filteredRecords.isEmpty {
                 if delayRepayOnly {
-                    ContentUnavailableView {
-                        Label("No current Delay Repay journeys", systemImage: "checkmark.circle")
-                    } description: {
-                        Text("Eligible journeys older than 28 days are hidden because the submission deadline has passed.")
-                    } actions: {
-                        if !showOlderDelayRepayJourneys {
-                            Button("Show older eligible journeys") {
-                                showOlderDelayRepayJourneys = true
+                    historyUnavailableCard {
+                        ContentUnavailableView {
+                            Label("No current Delay Repay journeys", systemImage: "checkmark.circle")
+                        } description: {
+                            Text("Eligible journeys older than 28 days are hidden because the submission deadline has passed.")
+                        } actions: {
+                            if !showOlderDelayRepayJourneys {
+                                Button("Show older eligible journeys") {
+                                    showOlderDelayRepayJourneys = true
+                                }
                             }
                         }
                     }
                 } else if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    ContentUnavailableView(
-                        "No journeys in this range",
-                        systemImage: "calendar.badge.exclamationmark",
-                        description: Text("Choose a wider date range to see more history.")
-                    )
+                    historyUnavailableCard {
+                        ContentUnavailableView(
+                            "No journeys in this range",
+                            systemImage: "calendar.badge.exclamationmark",
+                            description: Text("Choose a wider date range to see more history.")
+                        )
+                    }
                 } else {
-                    ContentUnavailableView.search(text: searchText)
+                    historyUnavailableCard {
+                        ContentUnavailableView.search(text: searchText)
+                    }
                 }
             } else {
                 List {
                     if delayRepayOnly {
-                        Section("Delay Repay") {
+                        Section {
                             Toggle("Show older eligible journeys", isOn: $showOlderDelayRepayJourneys)
                             Text("Claims must be submitted within 28 days, so older eligible journeys are hidden by default.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
+                        } header: {
+                            RailwayBackgroundSectionHeader(title: "Delay Repay")
                         }
                     }
 
                     ForEach(groupedRecords, id: \.date) { group in
-                        Section(group.date.formatted(date: .complete, time: .omitted)) {
+                        Section {
                             ForEach(group.records) { record in
                                 VStack(spacing: 0) {
                                     NavigationLink {
@@ -109,6 +119,10 @@ struct MyJourneyHistoryView: View {
                                     }
                                 }
                             }
+                        } header: {
+                            RailwayBackgroundSectionHeader(
+                                title: group.date.formatted(date: .complete, time: .omitted)
+                            )
                         }
                     }
 
@@ -120,6 +134,8 @@ struct MyJourneyHistoryView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle("History")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Station, CRS, or operator")
@@ -243,6 +259,18 @@ struct MyJourneyHistoryView: View {
         } message: {
             Text("This permanently deletes all locally stored journey history.")
         }
+        .railwayBackgroundPOC()
+    }
+
+    private func historyUnavailableCard<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 20)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .padding(.horizontal, 20)
     }
 
     private func matchesDateFilter(_ record: JourneyHistoryRecord) -> Bool {
@@ -857,7 +885,7 @@ private struct JourneyHistoryDetailView: View {
 
     var body: some View {
         List {
-            Section("Journey") {
+            Section {
                 LabeledContent("Planned", value: "\(record.plannedOriginName) → \(record.plannedDestinationName)")
                 journeyRouteMapLink
                 if record.recordedDestinationCRS != record.plannedDestinationCRS {
@@ -866,9 +894,11 @@ private struct JourneyHistoryDetailView: View {
                 LabeledContent("Source", value: record.source.displayName)
                 LabeledContent("Outcome", value: record.outcome.displayName)
                 LabeledContent("Departed", value: record.detectedDepartureAt.formatted(date: .abbreviated, time: .shortened))
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Journey")
             }
 
-            Section("Arrival") {
+            Section {
                 if let scheduled = record.scheduledArrivalAt {
                     LabeledContent("Scheduled", value: scheduled.formatted(date: .omitted, time: .shortened))
                 }
@@ -891,16 +921,20 @@ private struct JourneyHistoryDetailView: View {
                 if let delay = record.delayMinutes {
                     LabeledContent("Delay", value: delay == 0 ? "On time" : "\(delay) min")
                 }
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Arrival")
             }
 
             if record.hasPrecedingCancellation {
-                Section("Disruption") {
+                Section {
                     JourneyHistoryPrecedingCancellationNotice(record: record)
+                } header: {
+                    RailwayBackgroundSectionHeader(title: "Disruption")
                 }
             }
 
             ForEach(Array(record.legs.enumerated()), id: \.element.id) { index, leg in
-                Section(legSectionTitle(for: leg, index: index)) {
+                Section {
                     if record.legs.count > 1 {
                         routeMapLink(for: leg, index: index)
                     }
@@ -916,11 +950,13 @@ private struct JourneyHistoryDetailView: View {
                     if let arrived = leg.detectedArrivalAt {
                         LabeledContent("Detected arrival", value: arrived.formatted(date: .omitted, time: .shortened))
                     }
+                } header: {
+                    RailwayBackgroundSectionHeader(title: legSectionTitle(for: leg, index: index))
                 }
             }
 
             #if DEBUG
-            Section("Testing") {
+            Section {
                 ForEach(Array(record.legs.enumerated()), id: \.element.id) { index, leg in
                     Button {
                         debugEditedLeg = leg
@@ -936,6 +972,8 @@ private struct JourneyHistoryDetailView: View {
                 Text("Debug only. Use this to test cancellation-based Delay Repay eligibility without changing live rail data.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Testing")
             }
             #endif
 
@@ -945,6 +983,7 @@ private struct JourneyHistoryDetailView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
         .navigationTitle(record.routeTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -1000,6 +1039,7 @@ private struct JourneyHistoryDetailView: View {
         } message: {
             Text("This cannot be undone.")
         }
+        .railwayBackgroundPOC()
     }
 
     @ViewBuilder
@@ -1297,6 +1337,7 @@ private struct JourneyHistoryCombinedRouteMapView: View {
             }
         }
         .disablesHorizontalTabSwipe()
+        .hidesRailwayBackgroundChrome()
         .navigationTitle("Journey Route")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)

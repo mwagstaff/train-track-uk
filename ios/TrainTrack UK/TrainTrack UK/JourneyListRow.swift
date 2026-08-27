@@ -1,6 +1,15 @@
 import SwiftUI
 
 enum JourneyCardPresentation {
+    static func isUpcomingDeparture(_ departure: DepartureV2, now: Date = Date()) -> Bool {
+        let departureDate = JourneyItineraryBuilder.date(
+            for: JourneyItineraryBuilder.departureDisplayTime(departure),
+            now: now
+        ) ?? JourneyItineraryBuilder.date(for: departure.departureTime.scheduled, now: now)
+        guard let departureDate else { return true }
+        return departureDate >= now.addingTimeInterval(-60)
+    }
+
     static func defaultDepartureCount(journeyCount: Int) -> Int {
         journeyCount == 1 ? 5 : 3
     }
@@ -134,9 +143,8 @@ struct JourneyCard: View {
     private var isScheduled: Bool { !scheduledSubscriptions.isEmpty }
 
     private var upcomingDepartures: [DepartureV2] {
-        depStore.departures(for: firstLeg).filter { departure in
-            guard let date = departureDate(departure) else { return true }
-            return date >= Date().addingTimeInterval(-60)
+        depStore.departures(for: firstLeg).filter {
+            JourneyCardPresentation.isUpcomingDeparture($0)
         }
     }
 

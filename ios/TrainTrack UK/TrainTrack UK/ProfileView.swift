@@ -55,7 +55,7 @@ struct ProfileView: View {
                 }
             }
 
-            Section("Journey Updates") {
+            Section {
                 if notificationStore.isLoading && !notificationStore.hasLoadedOnce {
                     ProgressView("Loading…")
                 } else if !notificationStore.hasAuthoritativeRemoteState {
@@ -74,9 +74,13 @@ struct ProfileView: View {
                             .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                     }
                 }
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Journey Updates")
             }
         }
+        .scrollContentBackground(.hidden)
         .navigationTitle("Profile")
+        .navigationBarTitleDisplayMode(.inline)
         .task {
             await notificationStore.refresh()
             try? await StationsService.shared.loadStations()
@@ -112,6 +116,7 @@ struct ProfileView: View {
         .sheet(item: $viewingLiveSession) { session in
             LiveSessionInfoSheet(session: session)
         }
+        .railwayBackgroundPOC()
     }
 
     private func profileRow(title: String, subtitle: String, systemImage: String) -> some View {

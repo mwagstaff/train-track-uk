@@ -90,7 +90,7 @@ struct AddJourneyView: View {
                     }
                 }
 
-                Section("Options") {
+                Section {
                     Toggle("Start journey now", isOn: Binding(
                         get: { options.startNow },
                         set: { options.setStartNow($0) }
@@ -115,6 +115,8 @@ struct AddJourneyView: View {
 
                     Toggle("Mark as favourite", isOn: $markAsFavorite)
                         .disabled(options.oneOff)
+                } header: {
+                    RailwayBackgroundSectionHeader(title: "Options")
                 }
 
                 Section {
@@ -134,6 +136,7 @@ struct AddJourneyView: View {
                     .disabled(!canSubmit)
                 }
             }
+            .scrollContentBackground(.hidden)
             .onAppear {
                 loadStations()
                 if router.addJourneyPrefillFavourite {
@@ -154,6 +157,7 @@ struct AddJourneyView: View {
             }
         }
         .navigationTitle("Add Journey")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancel") { cancel() }
@@ -167,6 +171,7 @@ struct AddJourneyView: View {
                 existingSubscription: destination.existingSubscription
             )
         }
+        .railwayBackgroundPOC()
         .onChange(of: router.selected) { _, selectedTab in
             updateFocus(for: selectedTab)
         }
@@ -411,7 +416,7 @@ struct AddJourneyView: View {
         allowRemove: Bool = false,
         onRemove: (() -> Void)? = nil
     ) -> some View {
-        Section(title) {
+        Section {
             TextField("Search station", text: input.query)
                 .accessibilityIdentifier(stationFieldAccessibilityIdentifier(for: focus))
                 .textInputAutocapitalization(.never)
@@ -445,6 +450,8 @@ struct AddJourneyView: View {
                     Label("Remove stop", systemImage: "minus.circle")
                 }
             }
+        } header: {
+            RailwayBackgroundSectionHeader(title: title)
         }
     }
 

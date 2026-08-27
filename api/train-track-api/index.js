@@ -23,6 +23,7 @@ import { testServiceHarness } from './lib/test-service-harness.js';
 import { formatDepartureJourneyResult, shouldIncludeDepartureStatus } from './lib/departure-response.js';
 import { ensureMongoIndexes } from './lib/mongo-client.js';
 import { resolveDelayRepayOperator } from './lib/delay-repay-config.js';
+import { registerRailwayBackgroundRoutes } from './lib/railway-backgrounds.js';
 import {
     deleteSubscriptionAuditEventsForDevice,
     startSubscriptionAuditLogMaintenance
@@ -198,6 +199,7 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
 registerAdminRoutes(app);
+registerRailwayBackgroundRoutes(app);
 
 // Live activity request logging middleware (only logs when DEBUG_CONSOLE_LOGGING_APNS=true)
 app.use('/api/v2/live_activities', (req, res, next) => {

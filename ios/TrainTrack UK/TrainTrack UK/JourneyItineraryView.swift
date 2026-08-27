@@ -418,12 +418,13 @@ struct JourneyItineraryView: View {
             }
             .padding(16)
         }
-        .background(Color(uiColor: .systemGroupedBackground))
+        .background(Color.clear)
         .navigationTitle("Journey details")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: serviceDetailsTaskID) {
             await depStore.ensureServiceDetails(for: selectedServiceIDs)
         }
+        .railwayBackgroundPOC()
     }
 
     private var journeyHeader: some View {

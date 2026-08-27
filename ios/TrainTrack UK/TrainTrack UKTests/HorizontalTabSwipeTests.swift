@@ -100,6 +100,15 @@ struct HorizontalTabSwipeTests {
         try await Task.sleep(for: .milliseconds(50))
         #expect(state.value)
 
+        controller.rootView = AnyView(
+            Color.clear
+                .disablesHorizontalTabSwipe(false)
+                .horizontalTabSwipeDisabled(isDisabled)
+        )
+        controller.view.layoutIfNeeded()
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(!state.value)
+
         controller.rootView = AnyView(Color.clear)
         controller.view.layoutIfNeeded()
         try await Task.sleep(for: .milliseconds(50))

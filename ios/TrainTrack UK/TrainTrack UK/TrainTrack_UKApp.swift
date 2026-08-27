@@ -11,6 +11,7 @@ import SwiftUI
 struct TrainTrackUKApp: App {
     @UIApplicationDelegateAdaptor(NotificationAppDelegate.self) var notificationDelegate
     @StateObject private var deepLink = DeepLinkRouter.shared
+    @StateObject private var railwayBackgroundStore = RailwayBackgroundStore()
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("autoReturnToFavouritesMinutes") private var autoReturnMinutes: Int = 0
 
@@ -29,11 +30,15 @@ struct TrainTrackUKApp: App {
                 .environmentObject(HolidayModeStore.shared)
                 .environmentObject(JourneyHistoryStore.shared)
                 .environmentObject(RecentServiceStore.shared)
+                .environmentObject(railwayBackgroundStore)
                 .environmentObject(deepLink)
                 .onAppear {
                     // Defer to next runloop to avoid "Publishing changes from within view updates" warnings
                     DispatchQueue.main.async {
                         DeparturesStore.shared.startPolling(journeyStore: JourneyStore.shared)
+                    }
+                    Task {
+                        await railwayBackgroundStore.ensureFresh()
                     }
                 }
                 .onOpenURL { url in
@@ -58,6 +63,10 @@ struct TrainTrackUKApp: App {
                 // stays in sync without requiring an app update.
                 Task {
                     await ServerConfigStore.shared.refresh()
+                }
+
+                Task {
+                    await railwayBackgroundStore.ensureFresh()
                 }
 
                 Task {

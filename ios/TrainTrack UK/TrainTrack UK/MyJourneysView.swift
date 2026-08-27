@@ -124,7 +124,10 @@ struct MyJourneysView: View {
     private var groups: [Group] { grouped() }
     private func groupsEmpty(_ groups: [Group]) -> Bool { groups.allSatisfy { $0.items.isEmpty } }
 
-    var body: some View { toolbarView }
+    var body: some View {
+        toolbarView
+            .railwayBackgroundPOC()
+    }
 
     private var baseListView: AnyView {
         let snapshot = groups
@@ -321,53 +324,63 @@ struct MyJourneysView: View {
 
     @ViewBuilder
     private var emptySection: some View {
-        Section("My Journeys") {
-            if hasActiveSearch {
-                if #available(iOS 17.0, *) {
-                    ContentUnavailableView(
-                        "No matches",
-                        systemImage: "magnifyingglass",
-                        description: Text("Try searching for another station or CRS code.")
-                    )
-                } else {
-                    VStack(spacing: 8) {
-                        Image(systemName: "magnifyingglass").font(.system(size: 34)).foregroundStyle(.secondary)
-                        Text("No matches").font(.headline)
-                        Text("Try searching for another station or CRS code.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 24)
-                }
-            } else {
-                if #available(iOS 17.0, *) {
-                    VStack(spacing: 12) {
+        Section {
+            SwiftUI.Group {
+                if hasActiveSearch {
+                    if #available(iOS 17.0, *) {
                         ContentUnavailableView(
-                            "No journeys",
-                            systemImage: "train.side.front.car",
-                            description: Text("Your saved journeys will appear here.")
+                            "No matches",
+                            systemImage: "magnifyingglass",
+                            description: Text("Try searching for another station or CRS code.")
                         )
-                        Button("Add journey") {
-                            router.selected = .addJourney
+                        .padding(.vertical, 20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    } else {
+                        VStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass").font(.system(size: 34)).foregroundStyle(.secondary)
+                            Text("No matches").font(.headline)
+                            Text("Try searching for another station or CRS code.")
+                                .font(.footnote).foregroundStyle(.secondary)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 24)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
                     }
                 } else {
-                    VStack(spacing: 8) {
-                        Image(systemName: "train.side.front.car").font(.system(size: 34)).foregroundStyle(.secondary)
-                        Text("No journeys").font(.headline)
-                        Text("Your saved journeys will appear here.")
-                            .font(.footnote).foregroundStyle(.secondary)
-                        Button("Add journey") {
-                            router.selected = .addJourney
+                    if #available(iOS 17.0, *) {
+                        VStack(spacing: 12) {
+                            ContentUnavailableView(
+                                "No journeys",
+                                systemImage: "train.side.front.car",
+                                description: Text("Your saved journeys will appear here.")
+                            )
+                            Button("Add journey") {
+                                router.selected = .addJourney
+                            }
+                            .buttonStyle(.borderedProminent)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .padding(.top, 4)
+                        .padding(.vertical, 20)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                    } else {
+                        VStack(spacing: 8) {
+                            Image(systemName: "train.side.front.car").font(.system(size: 34)).foregroundStyle(.secondary)
+                            Text("No journeys").font(.headline)
+                            Text("Your saved journeys will appear here.")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            Button("Add journey") {
+                                router.selected = .addJourney
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .padding(.top, 4)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 24)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
                     }
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 24)
                 }
             }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
         }
     }
 
@@ -388,7 +401,8 @@ struct MyJourneysView: View {
     private func distanceSectionLabel(_ title: String) -> some View {
         Text(title)
             .font(.headline)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.white.opacity(0.88))
+            .shadow(color: .black.opacity(0.55), radius: 3, y: 1)
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
@@ -396,7 +410,7 @@ struct MyJourneysView: View {
 
     @ViewBuilder
     private var alphabeticalSection: some View {
-        Section("My Journeys") {
+        Section {
             ForEach(alphabeticallySortedJourneys) { j in
                 journeyRow(j)
             }
@@ -405,7 +419,7 @@ struct MyJourneysView: View {
 
     @ViewBuilder
     private var manualSection: some View {
-        Section("My Journeys") {
+        Section {
             ForEach(filteredManualJourneys) { j in
                 journeyRow(j)
             }
@@ -429,6 +443,7 @@ struct MyJourneysView: View {
         MyJourneysView()
             .environmentObject(JourneyStore.shared)
             .environmentObject(TabRouter.shared)
+            .environmentObject(RailwayBackgroundStore())
     }
 }
 

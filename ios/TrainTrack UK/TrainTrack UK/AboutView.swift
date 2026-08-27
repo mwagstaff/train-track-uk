@@ -37,24 +37,28 @@ struct AboutView: View {
                 .padding(.vertical, 8)
             }
 
-            Section("Developer") {
+            Section {
                 Text("Developed by Mike Wagstaff")
                 Link(destination: URL(string: "https://skynolimit.dev/")!) {
                     // Use globe icon to represent personal website
                     Label("Sky No Limit", systemImage: "globe")
                 }
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Developer")
             }
 
-            Section("Feedback") {
+            Section {
                 Link(destination: feedbackURL) {
                     Label("Email Feedback", systemImage: "envelope")
                 }
                 Link(destination: URL(string: "https://skynolimit.dev/privacy_policy")!) {
                     Label("Privacy Policy", systemImage: "hand.raised")
                 }
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Feedback")
             }
 
-            Section("Support") {
+            Section {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Support ID")
                         .font(.subheadline.weight(.semibold))
@@ -80,9 +84,11 @@ struct AboutView: View {
                     )
                 }
                 .accessibilityHint("Copies the identifier used to find this installation's server data")
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Support")
             }
 
-            Section("Data sources") {
+            Section {
                 Link(destination: URL(string: "https://www.nationalrail.co.uk/")!) {
                     Label("National Rail Enquiries", systemImage: "train.side.front.car")
                 }
@@ -92,9 +98,14 @@ struct AboutView: View {
                 Link(destination: URL(string: "https://github.com/trainline-eu/stations")!) {
                     Label("Stations - A Database of European Train Stations", systemImage: "globe.europe.africa")
                 }
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Data sources")
             }
         }
+        .scrollContentBackground(.hidden)
         .navigationTitle("About")
+        .navigationBarTitleDisplayMode(.inline)
+        .railwayBackgroundPOC()
     }
 }
 

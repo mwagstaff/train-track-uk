@@ -33,6 +33,7 @@ struct PreferencesView: View {
     @AppStorage(NotificationPreferences.delaysKey, store: NotificationPreferences.store) private var notifyDelays: Bool = true
     @AppStorage(NotificationPreferences.platformKey, store: NotificationPreferences.store) private var notifyPlatform: Bool = true
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
+    @EnvironmentObject private var railwayBackgroundStore: RailwayBackgroundStore
     @State private var notificationPendingDelete: NotificationSubscription? = nil
     @State private var showNotificationDeleteDialog = false
     #if DEBUG
@@ -132,7 +133,7 @@ struct PreferencesView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Notification Preferences") {
+            Section {
                 Toggle(NotificationType.summary.displayName, isOn: notificationTypeBinding(.summary))
                 Toggle(NotificationType.delays.displayName, isOn: notificationTypeBinding(.delays))
                 Toggle(NotificationType.platform.displayName, isOn: notificationTypeBinding(.platform))
@@ -144,9 +145,11 @@ struct PreferencesView: View {
                         .font(.footnote)
                         .foregroundStyle(.red)
                 }
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Notification Preferences")
             }
 
-            Section("Scheduled Notifications") {
+            Section {
                 if notificationStore.isLoading {
                     ProgressView("Loading…")
                 } else if !notificationStore.hasAuthoritativeRemoteState {
@@ -177,9 +180,11 @@ struct PreferencesView: View {
                 Text("Notification types above apply to all schedules. You can create up to \(ServerConfigStore.shared.maxSubscriptionsPerDevice) schedules.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Scheduled Notifications")
             }
 
-            Section("Journey Sorting") {
+            Section {
                 Picker("Sort journeys by", selection: journeySortMode) {
                     ForEach(JourneySortMode.allCases) { mode in
                         Text(mode.displayName).tag(mode)
@@ -189,10 +194,12 @@ struct PreferencesView: View {
                 Text("Choose how journeys are sorted in Favourites and My Journeys lists.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Journey Sorting")
             }
 
             if journeySortMode.wrappedValue == .distance {
-                Section("Distance Grouping") {
+                Section {
                     Stepper(value: $veryCloseMiles, in: 0.5...20, step: 0.5) {
                         HStack {
                             Text("Very close threshold")
@@ -212,17 +219,21 @@ struct PreferencesView: View {
                     Text("Used to group journeys by proximity to your current location in the lists. Defaults are 3 and 10 miles.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                } header: {
+                    RailwayBackgroundSectionHeader(title: "Distance Grouping")
                 }
             }
 
-            Section("Journey Pairs") {
+            Section {
                 Toggle("Only show closest leg", isOn: $showClosestJourneyLegOnly)
                 Text("When enabled, only the journey leg whose start station is closest to you appears in lists. Use Reverse journey in the details view to see the return leg.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Journey Pairs")
             }
 
-            Section("Journey Summary") {
+            Section {
                 Toggle("Warn on tight changes", isOn: $showTransferWarnings)
                 if showTransferWarnings {
                     Stepper(value: $transferWarningThresholdMinutes, in: 1...15) {
@@ -237,9 +248,11 @@ struct PreferencesView: View {
                 Text("Shows a warning icon in the journey summary when your change time is below the chosen threshold.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Journey Summary")
             }
 
-            Section("Warnings") {
+            Section {
                 Stepper(value: $minShortTrainCars, in: 1...12) {
                     HStack {
                         Text("Highlight trains with")
@@ -251,9 +264,11 @@ struct PreferencesView: View {
                 Text("Shows a warning icon next to train length when the train has the configured number of carriages or fewer. Default is 4.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Warnings")
             }
 
-            Section("Auto-Return to Favourites") {
+            Section {
                 Picker("Return after inactivity", selection: $autoReturnMinutes) {
                     Text("Off").tag(0)
                     Text("30 min").tag(30)
@@ -265,10 +280,12 @@ struct PreferencesView: View {
                 Text("Automatically navigate back to the Favourites screen after the app has been in the background for the selected duration. Disabled by default.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Auto-Return to Favourites")
             }
 
             #if DEBUG
-            Section("Debug") {
+            Section {
                 NavigationLink {
                     JourneySimulationHarnessView()
                 } label: {
@@ -283,11 +300,44 @@ struct PreferencesView: View {
                 Text("Switch between production (\(ApiHost.prod.hostDescription)) and dev (\(ApiHost.dev.hostDescription)) for API calls. Intended for local testing.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                Button {
+                    Task { await railwayBackgroundStore.advanceDebugBackground() }
+                } label: {
+                    Label("Next background photo", systemImage: "photo.stack")
+                }
+                .disabled(railwayBackgroundStore.isRefreshing)
+
+                Button {
+                    railwayBackgroundStore.resetDebugBackground()
+                } label: {
+                    Label("Reset to today's photo", systemImage: "calendar")
+                }
+
+                Button {
+                    Task { await railwayBackgroundStore.ensureFresh(force: true) }
+                } label: {
+                    Label("Pull latest background catalogue", systemImage: "arrow.clockwise.icloud")
+                }
+                .disabled(railwayBackgroundStore.isRefreshing)
+
+                if railwayBackgroundStore.isRefreshing {
+                    ProgressView("Refreshing background photos…")
+                } else if let asset = railwayBackgroundStore.selectedAsset {
+                    LabeledContent("Current photo", value: asset.title)
+                }
+                if let error = railwayBackgroundStore.lastRefreshErrorDescription {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Debug")
             }
             #endif
 
             #if DEBUG
-            Section("Diagnostics") {
+            Section {
                 Button {
                     Task {
                         await JourneyTrackingCoordinator.shared.logDiagnosticSnapshot(
@@ -306,10 +356,14 @@ struct PreferencesView: View {
                 Text("DEBUG builds only. Includes journey state, service matching, notification delivery, monitored regions, location authorization and detailed GPS evaluations stored locally on this device.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Diagnostics")
             }
             #endif
         }
+        .scrollContentBackground(.hidden)
         .navigationTitle("Preferences")
+        .navigationBarTitleDisplayMode(.inline)
         .task {
             await notificationStore.refresh()
             try? await StationsService.shared.loadStations()
@@ -348,6 +402,7 @@ struct PreferencesView: View {
             }
         }
         #endif
+        .railwayBackgroundPOC()
     }
 
     private func notificationTypeBinding(_ type: NotificationType) -> Binding<Bool> {
@@ -516,6 +571,7 @@ private struct ResolvedScheduledRoute {
     NavigationStack {
         PreferencesView()
             .environmentObject(NotificationSubscriptionStore.shared)
+            .environmentObject(RailwayBackgroundStore())
     }
 }
 

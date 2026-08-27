@@ -335,6 +335,7 @@ final class LiveActivityManager: ObservableObject {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_GB")
         formatter.dateFormat = "HH:mm"
+        var backendStateSynchronized = false
 
         for activity in currentSystemActivities() {
             let routeState = activity.content.state
@@ -343,6 +344,15 @@ final class LiveActivityManager: ObservableObject {
             guard deepLinkFrom == startCRS, deepLinkTo == destinationCRS else { continue }
 
             let currentLeg = checkpoint?.currentLeg
+            let matchedServiceID = phase.showsInProgressService ? currentLeg?.serviceID : nil
+            let previousPreferredServiceID = trackedActivities[activity.id]?.preferredServiceID
+            let backendStateNeedsSync = routeState.journeyPhase != phase
+                || (matchedServiceID != nil && previousPreferredServiceID != matchedServiceID)
+            if let matchedServiceID,
+               var tracked = trackedActivities[activity.id] {
+                tracked.preferredServiceID = matchedServiceID
+                trackedActivities[activity.id] = tracked
+            }
             if phase.showsInProgressService,
                let currentLeg,
                let serviceID = currentLeg.serviceID {
@@ -444,6 +454,18 @@ final class LiveActivityManager: ObservableObject {
             }
 
             await activity.update(ActivityContent(state: state, staleDate: nil))
+
+            // A locally updated journey activity can otherwise be replaced by the
+            // backend's next-departure board on its next poll. Pin the backend to
+            // the detected service and journey phase whenever either changes.
+            if backendStateNeedsSync, backendStateSynchronized == false {
+                backendStateSynchronized = await sendLiveActivityJourneyStatus(
+                    phase: phase,
+                    fromCRS: startCRS,
+                    toCRS: destinationCRS,
+                    preferredServiceID: matchedServiceID
+                )
+            }
         }
     }
 
@@ -1346,6 +1368,21 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func update(for journey: Journey, depStore: DeparturesStore, activityID: String? = nil) async {
+        let route = routePresentation(for: journey)
+        let trackedJourney = JourneyTrackingCoordinator.shared.activeJourney
+            ?? JourneyTrackingCoordinator.shared.recentlyCompletedJourney
+        if let trackedJourney,
+           trackedJourney.plannedOrigin.crs.caseInsensitiveCompare(route.deepLinkFromCRS) == .orderedSame,
+           trackedJourney.plannedDestination.crs.caseInsensitiveCompare(route.deepLinkToCRS) == .orderedSame {
+            await updateJourneyPhase(
+                JourneyTrackingCoordinator.shared.activeJourney == nil ? .arrived : .enRoute,
+                startStation: trackedJourney.plannedOrigin,
+                destinationStation: trackedJourney.plannedDestination,
+                checkpoint: trackedJourney
+            )
+            return
+        }
+
         let preferredServiceID: String? = {
             if let activityID {
                 return trackedActivities[activityID]?.preferredServiceID
@@ -2300,6 +2337,76 @@ final class LiveActivityManager: ObservableObject {
     }
 
     // MARK: - Push token / backend registration
+    @discardableResult
+    private func sendLiveActivityJourneyStatus(
+        phase: JourneyActivityAttributes.JourneyPhase,
+        fromCRS: String,
+        toCRS: String,
+        preferredServiceID: String?
+    ) async -> Bool {
+        let backgroundTask = AppBackgroundTaskToken(name: "live-activity-journey-status")
+        defer { backgroundTask.end() }
+
+        let urlString = "\(ApiHostPreference.currentBaseURL)/live_activities/status"
+        guard let url = URL(string: urlString) else {
+            debugLog("❌ [LiveActivity] Invalid journey status URL: \(urlString)")
+            return false
+        }
+
+        var payload: [String: Any] = [
+            "device_id": DeviceIdentity.deviceToken,
+            "from": fromCRS,
+            "to": toCRS,
+            "phase": phase.rawValue
+        ]
+        if let preferredServiceID, !preferredServiceID.isEmpty {
+            payload["service_id"] = preferredServiceID
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(DeviceIdentity.deviceToken, forHTTPHeaderField: "X-Device-Token")
+        request.timeoutInterval = 30
+
+        do {
+            request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else {
+                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+                debugLog("❌ [LiveActivity] Journey status sync failed with status \(statusCode)")
+                ClientDiagnosticsLogger.log("live_activity", "journey_status_sync_failed", metadata: [
+                    "from": fromCRS,
+                    "to": toCRS,
+                    "phase": phase.rawValue,
+                    "service_id": preferredServiceID,
+                    "status_code": statusCode
+                ])
+                return false
+            }
+
+            debugLog("✅ [LiveActivity] Synced journey status \(phase.rawValue) for \(fromCRS) → \(toCRS), service \(preferredServiceID ?? "none")")
+            ClientDiagnosticsLogger.log("live_activity", "journey_status_synced", metadata: [
+                "from": fromCRS,
+                "to": toCRS,
+                "phase": phase.rawValue,
+                "service_id": preferredServiceID
+            ])
+            return true
+        } catch {
+            debugLog("❌ [LiveActivity] Journey status sync error: \(error.localizedDescription)")
+            ClientDiagnosticsLogger.log("live_activity", "journey_status_sync_error", metadata: [
+                "from": fromCRS,
+                "to": toCRS,
+                "phase": phase.rawValue,
+                "service_id": preferredServiceID,
+                "error": error.localizedDescription
+            ])
+            return false
+        }
+    }
+
     private func watchPushToken(for activity: Activity<JourneyActivityAttributes>, fromCRS: String, toCRS: String) {
         pushTokenTasks[activity.id]?.cancel()
         pushTokenTasks[activity.id] = Task { @MainActor [weak self] in

@@ -233,9 +233,10 @@ struct ServiceMapView: View {
             }
         }
         .navigationTitle("")
+        .hidesRailwayBackgroundChrome(!isCompact)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
-        .disablesHorizontalTabSwipe()
+        .disablesHorizontalTabSwipe(!isCompact)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 if !isMapLoading && !isCompact {

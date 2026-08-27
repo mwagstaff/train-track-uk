@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "rotation": {
+    "time_zone": "Europe/London",
+    "epoch_date": "2026-01-01"
+  },
+  "assets": [
+    {
+      "id": "station-golden-hour",
+      "file": "sources/station-golden-hour.png",
+      "title": "Station at golden hour",
+      "location": "Location to be confirmed",
+      "caption": "An internal POC photograph of railway platforms at sunset.",
+      "focal_point": { "x": 0.5, "y": 0.55 },
+      "scrim_opacity": 0.32,
+      "credit": { "license": "Internal POC only" }
+    },
+    {
+      "id": "paddington-station",
+      "file": "sources/paddington-station.png",
+      "title": "Paddington Station",
+      "location": "London Paddington, London, UK",
+      "caption": "Trains beneath Paddington's sweeping station roof.",
+      "focal_point": { "x": 0.52, "y": 0.48 },
+      "scrim_opacity": 0.34,
+      "credit": {
+        "photographer": "Tomek Baginski",
+        "license": "Unsplash Licence"
+      }
+    },
+    {
+      "id": "glenfinnan-viaduct",
+      "file": "sources/glenfinnan-viaduct.png",
+      "title": "Glenfinnan Viaduct",
+      "location": "Glenfinnan, Scottish Highlands",
+      "caption": "A steam train crossing Glenfinnan Viaduct.",
+      "focal_point": { "x": 0.57, "y": 0.56 },
+      "scrim_opacity": 0.24,
+      "credit": {
+        "photographer": "Ronnie Smith",
+        "license": "Unsplash Licence"
+      }
+    },
+    {
+      "id": "platform-golden-hour",
+      "file": "sources/platform-golden-hour.png",
+      "title": "Platform at golden hour",
+      "location": "Location to be confirmed",
+      "caption": "Curving platforms and tracks in evening light.",
+      "focal_point": { "x": 0.58, "y": 0.48 },
+      "scrim_opacity": 0.3,
+      "credit": { "license": "Internal POC only" }
+    },
+    {
+      "id": "station-roof-at-night",
+      "file": "sources/station-roof-at-night.png",
+      "title": "Station roof at night",
+      "location": "Location to be confirmed",
+      "caption": "An illuminated railway station roof after dark.",
+      "focal_point": { "x": 0.5, "y": 0.46 },
+      "scrim_opacity": 0.28,
+      "credit": { "license": "Internal POC only" }
+    },
+    {
+      "id": "scottish-highlands-train",
+      "file": "sources/scottish-highlands-train.png",
+      "title": "Train through the Highlands",
+      "location": "Scottish Highlands",
+      "caption": "A passenger train crossing a Highland landscape.",
+      "focal_point": { "x": 0.36, "y": 0.55 },
+      "scrim_opacity": 0.25,
+      "credit": { "license": "Internal POC only" }
+    },
+    {
+      "id": "heritage-station",
+      "file": "sources/heritage-station.png",
+      "title": "Heritage station",
+      "location": "Location to be confirmed",
+      "caption": "A train passing through a traditional station.",
+      "focal_point": { "x": 0.55, "y": 0.5 },
+      "scrim_opacity": 0.24,
+      "credit": { "license": "Internal POC only" }
+    }
+  ]
+}

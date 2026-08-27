@@ -63,7 +63,10 @@ struct FavouritesView: View {
 
     private var groups: [Group] { grouped(from: filteredFavourites) }
     private var filteredManualJourneys: [JourneyGroup] { applyClosestLegFilter(manualOrderedJourneys).filter(matchesSearch) }
-    var body: some View { toolbarView }
+    var body: some View {
+        toolbarView
+            .railwayBackgroundPOC()
+    }
 
     private var baseListView: AnyView {
         let snapshot = groups
@@ -308,46 +311,53 @@ extension FavouritesView {
         actionTitle: String? = nil,
         action: (() -> Void)? = nil
     ) -> some View {
-        if #available(iOS 17.0, *) {
-            VStack(spacing: 12) {
-                ContentUnavailableView(title, systemImage: systemImage, description: Text(description))
-                if let actionTitle, let action {
-                    Button(actionTitle, action: action)
-                        .buttonStyle(.borderedProminent)
+        SwiftUI.Group {
+            if #available(iOS 17.0, *) {
+                VStack(spacing: 12) {
+                    ContentUnavailableView(title, systemImage: systemImage, description: Text(description))
+                    if let actionTitle, let action {
+                        Button(actionTitle, action: action)
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: systemImage).font(.system(size: 34)).foregroundStyle(.secondary)
+                    Text(title).font(.headline)
+                    Text(description).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    if let actionTitle, let action {
+                        Button(actionTitle, action: action)
+                            .buttonStyle(.borderedProminent)
+                            .padding(.top, 4)
+                    }
                 }
             }
-        } else {
-            VStack(spacing: 8) {
-                Image(systemName: systemImage).font(.system(size: 34)).foregroundStyle(.secondary)
-                Text(title).font(.headline)
-                Text(description).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                if let actionTitle, let action {
-                    Button(actionTitle, action: action)
-                        .buttonStyle(.borderedProminent)
-                        .padding(.top, 4)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.vertical, 24)
         }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.vertical, 20)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
     @ViewBuilder
     private var emptySection: some View {
-        Section("Favourites") {
-            if hasActiveSearch {
-                compatUnavailable(title: "No matches", systemImage: "magnifyingglass", description: "Try searching for another station or CRS code.")
-            } else {
-                compatUnavailable(
-                    title: "No favourites yet",
-                    systemImage: "heart",
-                    description: "Add favourite journeys to see them here.",
-                    actionTitle: "Add favourite journey",
-                    action: {
-                        router.addJourneyPrefillFavourite = true
-                        router.selected = .addJourney
-                    }
-                )
+        Section {
+            SwiftUI.Group {
+                if hasActiveSearch {
+                    compatUnavailable(title: "No matches", systemImage: "magnifyingglass", description: "Try searching for another station or CRS code.")
+                } else {
+                    compatUnavailable(
+                        title: "No favourites yet",
+                        systemImage: "heart",
+                        description: "Add favourite journeys to see them here.",
+                        actionTitle: "Add favourite journey",
+                        action: {
+                            router.addJourneyPrefillFavourite = true
+                            router.selected = .addJourney
+                        }
+                    )
+                }
             }
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
         }
     }
 
@@ -392,7 +402,8 @@ extension FavouritesView {
     private func distanceSectionLabel(_ title: String) -> some View {
         Text(title)
             .font(.headline)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.white.opacity(0.88))
+            .shadow(color: .black.opacity(0.55), radius: 3, y: 1)
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 4, trailing: 16))
@@ -404,7 +415,7 @@ extension FavouritesView {
 
     @ViewBuilder
     private var alphabeticalSection: some View {
-        Section("Favourites") {
+        Section {
             ForEach(alphabeticallySortedFavourites) { j in
                 journeyRow(j)
             }
@@ -413,7 +424,7 @@ extension FavouritesView {
 
     @ViewBuilder
     private var manualSection: some View {
-        Section("Favourites") {
+        Section {
             ForEach(filteredManualJourneys) { j in
                 journeyRow(j)
             }
