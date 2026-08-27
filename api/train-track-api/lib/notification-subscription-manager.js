@@ -164,20 +164,22 @@ export class NotificationSubscriptionManager {
 
     async _saveSubscription(sub) {
         if (this.deletedDeviceIds.has(sub?.deviceId)) return;
+        if (this.subscriptions.get(sub?.id) !== sub) return;
         const collection = await this.getCollection(COLLECTIONS.notificationSubscriptions);
         if (this.deletedDeviceIds.has(sub?.deviceId)) return;
+        if (this.subscriptions.get(sub?.id) !== sub) return;
         await collection.updateOne(
             { _id: sub.id },
             { $set: { _id: sub.id, ...sub } },
             { upsert: true }
         );
-        if (this.deletedDeviceIds.has(sub?.deviceId)) {
+        if (this.deletedDeviceIds.has(sub?.deviceId) || this.subscriptions.get(sub?.id) !== sub) {
             await collection.deleteOne({ _id: sub.id });
         }
     }
 
     async _deleteFromMongo(id) {
-        const collection = await getMongoCollection(COLLECTIONS.notificationSubscriptions);
+        const collection = await this.getCollection(COLLECTIONS.notificationSubscriptions);
         await collection.deleteOne({ _id: id });
     }
 
@@ -303,16 +305,31 @@ export class NotificationSubscriptionManager {
             throw new Error('route_key is required');
         }
 
+        const requestedLiveSessionOrigin = source === LIVE_SESSION_SOURCE
+            ? normalizeLiveSessionOrigin(liveSessionOriginInput)
+            : null;
         const existingById = subscriptionId
             ? this.subscriptions.get(subscriptionId)
             : null;
+        const matchingScheduledLiveSessions = !subscriptionId
+            && source === LIVE_SESSION_SOURCE
+            && requestedLiveSessionOrigin === 'scheduled'
+            ? Array.from(this.subscriptions.values()).filter((candidate) =>
+                candidate.deviceId === deviceId
+                    && this.subscriptionSource(candidate) === LIVE_SESSION_SOURCE
+                    && normalizeLiveSessionOrigin(candidate.liveSessionOrigin) === 'scheduled'
+                    && String(candidate.routeKey || '').toUpperCase() === String(routeKey).toUpperCase()
+                    && !this.isExpiredLiveSession(candidate)
+            )
+            : [];
+        const existingScheduledLiveSession = matchingScheduledLiveSessions[0] || null;
         const existing = (
             existingById
             && existingById.deviceId === deviceId
             && this.subscriptionSource(existingById) === source
         )
             ? existingById
-            : null;
+            : existingScheduledLiveSession;
         if (subscriptionId && !existing) {
             throw new Error('Subscription not found');
         }
@@ -388,6 +405,26 @@ export class NotificationSubscriptionManager {
                 request: auditContext
             }
         });
+        const duplicateScheduledLiveSessions = matchingScheduledLiveSessions.filter((candidate) =>
+            candidate.id !== subscription.id
+        );
+        if (duplicateScheduledLiveSessions.length > 0) {
+            await Promise.all(duplicateScheduledLiveSessions.map((candidate) => this.deleteSubscription({
+                deviceId,
+                subscriptionId: candidate.id,
+                reason: 'duplicate_scheduled_live_session',
+                metadata: {
+                    retained_subscription_id: subscription.id,
+                    route_key: routeKey
+                }
+            })));
+            console.log('[notifications] removed_duplicate_scheduled_live_sessions', JSON.stringify({
+                device_id: deviceId,
+                route_key: routeKey,
+                retained_subscription_id: subscription.id,
+                removed_subscription_ids: duplicateScheduledLiveSessions.map((candidate) => candidate.id)
+            }));
+        }
         if (source === SCHEDULED_SOURCE) {
             await this.auditScheduledPushToStartReadiness(subscription);
         }
@@ -586,7 +623,7 @@ export class NotificationSubscriptionManager {
         }) || null;
     }
 
-    async deleteLiveSessionsForLeg({ deviceId, from, to, fallbackDeviceIds = [] }) {
+    async deleteLiveSessionsForLeg({ deviceId, from, to, fallbackDeviceIds = [], excludingSubscriptionIds = [] }) {
         const fromCode = typeof from === 'string' ? from.trim().toUpperCase() : '';
         const toCode = typeof to === 'string' ? to.trim().toUpperCase() : '';
         if (!deviceId || !fromCode || !toCode) return 0;
@@ -596,9 +633,11 @@ export class NotificationSubscriptionManager {
                 .filter((value) => typeof value === 'string' && value.trim().length > 0)
                 .map((value) => value.trim())
         );
+        const excludedIds = new Set(excludingSubscriptionIds);
         const matching = Array.from(this.subscriptions.values()).filter((sub) => {
             if (this.subscriptionSource(sub) !== LIVE_SESSION_SOURCE) return false;
             if (!candidateDeviceIds.has(sub.deviceId)) return false;
+            if (excludedIds.has(sub.id)) return false;
             return Array.isArray(sub.legs) && sub.legs.some((leg) =>
                 String(leg?.from || '').trim().toUpperCase() === fromCode
                     && String(leg?.to || '').trim().toUpperCase() === toCode
@@ -1414,7 +1453,7 @@ export class NotificationSubscriptionManager {
         const muteDetectionSource = resolveDetectionSource({ detectionSource, reason: muteReason });
         const isStationExit = muteTransition === 'station_exit';
         if (muteReason === JOURNEY_COMPLETION_RECONCILIATION_REASON) {
-            await this.reconcileJourneyCompletion({
+            const reconciliation = await this.reconcileJourneyCompletion({
                 deviceId,
                 subscriptionId,
                 from: fromCode,
@@ -1427,7 +1466,8 @@ export class NotificationSubscriptionManager {
             return {
                 date: currentScheduleDateKey(),
                 transition: muteTransition,
-                detectionSource: muteDetectionSource
+                detectionSource: muteDetectionSource,
+                removedLiveSessions: reconciliation.removedLiveSessions
             };
         }
         let subscription = this.subscriptions.get(subscriptionId);
@@ -1459,6 +1499,7 @@ export class NotificationSubscriptionManager {
         await this._saveSubscription(subscription);
 
         const source = this.subscriptionSource(subscription);
+        let removedLiveSessions = 0;
         if (dateKey === todayKey && (source === SCHEDULED_SOURCE || source === LIVE_SESSION_SOURCE)) {
             const matchingScheduleMuteReason = source === LIVE_SESSION_SOURCE
                 ? (isStationExit ? 'live_session_muted_on_station_exit' : 'live_session_muted_on_arrival')
@@ -1475,6 +1516,15 @@ export class NotificationSubscriptionManager {
                     detection_source: muteDetectionSource
                 }
             });
+
+            if (isStationExit) {
+                removedLiveSessions = await this.deleteLiveSessionsForLeg({
+                    deviceId: subscription.deviceId,
+                    from: fromCode,
+                    to: toCode,
+                    excludingSubscriptionIds: source === LIVE_SESSION_SOURCE ? [subscription.id] : []
+                });
+            }
         }
 
         // When muting for today (i.e. triggered by geofence arrival), send a
@@ -1562,12 +1612,14 @@ export class NotificationSubscriptionManager {
                     detection_source: muteDetectionSource
                 }
             });
+            removedLiveSessions += 1;
         }
 
         return {
             date: dateKey,
             transition: muteTransition,
-            detectionSource: muteDetectionSource
+            detectionSource: muteDetectionSource,
+            removedLiveSessions
         };
     }
 
@@ -2006,21 +2058,9 @@ function isUpdateNotificationType(type) {
 
 async function getDeparturesSnapshot(fromStation, toStation) {
     const result = await getTrainTimes(fromStation, toStation);
-    const gracePeriodMs = 60 * 1000; // 1 minute grace, matching live-activity-manager sortDepartures
-    const gracePeriodMinutes = gracePeriodMs / (60 * 1000);
     const nowMinutes = currentMinutes();
     const allDepartures = Array.isArray(result?.departures) ? result.departures : [];
-    const upcomingDepartures = allDepartures
-        .map((dep) => {
-            const timeStr = dep.departure_time?.estimated || dep.departure_time?.scheduled;
-            return {
-                dep,
-                relativeMinutes: relativeTimeMinutes(timeStr, nowMinutes)
-            };
-        })
-        .filter(({ relativeMinutes }) => relativeMinutes !== null && relativeMinutes >= -gracePeriodMinutes)
-        .sort((left, right) => left.relativeMinutes - right.relativeMinutes)
-        .map(({ dep }) => dep);
+    const upcomingDepartures = selectUpcomingNotificationDepartures(allDepartures, nowMinutes);
     if (allDepartures.length > 0 && upcomingDepartures.length === 0) {
         console.log('[notifications] departures_filter_empty', JSON.stringify({
             from: fromStation,
@@ -2048,6 +2088,23 @@ async function getDeparturesSnapshot(fromStation, toStation) {
         error: typeof result?.error === 'string' ? result.error : null,
         fetchedAt: new Date().toISOString()
     };
+}
+
+export function selectUpcomingNotificationDepartures(allDepartures, nowMinutes = currentMinutes()) {
+    return allDepartures
+        .map((dep) => {
+            const timeStr = dep.departure_time?.estimated || dep.departure_time?.scheduled;
+            return {
+                dep,
+                relativeMinutes: relativeTimeMinutes(timeStr, nowMinutes)
+            };
+        })
+        // A newly started scheduled activity must never begin on a service that
+        // has already departed. Keeping the old one-minute grace here left the
+        // 07:00 start displaying a 06:57 service (estimated 06:59).
+        .filter(({ relativeMinutes }) => relativeMinutes !== null && relativeMinutes >= 0)
+        .sort((left, right) => left.relativeMinutes - right.relativeMinutes)
+        .map(({ dep }) => dep);
 }
 
 function relativeTimeMinutes(timeStr, referenceMinutes = currentMinutes()) {

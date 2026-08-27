@@ -234,6 +234,38 @@ struct JourneyHistoryTests {
         )
     }
 
+    @Test @MainActor func activeSubscriptionCannotBeRearmedByAConcurrentCallback() {
+        #expect(!JourneyTrackingCoordinator.shouldArmCandidate(
+            subscriptionID: "scheduled-journey",
+            activeSubscriptionID: "scheduled-journey"
+        ))
+        #expect(JourneyTrackingCoordinator.shouldArmCandidate(
+            subscriptionID: "later-journey",
+            activeSubscriptionID: "scheduled-journey"
+        ))
+    }
+
+    @Test @MainActor func restoreDropsActiveCompletedMutedAndExpiredCandidates() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let candidates = [
+            armedCandidate(subscriptionID: "active", now: now),
+            armedCandidate(subscriptionID: "completed", now: now),
+            armedCandidate(subscriptionID: "muted", now: now),
+            armedCandidate(subscriptionID: "future", now: now, from: "VIC", to: "KTH"),
+            armedCandidate(subscriptionID: "expired", now: now, activeUntil: now.addingTimeInterval(-1))
+        ]
+
+        let restored = JourneyTrackingCoordinator.restorableCandidates(
+            candidates,
+            activeSubscriptionID: "active",
+            recentlyCompletedSubscriptionID: "completed",
+            now: now,
+            isMutedToday: { from, to in from == "KTH" && to == "VIC" }
+        )
+
+        #expect(restored.map(\.subscriptionId) == ["future"])
+    }
+
     @Test func finalArrivalCompensatesForAValidCoarseLocationFix() {
         let evaluation = JourneyArrivalLocationPolicy.evaluate(
             rawDistance: 210,
@@ -644,6 +676,27 @@ struct JourneyHistoryTests {
 
     private func station(crs: String, name: String) -> Station {
         Station(crs: crs, name: name, longitude: "0", latitude: "0")
+    }
+
+    private func armedCandidate(
+        subscriptionID: String,
+        now: Date,
+        activeUntil: Date? = nil,
+        from: String = "KTH",
+        to: String = "VIC"
+    ) -> ArmedJourneyHistoryCandidate {
+        ArmedJourneyHistoryCandidate(
+            subscriptionId: subscriptionID,
+            source: .scheduled,
+            stations: [
+                station(crs: from, name: from),
+                station(crs: to, name: to)
+            ],
+            createdAt: now,
+            activeUntil: activeUntil,
+            originArrivedAt: nil,
+            candidateDepartures: []
+        )
     }
 
     private func recentDeparture(

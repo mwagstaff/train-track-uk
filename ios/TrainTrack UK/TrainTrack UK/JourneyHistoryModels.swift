@@ -192,7 +192,11 @@ struct ArmedJourneyHistoryCandidate: Codable, Hashable, Identifiable {
     var candidateDepartures: [DepartureV2]
 
     var isCurrent: Bool {
-        activeUntil.map { $0 > Date() } ?? true
+        isCurrent(at: Date())
+    }
+
+    func isCurrent(at date: Date) -> Bool {
+        activeUntil.map { $0 > date } ?? true
     }
 }
 

@@ -908,7 +908,8 @@ app.post('/api/v2/notifications/terminate', async (req, res) => {
         date: result.date,
         reason: reason || null,
         transition: result.transition,
-        detection_source: result.detectionSource
+        detection_source: result.detectionSource,
+        removed_live_sessions: result.removedLiveSessions || 0
     });
 });
 

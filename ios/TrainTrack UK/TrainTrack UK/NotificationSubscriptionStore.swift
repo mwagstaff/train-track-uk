@@ -495,6 +495,12 @@ final class NotificationSubscriptionStore: ObservableObject {
             + resolvedActivation.legs.map { $0.to.uppercased() }
 
         let coordinator = JourneyTrackingCoordinator.shared
+        if !JourneyTrackingCoordinator.shouldArmCandidate(
+            subscriptionID: activation.subscription.id,
+            activeSubscriptionID: coordinator.activeJourney?.subscriptionId
+        ) {
+            return true
+        }
         if coordinator.armedCandidates.contains(where: {
             $0.subscriptionId == activation.subscription.id
                 && $0.stations.map { $0.crs.uppercased() } == expectedRoute

@@ -337,11 +337,33 @@ final class LiveActivityManager: ObservableObject {
         formatter.dateFormat = "HH:mm"
 
         for activity in currentSystemActivities() {
-            var state = activity.content.state
-            let deepLinkFrom = (state.deepLinkFromCRS ?? state.fromCRS).uppercased()
-            let deepLinkTo = (state.deepLinkToCRS ?? state.toCRS).uppercased()
+            let routeState = activity.content.state
+            let deepLinkFrom = (routeState.deepLinkFromCRS ?? routeState.fromCRS).uppercased()
+            let deepLinkTo = (routeState.deepLinkToCRS ?? routeState.toCRS).uppercased()
             guard deepLinkFrom == startCRS, deepLinkTo == destinationCRS else { continue }
 
+            let currentLeg = checkpoint?.currentLeg
+            if phase.showsInProgressService,
+               let currentLeg,
+               let serviceID = currentLeg.serviceID {
+                _ = await DeparturesStore.shared.ensureServiceDetails(
+                    for: [serviceID],
+                    force: true,
+                    context: ServiceDetailsLookupContext(
+                        fromCRS: currentLeg.fromStation.crs,
+                        toCRS: currentLeg.toStation.crs,
+                        originCRS: nil,
+                        operator: currentLeg.operatorCode,
+                        destinationCRSs: [destinationCRS],
+                        length: nil
+                    )
+                )
+            }
+
+            // Service-detail lookup can overlap a foreground departure refresh.
+            // Rebase on ActivityKit's latest content after that await so an older
+            // 06:59 snapshot cannot overwrite a newer 07:42 local update.
+            var state = activity.content.state
             state.journeyPhase = phase
             state.journeyStartName = startStation.name
             state.journeyDestinationName = destinationStation.name
@@ -375,23 +397,9 @@ final class LiveActivityManager: ObservableObject {
                     }
                 }
 
-                guard let leg = checkpoint?.currentLeg else {
+                guard let leg = currentLeg else {
                     await activity.update(ActivityContent(state: state, staleDate: nil))
                     continue
-                }
-                if let serviceID = leg.serviceID {
-                    _ = await DeparturesStore.shared.ensureServiceDetails(
-                        for: [serviceID],
-                        force: true,
-                        context: ServiceDetailsLookupContext(
-                            fromCRS: leg.fromStation.crs,
-                            toCRS: leg.toStation.crs,
-                            originCRS: nil,
-                            operator: leg.operatorCode,
-                            destinationCRSs: [destinationCRS],
-                            length: nil
-                        )
-                    )
                 }
                 if let serviceID = leg.serviceID,
                    let details = DeparturesStore.shared.serviceDetailsById[serviceID] {
@@ -524,6 +532,7 @@ final class LiveActivityManager: ObservableObject {
             }) {
                 debugLog("✅ [LiveActivity] Found existing journey for \(activityID), refreshing...")
                 await refreshAndUpdate(for: journey, depStore: depStore, activityID: activityID)
+                ensureUpdateTimer(for: journey, depStore: depStore, activityID: activityID)
             } else {
                 debugLog("⚠️ [LiveActivity] Journey not found in store for \(activityID), attempting to create temporary journey...")
 
@@ -533,6 +542,7 @@ final class LiveActivityManager: ObservableObject {
                     let tempJourney = Journey(fromStation: fromStation, toStation: toStation, favorite: false)
                     debugLog("✅ [LiveActivity] Created temporary journey for \(activityID), refreshing...")
                     await refreshAndUpdate(for: tempJourney, depStore: depStore, activityID: activityID)
+                    ensureUpdateTimer(for: tempJourney, depStore: depStore, activityID: activityID)
                 } else {
                     debugLog("❌ [LiveActivity] Could not find stations for \(fromCRS) → \(toCRS)")
                 }
@@ -1204,7 +1214,24 @@ final class LiveActivityManager: ObservableObject {
         }
     }
 
-    private func scheduleUpdates(for journey: Journey, depStore: DeparturesStore, activityID: String) -> Timer {
+    private func ensureUpdateTimer(for journey: Journey, depStore: DeparturesStore, activityID: String) {
+        guard var tracked = trackedActivities[activityID], tracked.timer == nil else { return }
+        tracked.timer = scheduleUpdates(
+            for: journey,
+            depStore: depStore,
+            activityID: activityID,
+            refreshImmediately: false
+        )
+        trackedActivities[activityID] = tracked
+        debugLog("⏰ [LiveActivity] Attached foreground refresh timer to adopted activity \(activityID)")
+    }
+
+    private func scheduleUpdates(
+        for journey: Journey,
+        depStore: DeparturesStore,
+        activityID: String,
+        refreshImmediately: Bool = true
+    ) -> Timer {
         debugLog("⏰ [LiveActivity] Scheduling timer for activity \(activityID) updates every 20 seconds")
 
         // NOTE: Timer-based updates only work when app is in foreground
@@ -1219,9 +1246,10 @@ final class LiveActivityManager: ObservableObject {
             }
         }
 
-        // Fire immediately on first setup
-        Task {
-            await self.refreshAndUpdate(for: journey, depStore: depStore, activityID: activityID)
+        if refreshImmediately {
+            Task {
+                await self.refreshAndUpdate(for: journey, depStore: depStore, activityID: activityID)
+            }
         }
 
         return timer
@@ -2332,6 +2360,23 @@ final class LiveActivityManager: ObservableObject {
             } else {
                 debugLog("⏳ [LiveActivity] No current push token for \(activity.id); waiting for pushTokenUpdates")
             }
+
+            // The token is created asynchronously. Poll the current value while
+            // the update stream is active so a token produced between the one-off
+            // read above and stream subscription cannot leave a remote-started
+            // activity permanently unregistered.
+            let currentTokenPollingTask = Task { @MainActor in
+                for _ in 0..<32 {
+                    if Task.isCancelled { return }
+                    if let tokenData = activity.pushToken {
+                        await register(tokenData, source: "current-poll")
+                        return
+                    }
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                }
+                debugLog("⚠️ [LiveActivity] Current push token still unavailable after polling for \(activity.id); stream observation remains active")
+            }
+            defer { currentTokenPollingTask.cancel() }
 
             for await tokenData in activity.pushTokenUpdates {
                 await register(tokenData, source: "stream")

@@ -61,6 +61,29 @@ final class JourneyTrackingCoordinator: ObservableObject {
     static let maximumActiveJourneyDuration: TimeInterval = 24 * 60 * 60
     static let completedJourneyDisplayDuration: TimeInterval = 60 * 60
 
+    static func shouldArmCandidate(subscriptionID: String, activeSubscriptionID: String?) -> Bool {
+        activeSubscriptionID != subscriptionID
+    }
+
+    static func restorableCandidates(
+        _ candidates: [ArmedJourneyHistoryCandidate],
+        activeSubscriptionID: String?,
+        recentlyCompletedSubscriptionID: String?,
+        now: Date = Date(),
+        isMutedToday: (String, String) -> Bool = {
+            NotificationMuteStorage.isMutedToday(from: $0, to: $1)
+        }
+    ) -> [ArmedJourneyHistoryCandidate] {
+        candidates.filter { candidate in
+            let originLegIsMuted = candidate.stations.count >= 2
+                && isMutedToday(candidate.stations[0].crs, candidate.stations[1].crs)
+            return candidate.isCurrent(at: now)
+                && candidate.subscriptionId != activeSubscriptionID
+                && candidate.subscriptionId != recentlyCompletedSubscriptionID
+                && !originLegIsMuted
+        }
+    }
+
     @Published private(set) var armedCandidates: [ArmedJourneyHistoryCandidate] = []
     @Published private(set) var activeJourney: ActiveJourneyHistoryCheckpoint?
     @Published private(set) var recentlyCompletedJourney: ActiveJourneyHistoryCheckpoint?
@@ -495,6 +518,17 @@ final class JourneyTrackingCoordinator: ObservableObject {
         cachedStationsByCRS: [String: Station] = [:]
     ) async {
         pruneExpiredCompletion()
+        guard Self.shouldArmCandidate(
+            subscriptionID: subscription.id,
+            activeSubscriptionID: activeJourney?.subscriptionId
+        ) else {
+            log("candidate_arm_skipped", "Journey history was not re-armed because the subscription is already active", metadata: [
+                "subscription_id": subscription.id,
+                "active_journey_id": activeJourney?.id.uuidString,
+                "source": source.rawValue
+            ])
+            return
+        }
         if StationsService.shared.stations.isEmpty && cachedStationsByCRS.isEmpty {
             do {
                 try await StationsService.shared.loadStations()
@@ -1661,6 +1695,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
             completedAt: completedAt,
             autoDismissAt: completedAt.addingTimeInterval(Self.completedJourneyDisplayDuration)
         )
+        armedCandidates.removeAll { $0.subscriptionId == active.subscriptionId }
         activeJourney = nil
         persistCheckpoint()
         await refreshMonitoringConditions()
@@ -1988,7 +2023,11 @@ final class JourneyTrackingCoordinator: ObservableObject {
               let envelope = try? JSONDecoder().decode(JourneyHistoryCheckpointEnvelope.self, from: data) else {
             return
         }
-        armedCandidates = envelope.armedCandidates.filter(\.isCurrent)
+        armedCandidates = Self.restorableCandidates(
+            envelope.armedCandidates,
+            activeSubscriptionID: envelope.activeJourney?.subscriptionId,
+            recentlyCompletedSubscriptionID: envelope.recentlyCompleted?.checkpoint.subscriptionId
+        )
         activeJourney = envelope.activeJourney
         recentlyCompleted = envelope.recentlyCompleted
         recentlyCompletedJourney = envelope.recentlyCompleted?.checkpoint
