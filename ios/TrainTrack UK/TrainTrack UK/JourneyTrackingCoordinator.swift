@@ -55,11 +55,11 @@ final class JourneyTrackingCoordinator: ObservableObject {
 
     static let destinationArrivalRadiusMeters: CLLocationDistance = 150
     static let destinationApproachRadiusMeters: CLLocationDistance = 500
-    static let arrivalNotificationBufferSeconds: TimeInterval = 90
+    static let arrivalNotificationBufferSeconds: TimeInterval = 0
     static let expectedStationRadiusMeters: CLLocationDistance = 250
     static let unexpectedStationDwellSeconds: TimeInterval = 90
     static let maximumActiveJourneyDuration: TimeInterval = 24 * 60 * 60
-    static let completedJourneyDisplayDuration: TimeInterval = 60 * 60
+    static let completedJourneyDisplayDuration: TimeInterval = 10 * 60
 
     static func shouldArmCandidate(subscriptionID: String, activeSubscriptionID: String?) -> Bool {
         activeSubscriptionID != subscriptionID
@@ -91,9 +91,11 @@ final class JourneyTrackingCoordinator: ObservableObject {
 
     private let defaults = UserDefaults(suiteName: "group.dev.skynolimit.traintrack") ?? .standard
     private let checkpointKey = "journeyHistoryTrackingCheckpointV1"
+    private var completionCleanupTask: Task<Void, Never>?
 
     private init() {
         restoreCheckpoint()
+        scheduleCompletedJourneyCleanup()
     }
 
     var hasActiveJourney: Bool { activeJourney != nil }
@@ -163,6 +165,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 completedAt: now,
                 autoDismissAt: now.addingTimeInterval(Self.completedJourneyDisplayDuration)
             )
+            scheduleCompletedJourneyCleanup()
         }
     }
 
@@ -428,16 +431,50 @@ final class JourneyTrackingCoordinator: ObservableObject {
     }
 
     func clearRecentlyCompletedJourney() {
+        let completedCheckpoint = recentlyCompleted?.checkpoint
+        completionCleanupTask?.cancel()
+        completionCleanupTask = nil
         recentlyCompletedJourney = nil
         recentlyCompleted = nil
         persistCheckpoint()
+        if let completedCheckpoint {
+            Task {
+                await LiveActivityManager.shared.stopJourneyActivities(
+                    deepLinkFromCRS: completedCheckpoint.plannedOrigin.crs,
+                    deepLinkToCRS: completedCheckpoint.plannedDestination.crs
+                )
+            }
+        }
     }
 
     func pruneExpiredCompletion(now: Date = Date()) {
         guard let recentlyCompleted, recentlyCompleted.autoDismissAt <= now else { return }
-        self.recentlyCompleted = nil
-        recentlyCompletedJourney = nil
-        persistCheckpoint()
+        log("completed_journey_auto_dismissed", "Clearing completed journey after the arrival grace period", metadata: [
+            "journey_id": recentlyCompleted.checkpoint.id.uuidString,
+            "completed_at": recentlyCompleted.completedAt,
+            "auto_dismiss_at": recentlyCompleted.autoDismissAt
+        ])
+        clearRecentlyCompletedJourney()
+    }
+
+    private func scheduleCompletedJourneyCleanup() {
+        completionCleanupTask?.cancel()
+        guard let expiry = recentlyCompleted?.autoDismissAt else {
+            completionCleanupTask = nil
+            return
+        }
+        completionCleanupTask = Task { [weak self] in
+            let delay = expiry.timeIntervalSinceNow
+            if delay > 0 {
+                do {
+                    try await Task.sleep(for: .seconds(delay))
+                } catch {
+                    return
+                }
+            }
+            guard !Task.isCancelled else { return }
+            self?.pruneExpiredCompletion()
+        }
     }
 
     func boardingNotificationBody(from: String, to: String) -> String? {
@@ -1615,6 +1652,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
         active.detectedArrivalAt = detectedAt
         active.deviceBasedArrivalAt = isDeviceBased ? detectedAt : nil
         active.stationEvents.append(JourneyHistoryStationEvent(station: station, kind: .arrival, detectedAt: detectedAt))
+        await postArrivalConfirmedNotification(active, detectedAt: detectedAt)
         if let index = active.legs.indices.last {
             active.legs[index].detectedArrivalAt = detectedAt
             active.legs[index].outcome = .completed
@@ -1637,7 +1675,12 @@ final class JourneyTrackingCoordinator: ObservableObject {
             phase: .arrived,
             from: active.plannedOrigin.crs,
             to: active.plannedDestination.crs,
-            serviceID: active.currentLeg?.serviceID
+            serviceID: active.currentLeg?.serviceID,
+            arrivalTime: active.currentLeg?.actualArrivalAt
+                ?? active.currentLeg?.detectedArrivalAt
+                ?? active.detectedArrivalAt,
+            scheduledArrival: active.currentLeg?.scheduledArrivalAt,
+            completedAt: detectedAt
         )
         log("destination_arrival_correlated", "Final arrival correlated with official timing data", metadata: [
             "journey_id": active.id.uuidString,
@@ -1695,6 +1738,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
             completedAt: completedAt,
             autoDismissAt: completedAt.addingTimeInterval(Self.completedJourneyDisplayDuration)
         )
+        scheduleCompletedJourneyCleanup()
         armedCandidates.removeAll { $0.subscriptionId == active.subscriptionId }
         activeJourney = nil
         persistCheckpoint()
@@ -1705,7 +1749,6 @@ final class JourneyTrackingCoordinator: ObservableObject {
             "recorded_destination_crs": active.lastConfirmedOnRouteStation.crs
         ])
         if outcome == .completed {
-            await postArrivalConfirmedNotification(active, detectedAt: active.detectedArrivalAt ?? completedAt)
             if record.isDelayRepay15Plus {
                 await postDelayRepayNotification(for: record)
             }
@@ -1823,10 +1866,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
         let request = UNNotificationRequest(
             identifier: "journey_arrival_\(active.id.uuidString)",
             content: content,
-            trigger: UNTimeIntervalNotificationTrigger(
-                timeInterval: Self.arrivalNotificationBufferSeconds,
-                repeats: false
-            )
+            trigger: nil
         )
         do {
             try await UNUserNotificationCenter.current().add(request)
@@ -1834,7 +1874,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 "journey_id": active.id.uuidString,
                 "destination_crs": active.plannedDestination.crs,
                 "detected_at": detectedAt,
-                "buffer_seconds": Self.arrivalNotificationBufferSeconds,
+                "buffer_seconds": 0,
                 "notification_id": request.identifier
             ])
         } catch {

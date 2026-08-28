@@ -23,7 +23,10 @@ final class LiveActivityJourneyStatusSender: NSObject, URLSessionTaskDelegate {
         phase: JourneyActivityAttributes.JourneyPhase,
         from: String,
         to: String,
-        serviceID: String? = nil
+        serviceID: String? = nil,
+        arrivalTime: Date? = nil,
+        scheduledArrival: Date? = nil,
+        completedAt: Date? = nil
     ) {
         guard let url = URL(string: "\(ApiHostPreference.currentBaseURL)/live_activities/status") else {
             return
@@ -34,7 +37,7 @@ final class LiveActivityJourneyStatusSender: NSObject, URLSessionTaskDelegate {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(DeviceIdentity.deviceToken, forHTTPHeaderField: "X-Device-Token")
 
-        var payload = [
+        var payload: [String: Any] = [
             "device_id": DeviceIdentity.deviceToken,
             "from": from.uppercased(),
             "to": to.uppercased(),
@@ -42,6 +45,21 @@ final class LiveActivityJourneyStatusSender: NSObject, URLSessionTaskDelegate {
         ]
         if let serviceID, !serviceID.isEmpty {
             payload["service_id"] = serviceID
+        }
+        if let arrivalTime {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_GB")
+            formatter.dateFormat = "HH:mm"
+            payload["arrival_time"] = formatter.string(from: arrivalTime)
+            if let scheduledArrival {
+                payload["arrival_delay_minutes"] = JourneyHistoryDelayPolicy.confirmedDelayMinutes(
+                    scheduledArrival: scheduledArrival,
+                    actualArrival: arrivalTime
+                )
+            }
+        }
+        if let completedAt {
+            payload["completed_at"] = ISO8601DateFormatter().string(from: completedAt)
         }
         guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
 

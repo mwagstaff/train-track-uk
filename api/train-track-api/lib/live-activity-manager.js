@@ -15,6 +15,7 @@ const DEFAULT_END_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_END_AFTER_SEC
 const DEFAULT_STALE_DATE_REFRESH_SECONDS = Number(process.env.LIVE_ACTIVITY_STALE_DATE_REFRESH_SECONDS || '240'); // refresh stale-date every 4 minutes
 const APP_CHECKIN_WARNING_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_APP_CHECKIN_WARNING_AFTER_SECONDS || '120');
 const DEFAULT_MAX_ACTIVE_PER_DEVICE = Number(process.env.LIVE_ACTIVITY_MAX_ACTIVE_PER_DEVICE || '5');
+const JOURNEY_COMPLETION_GRACE_MS = 10 * 60 * 1000;
 
 export class LiveActivityManager {
     constructor() {
@@ -54,7 +55,12 @@ export class LiveActivityManager {
             }
             const endAtMs = Date.parse(subscription.endAt || '');
             if (Number.isFinite(endAtMs) && endAtMs <= now) {
-                await this.deleteSubscriptionFromMongo(subscription);
+                const key = this.buildKey(subscription.deviceId, subscription.activityId);
+                this.subscriptions.set(key, subscription);
+                await this.sendEndUpdate(subscription, {
+                    reason: subscription.endReason || 'duration_elapsed',
+                    trigger: 'restore_expired'
+                });
                 continue;
             }
             const key = this.buildKey(subscription.deviceId, subscription.activityId);
@@ -207,7 +213,7 @@ export class LiveActivityManager {
         let windowEndBufferMs = null;
 
         const persistedEndAtMs = Date.parse(subscription.endAt || '');
-        if (Number.isFinite(persistedEndAtMs) && persistedEndAtMs > Date.now()) {
+        if (Number.isFinite(persistedEndAtMs)) {
             endAfterMs = Math.max(persistedEndAtMs - Date.now(), 0);
             endReason = subscription.endReason || endReason;
             endPolicy = subscription.endPolicy || endPolicy;
@@ -861,13 +867,18 @@ export class LiveActivityManager {
         const isInProgress = subscription.journeyPhase === 'en_route' || subscription.journeyPhase === 'arrived';
         const isArrived = subscription.journeyPhase === 'arrived';
         const estimated = isArrived
-            ? this.ensureString(primary.actualArrivalTime, this.ensureString(primary.arrivalTime, this.getDisplayTime(primary.estimated, primary.scheduled)))
+            ? this.ensureString(
+                subscription.arrivalTime,
+                this.ensureString(primary.actualArrivalTime, this.ensureString(primary.arrivalTime, this.getDisplayTime(primary.estimated, primary.scheduled)))
+            )
             : isInProgress
             ? this.ensureString(primary.arrivalTime, this.getDisplayTime(primary.estimated, primary.scheduled))
             : this.getDisplayTime(primary.estimated, primary.scheduled);
-        const arrivalDelayMinutes = isArrived && Number.isFinite(primary.arrivalDelayMinutes)
-            ? Math.max(0, primary.arrivalDelayMinutes)
-            : null;
+        const arrivalDelayMinutes = isArrived && Number.isFinite(subscription.arrivalDelayMinutes)
+            ? Math.max(0, subscription.arrivalDelayMinutes)
+            : (isArrived && Number.isFinite(primary.arrivalDelayMinutes)
+                ? Math.max(0, primary.arrivalDelayMinutes)
+                : null);
         const delayMinutes = arrivalDelayMinutes ?? this.calculateDelay(primary.scheduled, primary.estimated);
 
         const platform = this.ensureString(isInProgress ? primary.arrivalPlatform : primary.platform);
@@ -1601,6 +1612,9 @@ export class LiveActivityManager {
         toStation = null,
         phase,
         preferredServiceId = null,
+        arrivalTime = null,
+        arrivalDelayMinutes = null,
+        completedAt = null,
         fallbackDeviceIds = []
     } = {}) {
         const validPhases = new Set(['pending_start', 'at_start', 'en_route', 'arrived']);
@@ -1637,6 +1651,27 @@ export class LiveActivityManager {
                         (departure) => departure.serviceID === matchedServiceId
                     ) || null;
                 }
+            }
+            if (phase === 'arrived') {
+                if (typeof arrivalTime === 'string' && /^\d{2}:\d{2}$/.test(arrivalTime)) {
+                    subscription.arrivalTime = arrivalTime;
+                }
+                const parsedDelay = Number(arrivalDelayMinutes);
+                if (Number.isFinite(parsedDelay)) {
+                    subscription.arrivalDelayMinutes = Math.max(0, Math.round(parsedDelay));
+                }
+                const suppliedCompletionMs = Date.parse(completedAt || '');
+                const existingCompletionMs = Date.parse(subscription.journeyCompletedAt || '');
+                const completionMs = Number.isFinite(suppliedCompletionMs)
+                    ? suppliedCompletionMs
+                    : (Number.isFinite(existingCompletionMs) ? existingCompletionMs : Date.now());
+                subscription.journeyCompletedAt = new Date(completionMs).toISOString();
+                subscription.endAt = new Date(completionMs + JOURNEY_COMPLETION_GRACE_MS).toISOString();
+                subscription.endReason = 'journey_arrival_grace_elapsed';
+                subscription.endPolicy = 'journey_arrival_plus_grace';
+                subscription.endAfterMs = Math.max((completionMs + JOURNEY_COMPLETION_GRACE_MS) - Date.now(), 0);
+                subscription.windowEndBufferMs = null;
+                this.scheduleEnd(subscription);
             }
             await this.saveSubscriptionToMongo(subscription);
             const result = await this.pollSubscription(subscription, { force: true });

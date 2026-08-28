@@ -227,7 +227,8 @@ struct JourneyHistoryTests {
 
     @Test @MainActor func activeJourneyMonitoringHasASafetyExpiry() {
         #expect(JourneyTrackingCoordinator.maximumActiveJourneyDuration == 24 * 60 * 60)
-        #expect(JourneyTrackingCoordinator.completedJourneyDisplayDuration == 60 * 60)
+        #expect(JourneyTrackingCoordinator.completedJourneyDisplayDuration == 10 * 60)
+        #expect(JourneyTrackingCoordinator.arrivalNotificationBufferSeconds == 0)
         #expect(
             JourneyTrackingCoordinator.destinationApproachRadiusMeters
                 > JourneyTrackingCoordinator.destinationArrivalRadiusMeters

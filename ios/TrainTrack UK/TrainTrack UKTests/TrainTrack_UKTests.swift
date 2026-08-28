@@ -483,6 +483,47 @@ struct TrainTrack_UKTests {
         #expect(selected?.serviceID == "next")
     }
 
+    @Test func inProgressFinalDestinationETAShowsArrivalDelay() {
+        #expect(InProgressJourneyPresentation.finalDestinationETAText(
+            time: "08:05",
+            delayMinutes: 2
+        ) == "ETA 08:05, 2 minutes late")
+        #expect(InProgressJourneyPresentation.finalDestinationETAText(
+            time: "08:03",
+            delayMinutes: 0
+        ) == "ETA 08:03, on time")
+    }
+
+    @Test func itineraryRetainsFinalArrivalDelay() {
+        let serviceID = "delayed-final-arrival"
+        let groupID = UUID()
+        let directJourney = journey(
+            groupID: groupID,
+            index: 0,
+            from: station(crs: "KTH", name: "Kent House"),
+            to: station(crs: "VIC", name: "London Victoria")
+        )
+        let selectedDeparture = departure(at: "07:42", serviceID: serviceID)
+        let details = serviceDetails(callingPoints: [
+            callingPoint(
+                name: "London Victoria",
+                crs: "VIC",
+                time: "08:03",
+                estimatedTime: "08:05"
+            )
+        ])
+
+        let itinerary = JourneyItineraryBuilder.build(
+            group: JourneyGroup(id: groupID, legs: [directJourney]),
+            firstDeparture: selectedDeparture,
+            departuresForJourney: { _ in [selectedDeparture] },
+            serviceDetailsByID: [serviceID: details]
+        )
+
+        #expect(itinerary.finalArrivalTime == "08:05")
+        #expect(itinerary.finalArrivalDelayMinutes == 2)
+    }
+
     @Test func singleLegJourneyCardsKeepCancelledDeparturesVisible() {
         let groupID = UUID()
         let directJourney = journey(
@@ -929,13 +970,14 @@ struct TrainTrack_UKTests {
         name: String,
         crs: String,
         time: String,
+        estimatedTime: String? = nil,
         isCancelled: Bool = false
     ) -> CallingPoint {
         CallingPoint(
             locationName: name,
             crs: crs,
             st: time,
-            et: isCancelled ? "Cancelled" : "On time",
+            et: isCancelled ? "Cancelled" : (estimatedTime ?? "On time"),
             at: nil,
             isCancelled: isCancelled,
             cancelReason: nil,

@@ -15,6 +15,13 @@ struct JourneyItinerary: Hashable {
         guard hasServicesForAllLegs else { return nil }
         return legs.last?.arrivalTime
     }
+
+    var finalArrivalDelayMinutes: Int? {
+        guard hasServicesForAllLegs,
+              let arrivalDate = legs.last?.arrivalDate,
+              let scheduledArrivalDate = legs.last?.scheduledArrivalDate else { return nil }
+        return max(0, Int(arrivalDate.timeIntervalSince(scheduledArrivalDate) / 60))
+    }
 }
 
 struct JourneyItineraryLeg: Identifiable, Hashable {
@@ -23,9 +30,28 @@ struct JourneyItineraryLeg: Identifiable, Hashable {
     let departureDate: Date?
     let arrivalTime: String?
     let arrivalDate: Date?
+    let scheduledArrivalDate: Date?
     let disruptionNotes: [String]
 
     var id: UUID { journey.id }
+
+    init(
+        journey: Journey,
+        departure: DepartureV2?,
+        departureDate: Date?,
+        arrivalTime: String?,
+        arrivalDate: Date?,
+        scheduledArrivalDate: Date? = nil,
+        disruptionNotes: [String]
+    ) {
+        self.journey = journey
+        self.departure = departure
+        self.departureDate = departureDate
+        self.arrivalTime = arrivalTime
+        self.arrivalDate = arrivalDate
+        self.scheduledArrivalDate = scheduledArrivalDate
+        self.disruptionNotes = disruptionNotes
+    }
 }
 
 struct JourneyConnectionSelection {
@@ -86,6 +112,7 @@ enum JourneyItineraryBuilder {
                     departureDate: nil,
                     arrivalTime: nil,
                     arrivalDate: nil,
+                    scheduledArrivalDate: nil,
                     disruptionNotes: disruptionNotes
                 ))
                 canSelectConnection = false
@@ -109,6 +136,7 @@ enum JourneyItineraryBuilder {
                 departureDate: departureDate,
                 arrivalTime: arrival.time,
                 arrivalDate: arrival.date,
+                scheduledArrivalDate: arrival.scheduledDate,
                 disruptionNotes: disruptionNotes
             ))
 

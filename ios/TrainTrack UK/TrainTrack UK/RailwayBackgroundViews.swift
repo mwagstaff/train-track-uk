@@ -250,6 +250,7 @@ private struct RailwayBackgroundHiddenPreferenceKey: PreferenceKey {
 }
 
 private struct RailwayBackgroundChromeModifier: ViewModifier {
+    let showsInfoButton: Bool
     @EnvironmentObject private var store: RailwayBackgroundStore
     @Environment(\.horizontalTabSwipePresentation) private var swipePresentation
     @Environment(\.isActiveHorizontalTabSwipePage) private var isActiveSwipePage
@@ -269,7 +270,7 @@ private struct RailwayBackgroundChromeModifier: ViewModifier {
                 }
             }
             .overlay(alignment: .bottomTrailing) {
-                if !isHidden {
+                if !isHidden, showsInfoButton {
                     RailwayBackgroundInfoButton(asset: store.selectedAsset) {
                         isViewerPresented = true
                     }
@@ -295,8 +296,8 @@ private struct StationaryRailwayBackground: View {
 }
 
 extension View {
-    func railwayBackgroundPOC() -> some View {
-        modifier(RailwayBackgroundChromeModifier())
+    func railwayBackgroundPOC(showsInfoButton: Bool = true) -> some View {
+        modifier(RailwayBackgroundChromeModifier(showsInfoButton: showsInfoButton))
     }
 
     func hidesRailwayBackgroundChrome(_ isHidden: Bool = true) -> some View {

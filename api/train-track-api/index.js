@@ -986,7 +986,16 @@ app.delete('/api/v2/journey_tracking/sessions/:id', (req, res) => {
 });
 
 app.post('/api/v2/live_activities/status', async (req, res) => {
-    const { device_id, from, to, phase, service_id } = req.body || {};
+    const {
+        device_id,
+        from,
+        to,
+        phase,
+        service_id,
+        arrival_time,
+        arrival_delay_minutes,
+        completed_at
+    } = req.body || {};
     const { canonicalDeviceId, fallbackDeviceIds } = resolveRequestDeviceIds(req, device_id);
     const validPhases = new Set(['pending_start', 'at_start', 'en_route', 'arrived']);
     if (!canonicalDeviceId || !validPhases.has(phase)) {
@@ -999,6 +1008,9 @@ app.post('/api/v2/live_activities/status', async (req, res) => {
             toStation: to || null,
             phase,
             preferredServiceId: typeof service_id === 'string' ? service_id : null,
+            arrivalTime: typeof arrival_time === 'string' ? arrival_time : null,
+            arrivalDelayMinutes: arrival_delay_minutes,
+            completedAt: typeof completed_at === 'string' ? completed_at : null,
             fallbackDeviceIds
         });
         res.json({

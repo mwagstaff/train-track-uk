@@ -11,6 +11,14 @@ enum InProgressJourneyPresentation {
                 && JourneyCardPresentation.isUpcomingDeparture($0, now: now)
         }
     }
+
+    static func finalDestinationETAText(time: String?, delayMinutes: Int?) -> String {
+        guard let time else { return "Unavailable" }
+        let eta = "ETA \(JourneyCardPresentation.arrivalTimeLabel(time))"
+        guard let delayMinutes else { return eta }
+        guard delayMinutes > 0 else { return "\(eta), on time" }
+        return "\(eta), \(delayMinutes) minute\(delayMinutes == 1 ? "" : "s") late"
+    }
 }
 
 struct InProgressJourneyView: View {
@@ -189,7 +197,7 @@ struct InProgressJourneyView: View {
         } message: { confirmation in
             Text(confirmation.message)
         }
-        .railwayBackgroundPOC()
+        .railwayBackgroundPOC(showsInfoButton: false)
         .alert(
             "Start a different journey?",
             isPresented: Binding(
@@ -432,23 +440,44 @@ struct InProgressJourneyView: View {
         group: JourneyGroup,
         departure: DepartureV2
     ) -> some View {
-        etaCard(
+        let itinerary = remainingItinerary(group: group, departure: departure)
+        return etaCard(
             label: "Final destination",
             subtitle: group.endStation.name,
-            time: finalDestinationETA(group: group, departure: departure)
+            time: itinerary?.finalArrivalTime,
+            delayMinutes: itinerary?.finalArrivalDelayMinutes,
+            showsDelayStatus: true
         )
     }
 
-    @MainActor private func etaCard(label: String, subtitle: String, time: String?) -> some View {
+    @MainActor private func etaCard(
+        label: String,
+        subtitle: String,
+        time: String?,
+        delayMinutes: Int? = nil,
+        showsDelayStatus: Bool = false
+    ) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(label.uppercased())
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
                 .minimumScaleFactor(0.8)
-            Text(time.map(JourneyCardPresentation.arrivalTimeLabel) ?? "Unavailable")
-                .font(.title2.weight(.bold))
-                .monospacedDigit()
+            if showsDelayStatus {
+                Text(InProgressJourneyPresentation.finalDestinationETAText(
+                    time: time,
+                    delayMinutes: delayMinutes
+                ))
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(etaColor(delayMinutes: delayMinutes, isAvailable: time != nil))
+                    .monospacedDigit()
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.8)
+            } else {
+                Text(time.map(JourneyCardPresentation.arrivalTimeLabel) ?? "Unavailable")
+                    .font(.title2.weight(.bold))
+                    .monospacedDigit()
+            }
             Text(subtitle)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -458,6 +487,13 @@ struct InProgressJourneyView: View {
         .padding(14)
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
         .accessibilityElement(children: .combine)
+    }
+
+    private func etaColor(delayMinutes: Int?, isAvailable: Bool) -> Color {
+        guard isAvailable, let delayMinutes else { return .secondary }
+        if delayMinutes >= 5 { return .red }
+        if delayMinutes > 0 { return .orange }
+        return .green
     }
 
     private func miniMap(
@@ -614,7 +650,7 @@ struct InProgressJourneyView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            Text("This screen closes automatically one hour after the journey ended.")
+            Text("This screen closes automatically 10 minutes after arrival.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
@@ -712,10 +748,6 @@ struct InProgressJourneyView: View {
         return active.currentLeg?.callingPoints.first(where: {
             $0.crs.caseInsensitiveCompare(destinationCRS) == .orderedSame
         }).map { $0.actualTime ?? $0.estimatedTime ?? $0.scheduledTime }
-    }
-
-    private func finalDestinationETA(group: JourneyGroup, departure: DepartureV2) -> String? {
-        remainingItinerary(group: group, departure: departure)?.finalArrivalTime
     }
 
     private func estimatedChangeTime(group: JourneyGroup, departure: DepartureV2) -> String {

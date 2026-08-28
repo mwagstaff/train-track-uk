@@ -345,9 +345,17 @@ final class LiveActivityManager: ObservableObject {
 
             let currentLeg = checkpoint?.currentLeg
             let matchedServiceID = phase.showsInProgressService ? currentLeg?.serviceID : nil
+            let finalLeg = checkpoint?.legs.last
+            let authoritativeArrival = finalLeg?.actualArrivalAt
+                ?? finalLeg?.detectedArrivalAt
+                ?? checkpoint?.detectedArrivalAt
+            let authoritativeArrivalText = authoritativeArrival.map(formatter.string(from:))
             let previousPreferredServiceID = trackedActivities[activity.id]?.preferredServiceID
             let backendStateNeedsSync = routeState.journeyPhase != phase
                 || (matchedServiceID != nil && previousPreferredServiceID != matchedServiceID)
+                || (phase == .arrived
+                    && authoritativeArrivalText != nil
+                    && routeState.estimated != authoritativeArrivalText)
             if let matchedServiceID,
                var tracked = trackedActivities[activity.id] {
                 tracked.preferredServiceID = matchedServiceID
@@ -391,12 +399,8 @@ final class LiveActivityManager: ObservableObject {
                 if phase == .arrived {
                     state.destinationTitle = destinationStation.name
                     state.statusText = nil
-                    let finalLeg = checkpoint?.legs.last
-                    let arrival = finalLeg?.actualArrivalAt
-                        ?? finalLeg?.detectedArrivalAt
-                        ?? checkpoint?.detectedArrivalAt
-                    if let arrival {
-                        state.estimated = formatter.string(from: arrival)
+                    if let authoritativeArrivalText {
+                        state.estimated = authoritativeArrivalText
                     }
                     state.arrivalDelayMinutes = JourneyHistoryDelayPolicy.confirmedDelayMinutes(
                         scheduledArrival: finalLeg?.scheduledArrivalAt,
@@ -416,13 +420,14 @@ final class LiveActivityManager: ObservableObject {
                     let destinationCallingPoint = details.allStations.first {
                         $0.crs.caseInsensitiveCompare(destinationCRS) == .orderedSame
                     }
-                    if let destinationCallingPoint {
+                    if let destinationCallingPoint, phase != .arrived || authoritativeArrivalText == nil {
                         state.estimated = callingPointDisplayTime(destinationCallingPoint)
                         if let arrivalPlatform = destinationCallingPoint.platform,
                            !arrivalPlatform.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             state.platform = arrivalPlatform
                         }
-                    } else if details.crs.caseInsensitiveCompare(destinationCRS) == .orderedSame {
+                    } else if details.crs.caseInsensitiveCompare(destinationCRS) == .orderedSame,
+                              phase != .arrived || authoritativeArrivalText == nil {
                         state.estimated = details.ata
                             ?? details.eta
                             ?? details.sta
@@ -463,7 +468,17 @@ final class LiveActivityManager: ObservableObject {
                     phase: phase,
                     fromCRS: startCRS,
                     toCRS: destinationCRS,
-                    preferredServiceID: matchedServiceID
+                    preferredServiceID: matchedServiceID,
+                    arrivalTime: authoritativeArrivalText,
+                    arrivalDelayMinutes: phase == .arrived
+                        ? JourneyHistoryDelayPolicy.confirmedDelayMinutes(
+                            scheduledArrival: finalLeg?.scheduledArrivalAt,
+                            actualArrival: finalLeg?.actualArrivalAt
+                        )
+                        : nil,
+                    completedAt: phase == .arrived
+                        ? (checkpoint?.detectedArrivalAt ?? authoritativeArrival)
+                        : nil
                 )
             }
         }
@@ -2342,7 +2357,10 @@ final class LiveActivityManager: ObservableObject {
         phase: JourneyActivityAttributes.JourneyPhase,
         fromCRS: String,
         toCRS: String,
-        preferredServiceID: String?
+        preferredServiceID: String?,
+        arrivalTime: String? = nil,
+        arrivalDelayMinutes: Int? = nil,
+        completedAt: Date? = nil
     ) async -> Bool {
         let backgroundTask = AppBackgroundTaskToken(name: "live-activity-journey-status")
         defer { backgroundTask.end() }
@@ -2361,6 +2379,15 @@ final class LiveActivityManager: ObservableObject {
         ]
         if let preferredServiceID, !preferredServiceID.isEmpty {
             payload["service_id"] = preferredServiceID
+        }
+        if let arrivalTime, !arrivalTime.isEmpty {
+            payload["arrival_time"] = arrivalTime
+        }
+        if let arrivalDelayMinutes {
+            payload["arrival_delay_minutes"] = arrivalDelayMinutes
+        }
+        if let completedAt {
+            payload["completed_at"] = ISO8601DateFormatter().string(from: completedAt)
         }
 
         var request = URLRequest(url: url)

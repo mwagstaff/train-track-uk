@@ -98,6 +98,29 @@ test('arrived live activity content shows actual arrival and Delay Repay eligibi
     assert.equal(content.delayMinutes, 15);
 });
 
+test('arrived live activity content keeps the client-confirmed arrival when service details are unavailable', () => {
+    const content = liveActivityManager.buildContentState({
+        activityId: 'activity-confirmed-arrival',
+        fromStation: 'KTH',
+        toStation: 'VIC',
+        journeyPhase: 'arrived',
+        journeyUpdatesEnabled: true,
+        arrivalTime: '08:05',
+        arrivalDelayMinutes: 2
+    }, {
+        fetchedAt: '2026-08-28T07:06:00.000Z',
+        departures: [{
+            serviceID: 'departed-service',
+            scheduled: '07:42',
+            estimated: '07:44'
+        }]
+    });
+
+    assert.equal(content.estimated, '08:05');
+    assert.equal(content.arrivalDelayMinutes, 2);
+    assert.equal(content.delayMinutes, 2);
+});
+
 test('journey phase pins the live activity to the service matched on device', async () => {
     const manager = new LiveActivityManager();
     const subscription = {
@@ -130,4 +153,35 @@ test('journey phase pins the live activity to the service matched on device', as
     assert.equal(subscription.preferredServiceId, 'boarded-service');
     assert.equal(subscription.preferredDepartureSnapshot.serviceID, 'boarded-service');
     assert.deepEqual(result, { updated: 1, pushed: 1 });
+});
+
+test('arrived journey phase schedules the live activity to end ten minutes after completion', async () => {
+    const manager = new LiveActivityManager();
+    const completedAt = new Date(Date.now() - 60_000);
+    const subscription = {
+        deviceId: 'device-arrived',
+        activityId: 'activity-arrived',
+        fromStation: 'KTH',
+        toStation: 'VIC',
+        lastSnapshot: { departures: [{ serviceID: 'service-arrived', scheduled: '07:42' }] }
+    };
+    manager.subscriptions.set('device-arrived:activity-arrived', subscription);
+    manager.saveSubscriptionToMongo = async () => {};
+    manager.pollSubscription = async () => ({ sent: true });
+
+    await manager.handleJourneyPhase('device-arrived', {
+        fromStation: 'KTH',
+        toStation: 'VIC',
+        phase: 'arrived',
+        preferredServiceId: 'service-arrived',
+        arrivalTime: '08:05',
+        arrivalDelayMinutes: 2,
+        completedAt: completedAt.toISOString()
+    });
+
+    assert.equal(subscription.arrivalTime, '08:05');
+    assert.equal(subscription.arrivalDelayMinutes, 2);
+    assert.equal(subscription.endPolicy, 'journey_arrival_plus_grace');
+    assert.ok(Math.abs(Date.parse(subscription.endAt) - (completedAt.getTime() + 10 * 60 * 1000)) < 10);
+    manager.clearEndTimer(subscription);
 });
