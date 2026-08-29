@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreMotion
 import Foundation
 import Testing
 @testable import TrainTrack_UK
@@ -94,6 +95,41 @@ struct RailwayBackgroundTests {
         )
 
         #expect(translation == .zero)
+    }
+
+    @Test func attitudeProjectionProvidesIndependentHorizontalAndVerticalTilt() {
+        let angle = 0.12
+        let horizontal = RailwayBackgroundAttitudeProjection.screenAngles(
+            quaternion: CMQuaternion(x: 0, y: sin(angle / 2), z: 0, w: cos(angle / 2)),
+            orientation: .portrait
+        )
+        let vertical = RailwayBackgroundAttitudeProjection.screenAngles(
+            quaternion: CMQuaternion(x: sin(angle / 2), y: 0, z: 0, w: cos(angle / 2)),
+            orientation: .portrait
+        )
+
+        #expect(abs(horizontal.horizontal - angle) < 0.0001)
+        #expect(abs(horizontal.vertical) < 0.0001)
+        #expect(abs(vertical.horizontal) < 0.0001)
+        #expect(abs(vertical.vertical - angle) < 0.0001)
+    }
+
+    @Test func parallaxCropUsesAvailablePhotoAreaWithoutExposingAnEdge() {
+        let limited = RailwayBackgroundParallaxCrop.boundedTranslation(
+            24,
+            viewportLength: 390,
+            renderedLength: 429,
+            focalOffset: 0
+        )
+        let roomy = RailwayBackgroundParallaxCrop.boundedTranslation(
+            24,
+            viewportLength: 390,
+            renderedLength: 600,
+            focalOffset: 0
+        )
+
+        #expect(abs(limited - 19.5) < 0.0001)
+        #expect(roomy == 24)
     }
 
     private func makeCatalog() -> RailwayBackgroundCatalog {

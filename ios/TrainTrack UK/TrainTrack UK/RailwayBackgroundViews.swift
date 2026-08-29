@@ -153,6 +153,8 @@ private struct RailwayBackgroundLoadedImage: View {
     let asset: RailwayBackgroundAsset?
     let contentMode: ContentMode
     let focalFill: Bool
+    let parallaxScale: CGFloat
+    let parallaxTranslation: CGSize
 
     @State private var remoteImage: UIImage?
 
@@ -186,15 +188,27 @@ private struct RailwayBackgroundLoadedImage: View {
     private func focalImage(_ image: UIImage, asset: RailwayBackgroundAsset, size: CGSize) -> some View {
         let sourceWidth = max(CGFloat(asset.width), 1)
         let sourceHeight = max(CGFloat(asset.height), 1)
-        let scale = max(size.width / sourceWidth, size.height / sourceHeight)
+        let scale = max(size.width / sourceWidth, size.height / sourceHeight) * max(parallaxScale, 1)
         let renderedWidth = sourceWidth * scale
         let renderedHeight = sourceHeight * scale
-        let xOffset = (renderedWidth - size.width) * (0.5 - CGFloat(asset.focalPoint.x))
-        let yOffset = (renderedHeight - size.height) * (0.5 - CGFloat(asset.focalPoint.y))
+        let focalXOffset = (renderedWidth - size.width) * (0.5 - CGFloat(asset.focalPoint.x))
+        let focalYOffset = (renderedHeight - size.height) * (0.5 - CGFloat(asset.focalPoint.y))
+        let xTranslation = RailwayBackgroundParallaxCrop.boundedTranslation(
+            parallaxTranslation.width,
+            viewportLength: size.width,
+            renderedLength: renderedWidth,
+            focalOffset: focalXOffset
+        )
+        let yTranslation = RailwayBackgroundParallaxCrop.boundedTranslation(
+            parallaxTranslation.height,
+            viewportLength: size.height,
+            renderedLength: renderedHeight,
+            focalOffset: focalYOffset
+        )
         return Image(uiImage: image)
             .resizable()
             .frame(width: renderedWidth, height: renderedHeight)
-            .offset(x: xOffset, y: yOffset)
+            .offset(x: focalXOffset + xTranslation, y: focalYOffset + yTranslation)
             .frame(width: size.width, height: size.height)
             .clipped()
     }
@@ -210,10 +224,13 @@ struct RailwayBackgroundBackdrop: View {
 
     var body: some View {
         ZStack {
-            RailwayBackgroundLoadedImage(asset: store.selectedAsset, contentMode: .fill, focalFill: true)
-                .scaleEffect(motionIsEnabled ? 1.08 : 1)
-                .offset(motionIsEnabled ? motion.translation : .zero)
-                .animation(reduceMotion ? nil : .easeOut(duration: 0.45), value: motionIsEnabled)
+            RailwayBackgroundLoadedImage(
+                asset: store.selectedAsset,
+                contentMode: .fill,
+                focalFill: true,
+                parallaxScale: reduceMotion ? 1 : 1.10,
+                parallaxTranslation: reduceMotion ? .zero : motion.translation
+            )
 
             Color.black.opacity(store.selectedAsset?.scrimOpacity ?? 0.34)
         }
@@ -430,7 +447,13 @@ private struct RailwayBackgroundZoomableImage: View {
                 scale: displayedScale
             )
 
-            RailwayBackgroundLoadedImage(asset: asset, contentMode: .fit, focalFill: false)
+            RailwayBackgroundLoadedImage(
+                asset: asset,
+                contentMode: .fit,
+                focalFill: false,
+                parallaxScale: 1,
+                parallaxTranslation: .zero
+            )
                 .scaleEffect(displayedScale)
                 .offset(displayedOffset)
                 .frame(width: proxy.size.width, height: proxy.size.height)

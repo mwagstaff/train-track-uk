@@ -4,10 +4,10 @@ import SwiftUI
 import UIKit
 
 struct RailwayBackgroundParallaxFilter {
-    static let maximumHorizontalTranslation: CGFloat = 12
-    static let maximumVerticalTranslation: CGFloat = 10
+    static let maximumHorizontalTranslation: CGFloat = 24
+    static let maximumVerticalTranslation: CGFloat = 20
 
-    private static let maximumAngle = 0.18
+    private static let maximumAngle = 0.24
     private static let deadZone = 0.006
     private static let dampingTimeConstant = 0.18
 
@@ -43,13 +43,72 @@ struct RailwayBackgroundParallaxFilter {
     }
 }
 
+enum RailwayBackgroundScreenOrientation {
+    case portrait
+    case portraitUpsideDown
+    case landscapeLeft
+    case landscapeRight
+
+    init(_ orientation: UIInterfaceOrientation) {
+        switch orientation {
+        case .portraitUpsideDown: self = .portraitUpsideDown
+        case .landscapeLeft: self = .landscapeLeft
+        case .landscapeRight: self = .landscapeRight
+        default: self = .portrait
+        }
+    }
+}
+
+struct RailwayBackgroundAttitudeProjection {
+    static func screenAngles(
+        quaternion: CMQuaternion,
+        orientation: RailwayBackgroundScreenOrientation
+    ) -> (horizontal: Double, vertical: Double) {
+        let sign = quaternion.w < 0 ? -1.0 : 1.0
+        let x = quaternion.x * sign
+        let y = quaternion.y * sign
+        let z = quaternion.z * sign
+        let w = quaternion.w * sign
+        let vectorMagnitude = sqrt((x * x) + (y * y) + (z * z))
+        let angleScale = vectorMagnitude > 1e-8
+            ? 2 * atan2(vectorMagnitude, w) / vectorMagnitude
+            : 2
+        let rotationX = x * angleScale
+        let rotationY = y * angleScale
+
+        switch orientation {
+        case .portrait:
+            return (rotationY, rotationX)
+        case .portraitUpsideDown:
+            return (-rotationY, -rotationX)
+        case .landscapeLeft:
+            return (-rotationX, rotationY)
+        case .landscapeRight:
+            return (rotationX, -rotationY)
+        }
+    }
+}
+
+struct RailwayBackgroundParallaxCrop {
+    static func boundedTranslation(
+        _ requested: CGFloat,
+        viewportLength: CGFloat,
+        renderedLength: CGFloat,
+        focalOffset: CGFloat
+    ) -> CGFloat {
+        let imageMinimum = ((viewportLength - renderedLength) / 2) + focalOffset
+        let imageMaximum = imageMinimum + renderedLength
+        return min(max(requested, viewportLength - imageMaximum), -imageMinimum)
+    }
+}
+
 private final class RailwayBackgroundMotionProcessor: @unchecked Sendable {
-    private let orientation: UIInterfaceOrientation
+    private let orientation: RailwayBackgroundScreenOrientation
     private var referenceAttitude: CMAttitude?
     private var filter: RailwayBackgroundParallaxFilter
 
     init(orientation: UIInterfaceOrientation, initialTranslation: CGSize) {
-        self.orientation = orientation
+        self.orientation = RailwayBackgroundScreenOrientation(orientation)
         filter = RailwayBackgroundParallaxFilter(translation: initialTranslation)
     }
 
@@ -61,17 +120,10 @@ private final class RailwayBackgroundMotionProcessor: @unchecked Sendable {
         guard let referenceAttitude else { return nil }
         relativeAttitude.multiply(byInverseOf: referenceAttitude)
 
-        let angles: (horizontal: Double, vertical: Double)
-        switch orientation {
-        case .portraitUpsideDown:
-            angles = (-relativeAttitude.roll, -relativeAttitude.pitch)
-        case .landscapeLeft:
-            angles = (-relativeAttitude.pitch, relativeAttitude.roll)
-        case .landscapeRight:
-            angles = (relativeAttitude.pitch, -relativeAttitude.roll)
-        default:
-            angles = (relativeAttitude.roll, relativeAttitude.pitch)
-        }
+        let angles = RailwayBackgroundAttitudeProjection.screenAngles(
+            quaternion: relativeAttitude.quaternion,
+            orientation: orientation
+        )
 
         return filter.update(
             horizontalAngle: angles.horizontal,
