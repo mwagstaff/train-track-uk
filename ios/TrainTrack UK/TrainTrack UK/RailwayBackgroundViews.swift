@@ -289,29 +289,11 @@ struct RailwayBackgroundSectionHeader: View {
 private struct RailwayBackgroundInfoButton: View {
     let asset: RailwayBackgroundAsset?
     let action: () -> Void
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     var body: some View {
         Button(action: action) {
             Image(systemName: "photo")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 34, height: 34)
-                .background {
-                    if reduceTransparency {
-                        Circle().fill(.black.opacity(0.9))
-                    } else {
-                        Circle().fill(.ultraThinMaterial)
-                    }
-                }
-                .overlay {
-                    Circle().stroke(.white.opacity(0.55), lineWidth: 1)
-                }
-                .contentShape(Circle())
         }
-        .buttonStyle(.plain)
-        .frame(width: 44, height: 44)
-        .contentShape(Circle())
         .accessibilityLabel("View background photo")
         .accessibilityValue(asset?.attributionText ?? "Fallback railway photograph")
         .accessibilityHint("Opens the photo full screen with image details")
