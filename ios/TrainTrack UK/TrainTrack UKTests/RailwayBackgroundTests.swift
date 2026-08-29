@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import TrainTrack_UK
@@ -44,6 +45,55 @@ struct RailwayBackgroundTests {
         #expect(asset.cacheFileExtension == "webp")
         #expect(asset.attributionText == "Image courtesy of Diane Picchiottino, Unsplash")
         #expect(asset.unsplashSourceURL?.absoluteString == "https://unsplash.com/photos/sKsNVoa_NsY")
+    }
+
+    @Test func parallaxFilteringEasesTowardClampedTranslation() {
+        var filter = RailwayBackgroundParallaxFilter()
+
+        let first = filter.update(horizontalAngle: 1, verticalAngle: -1, timestamp: 0)
+        var settled = first
+        for frame in 1...240 {
+            settled = filter.update(
+                horizontalAngle: 1,
+                verticalAngle: -1,
+                timestamp: Double(frame) / 60
+            )
+        }
+
+        #expect(abs(first.width) < RailwayBackgroundParallaxFilter.maximumHorizontalTranslation)
+        #expect(abs(first.height) < RailwayBackgroundParallaxFilter.maximumVerticalTranslation)
+        #expect(abs(settled.width) <= RailwayBackgroundParallaxFilter.maximumHorizontalTranslation)
+        #expect(abs(settled.height) <= RailwayBackgroundParallaxFilter.maximumVerticalTranslation)
+        #expect(abs(settled.width) > abs(first.width))
+        #expect(abs(settled.height) > abs(first.height))
+    }
+
+    @Test func parallaxFilteringSmoothlyReturnsToCentre() {
+        var filter = RailwayBackgroundParallaxFilter()
+        for frame in 0...120 {
+            _ = filter.update(horizontalAngle: 0.18, verticalAngle: -0.18, timestamp: Double(frame) / 60)
+        }
+        let displaced = filter.translation
+        var returned = displaced
+        for frame in 121...360 {
+            returned = filter.update(horizontalAngle: 0, verticalAngle: 0, timestamp: Double(frame) / 60)
+        }
+
+        #expect(abs(returned.width) < abs(displaced.width))
+        #expect(abs(returned.height) < abs(displaced.height))
+        #expect(abs(returned.width) < 0.01)
+        #expect(abs(returned.height) < 0.01)
+    }
+
+    @Test func parallaxFilteringIgnoresTinyAttitudeNoise() {
+        var filter = RailwayBackgroundParallaxFilter()
+        let translation = filter.update(
+            horizontalAngle: 0.003,
+            verticalAngle: -0.003,
+            timestamp: 0
+        )
+
+        #expect(translation == .zero)
     }
 
     private func makeCatalog() -> RailwayBackgroundCatalog {

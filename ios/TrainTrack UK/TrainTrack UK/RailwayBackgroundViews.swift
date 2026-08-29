@@ -202,12 +202,60 @@ private struct RailwayBackgroundLoadedImage: View {
 
 struct RailwayBackgroundBackdrop: View {
     @EnvironmentObject private var store: RailwayBackgroundStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var motion = RailwayBackgroundMotionModel.shared
+    @State private var isVisible = false
+    @State private var motionViewID = UUID()
 
     var body: some View {
-        RailwayBackgroundLoadedImage(asset: store.selectedAsset, contentMode: .fill, focalFill: true)
-            .overlay(Color.black.opacity(store.selectedAsset?.scrimOpacity ?? 0.34))
+        ZStack {
+            RailwayBackgroundLoadedImage(asset: store.selectedAsset, contentMode: .fill, focalFill: true)
+                .scaleEffect(motionIsEnabled ? 1.08 : 1)
+                .offset(motionIsEnabled ? motion.translation : .zero)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.45), value: motionIsEnabled)
+
+            Color.black.opacity(store.selectedAsset?.scrimOpacity ?? 0.34)
+        }
             .ignoresSafeArea()
             .accessibilityHidden(true)
+            .onAppear {
+                isVisible = true
+                updateMotionActivity()
+            }
+            .onDisappear {
+                isVisible = false
+                updateMotionActivity()
+            }
+            .onChange(of: reduceMotion) { _, _ in
+                updateMotionActivity()
+            }
+            .onChange(of: scenePhase) { _, _ in
+                updateMotionActivity()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIDevice.orientationDidChangeNotification)) { _ in
+                guard motionIsEnabled else { return }
+                motion.updateOrientation(currentInterfaceOrientation)
+            }
+    }
+
+    private var motionIsEnabled: Bool {
+        isVisible && scenePhase == .active && !reduceMotion
+    }
+
+    private var currentInterfaceOrientation: UIInterfaceOrientation {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first(where: { $0.activationState == .foregroundActive })?
+            .interfaceOrientation ?? .portrait
+    }
+
+    private func updateMotionActivity() {
+        if motionIsEnabled {
+            motion.activate(viewID: motionViewID, orientation: currentInterfaceOrientation)
+        } else {
+            motion.deactivate(viewID: motionViewID)
+        }
     }
 }
 
