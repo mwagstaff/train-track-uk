@@ -17,7 +17,10 @@ function fixture() {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'railway-backgrounds-'));
     const assetsDirectory = path.join(root, 'assets');
     fs.mkdirSync(assetsDirectory);
-    const assets = ['first', 'second'].map((id) => {
+    const assets = [
+        { id: 'first', photoID: 'first-id001' },
+        { id: 'second', photoID: 'second-id01' }
+    ].map(({ id, photoID }) => {
         const bytes = Buffer.from(`webp-${id}`);
         const hash = crypto.createHash('sha256').update(bytes).digest('hex');
         fs.writeFileSync(path.join(assetsDirectory, `${hash}.webp`), bytes);
@@ -28,13 +31,23 @@ function fixture() {
             caption: null,
             focal_point: { x: 0.5, y: 0.5 },
             scrim_opacity: 0.3,
+            delivery: 'server',
+            provider_asset_id: photoID,
+            source_filename: `alex-example-${photoID}-unsplash.jpg`,
             sha256: hash,
             asset_path: `assets/${hash}.webp`,
+            asset_url: `/api/v2/railway-backgrounds/assets/${hash}.webp`,
             content_type: 'image/webp',
             byte_size: bytes.length,
             width: 640,
             height: 480,
-            credit: { license: 'Internal POC only' }
+            credit: {
+                photographer: 'Alex Example',
+                source: 'Unsplash',
+                source_page: `https://unsplash.com/photos/${photoID}`,
+                license: 'Unsplash License',
+                license_url: 'https://unsplash.com/license'
+            }
         };
     });
     const catalog = {
@@ -52,9 +65,9 @@ function fixture() {
     return { root, catalog, assets };
 }
 
-async function withServer(root, body) {
+async function withServer(root, body, options = {}) {
     const app = express();
-    registerRailwayBackgroundRoutes(app, { rootDirectory: root });
+    registerRailwayBackgroundRoutes(app, { rootDirectory: root, ...options });
     const server = http.createServer(app);
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     try {
@@ -120,6 +133,26 @@ test('validation rejects incomplete rotation pools', () => {
     const item = fixture();
     try {
         item.catalog.rotation.asset_ids = [item.assets[0].id];
+        assert.throws(
+            () => validateRailwayBackgroundCatalog(item.catalog, item.root),
+            RailwayBackgroundCatalogError
+        );
+    } finally {
+        fs.rmSync(item.root, { recursive: true, force: true });
+    }
+});
+
+test('validation rejects non-Unsplash and hotlinked catalogue assets', () => {
+    const item = fixture();
+    try {
+        item.catalog.assets[0].credit.source = 'Other';
+        assert.throws(
+            () => validateRailwayBackgroundCatalog(item.catalog, item.root),
+            RailwayBackgroundCatalogError
+        );
+
+        item.catalog.assets[0].credit.source = 'Unsplash';
+        item.catalog.assets[0].delivery = 'unsplash_hotlink';
         assert.throws(
             () => validateRailwayBackgroundCatalog(item.catalog, item.root),
             RailwayBackgroundCatalogError

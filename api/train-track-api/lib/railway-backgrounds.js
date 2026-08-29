@@ -4,12 +4,27 @@ import path from 'node:path';
 const SCHEMA_VERSION = 1;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const ASSET_ID_PATTERN = /^[a-z0-9][a-z0-9-]{1,79}$/;
+const UNSPLASH_PHOTO_ID_PATTERN = /^[A-Za-z0-9_-]{11}$/;
+const SERVER_DELIVERY = 'server';
 
 export class RailwayBackgroundCatalogError extends Error {
     constructor(message) {
         super(message);
         this.name = 'RailwayBackgroundCatalogError';
     }
+}
+
+function validatedURL(value, hostname, description) {
+    let url;
+    try {
+        url = new URL(value);
+    } catch {
+        throw new RailwayBackgroundCatalogError(`invalid ${description}`);
+    }
+    if (url.protocol !== 'https:' || url.hostname !== hostname) {
+        throw new RailwayBackgroundCatalogError(`invalid ${description}`);
+    }
+    return url;
 }
 
 export function validateRailwayBackgroundCatalog(value, rootDirectory, options = {}) {
@@ -44,11 +59,32 @@ export function validateRailwayBackgroundCatalog(value, rootDirectory, options =
         if (!String(asset.title || '').trim() || !String(asset.location || '').trim()) {
             throw new RailwayBackgroundCatalogError(`asset ${assetID} is missing display metadata`);
         }
-        if (!SHA256_PATTERN.test(hash) || asset.asset_path !== `assets/${hash}.webp`) {
+        if (!SHA256_PATTERN.test(hash)) throw new RailwayBackgroundCatalogError(`asset ${assetID} has an invalid cache key`);
+        const delivery = asset.delivery || SERVER_DELIVERY;
+        if (delivery !== SERVER_DELIVERY) {
+            throw new RailwayBackgroundCatalogError(`asset ${assetID} must use server delivery`);
+        }
+        if (asset.asset_path !== `assets/${hash}.webp`) {
             throw new RailwayBackgroundCatalogError(`asset ${assetID} has an invalid immutable path`);
         }
         if (asset.content_type !== 'image/webp' || !Number.isInteger(asset.byte_size) || asset.byte_size < 1) {
             throw new RailwayBackgroundCatalogError(`asset ${assetID} has invalid file metadata`);
+        }
+        const photoID = String(asset.provider_asset_id || '');
+        const sourceFilename = String(asset.source_filename || '');
+        const sourceExtension = path.extname(sourceFilename).toLowerCase();
+        const sourceStem = path.basename(sourceFilename, sourceExtension);
+        if (!UNSPLASH_PHOTO_ID_PATTERN.test(photoID)
+            || !['.heic', '.heif', '.jpeg', '.jpg', '.png', '.webp'].includes(sourceExtension)
+            || !sourceStem.toLowerCase().endsWith(`-${photoID.toLowerCase()}-unsplash`)) {
+            throw new RailwayBackgroundCatalogError(`asset ${assetID} has invalid filename-derived Unsplash metadata`);
+        }
+        const sourceURL = validatedURL(asset.credit?.source_page, 'unsplash.com', `source URL for ${assetID}`);
+        if (sourceURL.pathname !== `/photos/${photoID}`
+            || asset.credit?.source !== 'Unsplash'
+            || !String(asset.credit?.photographer || '').trim()
+            || asset.credit?.license !== 'Unsplash License') {
+            throw new RailwayBackgroundCatalogError(`asset ${assetID} is missing Unsplash attribution`);
         }
         if (![asset.width, asset.height].every((number) => Number.isInteger(number) && number > 1)) {
             throw new RailwayBackgroundCatalogError(`asset ${assetID} has invalid dimensions`);
@@ -92,13 +128,15 @@ export function createRailwayBackgroundCatalogLoader(rootDirectory) {
                 JSON.parse(fs.readFileSync(catalogPath, 'utf8')),
                 rootDirectory
             );
+            const publicAssets = value.assets.map((asset) => ({
+                ...asset,
+                delivery: SERVER_DELIVERY,
+                asset_url: `/api/v2/railway-backgrounds/assets/${asset.sha256}.webp`
+            }));
             lastValid = {
                 value: {
                     ...value,
-                    assets: value.assets.map((asset) => ({
-                        ...asset,
-                        asset_url: `/api/v2/railway-backgrounds/assets/${asset.sha256}.webp`
-                    }))
+                    assets: publicAssets
                 },
                 etag: `"${value.catalog_version}"`,
                 lastModified: stat.mtime
@@ -159,7 +197,7 @@ export function registerRailwayBackgroundRoutes(app, options = {}) {
             console.warn('[railway-backgrounds] Catalog unavailable:', error?.message || error);
             return res.status(503).json({ error: 'Railway background catalog is unavailable.' });
         }
-        if (!catalog?.value.assets.some((asset) => asset.sha256 === hash)) {
+        if (!catalog?.value.assets.some((asset) => asset.sha256 === hash && asset.delivery === SERVER_DELIVERY)) {
             return res.status(404).json({ error: 'Railway background was not found.' });
         }
         const filePath = path.join(rootDirectory, 'assets', `${hash}.webp`);

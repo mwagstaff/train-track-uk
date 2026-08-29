@@ -291,3 +291,5 @@ scripts/.osm-routing-venv/
 
 # Generated railway background deployment bundle
 tools/railway-backgrounds/published/
+tools/railway-backgrounds/candidates/
+tools/unsplash-images/review-images/

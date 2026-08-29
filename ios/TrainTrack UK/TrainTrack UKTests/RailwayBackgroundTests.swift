@@ -2,6 +2,7 @@ import Foundation
 import Testing
 @testable import TrainTrack_UK
 
+@MainActor
 struct RailwayBackgroundTests {
     @Test func dailyRotationIsStableAndAdvancesAtLondonMidnight() throws {
         let catalog = makeCatalog()
@@ -25,6 +26,26 @@ struct RailwayBackgroundTests {
         #expect(url?.absoluteString == "https://api.skynolimit.dev/train-track/api/v2/railway-backgrounds/assets/test.webp")
     }
 
+    @Test func UnsplashAssetProvidesFilenameDerivedAttributionAndSourceURL() throws {
+        let json = """
+        {
+          "id":"unsplash-one","title":"Highland train","location":"Scottish Highlands",
+          "caption":null,"focal_point":{"x":0.5,"y":0.5},"scrim_opacity":0.3,
+          "delivery":"server","provider_asset_id":"sKsNVoa_NsY",
+          "sha256":"\(String(repeating: "c", count: 64))","asset_path":null,
+          "asset_url":"/api/v2/railway-backgrounds/assets/test.webp",
+          "content_type":"image/webp","byte_size":100,"width":2560,"height":1707,
+          "credit":{"photographer":"Diane Picchiottino","source":"Unsplash","source_page":"https://unsplash.com/photos/sKsNVoa_NsY"}
+        }
+        """
+        let asset = try JSONDecoder().decode(RailwayBackgroundAsset.self, from: Data(json.utf8))
+
+        #expect(asset.isUnsplashPhoto)
+        #expect(asset.cacheFileExtension == "webp")
+        #expect(asset.attributionText == "Image courtesy of Diane Picchiottino, Unsplash")
+        #expect(asset.unsplashSourceURL?.absoluteString == "https://unsplash.com/photos/sKsNVoa_NsY")
+    }
+
     private func makeCatalog() -> RailwayBackgroundCatalog {
         let ids = ["one", "two", "three"]
         return RailwayBackgroundCatalog(
@@ -44,6 +65,8 @@ struct RailwayBackgroundTests {
                     caption: nil,
                     focalPoint: RailwayBackgroundFocalPoint(x: 0.5, y: 0.5),
                     scrimOpacity: 0.3,
+                    delivery: "server",
+                    providerAssetID: nil,
                     sha256: String(repeating: id == "one" ? "a" : "b", count: 64),
                     assetPath: "assets/test.webp",
                     assetURL: "/api/v2/railway-backgrounds/assets/test.webp",
@@ -53,11 +76,7 @@ struct RailwayBackgroundTests {
                     height: 480,
                     credit: RailwayBackgroundCredit(
                         photographer: nil,
-                        photographerURL: nil,
-                        source: nil,
-                        sourcePage: nil,
-                        license: "POC",
-                        licenseURL: nil
+                        source: nil
                     )
                 )
             }

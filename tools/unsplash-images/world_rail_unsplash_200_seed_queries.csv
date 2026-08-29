@@ -1,0 +1,201 @@
+id,country,query,fallback_location
+1,Japan,Tokyo Station Marunouchi railway,Japan
+2,Japan,Tokyo Shinkansen bullet train,Japan
+3,Japan,Kyoto Station trains,Japan
+4,Japan,Osaka railway station,Japan
+5,Japan,Shinkansen Mount Fuji,Japan
+6,Japan,Enoden train Kamakura,Japan
+7,Japan,Hakone mountain railway,Japan
+8,Japan,Tokyo commuter train,Japan
+9,Japan,Japanese rural railway,Japan
+10,Japan,Hokkaido train snow,Japan
+11,Japan,Kyushu railway train,Japan
+12,Japan,Kanazawa Station railway,Japan
+13,Japan,Nagoya Station Shinkansen,Japan
+14,Japan,Hiroshima railway station,Japan
+15,Japan,Nikko railway Japan,Japan
+16,Switzerland,Bernina Express Alps,Switzerland
+17,Switzerland,Glacier Express Switzerland,Switzerland
+18,Switzerland,Landwasser Viaduct train,Switzerland
+19,Switzerland,Jungfrau railway,Switzerland
+20,Switzerland,Kleine Scheidegg train,Switzerland
+21,Switzerland,Lauterbrunnen railway,Switzerland
+22,Switzerland,Zermatt railway train,Switzerland
+23,Switzerland,Swiss train Alps snow,Switzerland
+24,Switzerland,Lucerne railway station,Switzerland
+25,Switzerland,Zurich Hauptbahnhof train,Switzerland
+26,Switzerland,Interlaken train Switzerland,Switzerland
+27,Switzerland,Gotthard railway Switzerland,Switzerland
+28,Switzerland,Rhätische Bahn red train,Switzerland
+29,Switzerland,Lake Geneva railway train,Switzerland
+30,Switzerland,Swiss mountain railway,Switzerland
+31,Norway,Flam Railway Norway,Norway
+32,Norway,Bergen Railway Norway,Norway
+33,Norway,Oslo Central Station train,Norway
+34,Norway,Norwegian train fjord,Norway
+35,Norway,Norway railway snow,Norway
+36,Norway,Dovre Line Norway train,Norway
+37,Norway,Rauma Railway Norway,Norway
+38,Norway,Bergensbanen mountain train,Norway
+39,Norway,Trondheim railway station,Norway
+40,Norway,Nordland Line Norway,Norway
+41,Norway,Norway scenic railway,Norway
+42,Norway,Norwegian train winter,Norway
+43,France,Gare du Nord Paris train,France
+44,France,Gare de Lyon Paris train,France
+45,France,TGV France,France
+46,France,French train countryside,France
+47,France,Strasbourg railway station,France
+48,France,Bordeaux Saint Jean station,France
+49,France,Marseille Saint Charles station,France
+50,France,Nice railway train,France
+51,France,Lyon Part Dieu train,France
+52,France,Chamonix Mont Blanc Express,France
+53,France,French Alps train,France
+54,France,Paris railway platform,France
+55,France,TGV high speed railway,France
+56,France,French coastal railway,France
+57,Italy,Milano Centrale station,Italy
+58,Italy,Roma Termini train,Italy
+59,Italy,Venezia Santa Lucia station,Italy
+60,Italy,Italian train Tuscany,Italy
+61,Italy,Cinque Terre railway train,Italy
+62,Italy,Trenitalia train Italy,Italy
+63,Italy,Frecciarossa high speed train,Italy
+64,Italy,Florence Santa Maria Novella station,Italy
+65,Italy,Naples railway station,Italy
+66,Italy,Lake Como train Italy,Italy
+67,Italy,Italian Alps railway,Italy
+68,Italy,Sicily railway train,Italy
+69,Italy,Trieste Centrale station,Italy
+70,Italy,Bolzano railway train,Italy
+71,Germany,Berlin Hauptbahnhof train,Germany
+72,Germany,Hamburg Hauptbahnhof station,Germany
+73,Germany,Cologne Hauptbahnhof ICE,Germany
+74,Germany,Frankfurt Hauptbahnhof train,Germany
+75,Germany,Munich Hauptbahnhof train,Germany
+76,Germany,Deutsche Bahn ICE train,Germany
+77,Germany,German railway forest,Germany
+78,Germany,Rhine railway train Germany,Germany
+79,Germany,Dresden railway station,Germany
+80,Germany,Leipzig Hauptbahnhof,Germany
+81,Germany,German train winter,Germany
+82,Germany,Black Forest railway train,Germany
+83,Germany,Nuremberg railway station,Germany
+84,Germany,German regional train,Germany
+85,Austria,Vienna Hauptbahnhof train,Austria
+86,Austria,Semmering railway Austria,Austria
+87,Austria,Austrian Alps train,Austria
+88,Austria,Innsbruck railway station,Austria
+89,Austria,Salzburg railway station,Austria
+90,Austria,ÖBB Railjet Austria,Austria
+91,Austria,Arlberg railway Austria,Austria
+92,Austria,Hallstatt train Austria,Austria
+93,Austria,Austria mountain railway,Austria
+94,Austria,Graz railway station,Austria
+95,Spain,Madrid Atocha station,Spain
+96,Spain,Barcelona Sants train,Spain
+97,Spain,AVE high speed train Spain,Spain
+98,Spain,Spanish railway countryside,Spain
+99,Spain,Montserrat railway train,Spain
+100,Spain,Seville Santa Justa station,Spain
+101,Spain,Valencia railway station,Spain
+102,Spain,Spain coastal railway,Spain
+103,Spain,Pyrenees train Spain,Spain
+104,Spain,Bilbao railway station,Spain
+105,Portugal,Porto Sao Bento station,Portugal
+106,Portugal,Lisbon Oriente station,Portugal
+107,Portugal,Portugal railway train,Portugal
+108,Portugal,Douro Valley train,Portugal
+109,Portugal,Lisbon train station,Portugal
+110,Portugal,Portuguese coastal railway,Portugal
+111,Portugal,Sintra train Portugal,Portugal
+112,Portugal,Algarve railway train,Portugal
+113,Netherlands,Amsterdam Centraal trains,Netherlands
+114,Netherlands,Rotterdam Centraal station,Netherlands
+115,Netherlands,Dutch NS train,Netherlands
+116,Netherlands,Netherlands railway countryside,Netherlands
+117,Netherlands,Utrecht Centraal train,Netherlands
+118,Netherlands,The Hague railway station,Netherlands
+119,Netherlands,Dutch railway sunset,Netherlands
+120,Netherlands,Netherlands train station,Netherlands
+121,Belgium,Antwerp Central Station,Belgium
+122,Belgium,Brussels Midi station,Belgium
+123,Belgium,Belgian railway train,Belgium
+124,Belgium,Liege Guillemins station,Belgium
+125,Belgium,Bruges railway station,Belgium
+126,Belgium,Belgium train countryside,Belgium
+127,United States,Grand Central Terminal New York,United States
+128,United States,Penn Station New York train,United States
+129,United States,Amtrak train USA,United States
+130,United States,California Zephyr train,United States
+131,United States,Chicago Union Station,United States
+132,United States,Pacific Surfliner California,United States
+133,United States,Amtrak Northeast Corridor,United States
+134,United States,Rocky Mountains train USA,United States
+135,United States,Alaska Railroad,United States
+136,United States,Colorado scenic railway,United States
+137,United States,New York subway train,United States
+138,United States,Washington Union Station,United States
+139,United States,Seattle King Street Station,United States
+140,United States,Los Angeles Union Station,United States
+141,United States,American freight train landscape,United States
+142,Canada,Rocky Mountaineer Canada,Canada
+143,Canada,VIA Rail Canada train,Canada
+144,Canada,Canadian Pacific railway Rockies,Canada
+145,Canada,Toronto Union Station,Canada
+146,Canada,Vancouver railway train,Canada
+147,Canada,Banff train railway,Canada
+148,Canada,Jasper railway train,Canada
+149,Canada,Canadian train snow,Canada
+150,Canada,Montreal Central Station train,Canada
+151,Canada,Canadian railway mountains,Canada
+152,Canada,Ontario railway train,Canada
+153,Canada,Quebec train station,Canada
+154,India,Indian Railways train,India
+155,India,Mumbai railway station,India
+156,India,Chhatrapati Shivaji Terminus,India
+157,India,Darjeeling Himalayan Railway,India
+158,India,Kalka Shimla Railway,India
+159,India,Indian train countryside,India
+160,India,Vande Bharat Express,India
+161,India,Indian railway platform,India
+162,India,Kerala train railway,India
+163,India,Goa railway train,India
+164,India,Nilgiri Mountain Railway,India
+165,India,New Delhi railway station,India
+166,India,Indian train bridge,India
+167,India,Indian railway sunset,India
+168,China,China high speed train,China
+169,China,Shanghai Hongqiao railway station,China
+170,China,Beijing railway station,China
+171,China,China bullet train,China
+172,China,Chinese railway mountains,China
+173,China,China train countryside,China
+174,China,Guangzhou railway station,China
+175,China,Chongqing railway train,China
+176,China,China railway bridge,China
+177,China,Chinese train station modern,China
+178,China,Tibet railway train,China
+179,China,China high speed railway,China
+180,Taiwan,Taiwan high speed rail,Taiwan
+181,Taiwan,Taipei railway station,Taiwan
+182,Taiwan,Taiwan train coast,Taiwan
+183,Taiwan,Alishan Forest Railway,Taiwan
+184,Taiwan,Taiwan railway countryside,Taiwan
+185,Taiwan,Hualien train Taiwan,Taiwan
+186,South Korea,KTX train South Korea,South Korea
+187,South Korea,Seoul railway station,South Korea
+188,South Korea,Korean train countryside,South Korea
+189,South Korea,Busan railway station,South Korea
+190,South Korea,South Korea high speed train,South Korea
+191,South Korea,Korea railway winter,South Korea
+192,Australia,Sydney Central Station train,Australia
+193,Australia,Australian railway outback,Australia
+194,Australia,The Ghan train Australia,Australia
+195,Australia,Indian Pacific train Australia,Australia
+196,Australia,Melbourne Flinders Street station,Australia
+197,Australia,Queensland railway train,Australia
+198,Australia,Australian train sunset,Australia
+199,Australia,Blue Mountains railway Australia,Australia
+200,Australia,Perth railway station,Australia

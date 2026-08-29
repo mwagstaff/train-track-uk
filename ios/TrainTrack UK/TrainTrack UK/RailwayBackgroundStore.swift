@@ -63,11 +63,12 @@ final class RailwayBackgroundStore: ObservableObject {
     }
 
     func ensureFresh(
-        apiBaseURL: String = ApiHostPreference.currentBaseURL,
+        apiBaseURL: String? = nil,
         force: Bool = false,
         now: Date = Date()
     ) async {
-        let normalizedBaseURL = apiBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedBaseURL = (apiBaseURL ?? ApiHostPreference.currentBaseURL)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard let baseURL = URL(string: normalizedBaseURL) else {
             lastRefreshErrorDescription = "Invalid API base URL."
             return
@@ -145,6 +146,32 @@ final class RailwayBackgroundStore: ObservableObject {
         if let selectedAsset, let apiBaseURL {
             _ = await RailwayBackgroundImageCache.shared.image(for: selectedAsset, apiBaseURL: apiBaseURL)
         }
+    }
+
+    func advanceDebugUnsplashBackground(now: Date = Date()) async {
+        await ensureFresh(force: true, now: now)
+        guard let catalog else { return }
+        let ids = catalog.rotation.assetIDs.filter { catalog.asset(id: $0)?.isUnsplashPhoto == true }
+        guard !ids.isEmpty else { return }
+        let currentIndex = selectedAsset.flatMap { asset in ids.firstIndex(of: asset.id) } ?? -1
+        let nextID = ids[(currentIndex + 1) % ids.count]
+        let day = RailwayBackgroundDailyRotation.dayKey(for: now)
+        defaults.set(day, forKey: Self.debugDayKey)
+        defaults.set(nextID, forKey: Self.debugAssetKey)
+        reconcileSelection(now: now)
+        if let selectedAsset, let apiBaseURL {
+            _ = await RailwayBackgroundImageCache.shared.image(for: selectedAsset, apiBaseURL: apiBaseURL)
+        }
+    }
+
+    var debugUnsplashPositionDescription: String {
+        guard let catalog else { return "Catalogue not loaded" }
+        let ids = catalog.rotation.assetIDs.filter { catalog.asset(id: $0)?.isUnsplashPhoto == true }
+        guard !ids.isEmpty else { return "No approved photos" }
+        guard let selectedID = selectedAsset?.id, let index = ids.firstIndex(of: selectedID) else {
+            return "\(ids.count) available"
+        }
+        return "\(index + 1) of \(ids.count)"
     }
 
     func resetDebugBackground(now: Date = Date()) {

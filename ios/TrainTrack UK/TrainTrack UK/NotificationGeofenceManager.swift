@@ -9,6 +9,46 @@ private func currentDateKey() -> String {
     NotificationMuteStorage.currentDateKey()
 }
 
+@MainActor
+final class AsyncSingleFlight<Value: Sendable> {
+    private var inFlight: Task<Value, Never>?
+
+    func run(_ operation: @escaping @MainActor () async -> Value) async -> Value {
+        if let inFlight {
+            return await inFlight.value
+        }
+
+        let task = Task { @MainActor in
+            await operation()
+        }
+        inFlight = task
+        let value = await task.value
+        inFlight = nil
+        return value
+    }
+}
+
+@MainActor
+final class AsyncOperationSerialiser {
+    private var tail: Task<Void, Never>?
+    private var generation = 0
+
+    func run(_ operation: @escaping @MainActor () async -> Void) async {
+        let predecessor = tail
+        generation += 1
+        let operationGeneration = generation
+        let task = Task { @MainActor in
+            await predecessor?.value
+            await operation()
+        }
+        tail = task
+        await task.value
+        if generation == operationGeneration {
+            tail = nil
+        }
+    }
+}
+
 private struct StationArrivalTarget: Codable {
     let identifier: String
     let subscriptionId: String
@@ -125,6 +165,8 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     private var hasRequestedFullAccuracyThisSession = false
     private var precisionSamplingTask: Task<Void, Never>?
     private var conditionMonitor: CLMonitor?
+    private let conditionMonitorCreation = AsyncSingleFlight<CLMonitor>()
+    private let conditionMonitorOperations = AsyncOperationSerialiser()
     private var conditionEventsTask: Task<Void, Never>?
     private var monitoredConditionIdentifiers: [String] = []
 
@@ -275,17 +317,27 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     func sync(subscriptions: [NotificationSubscription]) async {
+        var journeyEvaluationLocation: CLLocation?
+        await conditionMonitorOperations.run { [self] in
+            journeyEvaluationLocation = await performSync(subscriptions: subscriptions)
+        }
+        if let journeyEvaluationLocation {
+            await JourneyTrackingCoordinator.shared.evaluateLocation(journeyEvaluationLocation)
+        }
+    }
+
+    private func performSync(subscriptions: [NotificationSubscription]) async -> CLLocation? {
         guard isGeofencingSupported else {
             logGeofenceDiagnostic("sync_skipped_ios_app_on_mac", metadata: [
                 "subscription_count": subscriptions.count
             ])
-            return
+            return nil
         }
         guard CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else {
             logGeofenceDiagnostic("sync_skipped_monitoring_unavailable", metadata: [
                 "subscription_count": subscriptions.count
             ])
-            return
+            return nil
         }
         let monitor = await startConditionMonitorIfNeeded()
         let existingConditionIdentifiers = await monitor.identifiers.filter(isManagedRegion)
@@ -313,7 +365,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 "removed_region_count": existingIdentifiers.count,
                 "reason": "no_subscriptions"
             ])
-            return
+            return nil
         }
 
         if #available(iOS 18.0, *) {
@@ -335,7 +387,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 "subscription_count": subscriptions.count,
                 "removed_region_count": existingIdentifiers.count
             ])
-            return
+            return nil
         }
 
         if StationsService.shared.stations.isEmpty
@@ -362,7 +414,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 "subscription_count": subscriptions.count,
                 "existing_region_count": existingIdentifiers.count
             ])
-            return
+            return nil
         }
 
         let journeyConditions = JourneyTrackingCoordinator.shared.locationConditions()
@@ -417,12 +469,13 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         }
         monitoredConditionIdentifiers = await monitor.identifiers.filter(isManagedRegion)
 
+        var journeyEvaluationLocation: CLLocation?
         updateBackgroundLocationState(hasActiveGeofences: !desired.isEmpty)
         if !desired.isEmpty {
             startLowSensitivityTrackingIfNeeded(reason: "sync")
             if let currentLocation = currentUsableLocation(maxAge: ArrivalConfig.recentLocationForRegionHintSeconds) {
                 evaluateArrival(using: currentLocation, source: "sync-current-location")
-                await JourneyTrackingCoordinator.shared.evaluateLocation(currentLocation)
+                journeyEvaluationLocation = currentLocation
             }
         } else {
             stopLocationUpdatesIfNeeded(reason: "sync-empty")
@@ -443,6 +496,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             "removed_region_count": removedCount,
             "target_routes": desiredTargets.values.map { "\($0.from)-\($0.to)" }.sorted()
         ])
+        return journeyEvaluationLocation
     }
 
     func refreshJourneyConditions() async {
@@ -456,6 +510,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     /// Repairs the durable Core Location state from locally persisted targets and the
     /// active journey checkpoint. This is safe to run on every launch, wake, or phase change.
     private func reconcilePersistedMonitoring(trigger: String) async {
+        await conditionMonitorOperations.run { [self] in
+            await performPersistedMonitoringReconciliation(trigger: trigger)
+        }
+    }
+
+    private func performPersistedMonitoringReconciliation(trigger: String) async {
         guard isGeofencingSupported,
               CLLocationManager.isMonitoringAvailable(for: CLCircularRegion.self) else { return }
 
@@ -585,28 +645,32 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     private func startConditionMonitorIfNeeded() async -> CLMonitor {
         if let conditionMonitor { return conditionMonitor }
 
-        let monitor = await CLMonitor(conditionMonitorName)
-        conditionMonitor = monitor
-        monitoredConditionIdentifiers = await monitor.identifiers.filter(isManagedRegion)
-        conditionEventsTask?.cancel()
-        conditionEventsTask = Task { @MainActor [weak self, monitor] in
-            do {
-                for try await event in await monitor.events {
-                    guard !Task.isCancelled else { return }
-                    self?.handleConditionMonitorEvent(event)
+        return await conditionMonitorCreation.run { [self] in
+            if let conditionMonitor { return conditionMonitor }
+
+            let monitor = await CLMonitor(conditionMonitorName)
+            conditionMonitor = monitor
+            monitoredConditionIdentifiers = await monitor.identifiers.filter(isManagedRegion)
+            conditionEventsTask?.cancel()
+            conditionEventsTask = Task { @MainActor [weak self, monitor] in
+                do {
+                    for try await event in await monitor.events {
+                        guard !Task.isCancelled else { return }
+                        self?.handleConditionMonitorEvent(event)
+                    }
+                } catch is CancellationError {
+                    return
+                } catch {
+                    self?.logGeofenceDiagnostic("condition_monitor_failed", metadata: [
+                        "error": error.localizedDescription
+                    ])
                 }
-            } catch is CancellationError {
-                return
-            } catch {
-                self?.logGeofenceDiagnostic("condition_monitor_failed", metadata: [
-                    "error": error.localizedDescription
-                ])
             }
+            logGeofenceDiagnostic("condition_monitor_started", metadata: [
+                "condition_count": monitoredConditionIdentifiers.count
+            ])
+            return monitor
         }
-        logGeofenceDiagnostic("condition_monitor_started", metadata: [
-            "condition_count": monitoredConditionIdentifiers.count
-        ])
-        return monitor
     }
 
     private func handleConditionMonitorEvent(_ event: CLMonitor.Event) {

@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 
-import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseUnsplashImageFilename } from './lib/unsplash-filename.mjs';
 
 const toolRoot = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(toolRoot, '..', '..');
-const sourcePath = path.join(toolRoot, 'catalog-source.json');
+const sourcesRoot = path.join(repositoryRoot, 'resources', 'background_images');
 const publishedRoot = path.join(toolRoot, 'published');
 const assetsRoot = path.join(publishedRoot, 'assets');
-const assetIDPattern = /^[a-z0-9][a-z0-9-]{1,79}$/;
+const maximumPixelDimension = 2_560;
+const webPQuality = 72;
+const maximumAssetBytes = 1_000_000;
 
 function fail(message) {
     throw new Error(`[railway-backgrounds] ${message}`);
@@ -21,48 +24,61 @@ function sha256(data) {
     return createHash('sha256').update(data).digest('hex');
 }
 
-function validateSource(source) {
-    if (source?.schema_version !== 1 || !Array.isArray(source.assets) || source.assets.length < 2) {
-        fail('catalog-source.json must contain schema_version 1 and at least two assets');
-    }
-    if (source.rotation?.time_zone !== 'Europe/London' || !/^\d{4}-\d{2}-\d{2}$/.test(source.rotation?.epoch_date || '')) {
-        fail('rotation must use Europe/London and a YYYY-MM-DD epoch_date');
-    }
-    const ids = new Set();
-    for (const asset of source.assets) {
-        if (!assetIDPattern.test(asset.id || '')) fail(`invalid asset id: ${asset.id || '<empty>'}`);
-        if (ids.has(asset.id)) fail(`duplicate asset id: ${asset.id}`);
-        ids.add(asset.id);
-        for (const field of ['file', 'title', 'location']) {
-            if (!String(asset[field] || '').trim()) fail(`asset ${asset.id} is missing ${field}`);
-        }
-        const focal = asset.focal_point;
-        if (!focal || ![focal.x, focal.y].every((value) => Number.isFinite(value) && value >= 0 && value <= 1)) {
-            fail(`asset ${asset.id} has an invalid focal_point`);
-        }
-        if (!Number.isFinite(asset.scrim_opacity) || asset.scrim_opacity < 0.15 || asset.scrim_opacity > 0.65) {
-            fail(`asset ${asset.id} has an invalid scrim_opacity`);
-        }
-    }
+function assetID(photoID) {
+    const suffix = photoID.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    if (!suffix) fail(`could not create an asset ID for Unsplash photo ${photoID}`);
+    return `unsplash-${suffix}`;
 }
 
-function optimiseAsset(asset) {
-    const input = path.resolve(toolRoot, asset.file);
-    if (!fs.statSync(input, { throwIfNoEntry: false })?.isFile()) fail(`missing source image: ${asset.file}`);
+function sourceAssets() {
+    if (!fs.statSync(sourcesRoot, { throwIfNoEntry: false })?.isDirectory()) {
+        fail(`source directory not found: ${sourcesRoot}`);
+    }
+    const assets = [];
+    const photoIDs = new Set();
+    const assetIDs = new Set();
+    for (const entry of fs.readdirSync(sourcesRoot, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!entry.isFile()) continue;
+        if (entry.name === '.DS_Store') continue;
+        const attribution = parseUnsplashImageFilename(entry.name);
+        if (!attribution) {
+            fail(`source file does not follow <artist>-<11-character-photo-id>-unsplash naming: ${entry.name}`);
+        }
+        if (photoIDs.has(attribution.photoID)) fail(`duplicate Unsplash photo ID: ${attribution.photoID}`);
+        const id = assetID(attribution.photoID);
+        if (assetIDs.has(id)) fail(`duplicate generated asset ID: ${id}`);
+        photoIDs.add(attribution.photoID);
+        assetIDs.add(id);
+        assets.push({
+            id,
+            input: path.join(sourcesRoot, entry.name),
+            sourceFilename: entry.name,
+            ...attribution,
+        });
+    }
+    if (assets.length < 2) fail('at least two convention-compliant Unsplash images are required');
+    return assets;
+}
 
-    const temporary = path.join(assetsRoot, `.${asset.id}.tmp.webp`);
+function optimiseAsset(source) {
+    const temporary = path.join(assetsRoot, `.${source.id}.tmp.webp`);
     execFileSync('magick', [
-        input,
+        source.input,
         '-auto-orient',
         '-strip',
         '-colorspace', 'sRGB',
-        '-resize', '2400x2400>',
+        '-resize', `${maximumPixelDimension}x${maximumPixelDimension}>`,
         '-define', 'webp:method=6',
-        '-quality', '78',
+        '-define', 'webp:use-sharp-yuv=1',
+        '-quality', String(webPQuality),
         temporary,
     ], { stdio: 'inherit' });
 
     const data = fs.readFileSync(temporary);
+    if (data.length > maximumAssetBytes) {
+        fs.rmSync(temporary);
+        fail(`optimised asset ${source.sourceFilename} exceeds ${Math.round(maximumAssetBytes / 1_000)} KB`);
+    }
     const hash = sha256(data);
     const filename = `${hash}.webp`;
     const destination = path.join(assetsRoot, filename);
@@ -72,49 +88,51 @@ function optimiseAsset(asset) {
     const dimensions = execFileSync('magick', ['identify', '-format', '%w %h', destination], { encoding: 'utf8' })
         .trim().split(/\s+/).map(Number);
     if (dimensions.length !== 2 || dimensions.some((value) => !Number.isInteger(value) || value < 2)) {
-        fail(`could not determine dimensions for ${asset.id}`);
+        fail(`could not determine dimensions for ${source.sourceFilename}`);
     }
-    if (data.length > 1_500_000) fail(`optimised asset ${asset.id} exceeds 1.5 MB`);
 
     return {
-        id: asset.id,
-        title: asset.title,
-        location: asset.location,
-        caption: asset.caption || null,
-        focal_point: asset.focal_point,
-        scrim_opacity: asset.scrim_opacity,
+        id: source.id,
+        title: `Railway photograph by ${source.artistName}`,
+        location: 'Unsplash',
+        caption: null,
+        focal_point: { x: 0.5, y: 0.5 },
+        scrim_opacity: 0.3,
+        delivery: 'server',
+        provider_asset_id: source.photoID,
+        source_filename: source.sourceFilename,
         sha256: hash,
         asset_path: `assets/${filename}`,
+        asset_url: `/api/v2/railway-backgrounds/assets/${hash}.webp`,
         content_type: 'image/webp',
         byte_size: data.length,
         width: dimensions[0],
         height: dimensions[1],
         credit: {
-            photographer: asset.credit?.photographer || null,
-            photographer_url: asset.credit?.photographer_url || null,
-            source: asset.credit?.source || null,
-            source_page: asset.credit?.source_page || null,
-            license: asset.credit?.license || null,
-            license_url: asset.credit?.license_url || null,
+            photographer: source.artistName,
+            photographer_url: null,
+            source: 'Unsplash',
+            source_page: source.sourceURL,
+            license: 'Unsplash License',
+            license_url: 'https://unsplash.com/license',
         },
     };
 }
 
-const source = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
-validateSource(source);
 fs.mkdirSync(assetsRoot, { recursive: true });
-
-const assets = source.assets.map(optimiseAsset);
+const assets = sourceAssets().map(optimiseAsset);
 const activeAssetFiles = new Set(assets.map((asset) => path.basename(asset.asset_path)));
 for (const filename of fs.readdirSync(assetsRoot)) {
     if (filename.endsWith('.webp') && !activeAssetFiles.has(filename)) {
         fs.rmSync(path.join(assetsRoot, filename));
     }
 }
+
 const versionedContent = {
     schema_version: 1,
     rotation: {
-        ...source.rotation,
+        time_zone: 'Europe/London',
+        epoch_date: '2026-01-01',
         asset_ids: assets.map((asset) => asset.id),
     },
     assets,
@@ -128,4 +146,8 @@ fs.mkdirSync(publishedRoot, { recursive: true });
 fs.writeFileSync(path.join(publishedRoot, 'catalog.json'), `${JSON.stringify(catalog, null, 2)}\n`);
 
 const totalBytes = assets.reduce((total, asset) => total + asset.byte_size, 0);
-console.log(`[railway-backgrounds] Published ${assets.length} assets (${Math.round(totalBytes / 1024)} KB) from ${repositoryRoot}`);
+const largestBytes = Math.max(...assets.map((asset) => asset.byte_size));
+console.log(
+    `[railway-backgrounds] Published ${assets.length} filename-derived Unsplash assets `
+    + `(${Math.round(totalBytes / 1024)} KB total, ${Math.round(largestBytes / 1024)} KB largest)`
+);

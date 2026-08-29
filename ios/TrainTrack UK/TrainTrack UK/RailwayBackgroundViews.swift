@@ -5,7 +5,7 @@ import UIKit
 actor RailwayBackgroundImageCache {
     static let shared = RailwayBackgroundImageCache()
 
-    private static let maximumDownloadBytes = 4 * 1_024 * 1_024
+    private static let maximumDownloadBytes = 6 * 1_024 * 1_024
     private static let diskCapacity = 50 * 1_024 * 1_024
     private let cacheDirectory: URL
     private let session: URLSession
@@ -66,7 +66,7 @@ actor RailwayBackgroundImageCache {
             options: [.skipsHiddenFiles]
         ) else { return }
         let values = files.compactMap { url -> (URL, String, Int, Date)? in
-            guard url.pathExtension == "webp",
+            guard ["webp", "jpg"].contains(url.pathExtension),
                   let resource = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]) else {
                 return nil
             }
@@ -94,9 +94,9 @@ actor RailwayBackgroundImageCache {
         cacheDirectory: URL,
         session: URLSession
     ) async -> UIImage? {
-        let fileURL = cacheDirectory.appendingPathComponent("\(asset.sha256).webp")
+        let fileURL = cacheDirectory.appendingPathComponent("\(asset.sha256).\(asset.cacheFileExtension)")
         if let data = try? Data(contentsOf: fileURL), validate(data: data, asset: asset),
-           let image = UIImage(data: data) {
+           let image = displayImage(from: data) {
             try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: fileURL.path)
             return image
         }
@@ -106,9 +106,9 @@ actor RailwayBackgroundImageCache {
             try Task.checkCancellation()
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode),
-                  http.mimeType?.lowercased() == "image/webp",
+                  responseContentTypeIsValid(http.mimeType, asset: asset),
                   validate(data: data, asset: asset),
-                  let image = UIImage(data: data) else { return nil }
+                  let image = displayImage(from: data) else { return nil }
             try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
             try data.write(to: fileURL, options: .atomic)
             return image
@@ -125,12 +125,27 @@ actor RailwayBackgroundImageCache {
     private nonisolated static func validate(data: Data, asset: RailwayBackgroundAsset) -> Bool {
         guard !data.isEmpty,
               data.count <= maximumDownloadBytes,
-              data.count == asset.byteSize,
-              SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == asset.sha256,
               let image = UIImage(data: data) else { return false }
         let width = image.cgImage?.width ?? Int(image.size.width * image.scale)
         let height = image.cgImage?.height ?? Int(image.size.height * image.scale)
+        guard let byteSize = asset.byteSize,
+              data.count == byteSize,
+              SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == asset.sha256 else {
+            return false
+        }
         return width == asset.width && height == asset.height
+    }
+
+    private nonisolated static func responseContentTypeIsValid(
+        _ mimeType: String?,
+        asset: RailwayBackgroundAsset
+    ) -> Bool {
+        mimeType?.lowercased() == "image/webp"
+    }
+
+    private nonisolated static func displayImage(from data: Data) -> UIImage? {
+        guard let image = UIImage(data: data) else { return nil }
+        return image.preparingForDisplay() ?? image
     }
 }
 
@@ -153,11 +168,7 @@ private struct RailwayBackgroundLoadedImage: View {
                         .frame(width: proxy.size.width, height: proxy.size.height)
                 }
             } else {
-                Image("RailwayBackgroundFallback")
-                    .resizable()
-                    .aspectRatio(contentMode: contentMode)
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-                    .clipped()
+                Color(.systemBackground)
             }
         }
         .task(id: "\(ApiHostPreference.currentBaseURL)|\(asset?.sha256 ?? "fallback")") {
@@ -217,8 +228,8 @@ private struct RailwayBackgroundInfoButton: View {
 
     var body: some View {
         Button(action: action) {
-            Image(systemName: "info.circle.fill")
-                .font(.system(size: 18, weight: .semibold))
+            Image(systemName: "photo")
+                .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 34, height: 34)
                 .background {
@@ -236,8 +247,9 @@ private struct RailwayBackgroundInfoButton: View {
         .buttonStyle(.plain)
         .frame(width: 44, height: 44)
         .contentShape(Circle())
-        .accessibilityLabel("View background photo details")
-        .accessibilityValue(asset.map { "\($0.title), \($0.location)" } ?? "Fallback railway photograph")
+        .accessibilityLabel("View background photo")
+        .accessibilityValue(asset?.attributionText ?? "Fallback railway photograph")
+        .accessibilityHint("Opens the photo full screen with image details")
     }
 }
 
@@ -269,13 +281,13 @@ private struct RailwayBackgroundChromeModifier: ViewModifier {
                     )
                 }
             }
-            .overlay(alignment: .bottomTrailing) {
-                if !isHidden, showsInfoButton {
-                    RailwayBackgroundInfoButton(asset: store.selectedAsset) {
-                        isViewerPresented = true
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    if !isHidden, showsInfoButton {
+                        RailwayBackgroundInfoButton(asset: store.selectedAsset) {
+                            isViewerPresented = true
+                        }
                     }
-                    .padding(.trailing, 18)
-                    .padding(.bottom, 10)
                 }
             }
             .fullScreenCover(isPresented: $isViewerPresented) {
@@ -328,44 +340,26 @@ private struct RailwayBackgroundViewer: View {
                 .padding(.horizontal, 18)
                 .padding(.top, 8)
                 Spacer()
-                photoInformation
+                if let attributionText = asset?.attributionText,
+                   let sourceURL = asset?.unsplashSourceURL {
+                    Link(destination: sourceURL) {
+                        Text(attributionText)
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(.black.opacity(0.58), in: Capsule())
+                    }
+                    .accessibilityHint("Opens this photograph on Unsplash")
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 16)
+                }
             }
         }
         .preferredColorScheme(.dark)
     }
 
-    private var photoInformation: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(asset?.title ?? "TrainTrack UK")
-                .font(.headline)
-            Text(asset?.location ?? "Railway background")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            if let caption = asset?.caption, !caption.isEmpty {
-                Text(caption)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.top, 2)
-            }
-            if let photographer = asset?.credit.photographer, !photographer.isEmpty {
-                Text("Photograph by \(photographer)")
-                    .font(.footnote)
-            }
-            if let license = asset?.credit.license, !license.isEmpty {
-                Text(license)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-            if let source = asset?.credit.sourcePage.flatMap(URL.init(string:)) {
-                Link("View source", destination: source)
-                    .font(.footnote.weight(.semibold))
-                    .padding(.top, 3)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .background(.ultraThinMaterial)
-    }
 }
 
 private struct RailwayBackgroundZoomableImage: View {

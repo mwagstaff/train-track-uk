@@ -309,6 +309,13 @@ struct PreferencesView: View {
                 .disabled(railwayBackgroundStore.isRefreshing)
 
                 Button {
+                    Task { await railwayBackgroundStore.advanceDebugUnsplashBackground() }
+                } label: {
+                    Label("Show next Unsplash photo", systemImage: "photo.badge.checkmark")
+                }
+                .disabled(railwayBackgroundStore.isRefreshing)
+
+                Button {
                     railwayBackgroundStore.resetDebugBackground()
                 } label: {
                     Label("Reset to today's photo", systemImage: "calendar")

@@ -573,8 +573,22 @@ struct InProgressJourneyView: View {
                             stationName: active.currentPlannedLegDestination.name
                         )
                     }
-                    Button("Change the train I’m on") { isShowingServicePicker = true }
-                        .buttonStyle(.bordered)
+                    Button { isShowingServicePicker = true } label: {
+                        Text("Change the train I’m on")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.large)
+                    .tint(.black.opacity(0.76))
+                    .overlay {
+                        Capsule()
+                            .stroke(.white.opacity(0.34), lineWidth: 1)
+                            .allowsHitTesting(false)
+                    }
                 }
             }
         }

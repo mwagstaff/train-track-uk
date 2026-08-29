@@ -7,18 +7,7 @@ struct RailwayBackgroundFocalPoint: Codable, Hashable, Sendable {
 
 struct RailwayBackgroundCredit: Codable, Hashable, Sendable {
     let photographer: String?
-    let photographerURL: String?
     let source: String?
-    let sourcePage: String?
-    let license: String?
-    let licenseURL: String?
-
-    enum CodingKeys: String, CodingKey {
-        case photographer, source, license
-        case photographerURL = "photographer_url"
-        case sourcePage = "source_page"
-        case licenseURL = "license_url"
-    }
 }
 
 struct RailwayBackgroundAsset: Identifiable, Codable, Hashable, Sendable {
@@ -28,36 +17,60 @@ struct RailwayBackgroundAsset: Identifiable, Codable, Hashable, Sendable {
     let caption: String?
     let focalPoint: RailwayBackgroundFocalPoint
     let scrimOpacity: Double
+    let delivery: String?
+    let providerAssetID: String?
     let sha256: String
-    let assetPath: String
+    let assetPath: String?
     let assetURL: String
     let contentType: String
-    let byteSize: Int
+    let byteSize: Int?
     let width: Int
     let height: Int
     let credit: RailwayBackgroundCredit
 
     enum CodingKeys: String, CodingKey {
-        case id, title, location, caption, sha256, width, height, credit
+        case id, title, location, caption, delivery, sha256, width, height, credit
         case focalPoint = "focal_point"
         case scrimOpacity = "scrim_opacity"
+        case providerAssetID = "provider_asset_id"
         case assetPath = "asset_path"
         case assetURL = "asset_url"
         case contentType = "content_type"
         case byteSize = "byte_size"
     }
 
+    nonisolated var isUnsplashPhoto: Bool { credit.source?.caseInsensitiveCompare("Unsplash") == .orderedSame }
+    nonisolated var cacheFileExtension: String { "webp" }
+
+    nonisolated var attributionText: String? {
+        guard isUnsplashPhoto,
+              let photographer = credit.photographer?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !photographer.isEmpty else { return nil }
+        return "Image courtesy of \(photographer), Unsplash"
+    }
+
+    nonisolated var unsplashSourceURL: URL? {
+        guard isUnsplashPhoto,
+              let providerAssetID,
+              let url = URL(string: "https://unsplash.com/photos/\(providerAssetID)") else { return nil }
+        return url
+    }
+
     nonisolated func remoteURL(apiBaseURL: String) -> URL? {
+        resolvedURL(assetURL, apiBaseURL: apiBaseURL)
+    }
+
+    private nonisolated func resolvedURL(_ value: String, apiBaseURL: String) -> URL? {
         guard let baseURL = URL(string: apiBaseURL) else { return nil }
-        if let absoluteURL = URL(string: assetURL), absoluteURL.scheme != nil {
+        if let absoluteURL = URL(string: value), absoluteURL.scheme != nil {
             return absoluteURL
         }
-        let endpointMarker = "railway-backgrounds/assets/"
+        let endpointMarker = "railway-backgrounds/"
         let endpointPath: String
-        if let markerRange = assetURL.range(of: endpointMarker) {
-            endpointPath = String(assetURL[markerRange.lowerBound...])
+        if let markerRange = value.range(of: endpointMarker) {
+            endpointPath = String(value[markerRange.lowerBound...])
         } else {
-            endpointPath = assetURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            endpointPath = value.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         }
         guard !endpointPath.isEmpty else { return nil }
         return endpointPath.split(separator: "/").reduce(baseURL) { url, component in

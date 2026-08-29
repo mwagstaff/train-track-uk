@@ -3,6 +3,7 @@ import SwiftUI
 struct ProfileView: View {
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
     @EnvironmentObject var holidayMode: HolidayModeStore
+    @EnvironmentObject private var railwayBackgroundStore: RailwayBackgroundStore
     @State private var pendingDeleteUpdate: NotificationSubscription? = nil
     @State private var showUpdateDeleteDialog = false
     @State private var viewingScheduledRoute: IdentifiableScheduledRoute? = nil
@@ -54,6 +55,32 @@ struct ProfileView: View {
                     )
                 }
             }
+
+            #if DEBUG
+            Section {
+                Button {
+                    Task { await railwayBackgroundStore.advanceDebugUnsplashBackground() }
+                } label: {
+                    Label("Refresh and show next Unsplash photo", systemImage: "photo.stack")
+                }
+                .disabled(railwayBackgroundStore.isRefreshing)
+
+                LabeledContent("Position", value: railwayBackgroundStore.debugUnsplashPositionDescription)
+                if let asset = railwayBackgroundStore.selectedAsset {
+                    LabeledContent("Current photo", value: asset.title)
+                }
+                if let error = railwayBackgroundStore.lastRefreshErrorDescription {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+                Text("DEBUG builds only. Repeated taps loop through every approved Unsplash background in the current server catalogue.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Background Photo POC")
+            }
+            #endif
 
             Section {
                 if notificationStore.isLoading && !notificationStore.hasLoadedOnce {
@@ -649,5 +676,6 @@ private struct LiveSessionInfoSheet: View {
     NavigationStack {
         ProfileView()
             .environmentObject(NotificationSubscriptionStore.shared)
+            .environmentObject(RailwayBackgroundStore())
     }
 }
