@@ -1,5 +1,8 @@
 # Railway backgrounds
 
+For the short, step-by-step process used to update and deploy photos, see
+[Add or update background photos](../../BACKGROUND_PHOTOS.md).
+
 The background library is driven exclusively by image files in `resources/background_images/`. There is no hand-maintained photo manifest: the publisher derives attribution from each filename and generates the server catalogue.
 
 ## Filename contract
@@ -24,6 +27,18 @@ This produces:
 
 Supported source extensions are HEIC, HEIF, JPEG, PNG, and WebP. The final 11 characters before `-unsplash` are always treated as the Unsplash photo ID, including IDs that begin with a hyphen. Publishing fails on a malformed image filename or duplicate photo ID so an uncredited image cannot enter the app accidentally.
 
+The publisher shows the currently processed filename on one updating Terminal line. Unusable sources are moved into a unique `/tmp/train-track-railway-backgrounds-rejected-*` directory and listed with their reasons and temporary paths at the end of the run.
+
+## Importing from Downloads
+
+To find valid Unsplash downloads in the top level of `~/Downloads` and move them into the source library, run:
+
+```bash
+node tools/railway-backgrounds/import-downloads.mjs
+```
+
+The importer uses the same strict filename parser as the publisher, previews all candidates, and requires confirmation before moving anything. Invalid names (including browser duplicates containing `(1)`), existing destination filenames, and duplicate Unsplash photo IDs remain in Downloads. It never overwrites a destination file.
+
 ## Publishing and optimisation
 
 Generate the catalogue and optimized server bundle with:
@@ -42,13 +57,13 @@ The publisher:
 
 `tools/railway-backgrounds/published/` is generated and ignored by Git. The app downloads only the selected daily image and caches it on device. Its full-screen viewer displays the filename-derived attribution as a small centered link at the bottom.
 
-The normal API deployment runs the publisher through the shared asset-bundle configuration:
+For a photo-only update, the shared deployment script runs the publisher and atomically activates the validated asset catalogue without restarting the API:
 
 ```bash
-/Users/mwagstaff/dev/server-tooling/deploy/node_project.zsh
+/Users/mwagstaff/dev/server-tooling/deploy/node_project.zsh train-track-api sky --assets-only --skip-asset-prepare
 ```
 
-Adding or removing a convention-compliant source image therefore requires an API deployment, but no app release.
+`--skip-asset-prepare` reuses the bundle produced by the standalone publisher instead of optimising the source library again. Omit it when the publisher has not just completed successfully; plain `--assets-only` prepares the bundle before deployment. Omit `--assets-only` when deploying API code or configuration. Adding or removing a convention-compliant source image requires an asset deployment, but no API restart or app release.
 
 In a DEBUG app build, Profile → Background Photo POC can refresh the catalogue and advance through every image.
 

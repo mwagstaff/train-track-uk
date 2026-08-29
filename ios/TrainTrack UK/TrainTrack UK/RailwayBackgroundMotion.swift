@@ -102,6 +102,61 @@ struct RailwayBackgroundParallaxCrop {
     }
 }
 
+struct RailwayBackgroundPhotoGeometry {
+    let renderedSize: CGSize
+    let focalOffset: CGSize
+    private let viewportSize: CGSize
+
+    init(
+        viewportSize: CGSize,
+        sourceSize: CGSize,
+        focalPoint: CGPoint,
+        parallaxScale: CGFloat,
+        zoomScale: CGFloat
+    ) {
+        self.viewportSize = viewportSize
+        let sourceWidth = max(sourceSize.width, 1)
+        let sourceHeight = max(sourceSize.height, 1)
+        let fillScale = max(viewportSize.width / sourceWidth, viewportSize.height / sourceHeight)
+        let renderScale = fillScale * max(parallaxScale, 1) * max(zoomScale, 1)
+        renderedSize = CGSize(width: sourceWidth * renderScale, height: sourceHeight * renderScale)
+        focalOffset = CGSize(
+            width: (renderedSize.width - viewportSize.width) * (0.5 - focalPoint.x),
+            height: (renderedSize.height - viewportSize.height) * (0.5 - focalPoint.y)
+        )
+    }
+
+    func boundedTranslation(_ requested: CGSize) -> CGSize {
+        CGSize(
+            width: RailwayBackgroundParallaxCrop.boundedTranslation(
+                requested.width,
+                viewportLength: viewportSize.width,
+                renderedLength: renderedSize.width,
+                focalOffset: focalOffset.width
+            ),
+            height: RailwayBackgroundParallaxCrop.boundedTranslation(
+                requested.height,
+                viewportLength: viewportSize.height,
+                renderedLength: renderedSize.height,
+                focalOffset: focalOffset.height
+            )
+        )
+    }
+
+    func boundedUserTranslation(_ requested: CGSize, parallaxTranslation: CGSize) -> CGSize {
+        let combined = boundedTranslation(
+            CGSize(
+                width: requested.width + parallaxTranslation.width,
+                height: requested.height + parallaxTranslation.height
+            )
+        )
+        return CGSize(
+            width: combined.width - parallaxTranslation.width,
+            height: combined.height - parallaxTranslation.height
+        )
+    }
+}
+
 private final class RailwayBackgroundMotionProcessor: @unchecked Sendable {
     private let orientation: RailwayBackgroundScreenOrientation
     private var referenceAttitude: CMAttitude?

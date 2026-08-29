@@ -132,6 +132,31 @@ struct RailwayBackgroundTests {
         #expect(roomy == 24)
     }
 
+    @Test func zoomedPhotoGeometryAllowsMorePanningWithoutExposingEdges() {
+        let viewport = CGSize(width: 390, height: 844)
+        let source = CGSize(width: 1320, height: 2868)
+        let baseGeometry = RailwayBackgroundPhotoGeometry(
+            viewportSize: viewport,
+            sourceSize: source,
+            focalPoint: CGPoint(x: 0.5, y: 0.5),
+            parallaxScale: 1.1,
+            zoomScale: 1
+        )
+        let zoomedGeometry = RailwayBackgroundPhotoGeometry(
+            viewportSize: viewport,
+            sourceSize: source,
+            focalPoint: CGPoint(x: 0.5, y: 0.5),
+            parallaxScale: 1.1,
+            zoomScale: 2
+        )
+        let requested = CGSize(width: 1_000, height: 1_000)
+        let baseOffset = baseGeometry.boundedUserTranslation(requested, parallaxTranslation: .zero)
+        let zoomedOffset = zoomedGeometry.boundedUserTranslation(requested, parallaxTranslation: .zero)
+
+        #expect(zoomedOffset.width > baseOffset.width)
+        #expect(zoomedOffset.height > baseOffset.height)
+    }
+
     private func makeCatalog() -> RailwayBackgroundCatalog {
         let ids = ["one", "two", "three"]
         return RailwayBackgroundCatalog(

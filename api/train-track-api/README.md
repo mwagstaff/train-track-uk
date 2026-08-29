@@ -2,6 +2,10 @@
 
 API for the [TrainTrack UK](https://apps.apple.com/gb/app/traintrack-uk/id6504205950) app.
 
+## Railway Background Photos
+
+See [Add or update background photos](../../BACKGROUND_PHOTOS.md) for the step-by-step image optimisation and deployment process.
+
 ## Live Activity Pushes
 
 - Register a Live Activity push token and get the next 3 departures: `POST /api/v2/live_activities` with JSON body `{ "device_id": "...", "activity_id": "...", "live_activity_push_token": "...", "from": "EUS", "to": "WFJ" }`

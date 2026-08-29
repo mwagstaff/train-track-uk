@@ -29,4 +29,5 @@ test('rejects non-Unsplash and malformed filenames', () => {
     assert.equal(parseUnsplashImageFilename('diane-picchiottino-short-unsplash.jpg'), null);
     assert.equal(parseUnsplashImageFilename('diane_picchiottino-sKsNVoa_NsY-unsplash.jpg'), null);
     assert.equal(parseUnsplashImageFilename('diane-picchiottino-sKsNVoa_NsY-unsplash.txt'), null);
+    assert.equal(parseUnsplashImageFilename('umair-dingmar-lGHtVlyiv5I-unsplash (1).jpg'), null);
 });

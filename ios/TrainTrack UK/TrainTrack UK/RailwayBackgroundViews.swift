@@ -151,24 +151,17 @@ actor RailwayBackgroundImageCache {
 
 private struct RailwayBackgroundLoadedImage: View {
     let asset: RailwayBackgroundAsset?
-    let contentMode: ContentMode
-    let focalFill: Bool
     let parallaxScale: CGFloat
     let parallaxTranslation: CGSize
+    let zoomScale: CGFloat
+    let userTranslation: CGSize
 
     @State private var remoteImage: UIImage?
 
     var body: some View {
         GeometryReader { proxy in
             if let remoteImage, let asset {
-                if focalFill {
-                    focalImage(remoteImage, asset: asset, size: proxy.size)
-                } else {
-                    Image(uiImage: remoteImage)
-                        .resizable()
-                        .aspectRatio(contentMode: contentMode)
-                        .frame(width: proxy.size.width, height: proxy.size.height)
-                }
+                focalImage(remoteImage, asset: asset, size: proxy.size)
             } else {
                 Color(.systemBackground)
             }
@@ -186,56 +179,40 @@ private struct RailwayBackgroundLoadedImage: View {
     }
 
     private func focalImage(_ image: UIImage, asset: RailwayBackgroundAsset, size: CGSize) -> some View {
-        let sourceWidth = max(CGFloat(asset.width), 1)
-        let sourceHeight = max(CGFloat(asset.height), 1)
-        let scale = max(size.width / sourceWidth, size.height / sourceHeight) * max(parallaxScale, 1)
-        let renderedWidth = sourceWidth * scale
-        let renderedHeight = sourceHeight * scale
-        let focalXOffset = (renderedWidth - size.width) * (0.5 - CGFloat(asset.focalPoint.x))
-        let focalYOffset = (renderedHeight - size.height) * (0.5 - CGFloat(asset.focalPoint.y))
-        let xTranslation = RailwayBackgroundParallaxCrop.boundedTranslation(
-            parallaxTranslation.width,
-            viewportLength: size.width,
-            renderedLength: renderedWidth,
-            focalOffset: focalXOffset
+        let geometry = RailwayBackgroundPhotoGeometry(
+            viewportSize: size,
+            sourceSize: CGSize(width: asset.width, height: asset.height),
+            focalPoint: CGPoint(x: asset.focalPoint.x, y: asset.focalPoint.y),
+            parallaxScale: parallaxScale,
+            zoomScale: zoomScale
         )
-        let yTranslation = RailwayBackgroundParallaxCrop.boundedTranslation(
-            parallaxTranslation.height,
-            viewportLength: size.height,
-            renderedLength: renderedHeight,
-            focalOffset: focalYOffset
+        let translation = geometry.boundedTranslation(
+            CGSize(
+                width: parallaxTranslation.width + userTranslation.width,
+                height: parallaxTranslation.height + userTranslation.height
+            )
         )
         return Image(uiImage: image)
             .resizable()
-            .frame(width: renderedWidth, height: renderedHeight)
-            .offset(x: focalXOffset + xTranslation, y: focalYOffset + yTranslation)
+            .frame(width: geometry.renderedSize.width, height: geometry.renderedSize.height)
+            .offset(
+                x: geometry.focalOffset.width + translation.width,
+                y: geometry.focalOffset.height + translation.height
+            )
             .frame(width: size.width, height: size.height)
             .clipped()
     }
 }
 
-struct RailwayBackgroundBackdrop: View {
-    @EnvironmentObject private var store: RailwayBackgroundStore
+private struct RailwayBackgroundMotionLifecycleModifier: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var motion = RailwayBackgroundMotionModel.shared
     @State private var isVisible = false
-    @State private var motionViewID = UUID()
+    @State private var viewID = UUID()
 
-    var body: some View {
-        ZStack {
-            RailwayBackgroundLoadedImage(
-                asset: store.selectedAsset,
-                contentMode: .fill,
-                focalFill: true,
-                parallaxScale: reduceMotion ? 1 : 1.10,
-                parallaxTranslation: reduceMotion ? .zero : motion.translation
-            )
-
-            Color.black.opacity(store.selectedAsset?.scrimOpacity ?? 0.34)
-        }
-            .ignoresSafeArea()
-            .accessibilityHidden(true)
+    func body(content: Content) -> some View {
+        content
             .onAppear {
                 isVisible = true
                 updateMotionActivity()
@@ -269,10 +246,39 @@ struct RailwayBackgroundBackdrop: View {
 
     private func updateMotionActivity() {
         if motionIsEnabled {
-            motion.activate(viewID: motionViewID, orientation: currentInterfaceOrientation)
+            motion.activate(viewID: viewID, orientation: currentInterfaceOrientation)
         } else {
-            motion.deactivate(viewID: motionViewID)
+            motion.deactivate(viewID: viewID)
         }
+    }
+}
+
+private extension View {
+    func railwayBackgroundMotionLifecycle() -> some View {
+        modifier(RailwayBackgroundMotionLifecycleModifier())
+    }
+}
+
+struct RailwayBackgroundBackdrop: View {
+    @EnvironmentObject private var store: RailwayBackgroundStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var motion = RailwayBackgroundMotionModel.shared
+
+    var body: some View {
+        ZStack {
+            RailwayBackgroundLoadedImage(
+                asset: store.selectedAsset,
+                parallaxScale: reduceMotion ? 1 : 1.10,
+                parallaxTranslation: reduceMotion ? .zero : motion.translation,
+                zoomScale: 1,
+                userTranslation: .zero
+            )
+
+            Color.black.opacity(store.selectedAsset?.scrimOpacity ?? 0.34)
+        }
+            .ignoresSafeArea()
+            .accessibilityHidden(true)
+            .railwayBackgroundMotionLifecycle()
     }
 }
 
@@ -367,77 +373,94 @@ extension View {
 private struct RailwayBackgroundViewer: View {
     let asset: RailwayBackgroundAsset?
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject private var motion = RailwayBackgroundMotionModel.shared
 
     var body: some View {
         ZStack {
-            Color(red: 0.035, green: 0.04, blue: 0.045).ignoresSafeArea()
-            RailwayBackgroundZoomableImage(asset: asset)
+            Color(red: 0.035, green: 0.04, blue: 0.045)
+                .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                HStack {
-                    Spacer()
-                    Button { dismiss() } label: {
-                        Image(systemName: "xmark")
-                            .font(.headline.weight(.semibold))
-                            .frame(width: 44, height: 44)
-                            .background(.ultraThinMaterial, in: Circle())
+            ZStack {
+                RailwayBackgroundZoomableImage(
+                    asset: asset,
+                    parallaxScale: reduceMotion ? 1 : 1.10,
+                    parallaxTranslation: reduceMotion ? .zero : motion.translation
+                )
+
+                VStack(spacing: 0) {
+                    HStack {
+                        Spacer()
+                        Button { dismiss() } label: {
+                            Image(systemName: "xmark")
+                                .font(.headline.weight(.semibold))
+                                .frame(width: 44, height: 44)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
+                        .accessibilityLabel("Close photo")
                     }
-                    .accessibilityLabel("Close photo")
-                }
-                .padding(.horizontal, 18)
-                .padding(.top, 8)
-                Spacer()
-                if let attributionText = asset?.attributionText,
-                   let sourceURL = asset?.unsplashSourceURL {
-                    Link(destination: sourceURL) {
-                        Text(attributionText)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 8)
+                    Spacer()
+                    if let attributionText = asset?.attributionText,
+                       let sourceURL = asset?.unsplashSourceURL {
+                        Link(destination: sourceURL) {
+                            HStack(spacing: 5) {
+                                Text(attributionText)
+                                    .multilineTextAlignment(.center)
+                                Image(systemName: "arrow.up.right.square")
+                                    .accessibilityHidden(true)
+                            }
                             .font(.caption2.weight(.medium))
                             .foregroundStyle(.white)
-                            .multilineTextAlignment(.center)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 7)
                             .background(.black.opacity(0.58), in: Capsule())
+                        }
+                        .accessibilityHint("Opens this photograph on Unsplash in your browser")
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 16)
                     }
-                    .accessibilityHint("Opens this photograph on Unsplash")
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 16)
                 }
             }
         }
         .preferredColorScheme(.dark)
+        .railwayBackgroundMotionLifecycle()
     }
-
 }
 
 private struct RailwayBackgroundZoomableImage: View {
     let asset: RailwayBackgroundAsset?
+    let parallaxScale: CGFloat
+    let parallaxTranslation: CGSize
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var scale: CGFloat = 1
     @State private var offset = CGSize.zero
-    @GestureState private var transientScale: CGFloat = 1
-    @GestureState private var transientTranslation = CGSize.zero
+    @State private var activeDragTranslation = CGSize.zero
+    @State private var previousMagnification: CGFloat = 1
+    @State private var isMagnifying = false
+    @State private var panStartedDuringMagnification = false
 
     var body: some View {
         GeometryReader { proxy in
-            let displayedScale = clampedScale(scale * transientScale)
             let displayedOffset = boundedOffset(
                 CGSize(
-                    width: offset.width + transientTranslation.width,
-                    height: offset.height + transientTranslation.height
+                    width: offset.width + activeDragTranslation.width,
+                    height: offset.height + activeDragTranslation.height
                 ),
                 within: proxy.size,
-                scale: displayedScale
+                scale: scale,
+                parallaxTranslation: parallaxTranslation
             )
 
             RailwayBackgroundLoadedImage(
                 asset: asset,
-                contentMode: .fit,
-                focalFill: false,
-                parallaxScale: 1,
-                parallaxTranslation: .zero
+                parallaxScale: parallaxScale,
+                parallaxTranslation: parallaxTranslation,
+                zoomScale: scale,
+                userTranslation: displayedOffset
             )
-                .scaleEffect(displayedScale)
-                .offset(displayedOffset)
                 .frame(width: proxy.size.width, height: proxy.size.height)
                 .contentShape(Rectangle())
                 .gesture(
@@ -445,50 +468,69 @@ private struct RailwayBackgroundZoomableImage: View {
                         .simultaneously(with: dragGesture(within: proxy.size))
                 )
                 .onTapGesture(count: 2) {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        scale = scale > 1 ? 1 : 2
-                        offset = .zero
-                    }
+                    toggleZoom()
                 }
                 .accessibilityLabel("Background photograph")
-                .accessibilityHint("Pinch to zoom or drag to move around the photograph")
+                .accessibilityHint("Pinch to zoom or drag to move")
         }
         .ignoresSafeArea()
         .clipped()
     }
 
     private func magnifyGesture(within size: CGSize) -> some Gesture {
-        MagnifyGesture()
-            .updating($transientScale) { value, state, _ in
-                state = value.magnification
-            }
-            .onEnded { value in
-                let newScale = clampedScale(scale * value.magnification)
+        MagnifyGesture(minimumScaleDelta: 0)
+            .onChanged { value in
+                isMagnifying = true
+                activeDragTranslation = .zero
+
+                let delta = value.magnification / previousMagnification
+                previousMagnification = value.magnification
+                let newScale = clampedScale(scale * delta)
                 scale = newScale
-                offset = newScale == 1
+                offset = newScale <= 1.001
                     ? .zero
-                    : boundedOffset(offset, within: size, scale: newScale)
+                    : boundedOffset(
+                        offset,
+                        within: size,
+                        scale: newScale,
+                        parallaxTranslation: parallaxTranslation
+                    )
+            }
+            .onEnded { _ in
+                previousMagnification = 1
+                isMagnifying = false
+                if scale <= 1.001 {
+                    scale = 1
+                    offset = .zero
+                }
             }
     }
 
     private func dragGesture(within size: CGSize) -> some Gesture {
-        DragGesture()
-            .updating($transientTranslation) { value, state, _ in
-                guard scale > 1 else { return }
-                state = value.translation
-            }
-            .onEnded { value in
-                guard scale > 1 else {
-                    offset = .zero
+        DragGesture(minimumDistance: 8)
+            .onChanged { value in
+                guard !isMagnifying else {
+                    panStartedDuringMagnification = true
+                    activeDragTranslation = .zero
                     return
                 }
+                guard scale > 1.001 else { return }
+                activeDragTranslation = value.translation
+            }
+            .onEnded { value in
+                defer {
+                    activeDragTranslation = .zero
+                    panStartedDuringMagnification = false
+                }
+                guard !panStartedDuringMagnification, scale > 1.001 else { return }
                 offset = boundedOffset(
                     CGSize(
                         width: offset.width + value.translation.width,
                         height: offset.height + value.translation.height
                     ),
                     within: size,
-                    scale: scale
+                    scale: scale,
+                    parallaxTranslation: parallaxTranslation
                 )
             }
     }
@@ -497,13 +539,41 @@ private struct RailwayBackgroundZoomableImage: View {
         min(max(proposedScale, 1), 5)
     }
 
-    private func boundedOffset(_ proposedOffset: CGSize, within size: CGSize, scale: CGFloat) -> CGSize {
-        guard scale > 1 else { return .zero }
-        let maximumX = size.width * (scale - 1) / 2
-        let maximumY = size.height * (scale - 1) / 2
-        return CGSize(
-            width: min(max(proposedOffset.width, -maximumX), maximumX),
-            height: min(max(proposedOffset.height, -maximumY), maximumY)
+    private func boundedOffset(
+        _ proposedOffset: CGSize,
+        within size: CGSize,
+        scale: CGFloat,
+        parallaxTranslation: CGSize
+    ) -> CGSize {
+        guard scale > 1, let asset else { return .zero }
+        let geometry = RailwayBackgroundPhotoGeometry(
+            viewportSize: size,
+            sourceSize: CGSize(width: asset.width, height: asset.height),
+            focalPoint: CGPoint(x: asset.focalPoint.x, y: asset.focalPoint.y),
+            parallaxScale: parallaxScale,
+            zoomScale: scale
         )
+        return geometry.boundedUserTranslation(
+            proposedOffset,
+            parallaxTranslation: parallaxTranslation
+        )
+    }
+
+    private func toggleZoom() {
+        let update = {
+            scale = scale > 1 ? 1 : 2
+            offset = .zero
+            activeDragTranslation = .zero
+            previousMagnification = 1
+            isMagnifying = false
+            panStartedDuringMagnification = false
+        }
+        if reduceMotion {
+            update()
+        } else {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                update()
+            }
+        }
     }
 }
