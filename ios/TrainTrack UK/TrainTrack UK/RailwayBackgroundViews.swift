@@ -316,6 +316,7 @@ private struct RailwayBackgroundHiddenPreferenceKey: PreferenceKey {
 
 private struct RailwayBackgroundChromeModifier: ViewModifier {
     let showsInfoButton: Bool
+    let onViewBackground: (() -> Void)?
     @EnvironmentObject private var store: RailwayBackgroundStore
     @Environment(\.horizontalTabSwipePresentation) private var swipePresentation
     @Environment(\.isActiveHorizontalTabSwipePage) private var isActiveSwipePage
@@ -338,7 +339,11 @@ private struct RailwayBackgroundChromeModifier: ViewModifier {
                 ToolbarItem(placement: .topBarLeading) {
                     if !isHidden, showsInfoButton {
                         RailwayBackgroundInfoButton(asset: store.selectedAsset) {
-                            isViewerPresented = true
+                            if let onViewBackground {
+                                onViewBackground()
+                            } else {
+                                isViewerPresented = true
+                            }
                         }
                     }
                 }
@@ -361,8 +366,14 @@ private struct StationaryRailwayBackground: View {
 }
 
 extension View {
-    func railwayBackgroundPOC(showsInfoButton: Bool = true) -> some View {
-        modifier(RailwayBackgroundChromeModifier(showsInfoButton: showsInfoButton))
+    func railwayBackgroundPOC(
+        showsInfoButton: Bool = true,
+        onViewBackground: (() -> Void)? = nil
+    ) -> some View {
+        modifier(RailwayBackgroundChromeModifier(
+            showsInfoButton: showsInfoButton,
+            onViewBackground: onViewBackground
+        ))
     }
 
     func hidesRailwayBackgroundChrome(_ isHidden: Bool = true) -> some View {
@@ -370,11 +381,12 @@ extension View {
     }
 }
 
-private struct RailwayBackgroundViewer: View {
+struct RailwayBackgroundViewer: View {
     let asset: RailwayBackgroundAsset?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject private var motion = RailwayBackgroundMotionModel.shared
+    @State private var isPhotoZoomed = false
 
     var body: some View {
         ZStack {
@@ -385,7 +397,8 @@ private struct RailwayBackgroundViewer: View {
                 RailwayBackgroundZoomableImage(
                     asset: asset,
                     parallaxScale: reduceMotion ? 1 : 1.10,
-                    parallaxTranslation: reduceMotion ? .zero : motion.translation
+                    parallaxTranslation: reduceMotion ? .zero : motion.translation,
+                    isZoomed: $isPhotoZoomed
                 )
 
                 VStack(spacing: 0) {
@@ -424,6 +437,12 @@ private struct RailwayBackgroundViewer: View {
                 }
             }
         }
+        .background {
+            RailwayBackgroundViewerDismissRecognizer(
+                isEnabled: !isPhotoZoomed,
+                onDismiss: { dismiss() }
+            )
+        }
         .preferredColorScheme(.dark)
         .railwayBackgroundMotionLifecycle()
     }
@@ -433,6 +452,7 @@ private struct RailwayBackgroundZoomableImage: View {
     let asset: RailwayBackgroundAsset?
     let parallaxScale: CGFloat
     let parallaxTranslation: CGSize
+    @Binding var isZoomed: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var scale: CGFloat = 1
@@ -471,10 +491,16 @@ private struct RailwayBackgroundZoomableImage: View {
                     toggleZoom()
                 }
                 .accessibilityLabel("Background photograph")
-                .accessibilityHint("Pinch to zoom or drag to move")
+                .accessibilityHint("Pinch to zoom, drag to move, or swipe left or down to close")
         }
         .ignoresSafeArea()
         .clipped()
+        .onChange(of: scale) { _, scale in
+            isZoomed = scale > 1.001
+        }
+        .onDisappear {
+            isZoomed = false
+        }
     }
 
     private func magnifyGesture(within size: CGSize) -> some Gesture {
@@ -522,7 +548,8 @@ private struct RailwayBackgroundZoomableImage: View {
                     activeDragTranslation = .zero
                     panStartedDuringMagnification = false
                 }
-                guard !panStartedDuringMagnification, scale > 1.001 else { return }
+                guard !panStartedDuringMagnification else { return }
+                guard scale > 1.001 else { return }
                 offset = boundedOffset(
                     CGSize(
                         width: offset.width + value.translation.width,
@@ -574,6 +601,146 @@ private struct RailwayBackgroundZoomableImage: View {
             withAnimation(.easeInOut(duration: 0.2)) {
                 update()
             }
+        }
+    }
+}
+
+enum RailwayBackgroundViewerDismissGesture {
+    private static let directionalDominance: CGFloat = 1.15
+    private static let commitDistance: CGFloat = 44
+    private static let projectedCommitDistance: CGFloat = 90
+
+    static func shouldDismiss(
+        translationWidth: CGFloat,
+        translationHeight: CGFloat,
+        predictedEndTranslationWidth: CGFloat,
+        predictedEndTranslationHeight: CGFloat,
+        scale: CGFloat
+    ) -> Bool {
+        guard scale <= 1.001 else { return false }
+        if translationWidth < 0,
+           abs(translationWidth) > abs(translationHeight) * directionalDominance {
+            return shouldCommit(
+                translation: translationWidth,
+                predictedEndTranslation: predictedEndTranslationWidth
+            )
+        }
+        if translationHeight > 0,
+           abs(translationHeight) > abs(translationWidth) * directionalDominance {
+            return shouldCommit(
+                translation: translationHeight,
+                predictedEndTranslation: predictedEndTranslationHeight
+            )
+        }
+        return false
+    }
+
+    private static func shouldCommit(
+        translation: CGFloat,
+        predictedEndTranslation: CGFloat
+    ) -> Bool {
+        let projectionContinuesDirection = translation * predictedEndTranslation > 0
+        return abs(translation) >= commitDistance || (
+            projectionContinuesDirection
+                && abs(predictedEndTranslation) >= projectedCommitDistance
+        )
+    }
+}
+
+private struct RailwayBackgroundViewerDismissRecognizer: UIViewRepresentable {
+    let isEnabled: Bool
+    let onDismiss: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(isEnabled: isEnabled, onDismiss: onDismiss)
+    }
+
+    func makeUIView(context: Context) -> WindowAttachmentView {
+        let view = WindowAttachmentView()
+        view.isUserInteractionEnabled = false
+        view.onWindowChange = { [weak coordinator = context.coordinator] window in
+            coordinator?.install(on: window)
+        }
+        return view
+    }
+
+    func updateUIView(_ uiView: WindowAttachmentView, context: Context) {
+        context.coordinator.isEnabled = isEnabled
+        context.coordinator.onDismiss = onDismiss
+        context.coordinator.install(on: uiView.window)
+    }
+
+    static func dismantleUIView(_ uiView: WindowAttachmentView, coordinator: Coordinator) {
+        uiView.onWindowChange = nil
+        coordinator.install(on: nil)
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var isEnabled: Bool {
+            didSet { recognizer.isEnabled = isEnabled }
+        }
+        var onDismiss: () -> Void
+
+        private weak var installedWindow: UIWindow?
+        private lazy var recognizer: UIPanGestureRecognizer = {
+            let recognizer = UIPanGestureRecognizer(target: self, action: #selector(handlePan))
+            recognizer.cancelsTouchesInView = false
+            recognizer.delegate = self
+            return recognizer
+        }()
+
+        init(isEnabled: Bool, onDismiss: @escaping () -> Void) {
+            self.isEnabled = isEnabled
+            self.onDismiss = onDismiss
+            super.init()
+        }
+
+        func install(on window: UIWindow?) {
+            guard installedWindow !== window else { return }
+            installedWindow?.removeGestureRecognizer(recognizer)
+            installedWindow = window
+            window?.addGestureRecognizer(recognizer)
+            recognizer.isEnabled = isEnabled
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard isEnabled,
+                  let pan = gestureRecognizer as? UIPanGestureRecognizer else {
+                return false
+            }
+            let velocity = pan.velocity(in: gestureRecognizer.view)
+            return velocity.x < -abs(velocity.y) * 1.15
+                || velocity.y > abs(velocity.x) * 1.15
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
+
+        @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
+            guard recognizer.state == .ended else { return }
+            let translation = recognizer.translation(in: recognizer.view)
+            let velocity = recognizer.velocity(in: recognizer.view)
+            guard RailwayBackgroundViewerDismissGesture.shouldDismiss(
+                translationWidth: translation.x,
+                translationHeight: translation.y,
+                predictedEndTranslationWidth: translation.x + (velocity.x * 0.2),
+                predictedEndTranslationHeight: translation.y + (velocity.y * 0.2),
+                scale: 1
+            ) else { return }
+            onDismiss()
+        }
+    }
+
+    final class WindowAttachmentView: UIView {
+        var onWindowChange: ((UIWindow?) -> Void)?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            onWindowChange?(window)
         }
     }
 }

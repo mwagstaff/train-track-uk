@@ -13,6 +13,7 @@ struct ContentView: View {
     @EnvironmentObject var depStore: DeparturesStore
     @EnvironmentObject var toastStore: ToastStore
     @EnvironmentObject var deepLink: DeepLinkRouter
+    @EnvironmentObject var railwayBackgroundStore: RailwayBackgroundStore
     @ObservedObject private var trackingCoordinator = JourneyTrackingCoordinator.shared
 
     // Navigation paths for each tab to enable programmatic pop-to-root
@@ -23,6 +24,7 @@ struct ContentView: View {
     @State private var profilePath = NavigationPath()
     @State private var tabSelectionFeedbackTrigger = 0
     @State private var horizontalSwipeDisabledTabs: Set<Tab> = []
+    @State private var isRailwayBackgroundViewerPresented = false
 
     private var hasInProgressTab: Bool {
         trackingCoordinator.hasPresentableJourney
@@ -86,7 +88,9 @@ struct ContentView: View {
 
     var body: some View {
         TabView(selection: tabSelection) {
-            NavigationStack(path: $favouritesPath) { FavouritesView() }
+            NavigationStack(path: $favouritesPath) {
+                FavouritesView(onViewBackground: presentRailwayBackgroundViewer)
+            }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
                 .horizontalTabSwipePage(.favourites)
                 .horizontalTabSwipeDisabled(horizontalSwipeDisabledBinding(for: .favourites))
@@ -132,8 +136,12 @@ struct ContentView: View {
         .horizontalTabSwipe(
             selection: tabSelection,
             tabs: visibleTabs,
-            isEnabled: isHorizontalTabSwipeEnabled
+            isEnabled: isHorizontalTabSwipeEnabled,
+            onOpenBackgroundPhoto: presentRailwayBackgroundViewer
         )
+        .fullScreenCover(isPresented: $isRailwayBackgroundViewerPresented) {
+            RailwayBackgroundViewer(asset: railwayBackgroundStore.selectedAsset)
+        }
         .fullScreenCover(isPresented: addJourneyPresented) {
             NavigationStack { AddJourneyView() }
         }
@@ -169,6 +177,10 @@ struct ContentView: View {
                 router.selected = .history
             }
         }
+    }
+
+    private func presentRailwayBackgroundViewer() {
+        isRailwayBackgroundViewerPresented = true
     }
 }
 

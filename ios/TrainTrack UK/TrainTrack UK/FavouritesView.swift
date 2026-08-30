@@ -2,6 +2,8 @@ import SwiftUI
 import CoreLocation
 
 struct FavouritesView: View {
+    var onViewBackground: (() -> Void)?
+
     @EnvironmentObject var store: JourneyStore
     @EnvironmentObject var depStore: DeparturesStore
     @EnvironmentObject var activityMgr: LiveActivityManager
@@ -65,7 +67,7 @@ struct FavouritesView: View {
     private var filteredManualJourneys: [JourneyGroup] { applyClosestLegFilter(manualOrderedJourneys).filter(matchesSearch) }
     var body: some View {
         toolbarView
-            .railwayBackgroundPOC()
+            .railwayBackgroundPOC(onViewBackground: onViewBackground)
     }
 
     private var baseListView: AnyView {

@@ -6,6 +6,44 @@ import Testing
 
 @MainActor
 struct RailwayBackgroundTests {
+    @Test func photoViewerDismissesForLeftwardOrDownwardSwipesAtBaseZoom() {
+        #expect(RailwayBackgroundViewerDismissGesture.shouldDismiss(
+            translationWidth: -50,
+            translationHeight: 8,
+            predictedEndTranslationWidth: -70,
+            predictedEndTranslationHeight: 8,
+            scale: 1
+        ))
+        #expect(RailwayBackgroundViewerDismissGesture.shouldDismiss(
+            translationWidth: 8,
+            translationHeight: 50,
+            predictedEndTranslationWidth: 8,
+            predictedEndTranslationHeight: 70,
+            scale: 1
+        ))
+        #expect(!RailwayBackgroundViewerDismissGesture.shouldDismiss(
+            translationWidth: 50,
+            translationHeight: 8,
+            predictedEndTranslationWidth: 70,
+            predictedEndTranslationHeight: 8,
+            scale: 1
+        ))
+        #expect(!RailwayBackgroundViewerDismissGesture.shouldDismiss(
+            translationWidth: 8,
+            translationHeight: -50,
+            predictedEndTranslationWidth: 8,
+            predictedEndTranslationHeight: -70,
+            scale: 1
+        ))
+        #expect(!RailwayBackgroundViewerDismissGesture.shouldDismiss(
+            translationWidth: -50,
+            translationHeight: 8,
+            predictedEndTranslationWidth: -70,
+            predictedEndTranslationHeight: 8,
+            scale: 2
+        ))
+    }
+
     @Test func dailyRotationIsStableAndAdvancesAtLondonMidnight() throws {
         let catalog = makeCatalog()
         let formatter = ISO8601DateFormatter()

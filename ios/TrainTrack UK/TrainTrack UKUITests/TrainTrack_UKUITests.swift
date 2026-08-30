@@ -80,6 +80,32 @@ final class TrainTrack_UKUITests: XCTestCase {
     }
 
     @MainActor
+    func testBackgroundPhotoCanBeClosedWithLeftOrDownSwipe() throws {
+        let app = XCUIApplication()
+        app.launch()
+
+        XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
+        horizontalSwipe(in: app, from: 0.18, to: 0.82, at: 0.5)
+
+        let closePhotoButton = app.buttons["Close photo"]
+        XCTAssertTrue(closePhotoButton.waitForExistence(timeout: 2))
+
+        app.swipeLeft()
+
+        XCTAssertTrue(closePhotoButton.waitForNonExistence(timeout: 2))
+        XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.tabBars.buttons["Favourites"].isSelected)
+
+        app.buttons["View background photo"].tap()
+        XCTAssertTrue(closePhotoButton.waitForExistence(timeout: 2))
+
+        app.swipeDown()
+
+        XCTAssertTrue(closePhotoButton.waitForNonExistence(timeout: 2))
+        XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 2))
+    }
+
+    @MainActor
     func testAddJourneyTabShowsDependentJourneyOptions() throws {
         let app = XCUIApplication()
         app.launch()

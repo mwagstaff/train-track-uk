@@ -34,6 +34,7 @@ struct HorizontalTabSwipeModifier: ViewModifier {
     @Binding var selection: Tab
     let tabs: [Tab]
     let isEnabled: Bool
+    let onOpenBackgroundPhoto: (() -> Void)?
 
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @State private var translation: CGFloat = 0
@@ -95,7 +96,7 @@ struct HorizontalTabSwipeModifier: ViewModifier {
                 presentation.selectedTab = selection
                 presentation.offset = HorizontalTabSwipeMotion.visualOffset(
                     for: value.translation.width,
-                    hasAdjacentTab: adjacentTab(for: value.translation.width) != nil,
+                    hasAdjacentTab: destination(for: value.translation.width) != nil,
                     reduceMotion: accessibilityReduceMotion
                 )
                 presentation.isInteracting = true
@@ -104,7 +105,7 @@ struct HorizontalTabSwipeModifier: ViewModifier {
                     translationWidth: value.translation.width,
                     translationHeight: value.translation.height
                 ) && horizontal >= commitDistance
-                    && adjacentTab(for: value.translation.width) != nil
+                    && destination(for: value.translation.width) != nil
                 if newReadyState != isReady {
                     if newReadyState {
                         thresholdFeedbackTrigger += 1
@@ -126,7 +127,7 @@ struct HorizontalTabSwipeModifier: ViewModifier {
                         commitDistance: commitDistance,
                         projectedCommitDistance: projectedCommitDistance
                     )
-                let target = shouldCommit ? adjacentTab(for: horizontal) : nil
+                let target = shouldCommit ? destination(for: horizontal) : nil
 
                 if let target {
                     var transaction = Transaction()
@@ -135,7 +136,12 @@ struct HorizontalTabSwipeModifier: ViewModifier {
                         translation = 0
                         presentation.offset = 0
                         isReady = false
-                        selection = target
+                        if case .tab(let tab) = target {
+                            selection = tab
+                        }
+                    }
+                    if target == .backgroundPhoto {
+                        onOpenBackgroundPhoto?()
                     }
                 } else {
                     withAnimation(resetAnimation) {
@@ -173,19 +179,18 @@ struct HorizontalTabSwipeModifier: ViewModifier {
         translation < 0 ? .trailing : .leading
     }
 
-    private func adjacentTab(for horizontalTranslation: CGFloat) -> Tab? {
-        guard horizontalTranslation != 0,
-              let currentIndex = tabs.firstIndex(of: selection) else {
-            return nil
-        }
-        let targetIndex = horizontalTranslation < 0 ? currentIndex + 1 : currentIndex - 1
-        guard tabs.indices.contains(targetIndex) else { return nil }
-        return tabs[targetIndex]
+    private func destination(for horizontalTranslation: CGFloat) -> HorizontalTabSwipeDestination? {
+        HorizontalTabSwipeDestination.resolve(
+            horizontalTranslation: horizontalTranslation,
+            selection: selection,
+            tabs: tabs,
+            hasBackgroundPhoto: onOpenBackgroundPhoto != nil
+        )
     }
 
     @ViewBuilder
     private var swipeHint: some View {
-        if let target = adjacentTab(for: translation) {
+        if let target = destination(for: translation) {
             HStack(spacing: 8) {
                 if translation > 0 {
                     Image(systemName: "chevron.backward")
@@ -226,6 +231,43 @@ struct HorizontalTabSwipeModifier: ViewModifier {
             .padding(.horizontal, 12)
             .accessibilityHidden(true)
             .allowsHitTesting(false)
+        }
+    }
+}
+
+enum HorizontalTabSwipeDestination: Equatable {
+    case tab(Tab)
+    case backgroundPhoto
+
+    static func resolve(
+        horizontalTranslation: CGFloat,
+        selection: Tab,
+        tabs: [Tab],
+        hasBackgroundPhoto: Bool
+    ) -> Self? {
+        guard horizontalTranslation != 0,
+              let currentIndex = tabs.firstIndex(of: selection) else {
+            return nil
+        }
+        if horizontalTranslation > 0, currentIndex == tabs.startIndex, hasBackgroundPhoto {
+            return .backgroundPhoto
+        }
+        let targetIndex = horizontalTranslation < 0 ? currentIndex + 1 : currentIndex - 1
+        guard tabs.indices.contains(targetIndex) else { return nil }
+        return .tab(tabs[targetIndex])
+    }
+
+    var title: String {
+        switch self {
+        case .tab(let tab): tab.title
+        case .backgroundPhoto: "Photo"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .tab(let tab): tab.systemImage
+        case .backgroundPhoto: "photo"
         }
     }
 }
@@ -305,12 +347,14 @@ extension View {
     func horizontalTabSwipe(
         selection: Binding<Tab>,
         tabs: [Tab],
-        isEnabled: Bool = true
+        isEnabled: Bool = true,
+        onOpenBackgroundPhoto: (() -> Void)? = nil
     ) -> some View {
         modifier(HorizontalTabSwipeModifier(
             selection: selection,
             tabs: tabs,
-            isEnabled: isEnabled
+            isEnabled: isEnabled,
+            onOpenBackgroundPhoto: onOpenBackgroundPhoto
         ))
     }
 }
