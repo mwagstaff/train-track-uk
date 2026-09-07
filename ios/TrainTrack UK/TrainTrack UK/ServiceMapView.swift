@@ -187,6 +187,23 @@ struct ServiceMapView: View {
             if isMapLoading {
                 mapLoadingView
                     .transition(.opacity)
+            } else if isBusService, hasCallingPoints {
+                RailReplacementBusMapView(
+                    stations: stations(),
+                    stationCoordinates: stations().map { stationCoordinate(for: $0.crs) },
+                    serviceIdentifier: "BUS",
+                    destinationName: destinationName,
+                    fromCRS: fromCRS,
+                    toCRS: toCRS,
+                    showsChrome: !isCompact,
+                    progress: currentProgress,
+                    historicalTravelRange: isHistorical ? selectedCallingPointRange(in: stations()) : nil,
+                    historicalArrivalTime: historicalArrivalTime
+                )
+                .onAppear {
+                    RailwayMapPresentationGate.markMapPresented()
+                }
+                .transition(.opacity)
             } else if let railwayRoute {
                 ServiceRailwayMapView(
                     route: railwayRoute,
@@ -235,7 +252,7 @@ struct ServiceMapView: View {
                 .presentationDragIndicator(.visible)
         }
         .overlay(alignment: .bottom) {
-            if isShowingEstimateNotice && !isHistorical && !isCompact {
+            if isShowingEstimateNotice && !isHistorical && !isCompact && !isBusService {
                 estimateNoticeBanner
                     .transition(.opacity)
             }
@@ -289,45 +306,26 @@ struct ServiceMapView: View {
     }
 
     private var mapUnavailableView: some View {
-        ZStack {
-            if isBusService {
-                RailwayBackgroundParallaxImage(name: "ReplacementBusMapBackground")
-                    .opacity(0.58)
-                    .mask {
-                        LinearGradient(
-                            stops: [
-                                .init(color: .clear, location: 0),
-                                .init(color: .black, location: 0.18),
-                                .init(color: .black, location: 0.82),
-                                .init(color: .clear, location: 1)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    }
-            }
-
-            ContentUnavailableView {
-                Label(
-                    isBusService ? "Railway map unavailable" : "Service map unavailable",
-                    systemImage: isBusService ? "bus.fill" : "tram.fill"
-                )
-            } description: {
-                VStack(spacing: 8) {
-                    Text(mapUnavailableDescription)
-                    if isRetrying {
-                        HStack(spacing: 6) {
-                            ProgressView()
-                            Text(retryStatusText)
-                        }
+        ContentUnavailableView {
+            Label(
+                isBusService ? "Railway map unavailable" : "Service map unavailable",
+                systemImage: isBusService ? "bus.fill" : "tram.fill"
+            )
+        } description: {
+            VStack(spacing: 8) {
+                Text(mapUnavailableDescription)
+                if isRetrying {
+                    HStack(spacing: 6) {
+                        ProgressView()
+                        Text(retryStatusText)
                     }
                 }
-            } actions: {
-                Button("Try again now") {
-                    loadRequestID = UUID()
-                }
-                .buttonStyle(.borderedProminent)
             }
+        } actions: {
+            Button("Try again now") {
+                loadRequestID = UUID()
+            }
+            .buttonStyle(.borderedProminent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

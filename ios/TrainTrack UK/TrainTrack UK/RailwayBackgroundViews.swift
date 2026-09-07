@@ -282,44 +282,6 @@ struct RailwayBackgroundBackdrop: View {
     }
 }
 
-struct RailwayBackgroundParallaxImage: View {
-    let name: String
-
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ObservedObject private var motion = RailwayBackgroundMotionModel.shared
-
-    var body: some View {
-        GeometryReader { proxy in
-            if let image = UIImage(named: name) {
-                let parallaxScale: CGFloat = reduceMotion ? 1 : 1.10
-                let geometry = RailwayBackgroundPhotoGeometry(
-                    viewportSize: proxy.size,
-                    sourceSize: image.size,
-                    focalPoint: CGPoint(x: 0.5, y: 0.5),
-                    parallaxScale: parallaxScale,
-                    zoomScale: 1
-                )
-                let translation = geometry.boundedTranslation(
-                    reduceMotion ? .zero : motion.translation
-                )
-
-                Image(uiImage: image)
-                    .resizable()
-                    .frame(width: geometry.renderedSize.width, height: geometry.renderedSize.height)
-                    .offset(
-                        x: geometry.focalOffset.width + translation.width,
-                        y: geometry.focalOffset.height + translation.height
-                    )
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-                    .clipped()
-            }
-        }
-        .ignoresSafeArea()
-        .accessibilityHidden(true)
-        .railwayBackgroundMotionLifecycle()
-    }
-}
-
 struct RailwayBackgroundSectionHeader: View {
     let title: String
 

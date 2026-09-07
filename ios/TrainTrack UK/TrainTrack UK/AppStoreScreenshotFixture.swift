@@ -116,6 +116,52 @@ enum AppStoreScreenshotFixture {
                         )
                     }
                 }
+            case "bus-route-map":
+                let route = stations(["ECR", "NWD", "ANZ", "PNW", "SYD", "FOH", "HPA", "NXG", "LBG"])
+                if route.count == 9 {
+                    JourneyTrackingCoordinator.shared.installScreenshotCheckpoint(checkpoint(
+                        id: UUID(), route: route,
+                        departure: Date().addingTimeInterval(-8 * 60),
+                        durationMinutes: 36, delayMinutes: 0, completed: false
+                    ))
+                    if let checkpoint = JourneyTrackingCoordinator.shared.activeJourney,
+                       let leg = checkpoint.currentLeg,
+                       let serviceID = leg.serviceID,
+                       let current = leg.callingPoints.first {
+                        let subsequent = leg.callingPoints.dropFirst().map { point in
+                            CallingPoint(
+                                locationName: point.locationName, crs: point.crs,
+                                st: point.scheduledTime, et: point.estimatedTime, at: point.actualTime,
+                                isCancelled: false, cancelReason: nil, platform: nil, length: nil,
+                                detachFront: nil, affectedByDiversion: nil, rerouteDelay: nil
+                            )
+                        }
+                        let details = ServiceDetails(
+                            previousCallingPoints: nil,
+                            subsequentCallingPoints: [CallingPointList(
+                                callingPoint: subsequent,
+                                serviceType: "bus",
+                                serviceChangeRequired: false,
+                                assocIsCancelled: false
+                            )],
+                            generatedAt: ISO8601DateFormatter().string(from: Date()),
+                            serviceType: "bus", locationName: current.locationName, crs: current.crs,
+                            operator: "Rail replacement", operatorCode: "BUS", isCancelled: false,
+                            length: nil, detachFront: nil, isReverseFormation: nil, platform: nil,
+                            sta: nil, eta: nil, ata: nil,
+                            std: current.scheduledTime, etd: "On time", atd: current.actualTime,
+                            delayReason: nil, cancelReason: nil
+                        )
+                        DeparturesStore.shared.installScreenshotServiceDetails(details, serviceID: serviceID)
+                        try await Task.sleep(for: .milliseconds(300))
+                        TabRouter.shared.selected = .inProgress
+                        DeepLinkRouter.shared.routeMapDestination = JourneyRouteMapDestination(
+                            checkpoint: checkpoint,
+                            fromCRS: route.first!.crs,
+                            toCRS: route.last!.crs
+                        )
+                    }
+                }
             default: TabRouter.shared.selected = .myJourneys
             }
         } catch {
@@ -149,17 +195,23 @@ enum AppStoreScreenshotFixture {
         let arrival = scheduledArrival.addingTimeInterval(Double(delayMinutes * 60))
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
-        let points = [
-            JourneyHistoryCallingPoint(locationName: route[0].name, crs: route[0].crs,
-                scheduledTime: formatter.string(from: departure), estimatedTime: "On time",
-                actualTime: formatter.string(from: departure)),
-            JourneyHistoryCallingPoint(locationName: route[1].name, crs: route[1].crs,
-                scheduledTime: formatter.string(from: scheduledArrival),
-                estimatedTime: formatter.string(from: arrival),
-                actualTime: completed ? formatter.string(from: arrival) : nil)
-        ]
+        let legDuration = max(durationMinutes, route.count - 1)
+        let points = route.enumerated().map { index, station in
+            let progress = route.count > 1 ? Double(index) / Double(route.count - 1) : 0
+            let scheduledTime = departure.addingTimeInterval(Double(legDuration * 60) * progress)
+            let estimatedTime = scheduledTime.addingTimeInterval(Double(delayMinutes * 60))
+            return JourneyHistoryCallingPoint(
+                locationName: station.name,
+                crs: station.crs,
+                scheduledTime: formatter.string(from: scheduledTime),
+                estimatedTime: index == 0 ? "On time" : formatter.string(from: estimatedTime),
+                actualTime: index == 0
+                    ? formatter.string(from: departure)
+                    : (completed ? formatter.string(from: estimatedTime) : nil)
+            )
+        }
         let leg = JourneyHistoryLeg(
-            plannedLegIndex: 0, fromStation: route[0], toStation: route[1],
+            plannedLegIndex: 0, fromStation: route[0], toStation: route[route.count - 1],
             serviceID: completed ? nil : "SCREENSHOT-ECR-GTW",
             operatorName: route[0].crs == "CLK" ? "Southeastern" : "Thameslink",
             operatorCode: route[0].crs == "CLK" ? "SE" : "TL",

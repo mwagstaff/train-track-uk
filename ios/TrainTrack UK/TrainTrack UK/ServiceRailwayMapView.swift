@@ -216,7 +216,7 @@ enum RailwayEstimatedLocationLabel {
     }
 }
 
-private func railwayClockTime(_ value: String?) -> String? {
+func railwayClockTime(_ value: String?) -> String? {
     guard let value else { return nil }
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     let components = trimmed.split(separator: ":")
