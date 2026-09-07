@@ -294,6 +294,40 @@ struct TrainTrack_UKTests {
 
         #expect(departure.actualDeparture == "10:45")
         #expect(departure.platform == "2")
+        let actualDeparture = try #require(departure.actualDepartureAt)
+        #expect(departure.serviceDetailsMayBeAvailable(
+            at: actualDeparture.addingTimeInterval(119)
+        ))
+        #expect(!departure.serviceDetailsMayBeAvailable(
+            at: actualDeparture.addingTimeInterval(121)
+        ))
+    }
+
+    @Test @MainActor func serviceDetailsPolicyKeepsUnknownAndFutureDeparturesEligible() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+        #expect(ServiceDetailsRequestPolicy.mayRequest(departureAt: nil, at: now))
+        #expect(ServiceDetailsRequestPolicy.mayRequest(
+            departureAt: now.addingTimeInterval(60),
+            at: now
+        ))
+
+        let delayedDeparture = RecentDepartureV2(
+            serviceID: "delayed-service",
+            serviceType: "train",
+            fromCRS: "SLO",
+            toCRS: "PAD",
+            scheduledDeparture: "10:00",
+            estimatedDeparture: "Delayed",
+            actualDeparture: nil,
+            scheduledDepartureAt: now.addingTimeInterval(-600),
+            estimatedDepartureAt: nil,
+            actualDepartureAt: nil,
+            platform: nil,
+            isCancelled: false,
+            lastObservedAt: now
+        )
+        #expect(delayedDeparture.serviceDetailsMayBeAvailable(at: now))
     }
 
     @Test @MainActor func tabsHaveAStablePagingOrderAndPresentation() {
@@ -492,6 +526,17 @@ struct TrainTrack_UKTests {
             time: "08:03",
             delayMinutes: 0
         ) == "ETA 08:03, on time")
+    }
+
+    @Test func inProgressFinalDestinationOnlyShowsOriginalArrivalWhenLate() {
+        #expect(InProgressJourneyPresentation.originalArrivalText(
+            time: "08:03",
+            delayMinutes: 2
+        ) == "Originally due to arrive at 08:03")
+        #expect(InProgressJourneyPresentation.originalArrivalText(
+            time: "08:03",
+            delayMinutes: 0
+        ) == nil)
     }
 
     @Test func itineraryRetainsFinalArrivalDelay() {

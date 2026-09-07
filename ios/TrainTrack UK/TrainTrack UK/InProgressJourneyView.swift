@@ -19,6 +19,11 @@ enum InProgressJourneyPresentation {
         guard delayMinutes > 0 else { return "\(eta), on time" }
         return "\(eta), \(delayMinutes) minute\(delayMinutes == 1 ? "" : "s") late"
     }
+
+    static func originalArrivalText(time: String?, delayMinutes: Int?) -> String? {
+        guard let time, let delayMinutes, delayMinutes > 0 else { return nil }
+        return "Originally due to arrive at \(JourneyCardPresentation.arrivalTimeLabel(time))"
+    }
 }
 
 struct InProgressJourneyView: View {
@@ -441,18 +446,23 @@ struct InProgressJourneyView: View {
         departure: DepartureV2
     ) -> some View {
         let itinerary = remainingItinerary(group: group, departure: departure)
+        let delayMinutes = itinerary?.finalArrivalDelayMinutes
+        let scheduledArrivalTime = itinerary?.legs.last?.scheduledArrivalDate.map(clockTime)
         return etaCard(
-            label: "Final destination",
-            subtitle: group.endStation.name,
+            label: "Destination: \(group.endStation.name)",
+            subtitle: InProgressJourneyPresentation.originalArrivalText(
+                time: scheduledArrivalTime,
+                delayMinutes: delayMinutes
+            ),
             time: itinerary?.finalArrivalTime,
-            delayMinutes: itinerary?.finalArrivalDelayMinutes,
+            delayMinutes: delayMinutes,
             showsDelayStatus: true
         )
     }
 
     @MainActor private func etaCard(
         label: String,
-        subtitle: String,
+        subtitle: String?,
         time: String?,
         delayMinutes: Int? = nil,
         showsDelayStatus: Bool = false
@@ -478,10 +488,12 @@ struct InProgressJourneyView: View {
                     .font(.title2.weight(.bold))
                     .monospacedDigit()
             }
-            Text(subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+            if let subtitle {
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
@@ -1311,11 +1323,15 @@ private struct RecentServicePicker: View {
                     toCRS: journey.toStation.crs
                 )
                 hasLoadedPreviousDepartures = true
+                let now = Date()
                 _ = await depStore.ensureServiceDetails(
                     for: recentStore.departures(
                         fromCRS: journey.fromStation.crs,
-                        toCRS: journey.toStation.crs
-                    ).map(\.serviceID),
+                        toCRS: journey.toStation.crs,
+                        now: now
+                    )
+                    .filter { $0.serviceDetailsMayBeAvailable(at: now) }
+                    .map(\.serviceID),
                     force: true
                 )
             }

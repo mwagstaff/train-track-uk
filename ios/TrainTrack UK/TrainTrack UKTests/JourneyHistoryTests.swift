@@ -39,6 +39,46 @@ struct JourneyHistoryTests {
         #expect(JourneyHistoryClockTime.text(time, calendar: calendar) == "08:03")
     }
 
+    @Test func endedEarlyHistoryTitleRetainsPlannedDestination() {
+        let departedAt = Date(timeIntervalSince1970: 2_000_000_000)
+        let eastCroydon = station(crs: "ECR", name: "East Croydon")
+        let cambridgeSouth = station(crs: "CMB", name: "Cambridge South")
+        let checkpoint = ActiveJourneyHistoryCheckpoint(
+            id: UUID(),
+            subscriptionId: "ended-early-title",
+            source: .adhoc,
+            plannedStations: [eastCroydon, cambridgeSouth],
+            createdAt: departedAt,
+            phase: .inTransit,
+            plannedLegIndex: 0,
+            originArrivedAt: departedAt,
+            detectedDepartureAt: departedAt,
+            detectedArrivalAt: nil,
+            deviceBasedArrivalAt: nil,
+            lastConfirmedOnRouteStation: eastCroydon,
+            nextExpectedCallingPointIndex: 1,
+            legs: [],
+            stationEvents: [],
+            approachNotificationSent: false,
+            backendSessionID: nil,
+            serviceMatchConfidence: 1,
+            unexpectedStation: nil,
+            unexpectedStationObservedAt: nil,
+            serviceDepartedStationCRS: nil,
+            serviceDepartedStationAt: nil,
+            updatedAt: departedAt
+        )
+
+        let record = JourneyHistoryRecord(
+            checkpoint: checkpoint,
+            outcome: .endedEarly,
+            completedAt: departedAt
+        )
+
+        #expect(record.recordedDestinationName == "East Croydon")
+        #expect(record.routeTitle == "East Croydon → Cambridge South")
+    }
+
     @Test func delayRepayRequiresConfirmedActualArrival() {
         let scheduled = Date(timeIntervalSince1970: 1_000_000)
 
@@ -244,6 +284,41 @@ struct JourneyHistoryTests {
             subscriptionID: "later-journey",
             activeSubscriptionID: "scheduled-journey"
         ))
+    }
+
+    @Test @MainActor func journeyCompletionRejectsConcurrentArrivalCallbacks() {
+        #expect(JourneyTrackingCoordinator.shouldBeginCompletion(phase: .inTransit))
+        #expect(!JourneyTrackingCoordinator.shouldBeginCompletion(phase: .arriving))
+    }
+
+    @Test @MainActor func sameRouteGeofenceEventUsesAdHocCandidateWhenScheduledSubscriptionFiresFirst() throws {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let candidates = [
+            armedCandidate(subscriptionID: "ad-hoc", now: now, from: "VIC", to: "KTH")
+        ]
+
+        let index = try #require(JourneyTrackingCoordinator.candidateIndexForRouteEvent(
+            in: candidates,
+            subscriptionID: "scheduled",
+            from: "vic",
+            to: "kth"
+        ))
+
+        #expect(candidates[index].subscriptionId == "ad-hoc")
+    }
+
+    @Test @MainActor func routeEventDoesNotUseAnUnrelatedJourneyCandidate() {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let candidates = [
+            armedCandidate(subscriptionID: "ad-hoc", now: now, from: "VIC", to: "KTH")
+        ]
+
+        #expect(JourneyTrackingCoordinator.candidateIndexForRouteEvent(
+            in: candidates,
+            subscriptionID: "scheduled",
+            from: "KTH",
+            to: "VIC"
+        ) == nil)
     }
 
     @Test @MainActor func restoreDropsActiveCompletedMutedAndExpiredCandidates() {
@@ -677,6 +752,21 @@ struct JourneyHistoryTests {
 
     private func station(crs: String, name: String) -> Station {
         Station(crs: crs, name: name, longitude: "0", latitude: "0")
+    }
+
+    @Test @MainActor func expiredCandidatesCannotStartFromExactOrSameRouteCallbacks() {
+        let now = Date()
+        let candidates = [armedCandidate(subscriptionID: "scheduled", now: now,
+                                         activeUntil: now, from: "VIC", to: "KTH")]
+        for subscriptionID in ["scheduled", "live-session"] {
+            #expect(JourneyTrackingCoordinator.candidateIndexForRouteEvent(
+                in: candidates, subscriptionID: subscriptionID, from: "VIC", to: "KTH", now: now
+            ) == nil)
+            #expect(JourneyTrackingCoordinator.candidateIndexForRouteEvent(
+                in: candidates, subscriptionID: subscriptionID, from: "VIC", to: "KTH",
+                now: now.addingTimeInterval(-1)
+            ) == 0)
+        }
     }
 
     private func armedCandidate(

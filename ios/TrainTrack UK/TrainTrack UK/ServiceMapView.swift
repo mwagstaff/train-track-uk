@@ -208,28 +208,7 @@ struct ServiceMapView: View {
                 }
                 .transition(.opacity)
             } else {
-                ContentUnavailableView {
-                    Label(
-                        isBusService ? "Railway map unavailable" : "Service map unavailable",
-                        systemImage: isBusService ? "bus.fill" : "tram.fill"
-                    )
-                } description: {
-                    VStack(spacing: 8) {
-                        Text(mapUnavailableDescription)
-                        if isRetrying {
-                            HStack(spacing: 6) {
-                                ProgressView()
-                                Text(retryStatusText)
-                            }
-                        }
-                    }
-                } actions: {
-                    Button("Try again now") {
-                        loadRequestID = UUID()
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                mapUnavailableView
             }
         }
         .navigationTitle("")
@@ -307,6 +286,50 @@ struct ServiceMapView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var mapUnavailableView: some View {
+        ZStack {
+            if isBusService {
+                RailwayBackgroundParallaxImage(name: "ReplacementBusMapBackground")
+                    .opacity(0.58)
+                    .mask {
+                        LinearGradient(
+                            stops: [
+                                .init(color: .clear, location: 0),
+                                .init(color: .black, location: 0.18),
+                                .init(color: .black, location: 0.82),
+                                .init(color: .clear, location: 1)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    }
+            }
+
+            ContentUnavailableView {
+                Label(
+                    isBusService ? "Railway map unavailable" : "Service map unavailable",
+                    systemImage: isBusService ? "bus.fill" : "tram.fill"
+                )
+            } description: {
+                VStack(spacing: 8) {
+                    Text(mapUnavailableDescription)
+                    if isRetrying {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                            Text(retryStatusText)
+                        }
+                    }
+                }
+            } actions: {
+                Button("Try again now") {
+                    loadRequestID = UUID()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var estimateNoticeBanner: some View {

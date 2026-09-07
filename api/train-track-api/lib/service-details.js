@@ -31,13 +31,11 @@ export async function getServiceDetails(serviceId) {
         }
         return parseResponseDataServiceDetails(response.data);
     } catch (error) {
-        // If we got an HTTP 400 back, then log the request details and return an HTTP 400 status code
-        if (error.response && error.response.status === 400) {
-            const details = (() => {
-                try { return JSON.stringify(error.response.data); } catch { return '[unstringifiable error data]'; }
-            })();
-            console.error(`No data for service ID ${serviceId}: ${details}`);
-            return { error: 'No data for this service ID' };
+        // Rail Data Marketplace returns 400 or 500 after an LDBWS service ID has
+        // expired. Treat that documented short-lived-ID case as an unavailable
+        // result; the upstream status is still recorded by getWithRetry metrics.
+        if (isUnavailableServiceDetailsError(error)) {
+            return { error: 'No data for this service ID', unavailable: true };
         } else {
             const status = error?.response?.status;
             const statusText = error?.response?.statusText;
@@ -47,6 +45,11 @@ export async function getServiceDetails(serviceId) {
             return { error: 'Failed to get data from API' };
         }
     }
+}
+
+export function isUnavailableServiceDetailsError(error) {
+    const status = error?.response?.status;
+    return status === 400 || status === 500;
 }
 
 export async function getServiceDetailsWithContext(serviceId, context = {}) {

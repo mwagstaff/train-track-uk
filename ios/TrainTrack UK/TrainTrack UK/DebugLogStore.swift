@@ -8,9 +8,7 @@ final class DebugLogStore: ObservableObject {
 
     @Published private(set) var logs: [DebugLogEntry] = []
     @Published private(set) var isFetchingServerLogs = false
-    #if DEBUG
     private let maxLogs = 500
-    #endif
 
     private init() {
         #if DEBUG
@@ -23,7 +21,7 @@ final class DebugLogStore: ObservableObject {
     }
 
     func log(_ message: @autoclosure () -> String, category: String = "General") {
-        #if DEBUG
+        guard ClientDiagnosticsLogger.isEnabled else { return }
         let message = message()
         let entry = DebugLogEntry(
             timestamp: Date(),
@@ -37,7 +35,8 @@ final class DebugLogStore: ObservableObject {
             logs = Array(logs.prefix(maxLogs))
         }
 
-        // Persist logs
+        #if DEBUG
+        // Persist development logs only; production diagnostics remain bounded in memory.
         if let encoded = try? JSONEncoder().encode(logs) {
             UserDefaults.standard.set(encoded, forKey: "debug_logs")
         }
@@ -49,14 +48,11 @@ final class DebugLogStore: ObservableObject {
 
     func clear() {
         logs.removeAll()
-        #if DEBUG
         UserDefaults.standard.removeObject(forKey: "debug_logs")
         ClientDiagnosticsLogger.clearStoredLogs()
-        #endif
     }
 
     func exportLogs() -> String {
-        #if DEBUG
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
 
@@ -69,13 +65,9 @@ final class DebugLogStore: ObservableObject {
             "## Debug Logs\n\(debugLogs.isEmpty ? "(no entries)" : debugLogs)",
             ClientDiagnosticsLogger.exportStoredLogs()
         ].joined(separator: "\n\n")
-        #else
-        return ""
-        #endif
     }
 
     func exportFileURL() -> URL? {
-        #if DEBUG
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_GB_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
@@ -88,9 +80,6 @@ final class DebugLogStore: ObservableObject {
             log("Could not prepare troubleshooting log export: \(error.localizedDescription)", category: "Error")
             return nil
         }
-        #else
-        nil
-        #endif
     }
 
     func fetchServerAuditLogs(limit: Int = 40) async {
@@ -132,7 +121,6 @@ final class DebugLogStore: ObservableObject {
         #endif
     }
 
-    #if DEBUG
     private func environmentSummary() -> String {
         let info = Bundle.main.infoDictionary
         let version = info?["CFBundleShortVersionString"] as? String ?? "unknown"
@@ -184,7 +172,6 @@ final class DebugLogStore: ObservableObject {
             "Subscription: \(subscriptionId)"
         ].joined(separator: "\n")
     }
-    #endif
 }
 
 struct DebugLogEntry: Identifiable, Codable {

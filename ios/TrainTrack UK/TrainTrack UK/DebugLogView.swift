@@ -28,12 +28,14 @@ struct DebugLogView: View {
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     HStack {
+                        #if DEBUG
                         Button(store.isFetchingServerLogs ? "Fetching" : "Server") {
                             Task {
                                 await store.fetchServerAuditLogs()
                             }
                         }
                         .disabled(store.isFetchingServerLogs)
+                        #endif
 
                         Button("Journey") {
                             Task {

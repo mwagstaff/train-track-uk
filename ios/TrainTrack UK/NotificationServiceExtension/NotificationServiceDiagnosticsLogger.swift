@@ -1,19 +1,26 @@
 import Foundation
 
 nonisolated enum NotificationServiceDiagnosticsLogger {
-    #if DEBUG
     private static let suiteName = "group.dev.skynolimit.traintrack"
     private static let queue = DispatchQueue(label: "dev.skynolimit.traintrack.notification-service-diagnostics")
     private static let maxFileBytes = 512 * 1024
-    #endif
+
+    static var isEnabled: Bool {
+        let defaults = UserDefaults(suiteName: suiteName)
+        #if DEBUG
+        if defaults?.object(forKey: "troubleshootingLogsEnabled") == nil { return true }
+        #endif
+        return defaults?.bool(forKey: "troubleshootingLogsEnabled") ?? false
+    }
 
     static func log(
         _ event: String,
         metadata: @autoclosure () -> [String: Any?] = [:]
     ) {
-        #if DEBUG
+        guard isEnabled else { return }
         let metadata = metadata()
         queue.async {
+            guard isEnabled else { return }
             guard let url = logFileURL(named: "diagnostics-notification-service.jsonl") else { return }
             let entry: [String: Any] = [
                 "timestamp": ISO8601DateFormatter().string(from: Date()),
@@ -32,10 +39,8 @@ nonisolated enum NotificationServiceDiagnosticsLogger {
             append(lineData, to: url)
             trimIfNeeded(url)
         }
-        #endif
     }
 
-    #if DEBUG
     private static func logFileURL(named name: String) -> URL? {
         let fileManager = FileManager.default
         let directory = fileManager.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
@@ -57,7 +62,9 @@ nonisolated enum NotificationServiceDiagnosticsLogger {
     }
 
     private static func trimIfNeeded(_ url: URL) {
-        guard let data = try? Data(contentsOf: url), data.count > maxFileBytes else { return }
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber,
+              size.intValue > maxFileBytes,
+              let data = try? Data(contentsOf: url) else { return }
         try? Data(data.suffix(maxFileBytes / 2)).write(to: url, options: .atomic)
     }
 
@@ -86,5 +93,4 @@ nonisolated enum NotificationServiceDiagnosticsLogger {
             return String(describing: value)
         }
     }
-    #endif
 }

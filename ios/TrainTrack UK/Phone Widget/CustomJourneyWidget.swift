@@ -140,7 +140,9 @@ private final class NetworkServiceWidgetCJ {
     func fetchDepartures(from: String, to: String) async throws -> [DepartureV2] {
         let path = "from/\(from)/to/\(to)"
         guard let url = URL(string: "\(base)/departures/\(path)") else { throw URLError(.badURL) }
+        #if DEBUG
         Logger.customWidget.debug("GET \(url.absoluteString, privacy: .public)")
+        #endif
         var request = URLRequest(url: url)
         request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
         let (data, _) = try await URLSession.shared.data(for: request)
@@ -157,7 +159,9 @@ private final class NetworkServiceWidgetCJ {
     func fetchDetails(ids: [String]) async throws -> [String: ServiceDetails] {
         guard !ids.isEmpty else { return [:] }
         guard let url = URL(string: "\(base)/service_details/\(ids.joined(separator: "/"))") else { throw URLError(.badURL) }
+        #if DEBUG
         Logger.customWidget.debug("GET \(url.absoluteString, privacy: .public)")
+        #endif
         var request = URLRequest(url: url)
         request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
         let (data, _) = try await URLSession.shared.data(for: request)

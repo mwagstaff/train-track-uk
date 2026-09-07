@@ -49,7 +49,7 @@ final class AsyncOperationSerialiser {
     }
 }
 
-private struct StationArrivalTarget: Codable {
+struct StationArrivalTarget: Codable {
     let identifier: String
     let subscriptionId: String
     let from: String
@@ -63,6 +63,22 @@ private struct StationArrivalTarget: Codable {
     let windowStart: String?
     let windowEnd: String?
     let travelDate: String?
+    var dayWindows: [String: NotificationTimeWindow]? = nil
+
+    func isActive(at now: Date = Date()) -> Bool {
+        if let activeUntil, activeUntil <= now { return false }
+        guard isScheduledActivation == true else { return true }
+        guard let windowStart, let windowEnd else { return false }
+        return NotificationScheduleActivationPolicy.isActive(
+            scheduleKind: scheduleKind,
+            daysOfWeek: daysOfWeek ?? [],
+            windowStart: windowStart,
+            windowEnd: windowEnd,
+            travelDate: travelDate,
+            dayWindows: dayWindows,
+            now: now
+        )
+    }
 
     func distance(from location: CLLocation) -> CLLocationDistance {
         station.distance(from: location)
@@ -211,8 +227,9 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         debugLog("📍 [GeofenceManager] init auth=\(manager.authorizationStatus.rawValue) monitored=\(manager.monitoredRegions.count)")
     }
 
-    private func logGeofenceDiagnostic(_ event: String, metadata: [String: Any?] = [:]) {
-        var enriched = metadata
+    private func logGeofenceDiagnostic(_ event: String, metadata: @autoclosure () -> [String: Any?] = [:]) {
+        guard ClientDiagnosticsLogger.isEnabled else { return }
+        var enriched = metadata()
         enriched["authorization"] = authorizationStatusDescription(manager.authorizationStatus)
         enriched["accuracy_authorization"] = accuracyAuthorizationDescription
         enriched["tracking_mode"] = trackingModeDescription
@@ -617,7 +634,11 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         monitoredTargets = monitoredTargets.filter { _, target in
             !store.hasAuthoritativeScheduledActivationCache
                 || target.isScheduledActivation != true
-                || NotificationMuteStorage.hasPendingStationDepartureCleanup(from: target.from, to: target.to)
+                || NotificationMuteStorage.hasPendingStationDepartureCleanup(
+                    from: target.from,
+                    to: target.to,
+                    subscriptionId: target.subscriptionId
+                )
         }
         for (identifier, target) in scheduledTargets {
             monitoredTargets[identifier] = target
@@ -963,7 +984,8 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                     daysOfWeek: subscription.daysOfWeek,
                     windowStart: leg.windowStart,
                     windowEnd: leg.windowEnd,
-                    travelDate: leg.travelDate
+                    travelDate: leg.travelDate,
+                    dayWindows: leg.dayWindows
                 )
             }
         }
@@ -978,8 +1000,16 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         var selectedTargets: [String: StationArrivalTarget] = [:]
         let currentLocation = currentUsableLocation(maxAge: ArrivalConfig.recentLocationForRegionHintSeconds)
         let prioritized = targets.values.sorted { lhs, rhs in
-            let lhsAwaitingExit = NotificationMuteStorage.hasPendingStationDepartureCleanup(from: lhs.from, to: lhs.to)
-            let rhsAwaitingExit = NotificationMuteStorage.hasPendingStationDepartureCleanup(from: rhs.from, to: rhs.to)
+            let lhsAwaitingExit = NotificationMuteStorage.hasPendingStationDepartureCleanup(
+                from: lhs.from,
+                to: lhs.to,
+                subscriptionId: lhs.subscriptionId
+            )
+            let rhsAwaitingExit = NotificationMuteStorage.hasPendingStationDepartureCleanup(
+                from: rhs.from,
+                to: rhs.to,
+                subscriptionId: rhs.subscriptionId
+            )
             if lhsAwaitingExit != rhsAwaitingExit { return lhsAwaitingExit }
 
             let lhsActive = isTargetActiveNow(lhs)
@@ -1061,16 +1091,24 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     private func isTargetActiveNow(_ target: StationArrivalTarget, now: Date = Date()) -> Bool {
-        guard target.isScheduledActivation == true else { return true }
-        guard let windowStart = target.windowStart, let windowEnd = target.windowEnd else { return false }
-        return NotificationScheduleActivationPolicy.isActive(
-            scheduleKind: target.scheduleKind,
-            daysOfWeek: target.daysOfWeek ?? [],
-            windowStart: windowStart,
-            windowEnd: windowEnd,
-            travelDate: target.travelDate,
-            now: now
-        )
+        target.isActive(at: now)
+    }
+
+    private func validateActivation(_ target: StationArrivalTarget) -> Bool {
+        guard target.isActive() else {
+            if NotificationMuteStorage.hasPendingStationDepartureCleanup(
+                from: target.from, to: target.to, subscriptionId: target.subscriptionId
+            ) {
+                NotificationMuteStorage.clearPendingStationDepartureCleanup(from: target.from, to: target.to)
+                NotificationMuteStorage.clearArrivalDetectionPending(from: target.from, to: target.to)
+            }
+            confirmationStates[target.identifier]?.reset()
+            if JourneyTrackingCoordinator.shared.armedCandidates.contains(where: { $0.subscriptionId == target.subscriptionId }) {
+                JourneyTrackingCoordinator.shared.disarm(subscriptionID: target.subscriptionId)
+            }
+            return false
+        }
+        return true
     }
 
     private func syncMonitoredTargets(_ desired: [String: StationArrivalTarget]) {
@@ -1078,6 +1116,9 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         confirmationStates = confirmationStates.filter { desired[$0.key] != nil }
         for identifier in desired.keys where confirmationStates[identifier] == nil {
             confirmationStates[identifier] = StationArrivalConfirmationState()
+        }
+        for target in desired.values {
+            _ = validateActivation(target)
         }
         if desired.isEmpty {
             hasRequestedFullAccuracyThisSession = false
@@ -1205,14 +1246,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         }
 
         let now = Date()
-        if let activeUntil = target.activeUntil, activeUntil <= now {
-            logGeofenceDiagnostic("expired_condition_ignored", metadata: ["region_id": identifier])
-            return nil
-        }
+        guard validateActivation(target) else { return nil }
 
         let isAwaitingDeparture = NotificationMuteStorage.hasPendingStationDepartureCleanup(
             from: target.from,
-            to: target.to
+            to: target.to,
+            subscriptionId: target.subscriptionId
         )
         if target.isScheduledActivation == true, !isAwaitingDeparture {
             guard let windowStart = target.windowStart,
@@ -1223,6 +1262,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                     windowStart: windowStart,
                     windowEnd: windowEnd,
                     travelDate: target.travelDate,
+                    dayWindows: target.dayWindows,
                     now: now
                   ) else {
                 logGeofenceDiagnostic("scheduled_condition_outside_window", metadata: [
@@ -1249,7 +1289,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             }
         }
 
-        return target
+        return validateActivation(target) ? target : nil
     }
 
     private func handleRegionHint(
@@ -1318,20 +1358,13 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         guard Date().timeIntervalSince(location.timestamp) <= ArrivalConfig.staleLocationCutoffSeconds else { return }
 
         for target in monitoredTargets.values.sorted(by: { $0.identifier < $1.identifier }) {
-            if NotificationMuteStorage.hasPendingStationDepartureCleanup(from: target.from, to: target.to) {
+            guard validateActivation(target) else { continue }
+            if NotificationMuteStorage.hasPendingStationDepartureCleanup(
+                from: target.from,
+                to: target.to,
+                subscriptionId: target.subscriptionId
+            ) {
                 evaluateDeparture(using: location, for: target, source: source)
-            } else if target.isScheduledActivation == true,
-                      let windowStart = target.windowStart,
-                      let windowEnd = target.windowEnd,
-                      !NotificationScheduleActivationPolicy.isActive(
-                        scheduleKind: target.scheduleKind,
-                        daysOfWeek: target.daysOfWeek ?? [],
-                        windowStart: windowStart,
-                        windowEnd: windowEnd,
-                        travelDate: target.travelDate,
-                        now: Date()
-                      ) {
-                continue
             } else {
                 evaluateArrival(using: location, for: target, source: source)
             }
@@ -1339,6 +1372,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     private func evaluateDeparture(using location: CLLocation, for target: StationArrivalTarget, source: String) {
+        guard validateActivation(target) else { return }
         guard !NotificationMuteStorage.isMutedToday(from: target.from, to: target.to) else { return }
 
         let rawDistance = target.distance(from: location)
@@ -1374,7 +1408,11 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         let dwell = now.timeIntervalSince(state.departureConfirmationStartedAt ?? now)
         confirmationStates[target.identifier] = state
         guard dwell >= StationDetectionPolicy.departureConfirmationSeconds else { return }
-        guard NotificationMuteStorage.consumePendingStationDepartureCleanup(from: target.from, to: target.to) else { return }
+        guard NotificationMuteStorage.consumePendingStationDepartureCleanup(
+            from: target.from,
+            to: target.to,
+            subscriptionId: target.subscriptionId
+        ) else { return }
 
         finishPrecisionSamplingBurst(reason: "departure-confirmed")
         logGeofenceDiagnostic("departure_confirmed_from_location", metadata: [
@@ -1387,23 +1425,22 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             "source": source
         ])
         Task { @MainActor in
+            guard self.validateActivation(target) else { return }
             let journeyNotificationBody = await JourneyTrackingCoordinator.shared.handleOriginDeparture(
                 subscriptionID: target.subscriptionId,
                 from: target.from,
                 to: target.to,
                 detectedAt: Date()
             )
-            if target.muteOnArrival != false {
-                await self.triggerMuteFlow(
-                    subscriptionId: target.subscriptionId,
-                    from: target.from,
-                    to: target.to,
-                    simulate: false,
-                    endLiveActivity: false,
-                    detectionSource: "location_fallback",
-                    journeyNotificationBody: journeyNotificationBody
-                )
-            }
+            await self.triggerMuteFlow(
+                subscriptionId: target.subscriptionId,
+                from: target.from,
+                to: target.to,
+                simulate: false,
+                endLiveActivity: false,
+                detectionSource: "location_fallback",
+                journeyNotificationBody: journeyNotificationBody
+            )
         }
     }
 
@@ -1749,15 +1786,22 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         NotificationMuteStorage.clearArrivalDetectionPending(from: fromCode, to: toCode)
         let alreadyAwaitingDeparture = NotificationMuteStorage.hasPendingStationDepartureCleanup(
             from: fromCode,
-            to: toCode
+            to: toCode,
+            subscriptionId: subscriptionId
         )
         if !alreadyAwaitingDeparture {
             // Persist the transition before any departure-board request. A background wake
             // may end while the optional snapshot is still in flight.
-            _ = NotificationMuteStorage.markPendingStationDepartureCleanup(from: fromCode, to: toCode)
+            _ = NotificationMuteStorage.markPendingStationDepartureCleanup(
+                from: fromCode,
+                to: toCode,
+                subscriptionId: subscriptionId
+            )
         }
         await JourneyTrackingCoordinator.shared.handleOriginArrival(
             subscriptionID: subscriptionId,
+            from: fromCode,
+            to: toCode,
             detectedAt: Date()
         )
 
@@ -1895,7 +1939,12 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 return
             }
 
-            guard NotificationMuteStorage.consumePendingStationDepartureCleanup(from: parsed.from, to: parsed.to) else {
+            guard self.validateActivation(target) else { return }
+            guard NotificationMuteStorage.consumePendingStationDepartureCleanup(
+                from: parsed.from,
+                to: parsed.to,
+                subscriptionId: parsed.subscriptionId
+            ) else {
                 // The user entered and left the origin station. If arrival was never confirmed,
                 // background detection failed silently — surface it so the user can re-arm it.
                 await self.checkForMissedArrival(from: parsed.from, to: parsed.to, reason: "region-exit")
@@ -1910,22 +1959,18 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 detectedAt: Date()
             )
 
-            let endMsg = target.muteOnArrival == false
-                ? "Geofence exit for \(parsed.from)→\(parsed.to) — tracking the train journey"
-                : "Geofence exit for \(parsed.from)→\(parsed.to) — muting notifications and tracking the train journey"
+            let endMsg = "Geofence exit for \(parsed.from)→\(parsed.to) — muting scheduled notifications and tracking the train journey"
             DebugLogStore.shared.log(endMsg, category: "Geofence")
             debugLog("🏁 \(endMsg)")
-            if target.muteOnArrival != false {
-                await self.triggerMuteFlow(
-                    subscriptionId: parsed.subscriptionId,
-                    from: parsed.from,
-                    to: parsed.to,
-                    simulate: false,
-                    endLiveActivity: false,
-                    detectionSource: "geofence",
-                    journeyNotificationBody: journeyNotificationBody
-                )
-            }
+            await self.triggerMuteFlow(
+                subscriptionId: parsed.subscriptionId,
+                from: parsed.from,
+                to: parsed.to,
+                simulate: false,
+                endLiveActivity: false,
+                detectionSource: "geofence",
+                journeyNotificationBody: journeyNotificationBody
+            )
         }
         debugLog("📍 \(message)")
     }
@@ -1995,7 +2040,8 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             daysOfWeek: subscription.daysOfWeek,
             windowStart: leg.windowStart,
             windowEnd: leg.windowEnd,
-            travelDate: leg.travelDate
+            travelDate: leg.travelDate,
+            dayWindows: leg.dayWindows
         )
 
         monitoredTargets[identifier] = target
@@ -2318,11 +2364,19 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             NotificationMuteStorage.arrivalDetectionPendingSince(from: $0.from, to: $0.to) != nil
         }
         let hasPendingDeparture = monitoredTargets.values.contains {
-            NotificationMuteStorage.hasPendingStationDepartureCleanup(from: $0.from, to: $0.to)
+            NotificationMuteStorage.hasPendingStationDepartureCleanup(
+                from: $0.from,
+                to: $0.to,
+                subscriptionId: $0.subscriptionId
+            )
         }
         let hasUndetectedArrival = monitoredTargets.values.contains {
             !NotificationMuteStorage.isMutedToday(from: $0.from, to: $0.to)
-                && !NotificationMuteStorage.hasPendingStationDepartureCleanup(from: $0.from, to: $0.to)
+                && !NotificationMuteStorage.hasPendingStationDepartureCleanup(
+                    from: $0.from,
+                    to: $0.to,
+                    subscriptionId: $0.subscriptionId
+                )
         }
 
         if (hasPendingArrival || hasPendingDeparture || hasUndetectedArrival || JourneyTrackingCoordinator.shared.hasActiveJourney),

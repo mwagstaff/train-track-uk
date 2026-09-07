@@ -20,7 +20,7 @@ import {
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.NOTIFICATION_POLL_INTERVAL_SECONDS || '30');
 const MAX_SUBSCRIPTIONS_PER_DEVICE = Number(process.env.NOTIFICATION_MAX_SUBSCRIPTIONS || '3');
-const MAX_WINDOW_MINUTES = 120;
+const MAX_WINDOW_MINUTES = 300;
 const MAX_LIVE_SESSION_DURATION_MS = 2 * 60 * 60 * 1000;
 const SCHEDULED_SOURCE = 'scheduled';
 const LIVE_SESSION_SOURCE = 'live_session';
@@ -278,11 +278,14 @@ export class NotificationSubscriptionManager {
             const windowStart = leg.window_start || leg.windowStart;
             const windowEnd = leg.window_end || leg.windowEnd;
             const travelDate = normalizeTravelDate(leg.travel_date || leg.travelDate);
+            const dayWindows = source === SCHEDULED_SOURCE && scheduleKind === REGULAR_SCHEDULE
+                ? normalizeDayWindows(leg.day_windows ?? leg.dayWindows, index)
+                : null;
             if (enabled && source === SCHEDULED_SOURCE) {
                 const { startMinutes, endMinutes } = parseWindow(windowStart, windowEnd);
                 const duration = endMinutes - startMinutes;
                 if (duration < 0 || duration > MAX_WINDOW_MINUTES) {
-                    throw new Error(`Time window must be within 2 hours for leg ${index + 1}`);
+                    throw new Error(`Time window must be within 5 hours for leg ${index + 1}`);
                 }
                 if (scheduleKind === ONE_OFF_SCHEDULE && !travelDate) {
                     throw new Error(`A valid travel date is required for leg ${index + 1}`);
@@ -296,7 +299,8 @@ export class NotificationSubscriptionManager {
                 enabled,
                 windowStart,
                 windowEnd,
-                travelDate: scheduleKind === ONE_OFF_SCHEDULE ? travelDate : null
+                travelDate: scheduleKind === ONE_OFF_SCHEDULE ? travelDate : null,
+                dayWindows
             };
         });
 
@@ -739,9 +743,11 @@ export class NotificationSubscriptionManager {
         if (this.isHolidayModeEnabled(subscription.deviceId)) {
             return;
         }
-        for (const leg of subscription.legs) {
-            if (!leg.enabled) continue;
-            if (!shouldPollNow(subscription, leg)) continue;
+        for (const storedLeg of subscription.legs) {
+            if (!storedLeg.enabled) continue;
+            const now = new Date();
+            if (!shouldPollNow(subscription, storedLeg, now)) continue;
+            const leg = resolveLegWindow(subscription, storedLeg, now);
             const legKey = `${leg.from}-${leg.to}`;
             if (this.isMutedToday(subscription, legKey)) continue;
             subscription.lastActiveAt = new Date().toISOString();
@@ -1428,7 +1434,13 @@ export class NotificationSubscriptionManager {
                 enabled: leg.enabled,
                 window_start: leg.windowStart,
                 window_end: leg.windowEnd,
-                travel_date: leg.travelDate || null
+                travel_date: leg.travelDate || null,
+                day_windows: leg.dayWindows ? Object.fromEntries(
+                    Object.entries(leg.dayWindows).map(([day, window]) => [day, {
+                        window_start: window.windowStart,
+                        window_end: window.windowEnd
+                    }])
+                ) : null
             })),
             created_at: subscription.createdAt,
             updated_at: subscription.updatedAt
@@ -1883,6 +1895,37 @@ function buildRouteKey(legs) {
     return parts.join('-');
 }
 
+function normalizeDayWindows(input, legIndex) {
+    if (input == null) return null;
+    if (typeof input !== 'object' || Array.isArray(input)) {
+        throw new Error(`day_windows must be an object for leg ${legIndex + 1}`);
+    }
+    const result = {};
+    for (const [day, window] of Object.entries(input)) {
+        if (!Object.hasOwn(DAY_MAP, day) || !window || typeof window !== 'object' || Array.isArray(window)) {
+            throw new Error(`Invalid day window for leg ${legIndex + 1}`);
+        }
+        const windowStart = window.window_start ?? window.windowStart;
+        const windowEnd = window.window_end ?? window.windowEnd;
+        if (![windowStart, windowEnd].every((value) => typeof value === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(value))) {
+            throw new Error(`Day window times must be valid HH:mm times for leg ${legIndex + 1}`);
+        }
+        const { startMinutes, endMinutes } = parseWindow(windowStart, windowEnd);
+        if (endMinutes < startMinutes || endMinutes - startMinutes > MAX_WINDOW_MINUTES) {
+            throw new Error(`Time window must be within 5 hours for leg ${legIndex + 1} (${day})`);
+        }
+        result[day] = { windowStart, windowEnd };
+    }
+    return Object.keys(result).length ? result : null;
+}
+
+export function resolveLegWindow(subscription, leg, now = new Date()) {
+    if (normalizeSource(subscription?.source) === LIVE_SESSION_SOURCE
+        || normalizeScheduleKind(subscription?.scheduleKind) === ONE_OFF_SCHEDULE) return leg;
+    const window = leg.dayWindows?.[currentScheduleWeekdayKey(now)];
+    return window ? { ...leg, windowStart: window.windowStart, windowEnd: window.windowEnd } : leg;
+}
+
 function parseWindow(windowStart, windowEnd) {
     const startMinutes = parseTimeToMinutes(windowStart);
     const endMinutes = parseTimeToMinutes(windowEnd);
@@ -1950,6 +1993,7 @@ export function shouldPollNow(subscription, leg, now = new Date()) {
             return false;
         }
     }
+    leg = resolveLegWindow(subscription, leg, now);
     let startMinutes;
     let endMinutes;
     try {

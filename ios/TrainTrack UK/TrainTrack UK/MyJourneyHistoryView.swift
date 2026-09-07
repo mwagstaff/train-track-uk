@@ -4,6 +4,7 @@ import UIKit
 struct MyJourneyHistoryView: View {
     @EnvironmentObject private var historyStore: JourneyHistoryStore
     @State private var searchText = ""
+    @State private var showingStats: Bool
     @State private var dateFilter: JourneyHistoryDateFilter = .all
     @State private var customStartDate = Calendar.current.date(byAdding: .month, value: -1, to: Date()) ?? Date()
     @State private var customEndDate = Date()
@@ -17,6 +18,16 @@ struct MyJourneyHistoryView: View {
     @State private var isGeneratingTestHistory = false
     @State private var testHistoryMessage: String?
     #endif
+
+    init() {
+        #if (DEBUG || APP_STORE_CAPTURE) && targetEnvironment(simulator)
+        _showingStats = State(initialValue:
+            ProcessInfo.processInfo.environment["RELEASE_SCREENSHOT_SCREEN"] == "journey-stats"
+        )
+        #else
+        _showingStats = State(initialValue: false)
+        #endif
+    }
 
     private var shouldShowHistoryActions: Bool {
         #if DEBUG
@@ -170,7 +181,11 @@ struct MyJourneyHistoryView: View {
 
                 if shouldShowHistoryActions {
                     Menu {
+                        Button("Stats", systemImage: "chart.bar.xaxis") {
+                            showingStats = true
+                        }
                         if !historyStore.records.isEmpty {
+                            Divider()
                             Button("Share history", systemImage: "square.and.arrow.up") {
                                 share(records: historyStore.records)
                             }
@@ -198,6 +213,9 @@ struct MyJourneyHistoryView: View {
                     .accessibilityLabel("Journey history actions")
                 }
             }
+        }
+        .navigationDestination(isPresented: $showingStats) {
+            JourneyHistoryStatsView()
         }
         .sheet(isPresented: $showingCustomDates) {
             NavigationStack {
@@ -872,7 +890,7 @@ struct JourneyHistoryRecordDestination: View {
     }
 }
 
-private struct JourneyHistoryDetailView: View {
+struct JourneyHistoryDetailView: View {
     let record: JourneyHistoryRecord
     @EnvironmentObject private var historyStore: JourneyHistoryStore
     @Environment(\.dismiss) private var dismiss
@@ -1039,7 +1057,7 @@ private struct JourneyHistoryDetailView: View {
         } message: {
             Text("This cannot be undone.")
         }
-        .railwayBackgroundPOC()
+        .railwayBackgroundPOC(showsInfoButton: false)
     }
 
     @ViewBuilder

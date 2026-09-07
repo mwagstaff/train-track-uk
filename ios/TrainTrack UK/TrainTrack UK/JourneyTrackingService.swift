@@ -160,14 +160,15 @@ final class JourneyTrackingService {
 
     private func log(
         _ event: String,
-        _ message: String,
+        _ message: @autoclosure () -> String,
         checkpoint: ActiveJourneyHistoryCheckpoint? = nil,
-        metadata: [String: Any?] = [:]
+        metadata: @autoclosure () -> [String: Any?] = [:]
     ) {
-        var enriched = metadata
+        guard ClientDiagnosticsLogger.isEnabled else { return }
+        var enriched = metadata()
         enriched["journey_id"] = checkpoint?.id.uuidString
         enriched["subscription_id"] = checkpoint?.subscriptionId
-        DebugLogStore.shared.log(message, category: "JourneyHistory")
+        DebugLogStore.shared.log(message(), category: "JourneyHistory")
         ClientDiagnosticsLogger.log("journey_history", event, metadata: enriched)
     }
 

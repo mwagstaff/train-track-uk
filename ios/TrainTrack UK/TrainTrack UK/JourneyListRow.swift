@@ -49,6 +49,16 @@ enum JourneyCardPresentation {
         return "\(scheduledDeparture) • \(arrival)"
     }
 
+    static func serviceLabel(for departure: DepartureV2, details: ServiceDetails?) -> String? {
+        guard let operatorName = details?.operator?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !operatorName.isEmpty else { return nil }
+        let destinations = departure.destination
+            .map { $0.locationName.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !destinations.isEmpty else { return nil }
+        return "\(operatorName) service to \(destinations.joined(separator: " & "))"
+    }
+
     static func cancellationStatusText(_ reason: String?) -> String {
         guard let reason = reason?.trimmingCharacters(in: .whitespacesAndNewlines),
               !reason.isEmpty else {
@@ -127,6 +137,7 @@ struct JourneyCard: View {
 
     @EnvironmentObject private var depStore: DeparturesStore
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ObservedObject private var serverConfig = ServerConfigStore.shared
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
     @State private var isLoadingServiceDetails = false
 
@@ -210,9 +221,10 @@ struct JourneyCard: View {
                     }
                 } else {
                     ForEach(Array(displayedSummaries.enumerated()), id: \.element.id) { index, summary in
-                        departureLink(summary)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 10)
+                        departureLink(
+                            summary,
+                            isLast: index == displayedSummaries.count - 1
+                        )
                         if index < displayedSummaries.count - 1 {
                             Divider().padding(.horizontal, 16)
                         }
@@ -243,6 +255,7 @@ struct JourneyCard: View {
             }
         }
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(Color.primary.opacity(0.05), lineWidth: 1)
@@ -459,63 +472,154 @@ struct JourneyCard: View {
     }
 
     @ViewBuilder
-    private func departureLink(_ summary: Summary) -> some View {
+    private func departureLink(_ summary: Summary, isLast: Bool) -> some View {
         if isInteractive {
             Button {
                 onOpenDeparture(summary.firstLeg, summary.firstDeparture)
             } label: {
-                departureRow(summary)
+                styledDepartureRow(summary, isLast: isLast)
             }
             .buttonStyle(.plain)
             .accessibilityHint("Opens live calling points for this service.")
         } else {
-            departureRow(summary)
+            styledDepartureRow(summary, isLast: isLast)
         }
+    }
+
+    private func styledDepartureRow(_ summary: Summary, isLast: Bool) -> some View {
+        departureRow(summary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 16)
+            .padding(.trailing, 16)
+            .padding(.vertical, 10)
+            .overlay(alignment: .leading) {
+                Capsule()
+                    .fill(operatorColor(for: summary.firstDeparture))
+                    .frame(width: 4)
+                    .padding(.top, 2)
+                    .padding(.bottom, isLast && !canExpand ? 16 : 2)
+                    .accessibilityHidden(true)
+                    .allowsHitTesting(false)
+            }
+            .contentShape(Rectangle())
     }
 
     @ViewBuilder
     private func departureRow(_ summary: Summary) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if dynamicTypeSize.isAccessibilitySize {
-                VStack(alignment: .leading, spacing: 8) {
-                    departureIdentity(summary)
-                    HStack(spacing: 12) {
-                        platform(for: summary.firstDeparture, cancellation: summary.cancellation)
-                        departureStatus(summary)
-                        Spacer(minLength: 0)
-                        Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+        ZStack(alignment: .trailing) {
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 0) {
+                    if dynamicTypeSize.isAccessibilitySize {
+                        departureTiming(summary)
+                        HStack(spacing: 12) {
+                            platform(for: summary.firstDeparture, cancellation: summary.cancellation)
+                            departureStatus(summary)
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.top, 8)
+                    } else {
+                        HStack(alignment: .top, spacing: 12) {
+                            departureTiming(summary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            platform(for: summary.firstDeparture, cancellation: summary.cancellation)
+                            departureStatus(summary)
+                                .frame(minWidth: 86, alignment: .leading)
+                        }
                     }
+
+                    departureDetails(summary)
                 }
-            } else {
-                HStack(alignment: .center, spacing: 12) {
-                    departureIdentity(summary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    platform(for: summary.firstDeparture, cancellation: summary.cancellation)
-                    departureStatus(summary)
-                        .frame(minWidth: 86, alignment: .leading)
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.tertiary)
+
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 8) {
+                        detailedStatusView(summary)
+                        operatorLabel(for: summary.firstDeparture)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                } else {
+                    HStack(alignment: .bottom, spacing: 8) {
+                        detailedStatusView(summary)
+                        Spacer(minLength: 8)
+                        operatorLabel(for: summary.firstDeparture)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             }
+            .padding(.trailing, 20)
 
-            if summary.id == firstSummary?.id,
-               let status = detailedStatus(for: summary) {
-                HStack(alignment: .firstTextBaseline, spacing: 7) {
-                    Circle()
-                        .fill(status.color)
-                        .frame(width: 8, height: 8)
-                    Text(status.text)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder
+    private func detailedStatusView(_ summary: Summary) -> some View {
+        if summary.id == firstSummary?.id,
+           let status = detailedStatus(for: summary) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Circle()
+                    .fill(status.color)
+                    .frame(width: 8, height: 8)
+                Text(status.text)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
-    private func departureIdentity(_ summary: Summary) -> some View {
+    @ViewBuilder
+    private func operatorLabel(for departure: DepartureV2) -> some View {
+        if let operatorName = operatorDisplayName(for: departure) {
+            Text(operatorName.uppercased())
+                .font(.caption.weight(.medium))
+                .foregroundStyle(Color.primary.opacity(0.7))
+                .multilineTextAlignment(.trailing)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel("Operator \(operatorName)")
+        }
+    }
+
+    private func operatorDisplayName(for departure: DepartureV2) -> String? {
+        let identity = operatorIdentity(for: departure)
+        if let branding = OperatorBrandingResolver.resolve(
+            name: identity.name,
+            code: identity.code,
+            in: serverConfig.operatorBranding
+        ) {
+            return branding.name
+        }
+        return identity.name
+    }
+
+    private func operatorColor(for departure: DepartureV2) -> Color {
+        let identity = operatorIdentity(for: departure)
+        return OperatorBrandingResolver.resolve(
+            name: identity.name,
+            code: identity.code,
+            in: serverConfig.operatorBranding
+        )?.color ?? Color.secondary.opacity(0.35)
+    }
+
+    private func operatorIdentity(for departure: DepartureV2) -> (name: String?, code: String?) {
+        let details = depStore.serviceDetailsById[departure.serviceID]
+        return (
+            normalizedOperatorValue(departure.operator) ?? normalizedOperatorValue(details?.operator),
+            normalizedOperatorValue(departure.operatorCode) ?? normalizedOperatorValue(details?.operatorCode)
+        )
+    }
+
+    private func normalizedOperatorValue(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+
+    private func departureTiming(_ summary: Summary) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(departureDisplayTime(summary.firstDeparture))
                 .font(.title3)
@@ -529,43 +633,58 @@ struct JourneyCard: View {
                     carriageLoading: depStore.loadingDetailsByServiceId[summary.firstDeparture.serviceID]?.freshCoaches
                 )
             }
-            if summary.cancellation == nil {
-                Group {
-                    if let arrival = summary.finalArrivalTime {
-                        Text(JourneyCardPresentation.arrivalLabel(
-                            time: arrival,
-                            destinationName: group.endStation.name,
-                            scheduledDeparture: isRunningLate(summary.firstDeparture)
-                                ? summary.firstDeparture.departureTime.scheduled
-                                : nil
-                        ))
-                    } else {
-                        Text("Arrival time unavailable")
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-                .padding(.top, 1)
+        }
+    }
 
-                if let guidance = depStore.loadingDetailsByServiceId[summary.firstDeparture.serviceID]?.splitGuidance,
-                   let note = JourneyCardPresentation.splitGuidanceLabel(
-                    guidance,
-                    destinationName: summary.firstLeg.toStation.name
-                   ) {
-                    HStack(alignment: .top, spacing: 5) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.orange)
-                        Text(note)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.primary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(.top, 4)
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Important. \(note)")
+    @ViewBuilder
+    private func departureDetails(_ summary: Summary) -> some View {
+        if summary.cancellation == nil {
+            Group {
+                if let arrival = summary.finalArrivalTime {
+                    Text(JourneyCardPresentation.arrivalLabel(
+                        time: arrival,
+                        destinationName: group.endStation.name,
+                        scheduledDeparture: isRunningLate(summary.firstDeparture)
+                            ? summary.firstDeparture.departureTime.scheduled
+                            : nil
+                    ))
+                } else {
+                    Text("Arrival time unavailable")
                 }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+            .padding(.top, 1)
+
+            if let service = JourneyCardPresentation.serviceLabel(
+                for: summary.firstDeparture,
+                details: depStore.serviceDetailsById[summary.firstDeparture.serviceID]
+            ) {
+                Text(service)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 1)
+            }
+
+            if let guidance = depStore.loadingDetailsByServiceId[summary.firstDeparture.serviceID]?.splitGuidance,
+               let note = JourneyCardPresentation.splitGuidanceLabel(
+                guidance,
+                destinationName: summary.firstLeg.toStation.name
+               ) {
+                HStack(alignment: .top, spacing: 5) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.orange)
+                    Text(note)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 4)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Important. \(note)")
             }
         }
     }

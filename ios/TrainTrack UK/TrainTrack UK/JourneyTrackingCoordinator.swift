@@ -65,6 +65,28 @@ final class JourneyTrackingCoordinator: ObservableObject {
         activeSubscriptionID != subscriptionID
     }
 
+    static func shouldBeginCompletion(phase: JourneyTrackingPhase) -> Bool {
+        phase != .arriving
+    }
+
+    static func candidateIndexForRouteEvent(
+        in candidates: [ArmedJourneyHistoryCandidate],
+        subscriptionID: String,
+        from: String? = nil,
+        to: String? = nil,
+        now: Date = Date()
+    ) -> Int? {
+        if let exactIndex = candidates.firstIndex(where: { $0.subscriptionId == subscriptionID && $0.isCurrent(at: now) }) {
+            return exactIndex
+        }
+        guard let from, let to else { return nil }
+        return candidates.firstIndex { candidate in
+            guard candidate.isCurrent(at: now), candidate.stations.count >= 2 else { return false }
+            return candidate.stations[0].crs.caseInsensitiveCompare(from) == .orderedSame
+                && candidate.stations[1].crs.caseInsensitiveCompare(to) == .orderedSame
+        }
+    }
+
     static func restorableCandidates(
         _ candidates: [ArmedJourneyHistoryCandidate],
         activeSubscriptionID: String?,
@@ -102,6 +124,15 @@ final class JourneyTrackingCoordinator: ObservableObject {
     var hasPresentableJourney: Bool {
         !armedCandidates.isEmpty || activeJourney != nil || recentlyCompleted != nil
     }
+
+    #if (DEBUG || APP_STORE_CAPTURE) && targetEnvironment(simulator)
+    func installScreenshotCheckpoint(_ checkpoint: ActiveJourneyHistoryCheckpoint) {
+        armedCandidates = []
+        recentlyCompleted = nil
+        recentlyCompletedJourney = nil
+        activeJourney = checkpoint
+    }
+    #endif
 
     #if DEBUG
     private static let debugSimulationSubscriptionID = "debug-journey-simulation"
@@ -608,8 +639,23 @@ final class JourneyTrackingCoordinator: ObservableObject {
             return
         }
 
+        let now = Date()
+        let candidateExpiry: Date?
+        if source == .scheduled {
+            guard let windowEnd = NotificationScheduleActivationPolicy.activeWindowEnd(
+                for: subscription, leg: first, now: now
+            ) else {
+                disarm(subscriptionID: subscription.id)
+                return
+            }
+            candidateExpiry = min(subscription.activeUntil ?? windowEnd, windowEnd)
+        } else {
+            candidateExpiry = subscription.activeUntil
+        }
+
         let previousCandidate = armedCandidates.first {
             $0.subscriptionId == subscription.id
+                && $0.isCurrent(at: now)
                 && $0.stations.map { $0.crs.uppercased() } == stationCodes
         }
 
@@ -618,7 +664,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
             source: source,
             stations: stations,
             createdAt: subscription.createdAt ?? Date(),
-            activeUntil: subscription.activeUntil,
+            activeUntil: candidateExpiry,
             originArrivedAt: previousCandidate?.originArrivedAt,
             candidateDepartures: previousCandidate?.candidateDepartures ?? []
         )
@@ -632,7 +678,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
             "subscription_id": subscription.id,
             "source": source.rawValue,
             "station_crs": stations.map(\.crs),
-            "active_until": subscription.activeUntil,
+            "active_until": candidateExpiry,
             "armed_candidate_count": armedCandidates.count
         ])
         if let startStation = candidate.stations.first,
@@ -656,13 +702,32 @@ final class JourneyTrackingCoordinator: ObservableObject {
         ])
     }
 
-    func handleOriginArrival(subscriptionID: String, detectedAt: Date = Date()) async {
-        guard let index = armedCandidates.firstIndex(where: { $0.subscriptionId == subscriptionID }) else {
+    func handleOriginArrival(
+        subscriptionID: String,
+        from: String? = nil,
+        to: String? = nil,
+        detectedAt: Date = Date()
+    ) async {
+        guard let index = Self.candidateIndexForRouteEvent(
+            in: armedCandidates,
+            subscriptionID: subscriptionID,
+            from: from,
+            to: to
+        ) else {
             log("origin_arrival_ignored", "Origin arrival could not arm history because candidate \(subscriptionID) was not found", metadata: [
                 "subscription_id": subscriptionID,
                 "armed_candidate_count": armedCandidates.count
             ])
             return
+        }
+        let candidateSubscriptionID = armedCandidates[index].subscriptionId
+        if candidateSubscriptionID != subscriptionID {
+            log("origin_arrival_reassociated", "Associated \(from ?? "unknown")→\(to ?? "unknown") arrival with its same-route journey candidate", metadata: [
+                "event_subscription_id": subscriptionID,
+                "candidate_subscription_id": candidateSubscriptionID,
+                "from": from,
+                "to": to
+            ])
         }
         if armedCandidates[index].originArrivedAt != nil {
             return
@@ -672,7 +737,8 @@ final class JourneyTrackingCoordinator: ObservableObject {
         let first = armedCandidates[index].stations[0]
         let second = armedCandidates[index].stations[1]
         log("origin_arrival_detected", "Detected arrival at \(first.crs); capturing departures towards \(second.crs)", metadata: [
-            "subscription_id": subscriptionID,
+            "subscription_id": candidateSubscriptionID,
+            "event_subscription_id": subscriptionID,
             "from": first.crs,
             "to": second.crs,
             "detected_at": detectedAt
@@ -683,23 +749,23 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 delayBeforeEachBatch: false
             )
             let departures = snapshot[pairKey(from: first.crs, to: second.crs)]?.departures ?? []
-            if let currentIndex = armedCandidates.firstIndex(where: { $0.subscriptionId == subscriptionID }) {
+            if let currentIndex = armedCandidates.firstIndex(where: { $0.subscriptionId == candidateSubscriptionID }) {
                 armedCandidates[currentIndex].candidateDepartures = departures
             }
             log("origin_departures_captured", "Captured \(departures.count) departure candidate(s) for \(first.crs)→\(second.crs)", metadata: [
-                "subscription_id": subscriptionID,
+                "subscription_id": candidateSubscriptionID,
                 "candidate_count": departures.count,
                 "candidates": departureDiagnosticSummary(departures)
             ])
         } catch {
             log("origin_departures_failed", "Departure snapshot failed for \(first.crs)→\(second.crs): \(error.localizedDescription)", metadata: [
-                "subscription_id": subscriptionID,
+                "subscription_id": candidateSubscriptionID,
                 "from": first.crs,
                 "to": second.crs,
                 "error": error.localizedDescription
             ])
         }
-        let destination = armedCandidates.first { $0.subscriptionId == subscriptionID }?.stations.last ?? second
+        let destination = armedCandidates.first { $0.subscriptionId == candidateSubscriptionID }?.stations.last ?? second
         await LiveActivityManager.shared.updateJourneyPhase(
             .atStart,
             startStation: first,
@@ -746,12 +812,26 @@ final class JourneyTrackingCoordinator: ObservableObject {
             ])
             return await waitForBoardingNotificationBody(from: from, to: to)
         }
-        guard let candidate = armedCandidates.first(where: { $0.subscriptionId == subscriptionID }) else {
+        guard let candidateIndex = Self.candidateIndexForRouteEvent(
+            in: armedCandidates,
+            subscriptionID: subscriptionID,
+            from: from,
+            to: to
+        ) else {
             log("origin_departure_ignored", "Ignored \(from)→\(to) departure because its history candidate was not found", metadata: [
                 "subscription_id": subscriptionID,
                 "armed_candidate_count": armedCandidates.count
             ])
             return nil
+        }
+        let candidate = armedCandidates[candidateIndex]
+        if candidate.subscriptionId != subscriptionID {
+            log("origin_departure_reassociated", "Associated \(from)→\(to) departure with its same-route journey candidate", metadata: [
+                "event_subscription_id": subscriptionID,
+                "candidate_subscription_id": candidate.subscriptionId,
+                "from": from,
+                "to": to
+            ])
         }
         guard candidate.stations.first?.crs.caseInsensitiveCompare(from) == .orderedSame else {
             log("origin_departure_ignored", "Ignored departure because detected origin \(from) did not match planned origin \(candidate.stations.first?.crs ?? "unknown")", metadata: [
@@ -791,7 +871,8 @@ final class JourneyTrackingCoordinator: ObservableObject {
         persistCheckpoint()
         log("journey_started", "Started journey history \(activeJourney?.id.uuidString ?? "unknown") for \(candidate.stations.map(\.crs).joined(separator: "→"))", metadata: [
             "journey_id": activeJourney?.id.uuidString,
-            "subscription_id": subscriptionID,
+            "subscription_id": candidate.subscriptionId,
+            "event_subscription_id": subscriptionID,
             "source": candidate.source.rawValue,
             "detected_at": detectedAt,
             "planned_station_crs": candidate.stations.map(\.crs),
@@ -1542,7 +1623,9 @@ final class JourneyTrackingCoordinator: ObservableObject {
         guard var active = activeJourney else { return }
         if let previousIndex = active.legs.indices.last,
            let serviceID = active.legs[previousIndex].serviceID {
-            _ = await DeparturesStore.shared.ensureServiceDetails(for: [serviceID], force: true)
+            if active.legs[previousIndex].serviceDetailsMayBeAvailable(at: detectedAt) {
+                _ = await DeparturesStore.shared.ensureServiceDetails(for: [serviceID], force: true)
+            }
             if let details = DeparturesStore.shared.serviceDetailsById[serviceID] {
                 populate(&active.legs[previousIndex], from: details, reference: detectedAt)
             }
@@ -1641,7 +1724,20 @@ final class JourneyTrackingCoordinator: ObservableObject {
         detectedAt: Date,
         isDeviceBased: Bool
     ) async {
-        guard var active = activeJourney else { return }
+        guard var active = activeJourney,
+              Self.shouldBeginCompletion(phase: active.phase) else {
+            log("destination_arrival_duplicate_ignored", "Ignored duplicate final-arrival callback while journey completion was already in progress", metadata: [
+                "station_crs": station.crs,
+                "detected_at": detectedAt
+            ])
+            return
+        }
+        // Main-actor async functions are re-entrant. Mark completion before the first
+        // await so simultaneous location, geofence, and backend arrival signals cannot
+        // save the same journey or stop its tracking session more than once.
+        active.phase = .arriving
+        activeJourney = active
+        persistCheckpoint()
         log("destination_arrival_detected", "Detected final arrival at \(station.crs)", metadata: [
             "journey_id": active.id.uuidString,
             "station_crs": station.crs,
@@ -1657,7 +1753,9 @@ final class JourneyTrackingCoordinator: ObservableObject {
             active.legs[index].detectedArrivalAt = detectedAt
             active.legs[index].outcome = .completed
             if let serviceID = active.legs[index].serviceID {
-                _ = await DeparturesStore.shared.ensureServiceDetails(for: [serviceID], force: true)
+                if active.legs[index].serviceDetailsMayBeAvailable(at: detectedAt) {
+                    _ = await DeparturesStore.shared.ensureServiceDetails(for: [serviceID], force: true)
+                }
                 if let details = DeparturesStore.shared.serviceDetailsById[serviceID] {
                     populate(&active.legs[index], from: details, reference: detectedAt)
                 }
@@ -2074,9 +2172,9 @@ final class JourneyTrackingCoordinator: ObservableObject {
         pruneExpiredCompletion()
     }
 
-    private func log(_ event: String, _ message: String, metadata: [String: Any?] = [:]) {
-        DebugLogStore.shared.log(message, category: "JourneyHistory")
-        ClientDiagnosticsLogger.log("journey_history", event, metadata: metadata)
+    private func log(_ event: String, _ message: @autoclosure () -> String, metadata: @autoclosure () -> [String: Any?] = [:]) {
+        DebugLogStore.shared.log(message(), category: "JourneyHistory")
+        ClientDiagnosticsLogger.log("journey_history", event, metadata: metadata())
     }
 
     private func departureDiagnosticSummary(_ departures: [DepartureV2]) -> [[String: Any]] {

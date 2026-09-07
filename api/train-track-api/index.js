@@ -23,6 +23,7 @@ import { testServiceHarness } from './lib/test-service-harness.js';
 import { formatDepartureJourneyResult, shouldIncludeDepartureStatus } from './lib/departure-response.js';
 import { ensureMongoIndexes } from './lib/mongo-client.js';
 import { resolveDelayRepayOperator } from './lib/delay-repay-config.js';
+import { getOperatorBrandingConfig } from './lib/operator-branding-config.js';
 import { registerRailwayBackgroundRoutes } from './lib/railway-backgrounds.js';
 import {
     deleteSubscriptionAuditEventsForDevice,
@@ -1310,7 +1311,9 @@ app.get('/api/v1/service_details/:serviceId', async (req, res) => {
     const serviceDetails = await getServiceDetails(req.params.serviceId);
     // If we get an error response, then log the error and return a 404 status
     if (serviceDetails.error) {
-        console.error(`Failed to get service details for ID ${req.params.serviceId}: ${serviceDetails.error}`);
+        if (!serviceDetails.unavailable) {
+            console.error(`Failed to get service details for ID ${req.params.serviceId}: ${serviceDetails.error}`);
+        }
         res.status(404).json({ error: 'Service not found' });
     }
     else {
@@ -1343,7 +1346,9 @@ app.get('/api/v2/service_details/:serviceId*', async (req, res) => {
             const serviceDetails = await getServiceDetailsWithContext(serviceId, context);
             // If error, return empty object for this service
             if (serviceDetails.error) {
-                console.error(`Failed to get service details for ID ${serviceId}: ${serviceDetails.error}`);
+                if (!serviceDetails.unavailable) {
+                    console.error(`Failed to get service details for ID ${serviceId}: ${serviceDetails.error}`);
+                }
                 return { [serviceId]: {} };
             }
             return { [serviceId]: serviceDetails };
@@ -1396,10 +1401,17 @@ app.get('/api/v2/stations', async (req, res) => {
 // Returns server-side limits so clients can stay in sync without app updates.
 app.get('/api/v2/config', (req, res) => {
     const maxPerDevice = Number(process.env.NOTIFICATION_MAX_SUBSCRIPTIONS || '3');
-    res.json({
+    const config = {
         max_subscriptions_per_device: maxPerDevice,
-        max_live_sessions_per_device: maxPerDevice,
-    });
+        max_live_sessions_per_device: maxPerDevice
+    };
+    try {
+        config.operator_branding = getOperatorBrandingConfig();
+    } catch (error) {
+        console.error('[operator-branding] Failed to load config:', error?.message || error);
+    }
+    res.set('Cache-Control', 'public, max-age=300');
+    res.json(config);
 });
 
 app.get('/api/v2/delay-repay/operator', (req, res) => {

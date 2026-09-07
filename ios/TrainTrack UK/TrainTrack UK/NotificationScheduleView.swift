@@ -9,9 +9,11 @@ struct NotificationScheduleView: View {
     @EnvironmentObject var activityMgr: LiveActivityManager
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var legs: [NotificationLeg]
     @State private var scheduleKind: NotificationScheduleKind = .regular
+    @State private var windowPattern: NotificationWindowPattern = .same
     @State private var selectedDays: Set<DayOfWeek>
     @State private var outboundTravelDate = Calendar.current.startOfDay(for: Date())
     @State private var returnTravelDate = Calendar.current.startOfDay(for: Date())
@@ -25,7 +27,10 @@ struct NotificationScheduleView: View {
     @State private var initialDraftState: ScheduleDraftState?
     @State private var showWindowHint: Set<Int> = []
 
-    private let maxWindowMinutes = 120
+    @State private var reversalCount = 0
+
+    private let maxWindowMinutes = 300
+    private let defaultWindowMinutes = 120
     private let outboundLegCount: Int
     private let regularLegCount: Int
 
@@ -117,6 +122,7 @@ struct NotificationScheduleView: View {
         ScheduleDraftState(
             scheduleKind: scheduleKind,
             days: orderedSelectedDays,
+            windowPattern: windowPattern,
             outboundTravelDate: travelDateString(from: outboundTravelDate),
             returnTravelDate: travelDateString(from: returnTravelDate),
             legs: legs
@@ -162,22 +168,34 @@ struct NotificationScheduleView: View {
                         RailwayBackgroundSectionHeader(title: "Days")
                     }
 
+                    Section {
+                        Picker("Time windows", selection: Binding(
+                            get: { windowPattern },
+                            set: { applyWindowPattern($0) }
+                        )) {
+                            ForEach(NotificationWindowPattern.allCases) { pattern in
+                                Text(pattern.rawValue).tag(pattern)
+                            }
+                        }
+                        Text("Use the same times, split weekdays and weekends, or customise each day. Each window can be up to 5 hours.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+
                     ForEach(regularLegIndices, id: \.self) { index in
-                        let leg = legs[index]
                         Section {
                             Toggle("Enabled", isOn: bindingForLegEnabled(index))
-                            DatePicker("Start", selection: bindingForStartTime(index), displayedComponents: .hourAndMinute)
-                                .disabled(!leg.enabled)
-                            DatePicker("End", selection: bindingForEndTime(index), displayedComponents: .hourAndMinute)
-                                .disabled(!leg.enabled)
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .disabled(!leg.enabled)
+                            ForEach(windowPattern.dayGroups, id: \.self) { group in
+                                let days = group.filter(selectedDays.contains)
+                                if !days.isEmpty {
+                                    regularWindowEditor(index, days: days)
+                                }
+                            }
                             if showWindowHint.contains(index) {
                                 windowHint
                             }
                         } header: {
-                            RailwayBackgroundSectionHeader(title: legLabel(leg))
+                            journeySectionHeader(legLabel(legs[index]))
                         }
                     }
                 } else {
@@ -213,7 +231,7 @@ struct NotificationScheduleView: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .railwayBackgroundPOC()
+            .railwayBackgroundPOC(showsInfoButton: false)
             .navigationTitle("Schedule journey updates")
             .navigationBarTitleDisplayMode(.inline)
             .onChange(of: outboundTravelDate) { oldDate, newDate in
@@ -238,9 +256,10 @@ struct NotificationScheduleView: View {
                         reverseLegs()
                     } label: {
                         Image(systemName: "arrow.left.arrow.right")
+                            .rotationEffect(.degrees(reduceMotion ? 0 : Double(reversalCount) * 180))
                     }
                     .accessibilityLabel("Reverse legs")
-                    .accessibilityHint("Switch the scheduled journey direction")
+                    .accessibilityHint("Swaps the journey directions while keeping the time windows in place")
                     .disabled(isSaving || isDeleting || legs.isEmpty)
 
                     if hasUnsavedChanges {
@@ -295,19 +314,24 @@ struct NotificationScheduleView: View {
     }
 
     private func reverseLegs() {
-        legs = legs.reversed().map { leg in
-            NotificationLeg(
-                from: leg.to.uppercased(),
-                to: leg.from.uppercased(),
-                fromName: leg.toName,
-                toName: leg.fromName,
-                enabled: leg.enabled,
-                windowStart: leg.windowStart,
-                windowEnd: leg.windowEnd,
-                travelDate: leg.travelDate
-            )
+        withAnimation(.easeInOut(duration: reduceMotion ? 0.2 : 0.45)) {
+            legs = NotificationScheduleEditing.reversingDirections(in: legs, outboundLegCount: outboundLegCount)
+            reversalCount += 1
         }
         showWindowHint.removeAll()
+        UIAccessibility.post(notification: .announcement, argument: "Journey directions reversed. Time windows unchanged.")
+    }
+
+    private func journeySectionHeader(_ title: String) -> some View {
+        ZStack(alignment: .leading) {
+            RailwayBackgroundSectionHeader(title: title)
+                .id(title)
+                .transition(reduceMotion ? .opacity : .asymmetric(
+                    insertion: .move(edge: .trailing).combined(with: .opacity),
+                    removal: .move(edge: .leading).combined(with: .opacity)
+                ))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func applyExistingIfNeeded() {
@@ -316,16 +340,23 @@ struct NotificationScheduleView: View {
         scheduleKind = existing.scheduleKind
             ?? (existing.legs.contains { $0.travelDate != nil } ? .oneOff : .regular)
         selectedDays = Set(existing.daysOfWeek)
-        let existingById = Dictionary(uniqueKeysWithValues: existing.legs.map { ($0.id, $0) })
-        for index in legs.indices {
-            if let existingLeg = existingById[legs[index].id] {
-                legs[index].enabled = existingLeg.enabled
-                legs[index].windowStart = existingLeg.windowStart
-                legs[index].windowEnd = existingLeg.windowEnd
-                legs[index].travelDate = existingLeg.travelDate
-                clampLegWindow(index)
+        for (index, existingLeg) in existing.legs.enumerated() where legs.indices.contains(index) {
+            legs[index] = existingLeg
+            clampLegWindow(index)
+        }
+        if existing.legs.count == outboundLegCount, legs.count > outboundLegCount {
+            let returnRoutes = legs.prefix(outboundLegCount).reversed()
+            for (index, route) in zip(returnLegIndices, returnRoutes) {
+                let schedule = legs[index]
+                legs[index] = NotificationLeg(
+                    from: route.to, to: route.from,
+                    fromName: route.toName, toName: route.fromName,
+                    enabled: schedule.enabled,
+                    windowStart: schedule.windowStart, windowEnd: schedule.windowEnd
+                )
             }
         }
+        windowPattern = .matching(legs: regularLegIndices.map { legs[$0] }, days: orderedSelectedDays)
         if let value = outboundLegIndices.compactMap({ legs[$0].travelDate }).first,
            let date = travelDate(from: value) {
             outboundTravelDate = date
@@ -385,12 +416,16 @@ struct NotificationScheduleView: View {
                 windowHint
             }
         } header: {
-            RailwayBackgroundSectionHeader(title: title)
+            let route = indices.first.map { first in
+                let last = indices.last ?? first
+                return "\(legs[first].fromName ?? legs[first].from) → \(legs[last].toName ?? legs[last].to)"
+            }
+            journeySectionHeader(route.map { "\(title): \($0)" } ?? title)
         }
     }
 
     private var windowHint: some View {
-        Text("Choose a window up to 2 hours.")
+        Text("Choose a window up to 5 hours.")
             .font(.footnote)
             .foregroundStyle(.secondary)
     }
@@ -415,7 +450,7 @@ struct NotificationScheduleView: View {
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, minHeight: 52)
         .contentShape(Rectangle())
-        .accessibilityLabel(day.shortLabel)
+        .accessibilityLabel(day.fullLabel)
         .accessibilityValue(isSelected ? "Selected" : "Not selected")
     }
 
@@ -423,6 +458,12 @@ struct NotificationScheduleView: View {
         if selectedDays.contains(day) {
             selectedDays.remove(day)
         } else {
+            if let group = windowPattern.dayGroups.first(where: { $0.contains(day) }),
+               let source = group.first(where: selectedDays.contains) {
+                for index in regularLegIndices {
+                    legs[index].setWindow(legs[index].window(on: source), for: [day])
+                }
+            }
             selectedDays.insert(day)
         }
     }
@@ -451,17 +492,61 @@ struct NotificationScheduleView: View {
         )
     }
 
-    private func bindingForStartTime(_ index: Int) -> Binding<Date> {
+    private func applyWindowPattern(_ pattern: NotificationWindowPattern) {
+        if pattern == .split { selectedDays = Set(DayOfWeek.allCases) }
+        for index in regularLegIndices {
+            for group in pattern.dayGroups {
+                let first = group.first(where: selectedDays.contains) ?? group[0]
+                let window = legs[index].window(on: first)
+                legs[index].setWindow(window, for: group)
+                if pattern == .same {
+                    legs[index].windowStart = window.windowStart
+                    legs[index].windowEnd = window.windowEnd
+                }
+            }
+        }
+        windowPattern = pattern
+    }
+
+    private func regularWindowEditor(_ index: Int, days: [DayOfWeek]) -> some View {
+        let label = DayOfWeek.friendlyLabel(for: days)
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(label)
+                .font(.subheadline.weight(.semibold))
+            DatePicker("Start", selection: bindingForRegularTime(index, days: days, isStart: true), displayedComponents: .hourAndMinute)
+                .accessibilityLabel("\(label) start")
+            DatePicker("End", selection: bindingForRegularTime(index, days: days, isStart: false), displayedComponents: .hourAndMinute)
+                .accessibilityLabel("\(label) end")
+        }
+        .disabled(!legs[index].enabled)
+    }
+
+    private func bindingForRegularTime(_ index: Int, days: [DayOfWeek], isStart: Bool) -> Binding<Date> {
         Binding(
             get: {
-                timeFromString(legs[index].windowStart)
-                    ?? defaultWindowDate(for: index, isStart: true)
+                let window = legs[index].window(on: days[0])
+                return timeFromString(isStart ? window.windowStart : window.windowEnd) ?? Date()
             },
-            set: { newValue in
-                legs[index].windowStart = timeString(from: newValue)
-                let twoHoursLater = Calendar.current.date(byAdding: .hour, value: 2, to: newValue) ?? newValue
-                legs[index].windowEnd = timeString(from: twoHoursLater)
-                showWindowHint.remove(index)
+            set: { value in
+                var window = legs[index].window(on: days[0])
+                let lastMinute = Calendar.current.date(bySettingHour: 23, minute: 59, second: 0, of: value) ?? value
+                if isStart {
+                    window.windowStart = timeString(from: value)
+                    let end = Calendar.current.date(byAdding: .minute, value: defaultWindowMinutes, to: value) ?? value
+                    window.windowEnd = timeString(from: min(end, lastMinute))
+                    showWindowHint.remove(index)
+                } else if let start = timeFromString(window.windowStart) {
+                    let maxEnd = min(Calendar.current.date(byAdding: .minute, value: maxWindowMinutes, to: start) ?? start, lastMinute)
+                    if value > maxEnd || value < start { showWindowHint.insert(index) }
+                    else { showWindowHint.remove(index) }
+                    window.windowEnd = timeString(from: min(max(value, start), maxEnd))
+                }
+                let group = windowPattern.dayGroups.first(where: { $0.contains(days[0]) }) ?? days
+                legs[index].setWindow(window, for: group)
+                if windowPattern == .same {
+                    legs[index].windowStart = window.windowStart
+                    legs[index].windowEnd = window.windowEnd
+                }
             }
         )
     }
@@ -482,27 +567,6 @@ struct NotificationScheduleView: View {
                     legs[index].windowEnd = timeString(from: endDate)
                     showWindowHint.remove(index)
                 }
-            }
-        )
-    }
-
-    private func bindingForEndTime(_ index: Int) -> Binding<Date> {
-        Binding(
-            get: {
-                timeFromString(legs[index].windowEnd)
-                    ?? defaultWindowDate(for: index, isStart: false)
-            },
-            set: { newValue in
-                if let startDate = timeFromString(legs[index].windowStart) {
-                    let maxEnd = Calendar.current.date(byAdding: .minute, value: maxWindowMinutes, to: startDate) ?? startDate
-                    if newValue > maxEnd {
-                        showWindowHint.insert(index)
-                    } else {
-                        showWindowHint.remove(index)
-                    }
-                }
-                legs[index].windowEnd = timeString(from: newValue)
-                clampLegWindow(index)
             }
         )
     }
@@ -594,9 +658,7 @@ struct NotificationScheduleView: View {
                 return
             }
 
-            let autoMuteOnArrival = (UserDefaults.standard.object(forKey: "autoMuteOnArrival") as? Bool) ?? true
-            // Journey detection uses location even when the user does not want notification
-            // muting, so establish the durable authorization goal for every schedule.
+            // Journey detection establishes the durable authorization goal for every schedule.
             NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
 
             let pushToStartReady = await activityMgr.ensurePushToStartTokenRegistered()
@@ -617,6 +679,7 @@ struct NotificationScheduleView: View {
                 if scheduleKind == .oneOff {
                     let date = outboundLegIndices.contains(index) ? outboundTravelDate : returnTravelDate
                     leg.travelDate = travelDateString(from: date)
+                    leg.dayWindows = nil
                 } else {
                     leg.travelDate = nil
                 }
@@ -644,7 +707,7 @@ struct NotificationScheduleView: View {
                 fromName: primaryLeg?.fromName,
                 toName: primaryLeg?.toName,
                 useSandbox: useSandbox,
-                muteOnArrival: autoMuteOnArrival,
+                muteOnArrival: true,
                 liveSessionOrigin: nil,
                 activeUntil: nil
             )
@@ -703,6 +766,7 @@ struct NotificationScheduleDestination: Identifiable {
         if let first = JourneyStore.shared.journeyGroups().first {
             NotificationScheduleView(group: first)
                 .environmentObject(NotificationSubscriptionStore.shared)
+                .environmentObject(LiveActivityManager.shared)
         } else {
             Text("No journeys for preview")
         }
@@ -712,6 +776,7 @@ struct NotificationScheduleDestination: Identifiable {
 private struct ScheduleDraftState: Equatable {
     let scheduleKind: NotificationScheduleKind
     let days: [DayOfWeek]
+    let windowPattern: NotificationWindowPattern
     let outboundTravelDate: String
     let returnTravelDate: String
     let legs: [NotificationLeg]

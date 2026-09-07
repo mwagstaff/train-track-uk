@@ -32,6 +32,10 @@ struct TrainTrackUKApp: App {
                 .environmentObject(RecentServiceStore.shared)
                 .environmentObject(railwayBackgroundStore)
                 .environmentObject(deepLink)
+                .task { await ServerConfigStore.shared.refresh() }
+                #if (DEBUG || APP_STORE_CAPTURE) && targetEnvironment(simulator)
+                .task { await AppStoreScreenshotFixture.prepareIfRequested() }
+                #endif
                 .onAppear {
                     // Defer to next runloop to avoid "Publishing changes from within view updates" warnings
                     DispatchQueue.main.async {

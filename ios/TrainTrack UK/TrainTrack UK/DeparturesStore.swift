@@ -33,6 +33,13 @@ final class DeparturesStore: ObservableObject {
             .removeObject(forKey: "pinned_departures_v1")
     }
 
+    #if (DEBUG || APP_STORE_CAPTURE) && targetEnvironment(simulator)
+    func installScreenshotServiceDetails(_ details: ServiceDetails, serviceID: String) {
+        serviceDetailsById[serviceID] = details
+        serviceDetailsFetchedAt[serviceID] = Date()
+    }
+    #endif
+
     func startPolling(journeyStore: JourneyStore) {
         #if DEBUG
         if ProcessInfo.processInfo.environment["APP_STORE_SCREENSHOTS"] == "1" {

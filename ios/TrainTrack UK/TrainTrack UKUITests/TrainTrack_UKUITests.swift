@@ -300,6 +300,46 @@ final class TrainTrack_UKUITests: XCTestCase {
         capture("07-route-map", in: app)
     }
 
+    @MainActor
+    func testScheduleReversesHeadingsAndKeepsTimeWindows() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["APP_STORE_SCREENSHOTS"] = "1"
+        app.launchEnvironment["UI_TEST_RESET_JOURNEYS"] = "1"
+        app.launchArguments += ["-AppleLocale", "en_GB", "-journeySortMode", "alphabetical"]
+        app.launch()
+
+        XCTAssertTrue(app.staticTexts["Kent House → London Victoria"].waitForExistence(timeout: 15))
+        app.buttons.matching(identifier: "Journey actions").element(boundBy: 1).tap()
+        app.buttons["Schedule journey updates"].tap()
+        XCTAssertTrue(app.buttons["Reverse legs"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["View background photo"].isHittable)
+        XCTAssertTrue(app.staticTexts["Weekdays"].exists)
+
+        let start = app.datePickers["Weekdays start"]
+        let end = app.datePickers["Weekdays end"]
+        XCTAssertTrue(start.exists)
+        XCTAssertTrue(end.exists)
+        let firstStart = start.value as? String
+        let firstEnd = end.value as? String
+        XCTAssertNotNil(firstStart)
+        XCTAssertNotNil(firstEnd)
+
+        app.buttons["Reverse legs"].tap()
+        XCTAssertTrue(app.staticTexts["London Victoria → Kent House"].waitForExistence(timeout: 5))
+        XCTAssertEqual(start.value as? String, firstStart)
+        XCTAssertEqual(end.value as? String, firstEnd)
+        app.buttons["Reverse legs"].tap()
+        XCTAssertTrue(app.staticTexts["Kent House → London Victoria"].waitForExistence(timeout: 5))
+        XCTAssertEqual(start.value as? String, firstStart)
+        XCTAssertEqual(end.value as? String, firstEnd)
+        app.buttons["Wednesday"].tap()
+        app.buttons["Thursday"].tap()
+        XCTAssertTrue(app.staticTexts["Monday, Tuesday and Friday"].exists)
+        capture("schedule-friendly-days", in: app)
+        app.buttons["Close"].tap()
+        app.buttons["Discard changes"].tap()
+    }
+
     private func tapTab(_ label: String, in app: XCUIApplication) {
         let button = app.buttons[label].firstMatch
         XCTAssertTrue(button.waitForExistence(timeout: 10))

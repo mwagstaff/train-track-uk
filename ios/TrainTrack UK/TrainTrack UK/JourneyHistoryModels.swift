@@ -162,6 +162,23 @@ struct JourneyHistoryLeg: Codable, Hashable, Identifiable {
     }
 }
 
+extension JourneyHistoryLeg {
+    func serviceDetailsMayBeAvailable(at now: Date = Date()) -> Bool {
+        let estimatedDepartureAt = scheduledDepartureAt.flatMap {
+            JourneyHistoryTime.date(for: estimatedDepartureTime, near: $0)
+        }
+        if actualDepartureAt == nil,
+           estimatedDepartureAt == nil,
+           estimatedDepartureTime?.caseInsensitiveCompare("Delayed") == .orderedSame {
+            return true
+        }
+        return ServiceDetailsRequestPolicy.mayRequest(
+            departureAt: actualDepartureAt ?? estimatedDepartureAt ?? scheduledDepartureAt,
+            at: now
+        )
+    }
+}
+
 struct JourneyHistoryStationEvent: Codable, Hashable, Identifiable {
     enum Kind: String, Codable {
         case arrival
@@ -363,8 +380,7 @@ extension JourneyHistoryRecord {
     }
 
     var routeTitle: String {
-        let destination = outcome == .completed ? plannedDestinationName : recordedDestinationName
-        return "\(plannedOriginName) → \(destination)"
+        "\(plannedOriginName) → \(plannedDestinationName)"
     }
 
     var operatorDisplayText: String {

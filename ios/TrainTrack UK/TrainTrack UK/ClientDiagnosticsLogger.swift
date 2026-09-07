@@ -1,20 +1,27 @@
 import Foundation
 
 nonisolated enum ClientDiagnosticsLogger {
-    #if DEBUG
     private static let suiteName = "group.dev.skynolimit.traintrack"
     private static let queue = DispatchQueue(label: "dev.skynolimit.traintrack.client-diagnostics")
     private static let maxFileBytes = 2 * 1024 * 1024
-    #endif
+
+    static var isEnabled: Bool {
+        let defaults = UserDefaults(suiteName: suiteName)
+        #if DEBUG
+        if defaults?.object(forKey: "troubleshootingLogsEnabled") == nil { return true }
+        #endif
+        return defaults?.bool(forKey: "troubleshootingLogsEnabled") ?? false
+    }
 
     static func log(
         _ category: String,
         _ event: String,
         metadata: @autoclosure () -> [String: Any?] = [:]
     ) {
-        #if DEBUG
+        guard isEnabled else { return }
         let metadata = metadata()
         queue.async {
+            guard isEnabled else { return }
             guard let url = logFileURL(named: "diagnostics-app.jsonl") else { return }
             let entry: [String: Any] = [
                 "timestamp": ISO8601DateFormatter().string(from: Date()),
@@ -33,27 +40,17 @@ nonisolated enum ClientDiagnosticsLogger {
             append(lineData, to: url)
             trimIfNeeded(url)
         }
-        #endif
     }
 
     static func appLogURL() -> URL? {
-        #if DEBUG
         logFileURL(named: "diagnostics-app.jsonl")
-        #else
-        nil
-        #endif
     }
 
     static func notificationServiceLogURL() -> URL? {
-        #if DEBUG
         logFileURL(named: "diagnostics-notification-service.jsonl")
-        #else
-        nil
-        #endif
     }
 
     static func exportStoredLogs() -> String {
-        #if DEBUG
         queue.sync {
             [
                 ("Client Diagnostics", appLogURL()),
@@ -69,23 +66,17 @@ nonisolated enum ClientDiagnosticsLogger {
             }
             .joined(separator: "\n\n")
         }
-        #else
-        ""
-        #endif
     }
 
     static func clearStoredLogs() {
-        #if DEBUG
         queue.sync {
             [appLogURL(), notificationServiceLogURL()].forEach { url in
                 guard let url else { return }
                 try? FileManager.default.removeItem(at: url)
             }
         }
-        #endif
     }
 
-    #if DEBUG
     private static func logFileURL(named name: String) -> URL? {
         let fileManager = FileManager.default
         let directory = fileManager.containerURL(forSecurityApplicationGroupIdentifier: suiteName)
@@ -107,7 +98,9 @@ nonisolated enum ClientDiagnosticsLogger {
     }
 
     private static func trimIfNeeded(_ url: URL) {
-        guard let data = try? Data(contentsOf: url), data.count > maxFileBytes else { return }
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber,
+              size.intValue > maxFileBytes,
+              let data = try? Data(contentsOf: url) else { return }
         let suffix = data.suffix(maxFileBytes / 2)
         try? Data(suffix).write(to: url, options: .atomic)
     }
@@ -139,5 +132,4 @@ nonisolated enum ClientDiagnosticsLogger {
             return String(describing: value)
         }
     }
-    #endif
 }

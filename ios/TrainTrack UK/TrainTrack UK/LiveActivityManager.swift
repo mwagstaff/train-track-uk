@@ -363,7 +363,8 @@ final class LiveActivityManager: ObservableObject {
             }
             if phase.showsInProgressService,
                let currentLeg,
-               let serviceID = currentLeg.serviceID {
+               let serviceID = currentLeg.serviceID,
+               currentLeg.serviceDetailsMayBeAvailable() {
                 _ = await DeparturesStore.shared.ensureServiceDetails(
                     for: [serviceID],
                     force: true,
@@ -1317,7 +1318,9 @@ final class LiveActivityManager: ObservableObject {
         if let trackedJourney,
            trackedJourney.plannedOrigin.crs.caseInsensitiveCompare(route.deepLinkFromCRS) == .orderedSame,
            trackedJourney.plannedDestination.crs.caseInsensitiveCompare(route.deepLinkToCRS) == .orderedSame {
-            if let serviceID = trackedJourney.currentLeg?.serviceID {
+            if let currentLeg = trackedJourney.currentLeg,
+               let serviceID = currentLeg.serviceID,
+               currentLeg.serviceDetailsMayBeAvailable() {
                 _ = await depStore.ensureServiceDetails(for: [serviceID], force: true)
             }
             await updateJourneyPhase(
@@ -1815,11 +1818,15 @@ final class LiveActivityManager: ObservableObject {
         activityUpdatesTask?.cancel()
         activityUpdatesTask = Task { [weak self] in
             guard let self else { return }
+            #if DEBUG
             self.logger.debug("[ActivityMonitor] Activity.activityUpdates stream started")
+            #endif
             for await activity in Activity<JourneyActivityAttributes>.activityUpdates {
                 await self.handleActivityUpdate(activity)
             }
+            #if DEBUG
             self.logger.debug("[ActivityMonitor] Activity.activityUpdates stream completed")
+            #endif
         }
     }
 
@@ -1844,13 +1851,17 @@ final class LiveActivityManager: ObservableObject {
         }
         #endif
         await registerRemoteStartedActivityIfNeeded(activity)
+        #if DEBUG
         self.logger.debug("[ActivityMonitor] Activity emitted id=\(activity.id, privacy: .public) state=\(self.describe(state: activity.activityState), privacy: .public)")
+        #endif
         logActivitySnapshot(activity, context: "activityUpdates emit")
         stateMonitorTasks[activity.id]?.cancel()
         stateMonitorTasks[activity.id] = Task { [weak self] in
             guard let self else { return }
             for await state in activity.activityStateUpdates {
+                #if DEBUG
                 self.logger.debug("[ActivityMonitor] Activity \(activity.id, privacy: .public) transitioned to \(self.describe(state: state), privacy: .public)")
+                #endif
                 logActivitySnapshot(activity, context: "state transition -> \(self.describe(state: state))")
                 if state == .ended || state == .dismissed {
                     pushTokenTasks[activity.id]?.cancel()
@@ -1858,7 +1869,9 @@ final class LiveActivityManager: ObservableObject {
                     self.cleanupAfterRemoteEnd(for: activity)
                 }
             }
+            #if DEBUG
             self.logger.debug("[ActivityMonitor] Activity \(activity.id, privacy: .public) state stream ended")
+            #endif
             self.stateMonitorTasks[activity.id] = nil
         }
     }
@@ -2198,6 +2211,7 @@ final class LiveActivityManager: ObservableObject {
 
     // Debug helper: log current attributes/content state for an Activity to aid APNs troubleshooting.
     private func logActivitySnapshot(_ activity: Activity<JourneyActivityAttributes>, context: String) {
+        #if DEBUG
         var payload: [String: Any] = [:]
         if let stateData = try? JSONEncoder.activityDebug.encode(activity.content.state),
            let stateObj = try? JSONSerialization.jsonObject(with: stateData) {
@@ -2216,6 +2230,7 @@ final class LiveActivityManager: ObservableObject {
         } else {
             debugLog("🛰️ [LiveActivity][\(context)] Snapshot could not be serialized")
         }
+        #endif
     }
 
     // When the system ends/dismisses an activity (e.g. via remote push with dismissalPolicy.immediate),
@@ -2438,7 +2453,9 @@ final class LiveActivityManager: ObservableObject {
         pushTokenTasks[activity.id]?.cancel()
         pushTokenTasks[activity.id] = Task { @MainActor [weak self] in
             guard let self else { return }
+            #if DEBUG
             self.logger.debug("[LiveActivity] Listening for push token updates for activity \(activity.id, privacy: .public)")
+            #endif
             debugLog("👂 [LiveActivity] Started watching push tokens for \(activity.id)")
             var tokenCount = 0
             var registeredTokens = Set<String>()
@@ -2452,7 +2469,9 @@ final class LiveActivityManager: ObservableObject {
 
                 tokenCount += 1
                 let tokenPreview = String(tokenString.prefix(8)) + "..." + String(tokenString.suffix(8))
+                #if DEBUG
                 self.logger.debug("[LiveActivity] Received \(source, privacy: .public) push token #\(tokenCount) for activity \(activity.id, privacy: .public)")
+                #endif
                 debugLog("📡 [LiveActivity] \(source) push token #\(tokenCount) received for \(activity.id): \(tokenPreview)")
 
                 var retryCount = 0
@@ -2623,7 +2642,9 @@ final class LiveActivityManager: ObservableObject {
         }
 
         debugLog("➡️ [LiveActivity] Registering token \(tokenPreview) for activity \(activityID) at \(urlString)")
+        #if DEBUG
         logger.debug("[LiveActivity] Registering live activity with backend: \(urlString, privacy: .public)")
+        #endif
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -2632,7 +2653,9 @@ final class LiveActivityManager: ObservableObject {
                 let success = (200...299).contains(http.statusCode)
                 if success {
                     debugLog("✅ [LiveActivity] Registration successful: status=\(http.statusCode) token=\(tokenPreview)")
+                    #if DEBUG
                     logger.debug("[LiveActivity] Registration successful: status=\(http.statusCode)")
+                    #endif
                 } else {
                     debugLog("❌ [LiveActivity] Registration failed: status=\(http.statusCode) body=\(body)")
                     logger.error("[LiveActivity] Registration failed: status=\(http.statusCode)")
@@ -2690,7 +2713,9 @@ final class LiveActivityManager: ObservableObject {
                 return false
             }
             if (200...299).contains(http.statusCode) {
+                #if DEBUG
                 logger.debug("[LiveActivity] Push-to-start token registered successfully")
+                #endif
                 ClientDiagnosticsLogger.log("live_activity", "push_to_start_registration_http_success", metadata: [
                     "status": http.statusCode
                 ])
@@ -2746,7 +2771,9 @@ final class LiveActivityManager: ObservableObject {
         let requestLog = "Live Activity unregistration request\nURL: \(urlString)\nActivity: \(activityID)\nDevice: \(deviceID)\nPreserve notification session: \(preserveNotificationLiveSession)"
         DebugLogStore.shared.log(requestLog, category: "Mute")
         debugLog("➡️ [LiveActivity] Unregistering activity \(activityID) at \(urlString) preserveNotificationLiveSession=\(preserveNotificationLiveSession)")
+        #if DEBUG
         logger.debug("[LiveActivity] Unregistering live activity with backend: \(urlString, privacy: .public)")
+        #endif
 
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -2757,7 +2784,9 @@ final class LiveActivityManager: ObservableObject {
                 DebugLogStore.shared.log(responseLog, category: success ? "Mute" : "Error")
                 if success {
                     debugLog("✅ [LiveActivity] Unregistration successful: status=\(http.statusCode) body=\(body)")
+                    #if DEBUG
                     logger.debug("[LiveActivity] Unregistration successful: status=\(http.statusCode)")
+                    #endif
                 } else {
                     debugLog("⚠️ [LiveActivity] Unregistration returned: status=\(http.statusCode) body=\(body)")
                     logger.warning("[LiveActivity] Unregistration returned: status=\(http.statusCode)")
@@ -2784,7 +2813,9 @@ final class LiveActivityManager: ObservableObject {
     func sendImmediateBackendCheckIn(force: Bool = false) async {
         let hasAnyActivities = !trackedActivities.isEmpty || !currentSystemActivities().isEmpty
         if !force, !hasAnyActivities {
+            #if DEBUG
             logger.debug("[LiveActivity] Skipping check-in because no activities are active")
+            #endif
             return
         }
         if !force, let last = lastBackendCheckInAt, Date().timeIntervalSince(last) < backendCheckInMinIntervalSeconds {
@@ -2817,7 +2848,9 @@ final class LiveActivityManager: ObservableObject {
             if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
                 logger.warning("[LiveActivity] Check-in returned status=\(http.statusCode)")
             } else {
+                #if DEBUG
                 logger.debug("[LiveActivity] Check-in sent successfully")
+                #endif
             }
         } catch {
             logger.error("[LiveActivity] Failed to send check-in: \(String(describing: error), privacy: .public)")

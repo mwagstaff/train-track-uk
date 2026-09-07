@@ -26,6 +26,7 @@ final class JourneyHistoryStore: ObservableObject {
             clear()
         }
         applyVICToKTHDebugFixtureIfPresent()
+        importStatsTestJourneysIfPresent()
         #endif
         log(
             isUsingInMemoryFallback ? "history_store_fallback" : "history_store_ready",
@@ -177,11 +178,13 @@ final class JourneyHistoryStore: ObservableObject {
             destinationCRSs: [record.plannedDestinationCRS],
             length: nil
         )
-        _ = await DeparturesStore.shared.ensureServiceDetails(
-            for: [serviceID],
-            force: true,
-            context: context
-        )
+        if leg.serviceDetailsMayBeAvailable() {
+            _ = await DeparturesStore.shared.ensureServiceDetails(
+                for: [serviceID],
+                force: true,
+                context: context
+            )
+        }
         guard let details = DeparturesStore.shared.serviceDetailsById[serviceID] else {
             log("official_arrival_refresh_unavailable", "No service details were returned for journey \(record.id.uuidString)", metadata: [
                 "journey_id": record.id.uuidString,
@@ -320,6 +323,39 @@ final class JourneyHistoryStore: ObservableObject {
         return record
     }
 
+    /// Only imports an explicitly supplied local file in a development build.
+    /// No fixtures are bundled, downloaded, or generated on other installations.
+    private func importStatsTestJourneysIfPresent() {
+        let file = URL.documentsDirectory.appendingPathComponent("journey-stats-test-import.json")
+        guard FileManager.default.fileExists(atPath: file.path), !isUsingInMemoryFallback else { return }
+        do {
+            let checkpoints = try JSONDecoder().decode(
+                [ActiveJourneyHistoryCheckpoint].self, from: Data(contentsOf: file)
+            )
+            let existingIDs = Set(records.map(\.id))
+            let additions = checkpoints.filter { !existingIDs.contains($0.id) }
+            guard records.count + additions.count <= Self.maximumRecordCount else {
+                log("stats_test_import_skipped", "Not enough space to import stats test journeys without removing history")
+                return
+            }
+            for checkpoint in additions {
+                container.mainContext.insert(JourneyHistoryRecord(
+                    checkpoint: checkpoint, outcome: .completed, completedAt: checkpoint.updatedAt
+                ))
+            }
+            try container.mainContext.save()
+            reload()
+            let receipt = checkpoints.map { $0.id.uuidString }.joined(separator: "\n")
+            try receipt.write(to: URL.documentsDirectory.appendingPathComponent("journey-stats-test-import.receipt"),
+                              atomically: true, encoding: .utf8)
+            try FileManager.default.removeItem(at: file)
+            log("stats_test_imported", "Imported \(additions.count) local stats test journeys")
+        } catch {
+            container.mainContext.rollback()
+            log("stats_test_import_failed", "Stats test journey import failed: \(error.localizedDescription)")
+        }
+    }
+
     private func applyVICToKTHDebugFixtureIfPresent() {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "Europe/London") ?? .current
@@ -446,8 +482,8 @@ final class JourneyHistoryStore: ObservableObject {
         }
     }
 
-    private func log(_ event: String, _ message: String, metadata: [String: Any?] = [:]) {
-        DebugLogStore.shared.log(message, category: "JourneyHistory")
-        ClientDiagnosticsLogger.log("journey_history", event, metadata: metadata)
+    private func log(_ event: String, _ message: @autoclosure () -> String, metadata: @autoclosure () -> [String: Any?] = [:]) {
+        DebugLogStore.shared.log(message(), category: "JourneyHistory")
+        ClientDiagnosticsLogger.log("journey_history", event, metadata: metadata())
     }
 }

@@ -19,11 +19,14 @@ final class ServerConfigStore: ObservableObject {
     @Published private(set) var maxSubscriptionsPerDevice: Int
     /// Maximum number of live sessions a single device may hold.
     @Published private(set) var maxLiveSessionsPerDevice: Int
+    /// Train operator names and colours used by departure rows.
+    @Published private(set) var operatorBranding: OperatorBrandingConfig?
 
     // MARK: - UserDefaults keys & defaults
 
     private let maxSubsKey = "serverConfig_maxSubscriptionsPerDevice"
     private let maxLiveKey = "serverConfig_maxLiveSessionsPerDevice"
+    private let operatorBrandingKey = "serverConfig_operatorBranding"
 
     /// Intentionally conservative: ensures the schedule button is disabled
     /// rather than enabled on the very first install before the server is
@@ -38,6 +41,8 @@ final class ServerConfigStore: ObservableObject {
         let storedLive = UserDefaults.standard.integer(forKey: "serverConfig_maxLiveSessionsPerDevice")
         maxSubscriptionsPerDevice = storedSubs > 0 ? storedSubs : 1
         maxLiveSessionsPerDevice  = storedLive > 0 ? storedLive : 1
+        operatorBranding = UserDefaults.standard.data(forKey: operatorBrandingKey)
+            .flatMap { try? JSONDecoder().decode(OperatorBrandingConfig.self, from: $0) }
         startBackgroundRefresh()
     }
 
@@ -61,18 +66,24 @@ final class ServerConfigStore: ObservableObject {
             maxLiveSessionsPerDevice = maxLive
             debugLog("⚙️ [ServerConfig] maxLiveSessionsPerDevice = \(maxLive)")
         }
+        if let branding = config.operatorBranding, !branding.operators.isEmpty,
+           let encoded = try? JSONEncoder().encode(branding) {
+            UserDefaults.standard.set(encoded, forKey: operatorBrandingKey)
+            operatorBranding = branding
+            debugLog("⚙️ [ServerConfig] operator branding version = \(branding.version)")
+        }
     }
 
     // MARK: - Background refresh
 
     private var backgroundRefreshTask: Task<Void, Never>?
-    private let backgroundRefreshInterval: TimeInterval = 4 * 60 * 60 // 4 hours
+    private let backgroundRefreshInterval: TimeInterval = 60 * 60
 
     private func startBackgroundRefresh() {
         backgroundRefreshTask?.cancel()
         backgroundRefreshTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64((self?.backgroundRefreshInterval ?? 14400) * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64((self?.backgroundRefreshInterval ?? 3600) * 1_000_000_000))
                 guard !Task.isCancelled else { break }
                 await self?.refresh()
             }
@@ -85,9 +96,11 @@ final class ServerConfigStore: ObservableObject {
 private struct ServerConfigResponse: Codable {
     let maxSubscriptionsPerDevice: Int?
     let maxLiveSessionsPerDevice: Int?
+    let operatorBranding: OperatorBrandingConfig?
 
     enum CodingKeys: String, CodingKey {
         case maxSubscriptionsPerDevice = "max_subscriptions_per_device"
         case maxLiveSessionsPerDevice  = "max_live_sessions_per_device"
+        case operatorBranding = "operator_branding"
     }
 }

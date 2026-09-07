@@ -26,7 +26,7 @@ struct ProfileView: View {
                 } label: {
                     profileRow(
                         title: "Preferences",
-                        subtitle: "Notifications, Live Activity, journey sorting, and display settings.",
+                        subtitle: "Notifications, journey sorting, and display settings.",
                         systemImage: "slider.horizontal.3"
                     )
                 }
@@ -450,9 +450,7 @@ enum JourneyUpdateOrdering {
         now: Date,
         calendar: Calendar
     ) -> Date? {
-        guard let startTime = timeComponents(from: leg.windowStart),
-              let endTime = timeComponents(from: leg.windowEnd),
-              !days.isEmpty else {
+        guard !days.isEmpty else {
             return nil
         }
 
@@ -460,7 +458,10 @@ enum JourneyUpdateOrdering {
         for dayOffset in 0...7 {
             guard let day = calendar.date(byAdding: .day, value: dayOffset, to: today),
                   let weekday = dayOfWeek(for: day, calendar: calendar),
-                  days.contains(weekday),
+                  days.contains(weekday) else { continue }
+            let window = leg.window(on: weekday)
+            guard let startTime = timeComponents(from: window.windowStart),
+                  let endTime = timeComponents(from: window.windowEnd),
                   let start = calendar.date(bySettingHour: startTime.hour, minute: startTime.minute, second: 0, of: day),
                   let end = calendar.date(bySettingHour: endTime.hour, minute: endTime.minute, second: 0, of: day) else {
                 continue
@@ -543,6 +544,10 @@ enum JourneyUpdateSchedulePresentation {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> String {
+        if scheduled, subscription.scheduleKind != .oneOff, leg.travelDate == nil,
+           !(leg.dayWindows ?? [:]).isEmpty {
+            return "• \(leg.windowLabel(for: subscription.daysOfWeek))"
+        }
         let window = "• \(leg.windowStart) - \(leg.windowEnd)"
         guard scheduled else { return window }
 

@@ -30,6 +30,8 @@ struct DepartureV2: Codable, Identifiable, Hashable {
     let delayReason: String?
     let cancelReason: String?
     let timestamp: Date?
+    let `operator`: String?
+    let operatorCode: String?
 
     var id: String { serviceID }
 
@@ -37,7 +39,7 @@ struct DepartureV2: Codable, Identifiable, Hashable {
         case departureTime = "departure_time"
         case serviceType, platform, isCancelled, length
         case destination, origin
-        case serviceID, delayReason, cancelReason, timestamp
+        case serviceID, delayReason, cancelReason, timestamp, `operator`, operatorCode
     }
 
     init(
@@ -51,7 +53,9 @@ struct DepartureV2: Codable, Identifiable, Hashable {
         serviceID: String,
         delayReason: String?,
         cancelReason: String?,
-        timestamp: Date?
+        timestamp: Date?,
+        operator: String? = nil,
+        operatorCode: String? = nil
     ) {
         self.departureTime = departureTime
         self.serviceType = serviceType
@@ -64,6 +68,8 @@ struct DepartureV2: Codable, Identifiable, Hashable {
         self.delayReason = delayReason
         self.cancelReason = cancelReason
         self.timestamp = timestamp
+        self.operator = `operator`
+        self.operatorCode = operatorCode
     }
 
     init(from decoder: Decoder) throws {
@@ -98,6 +104,8 @@ struct DepartureV2: Codable, Identifiable, Hashable {
         self.delayReason = try? c.decode(String.self, forKey: .delayReason)
         self.cancelReason = try? c.decode(String.self, forKey: .cancelReason)
         self.timestamp = try? c.decode(Date.self, forKey: .timestamp)
+        self.operator = try? c.decode(String.self, forKey: .operator)
+        self.operatorCode = try? c.decode(String.self, forKey: .operatorCode)
     }
 
     func withPlatform(_ platform: String?) -> DepartureV2 {
@@ -112,7 +120,9 @@ struct DepartureV2: Codable, Identifiable, Hashable {
             serviceID: serviceID,
             delayReason: delayReason,
             cancelReason: cancelReason,
-            timestamp: timestamp
+            timestamp: timestamp,
+            operator: `operator`,
+            operatorCode: operatorCode
         )
     }
 }
@@ -200,6 +210,27 @@ struct RecentDepartureV2: Codable, Identifiable, Hashable {
 
     var id: String {
         "\(fromCRS.uppercased()):\(toCRS.uppercased()):\(serviceID):\(scheduledDepartureAt.timeIntervalSince1970)"
+    }
+
+    func serviceDetailsMayBeAvailable(at now: Date = Date()) -> Bool {
+        if actualDepartureAt == nil,
+           estimatedDepartureAt == nil,
+           estimatedDeparture?.caseInsensitiveCompare("Delayed") == .orderedSame {
+            return true
+        }
+        return ServiceDetailsRequestPolicy.mayRequest(
+            departureAt: actualDepartureAt ?? estimatedDepartureAt ?? scheduledDepartureAt,
+            at: now
+        )
+    }
+}
+
+enum ServiceDetailsRequestPolicy {
+    static let departureGracePeriod: TimeInterval = 2 * 60
+
+    static func mayRequest(departureAt: Date?, at now: Date = Date()) -> Bool {
+        guard let departureAt else { return true }
+        return now <= departureAt.addingTimeInterval(departureGracePeriod)
     }
 }
 

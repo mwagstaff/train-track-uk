@@ -1,0 +1,180 @@
+{
+  "version": "2026-09-06",
+  "source_url": "https://www.nationalrail.co.uk/travel-information/find-a-train-company/",
+  "operators": [
+    {
+      "name": "Avanti West Coast",
+      "operator_codes": ["VT"],
+      "aliases": ["Avanti", "First Trenitalia West Coast Rail"],
+      "color_hex": "#00A6B2"
+    },
+    {
+      "name": "c2c",
+      "operator_codes": ["CC"],
+      "aliases": ["C2C"],
+      "color_hex": "#B5007D"
+    },
+    {
+      "name": "Caledonian Sleeper",
+      "operator_codes": ["CS"],
+      "aliases": ["Sleeper"],
+      "color_hex": "#1D2D5C"
+    },
+    {
+      "name": "Chiltern Railways",
+      "operator_codes": ["CH"],
+      "aliases": ["Chiltern"],
+      "color_hex": "#005AA3"
+    },
+    {
+      "name": "CrossCountry",
+      "operator_codes": ["XC"],
+      "aliases": ["Cross Country"],
+      "color_hex": "#660F61"
+    },
+    {
+      "name": "East Midlands Railway",
+      "operator_codes": ["EM"],
+      "aliases": ["EMR", "East Midlands Trains"],
+      "color_hex": "#6E1E78"
+    },
+    {
+      "name": "Elizabeth line",
+      "operator_codes": ["XR"],
+      "aliases": ["Elizabeth Line", "Crossrail"],
+      "color_hex": "#6950A1"
+    },
+    {
+      "name": "Gatwick Express",
+      "operator_codes": ["GX"],
+      "aliases": [],
+      "color_hex": "#E32119"
+    },
+    {
+      "name": "Grand Central",
+      "operator_codes": ["GC"],
+      "aliases": ["Grand Central Railway"],
+      "color_hex": "#B49A5A"
+    },
+    {
+      "name": "Great Northern",
+      "operator_codes": ["GN"],
+      "aliases": [],
+      "color_hex": "#0077C8"
+    },
+    {
+      "name": "GWR",
+      "operator_codes": ["GW"],
+      "aliases": ["Great Western Railway", "First Great Western"],
+      "color_hex": "#0B5B4B"
+    },
+    {
+      "name": "Greater Anglia",
+      "operator_codes": ["LE", "GA"],
+      "aliases": ["Abellio Greater Anglia"],
+      "color_hex": "#D70428"
+    },
+    {
+      "name": "Heathrow Express",
+      "operator_codes": ["HX"],
+      "aliases": [],
+      "color_hex": "#532E63"
+    },
+    {
+      "name": "Hull Trains",
+      "operator_codes": ["HT"],
+      "aliases": ["First Hull Trains"],
+      "color_hex": "#E50046"
+    },
+    {
+      "name": "LNER",
+      "operator_codes": ["GR"],
+      "aliases": ["London North Eastern Railway"],
+      "color_hex": "#CE0F69"
+    },
+    {
+      "name": "London Northwestern Railway",
+      "operator_codes": ["LM", "LN"],
+      "aliases": ["London North Western Railway", "LNR"],
+      "color_hex": "#00A693"
+    },
+    {
+      "name": "London Overground",
+      "operator_codes": ["LO"],
+      "aliases": ["Overground"],
+      "color_hex": "#EE7C0E"
+    },
+    {
+      "name": "Lumo",
+      "operator_codes": ["LD"],
+      "aliases": ["East Coast Trains"],
+      "color_hex": "#2D2A8C"
+    },
+    {
+      "name": "Merseyrail",
+      "operator_codes": ["ME"],
+      "aliases": [],
+      "color_hex": "#FFD100"
+    },
+    {
+      "name": "Northern",
+      "operator_codes": ["NT"],
+      "aliases": ["Northern Trains", "Northern Rail"],
+      "color_hex": "#262262"
+    },
+    {
+      "name": "ScotRail",
+      "operator_codes": ["SR"],
+      "aliases": ["Scotrail"],
+      "color_hex": "#1C4074"
+    },
+    {
+      "name": "South Western Railway",
+      "operator_codes": ["SW"],
+      "aliases": ["SWR", "Island Line"],
+      "color_hex": "#007E8A"
+    },
+    {
+      "name": "Southeastern",
+      "operator_codes": ["SE"],
+      "aliases": ["South Eastern"],
+      "color_hex": "#1D2452"
+    },
+    {
+      "name": "Southern",
+      "operator_codes": ["SN"],
+      "aliases": ["Southern Railway"],
+      "color_hex": "#00A651"
+    },
+    {
+      "name": "Stansted Express",
+      "operator_codes": ["SX"],
+      "aliases": [],
+      "color_hex": "#00AEEF"
+    },
+    {
+      "name": "Thameslink",
+      "operator_codes": ["TL"],
+      "aliases": ["Thameslink Railway"],
+      "color_hex": "#E5007D"
+    },
+    {
+      "name": "TransPennine Express",
+      "operator_codes": ["TP"],
+      "aliases": ["Transpennine Express", "TPE"],
+      "color_hex": "#00A6A6"
+    },
+    {
+      "name": "Transport for Wales",
+      "operator_codes": ["AW"],
+      "aliases": ["TfW Rail", "Trafnidiaeth Cymru"],
+      "color_hex": "#E31837"
+    },
+    {
+      "name": "West Midlands Railway",
+      "operator_codes": ["WM"],
+      "aliases": ["WMR", "West Midlands Trains"],
+      "color_hex": "#6F2C91"
+    }
+  ]
+}

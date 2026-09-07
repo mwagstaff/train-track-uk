@@ -4,6 +4,39 @@ import Testing
 
 @MainActor
 struct NotificationGeofenceConcurrencyTests {
+    @Test func scheduledGeofenceCannotDetectDepartureAfterWindowEnds() throws {
+        let now = Date()
+        var calendar = Calendar.current
+        calendar.timeZone = .current
+        let start = calendar.startOfDay(for: now)
+        let end = try #require(calendar.date(bySettingHour: 18, minute: 0, second: 0, of: start))
+        let target = StationArrivalTarget(
+            identifier: "scheduled", subscriptionId: "scheduled", from: "VIC", to: "KTH",
+            station: Station(crs: "VIC", name: "Victoria", longitude: "0", latitude: "0"),
+            activeUntil: nil, muteOnArrival: true, isScheduledActivation: true,
+            scheduleKind: .regular, daysOfWeek: [.mon, .tue, .wed, .thu, .fri, .sat, .sun],
+            windowStart: "16:00", windowEnd: "18:00", travelDate: nil
+        )
+        #expect(target.isActive(at: end.addingTimeInterval(-1)))
+        #expect(!target.isActive(at: end))
+        #expect(!target.isActive(at: end.addingTimeInterval(5 * 60)))
+    }
+
+    @Test func stationDepartureOwnershipSeparatesSubscriptionsForTheSameRoute() {
+        #expect(NotificationMuteStorage.pendingStationDepartureOwnerMatches(
+            recordedSubscriptionId: "ad-hoc",
+            requestedSubscriptionId: "ad-hoc"
+        ))
+        #expect(!NotificationMuteStorage.pendingStationDepartureOwnerMatches(
+            recordedSubscriptionId: "ad-hoc",
+            requestedSubscriptionId: "scheduled"
+        ))
+        #expect(NotificationMuteStorage.pendingStationDepartureOwnerMatches(
+            recordedSubscriptionId: nil,
+            requestedSubscriptionId: "scheduled"
+        ))
+    }
+
     @Test func singleFlightSharesAnInProgressOperation() async {
         let singleFlight = AsyncSingleFlight<Int>()
         var invocationCount = 0

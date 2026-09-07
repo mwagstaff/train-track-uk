@@ -87,6 +87,32 @@ enum DayOfWeek: String, CaseIterable, Codable, Identifiable {
 
     var id: String { rawValue }
 
+    static let weekdays: [DayOfWeek] = [.mon, .tue, .wed, .thu, .fri]
+    static let weekend: [DayOfWeek] = [.sat, .sun]
+
+    var fullLabel: String {
+        switch self {
+        case .mon: return "Monday"
+        case .tue: return "Tuesday"
+        case .wed: return "Wednesday"
+        case .thu: return "Thursday"
+        case .fri: return "Friday"
+        case .sat: return "Saturday"
+        case .sun: return "Sunday"
+        }
+    }
+
+    static func friendlyLabel(for days: [DayOfWeek]) -> String {
+        let ordered = allCases.filter(Set(days).contains)
+        if ordered == allCases { return "Every day" }
+        if ordered == weekdays { return "Weekdays" }
+        if ordered == weekend { return "Weekends" }
+        let names = ordered.map(\.fullLabel)
+        guard let last = names.last else { return "No days selected" }
+        if names.count == 1 { return last }
+        return "\(names.dropLast().joined(separator: ", ")) and \(last)"
+    }
+
     var shortLabel: String {
         switch self {
         case .mon: return "Mon"
@@ -100,6 +126,43 @@ enum DayOfWeek: String, CaseIterable, Codable, Identifiable {
     }
 }
 
+struct NotificationTimeWindow: Codable, Hashable {
+    var windowStart: String
+    var windowEnd: String
+
+    enum CodingKeys: String, CodingKey {
+        case windowStart = "window_start"
+        case windowEnd = "window_end"
+    }
+}
+
+enum NotificationWindowPattern: String, CaseIterable, Identifiable {
+    case same = "Same times every day"
+    case split = "Weekdays & weekends"
+    case custom = "Custom per day"
+
+    var id: Self { self }
+
+    var dayGroups: [[DayOfWeek]] {
+        switch self {
+        case .same: return [DayOfWeek.allCases]
+        case .split: return [DayOfWeek.weekdays, DayOfWeek.weekend]
+        case .custom: return DayOfWeek.allCases.map { [$0] }
+        }
+    }
+
+    static func matching(legs: [NotificationLeg], days: [DayOfWeek]) -> Self {
+        for pattern in [Self.same, .split] {
+            if legs.allSatisfy({ leg in
+                pattern.dayGroups.allSatisfy { group in
+                    Set(group.filter(days.contains).map { leg.window(on: $0) }).count <= 1
+                }
+            }) { return pattern }
+        }
+        return .custom
+    }
+}
+
 struct NotificationLeg: Codable, Identifiable, Hashable {
     let from: String
     let to: String
@@ -109,6 +172,7 @@ struct NotificationLeg: Codable, Identifiable, Hashable {
     var windowStart: String
     var windowEnd: String
     var travelDate: String? = nil
+    var dayWindows: [String: NotificationTimeWindow]? = nil
 
     var id: String { "\(from)->\(to)" }
 
@@ -121,6 +185,65 @@ struct NotificationLeg: Codable, Identifiable, Hashable {
         case windowStart = "window_start"
         case windowEnd = "window_end"
         case travelDate = "travel_date"
+        case dayWindows = "day_windows"
+    }
+
+    func window(on day: DayOfWeek) -> NotificationTimeWindow {
+        dayWindows?[day.rawValue]
+            ?? NotificationTimeWindow(windowStart: windowStart, windowEnd: windowEnd)
+    }
+
+    mutating func setWindow(_ window: NotificationTimeWindow, for days: [DayOfWeek]) {
+        for day in days {
+            if dayWindows == nil { dayWindows = [:] }
+            dayWindows?[day.rawValue] = window
+        }
+    }
+
+    func windowGroups(for days: [DayOfWeek]) -> [(days: [DayOfWeek], window: NotificationTimeWindow)] {
+        var groups: [(days: [DayOfWeek], window: NotificationTimeWindow)] = []
+        for day in DayOfWeek.allCases where days.contains(day) {
+            let window = window(on: day)
+            if let index = groups.firstIndex(where: { $0.window == window }) {
+                groups[index].days.append(day)
+            } else {
+                groups.append(([day], window))
+            }
+        }
+        return groups
+    }
+
+    func windowLabel(for days: [DayOfWeek]) -> String {
+        windowGroups(for: days).map { group in
+            let label: String
+            if group.days == DayOfWeek.allCases { label = "Every day" }
+            else if group.days == DayOfWeek.weekdays { label = "Weekdays" }
+            else if group.days == DayOfWeek.weekend { label = "Weekends" }
+            else { label = group.days.map(\.shortLabel).joined(separator: ", ") }
+            return "\(label) \(group.window.windowStart)–\(group.window.windowEnd)"
+        }.joined(separator: " · ")
+    }
+}
+
+enum NotificationScheduleEditing {
+    /// Reverse each direction's route while keeping the schedule attached to its form position.
+    static func reversingDirections(in legs: [NotificationLeg], outboundLegCount: Int) -> [NotificationLeg] {
+        let split = min(max(outboundLegCount, 0), legs.count)
+        return [Array(legs.prefix(split)), Array(legs.dropFirst(split))].flatMap { direction in
+            zip(direction, direction.reversed()).map { schedule, route in
+                NotificationLeg(
+                    from: route.to,
+                    to: route.from,
+                    fromName: route.toName,
+                    toName: route.fromName,
+                    enabled: schedule.enabled,
+                    windowStart: schedule.windowStart,
+                    windowEnd: schedule.windowEnd,
+                    travelDate: schedule.travelDate,
+                    dayWindows: schedule.dayWindows
+                )
+            }
+        }
     }
 }
 
@@ -198,6 +321,9 @@ struct NotificationSubscription: Codable, Identifiable, Hashable {
     var windowLabel: String {
         let enabledLegs = legs.filter { $0.enabled }
         guard !enabledLegs.isEmpty else { return "No window" }
+        if scheduleKind != .oneOff, enabledLegs.contains(where: { !($0.dayWindows ?? [:]).isEmpty }) {
+            return enabledLegs.map { $0.windowLabel(for: daysOfWeek) }.joined(separator: " / ")
+        }
         if enabledLegs.count == 1, let leg = enabledLegs.first {
             return "\(leg.windowStart)–\(leg.windowEnd)"
         }
@@ -282,6 +408,7 @@ enum NotificationScheduleActivationPolicy {
         windowStart: String,
         windowEnd: String,
         travelDate: String?,
+        dayWindows: [String: NotificationTimeWindow]? = nil,
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> Bool {
@@ -291,9 +418,28 @@ enum NotificationScheduleActivationPolicy {
             windowStart: windowStart,
             windowEnd: windowEnd,
             travelDate: travelDate,
+            dayWindows: dayWindows,
             around: now,
             calendar: calendar
-        ).contains { $0.start <= now && now <= $0.end }
+        ).contains { $0.start <= now && now < $0.end }
+    }
+
+    static func activeWindowEnd(
+        for subscription: NotificationSubscription,
+        leg: NotificationLeg,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Date? {
+        activationIntervals(
+            scheduleKind: subscription.scheduleKind,
+            daysOfWeek: subscription.daysOfWeek,
+            windowStart: leg.windowStart,
+            windowEnd: leg.windowEnd,
+            travelDate: leg.travelDate,
+            dayWindows: leg.dayWindows,
+            around: now,
+            calendar: calendar
+        ).first { $0.start <= now && now < $0.end }?.end
     }
 
     static func nextStart(
@@ -308,6 +454,7 @@ enum NotificationScheduleActivationPolicy {
             windowStart: leg.windowStart,
             windowEnd: leg.windowEnd,
             travelDate: leg.travelDate,
+            dayWindows: leg.dayWindows,
             around: now,
             calendar: calendar
         )
@@ -322,6 +469,7 @@ enum NotificationScheduleActivationPolicy {
         windowStart: String,
         windowEnd: String,
         travelDate: String?,
+        dayWindows: [String: NotificationTimeWindow]? = nil,
         around now: Date,
         calendar: Calendar
     ) -> [DateInterval] {
@@ -352,7 +500,10 @@ enum NotificationScheduleActivationPolicy {
                   allowedDays.contains(dayOfWeek(for: day, calendar: calendar)) else {
                 return nil
             }
-            return interval(on: day, startTime: startTime, endTime: endTime, calendar: calendar)
+            let window = dayWindows?[dayOfWeek(for: day, calendar: calendar).rawValue]
+            guard let dayStart = timeComponents(from: window?.windowStart ?? windowStart),
+                  let dayEnd = timeComponents(from: window?.windowEnd ?? windowEnd) else { return nil }
+            return interval(on: day, startTime: dayStart, endTime: dayEnd, calendar: calendar)
         }
     }
 
@@ -437,6 +588,7 @@ enum ScheduledJourneyActivationResolver {
                     windowStart: leg.windowStart,
                     windowEnd: leg.windowEnd,
                     travelDate: leg.travelDate,
+                    dayWindows: leg.dayWindows,
                     now: now,
                     calendar: calendar
                 )

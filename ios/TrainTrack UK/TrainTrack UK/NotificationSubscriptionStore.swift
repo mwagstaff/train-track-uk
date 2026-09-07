@@ -503,6 +503,8 @@ final class NotificationSubscriptionStore: ObservableObject {
         }
         if coordinator.armedCandidates.contains(where: {
             $0.subscriptionId == activation.subscription.id
+                && $0.activeUntil != nil
+                && $0.isCurrent(at: now)
                 && $0.stations.map { $0.crs.uppercased() } == expectedRoute
         }) {
             return true

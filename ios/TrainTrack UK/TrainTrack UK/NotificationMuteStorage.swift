@@ -9,6 +9,7 @@ nonisolated enum NotificationMuteStorage {
     private static let pendingArrivalDetectionAtKey = "pendingArrivalDetectionAt"
     private static let pendingStationDepartureCleanupKey = "pendingStationDepartureCleanup"
     private static let pendingStationDepartureCleanupAtKey = "pendingStationDepartureCleanupAt"
+    private static let pendingStationDepartureCleanupOwnerKey = "pendingStationDepartureCleanupOwner"
     private static let pendingMuteRequestsKey = "pendingMuteRequests"
 
     struct PendingMuteRequest: Codable, Identifiable {
@@ -102,7 +103,12 @@ nonisolated enum NotificationMuteStorage {
     }
 
     @discardableResult
-    static func markPendingStationDepartureCleanup(from: String, to: String, at date: Date = Date()) -> String {
+    static func markPendingStationDepartureCleanup(
+        from: String,
+        to: String,
+        subscriptionId: String? = nil,
+        at date: Date = Date()
+    ) -> String {
         guard let sharedDefaults = UserDefaults(suiteName: suiteName) else {
             return currentDateKey()
         }
@@ -116,12 +122,25 @@ nonisolated enum NotificationMuteStorage {
         var pendingAt = sharedDefaults.dictionary(forKey: pendingStationDepartureCleanupAtKey) as? [String: String] ?? [:]
         pendingAt[key] = ISO8601DateFormatter().string(from: date)
         sharedDefaults.set(pendingAt, forKey: pendingStationDepartureCleanupAtKey)
+
+        var owners = sharedDefaults.dictionary(forKey: pendingStationDepartureCleanupOwnerKey) as? [String: String] ?? [:]
+        owners[key] = subscriptionId
+        sharedDefaults.set(owners, forKey: pendingStationDepartureCleanupOwnerKey)
         return dateKey
+    }
+
+    static func pendingStationDepartureOwnerMatches(
+        recordedSubscriptionId: String?,
+        requestedSubscriptionId: String?
+    ) -> Bool {
+        guard let requestedSubscriptionId, let recordedSubscriptionId else { return true }
+        return recordedSubscriptionId == requestedSubscriptionId
     }
 
     static func hasPendingStationDepartureCleanup(
         from: String,
         to: String,
+        subscriptionId: String? = nil,
         dateKey: String? = nil,
         now: Date = Date()
     ) -> Bool {
@@ -129,6 +148,11 @@ nonisolated enum NotificationMuteStorage {
         guard let pending = sharedDefaults.dictionary(forKey: pendingStationDepartureCleanupKey) as? [String: String] else { return false }
         let key = legKey(from: from, to: to)
         guard pending[key] != nil else { return false }
+        let recordedOwner = (sharedDefaults.dictionary(forKey: pendingStationDepartureCleanupOwnerKey) as? [String: String])?[key]
+        guard pendingStationDepartureOwnerMatches(
+            recordedSubscriptionId: recordedOwner,
+            requestedSubscriptionId: subscriptionId
+        ) else { return false }
 
         if let iso = (sharedDefaults.dictionary(forKey: pendingStationDepartureCleanupAtKey) as? [String: String])?[key],
            let recordedAt = ISO8601DateFormatter().date(from: iso) {
@@ -144,6 +168,7 @@ nonisolated enum NotificationMuteStorage {
     static func consumePendingStationDepartureCleanup(
         from: String,
         to: String,
+        subscriptionId: String? = nil,
         dateKey: String? = nil,
         now: Date = Date()
     ) -> Bool {
@@ -153,6 +178,11 @@ nonisolated enum NotificationMuteStorage {
               pending[key] != nil else {
             return false
         }
+        let recordedOwner = (sharedDefaults.dictionary(forKey: pendingStationDepartureCleanupOwnerKey) as? [String: String])?[key]
+        guard pendingStationDepartureOwnerMatches(
+            recordedSubscriptionId: recordedOwner,
+            requestedSubscriptionId: subscriptionId
+        ) else { return false }
 
         let isCurrent: Bool
         if let iso = (sharedDefaults.dictionary(forKey: pendingStationDepartureCleanupAtKey) as? [String: String])?[key],
@@ -165,6 +195,7 @@ nonisolated enum NotificationMuteStorage {
         pending.removeValue(forKey: key)
         sharedDefaults.set(pending, forKey: pendingStationDepartureCleanupKey)
         removePendingStationDepartureTimestamp(key: key, defaults: sharedDefaults)
+        removePendingStationDepartureOwner(key: key, defaults: sharedDefaults)
         return isCurrent
     }
 
@@ -176,12 +207,20 @@ nonisolated enum NotificationMuteStorage {
             sharedDefaults.set(pending, forKey: pendingStationDepartureCleanupKey)
         }
         removePendingStationDepartureTimestamp(key: key, defaults: sharedDefaults)
+        removePendingStationDepartureOwner(key: key, defaults: sharedDefaults)
     }
 
     private static func removePendingStationDepartureTimestamp(key: String, defaults: UserDefaults) {
         if var pendingAt = defaults.dictionary(forKey: pendingStationDepartureCleanupAtKey) as? [String: String] {
             pendingAt.removeValue(forKey: key)
             defaults.set(pendingAt, forKey: pendingStationDepartureCleanupAtKey)
+        }
+    }
+
+    private static func removePendingStationDepartureOwner(key: String, defaults: UserDefaults) {
+        if var owners = defaults.dictionary(forKey: pendingStationDepartureCleanupOwnerKey) as? [String: String] {
+            owners.removeValue(forKey: key)
+            defaults.set(owners, forKey: pendingStationDepartureCleanupOwnerKey)
         }
     }
 

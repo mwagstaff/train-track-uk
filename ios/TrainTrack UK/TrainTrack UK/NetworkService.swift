@@ -117,7 +117,6 @@ struct DevicePreferencesPayload: Codable, Sendable {
     let journeySortMode: String
     let apiHost: String
     let autoReturnToFavouritesMinutes: Int
-    let autoMuteOnArrival: Bool
     let muteDelayMinutes: Int
     let autoEndLiveActivity: Bool
     let showClosestJourneyLegOnly: Bool
@@ -161,7 +160,6 @@ enum DevicePreferencesSync {
             journeySortMode: defaults.string(forKey: "journeySortMode") ?? "distance",
             apiHost: currentApiHost,
             autoReturnToFavouritesMinutes: defaults.object(forKey: "autoReturnToFavouritesMinutes") as? Int ?? 0,
-            autoMuteOnArrival: defaults.object(forKey: "autoMuteOnArrival") as? Bool ?? true,
             muteDelayMinutes: defaults.object(forKey: "muteDelayMinutes") as? Int ?? 3,
             autoEndLiveActivity: false,
             showClosestJourneyLegOnly: defaults.object(forKey: "showClosestJourneyLegOnly") as? Bool ?? true,

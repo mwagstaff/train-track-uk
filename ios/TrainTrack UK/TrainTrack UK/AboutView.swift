@@ -105,7 +105,7 @@ struct AboutView: View {
         .scrollContentBackground(.hidden)
         .navigationTitle("About")
         .navigationBarTitleDisplayMode(.inline)
-        .railwayBackgroundPOC()
+        .railwayBackgroundPOC(showsInfoButton: false)
     }
 }
 

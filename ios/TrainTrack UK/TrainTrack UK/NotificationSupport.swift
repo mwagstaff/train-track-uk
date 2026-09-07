@@ -554,7 +554,8 @@ final class ScheduledLiveActivityAutoStartManager {
 
         for subscription in subscriptions where subscription.daysOfWeek.contains(today) {
             for leg in subscription.legs where leg.enabled {
-                guard isWithinWindow(now: now, start: leg.windowStart, end: leg.windowEnd) else { continue }
+                let window = leg.window(on: today)
+                guard isWithinWindow(now: now, start: window.windowStart, end: window.windowEnd) else { continue }
                 guard let trigger = ScheduledLiveActivityTrigger(
                     subscriptionId: subscription.id,
                     routeKey: subscription.routeKey,
@@ -563,8 +564,8 @@ final class ScheduledLiveActivityAutoStartManager {
                     fromName: leg.fromName,
                     toName: leg.toName,
                     alertType: autoStartAlertType,
-                    windowStart: leg.windowStart,
-                    windowEnd: leg.windowEnd
+                    windowStart: window.windowStart,
+                    windowEnd: window.windowEnd
                 ) else {
                     continue
                 }

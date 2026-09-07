@@ -108,6 +108,122 @@ struct NotificationScheduleActivationPolicyTests {
         #expect(legs.map { "\($0.from)-\($0.to)" } == ["ZFD-HNH", "HNH-KTH"])
     }
 
+    @Test func scheduledCandidateExpiresAtTheCurrentWindowEnd() throws {
+        let calendar = try londonCalendar()
+        let route = leg(from: "VIC", to: "KTH", start: "16:00", end: "18:00")
+        let subscription = scheduledSubscription(legs: [route])
+        let end = try date(2026, 8, 24, 18, 0, calendar: calendar)
+        #expect(NotificationScheduleActivationPolicy.activeWindowEnd(
+            for: subscription, leg: route, now: end.addingTimeInterval(-1), calendar: calendar
+        ) == end)
+        for now in [end, end.addingTimeInterval(5 * 60)] {
+            #expect(NotificationScheduleActivationPolicy.activeWindowEnd(
+                for: subscription, leg: route, now: now, calendar: calendar
+            ) == nil)
+            #expect(!NotificationScheduleActivationPolicy.isActive(
+                scheduleKind: .regular, daysOfWeek: [.mon], windowStart: "16:00",
+                windowEnd: "18:00", travelDate: nil, now: now, calendar: calendar
+            ))
+        }
+    }
+
+    @Test func overnightCandidateExpiresOnTheFollowingDay() throws {
+        let calendar = try londonCalendar()
+        let route = leg(from: "VIC", to: "KTH", start: "23:30", end: "01:00")
+        let subscription = scheduledSubscription(legs: [route])
+        #expect(NotificationScheduleActivationPolicy.activeWindowEnd(
+            for: subscription, leg: route,
+            now: try date(2026, 8, 25, 0, 30, calendar: calendar), calendar: calendar
+        ) == (try date(2026, 8, 25, 1, 0, calendar: calendar)))
+    }
+
+    @Test func dayWindowsRoundTripAndLegacyLegsKeepTheirDefaults() throws {
+        let legacy = Data(#"{"from":"KTH","to":"VIC","enabled":true,"window_start":"07:00","window_end":"09:00"}"#.utf8)
+        var route = try JSONDecoder().decode(NotificationLeg.self, from: legacy)
+        #expect(route.dayWindows == nil)
+        #expect(route.window(on: .sat).windowStart == "07:00")
+        route.setWindow(NotificationTimeWindow(windowStart: "09:00", windowEnd: "11:00"), for: DayOfWeek.weekend)
+        let data = try JSONEncoder().encode(route)
+        #expect(try JSONDecoder().decode(NotificationLeg.self, from: data) == route)
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let windows = try #require(json["day_windows"] as? [String: [String: String]])
+        #expect(windows["sat"]?["window_start"] == "09:00")
+    }
+
+    @Test func weekdayWeekendAndCustomPatternsPreserveIndependentTimes() {
+        var route = leg(from: "KTH", to: "VIC", start: "07:00", end: "09:00")
+        #expect(NotificationWindowPattern.matching(legs: [route], days: DayOfWeek.allCases) == .same)
+        route.setWindow(NotificationTimeWindow(windowStart: "09:00", windowEnd: "11:00"), for: DayOfWeek.weekend)
+        #expect(NotificationWindowPattern.matching(legs: [route], days: DayOfWeek.allCases) == .split)
+        #expect(route.windowLabel(for: DayOfWeek.allCases) == "Weekdays 07:00–09:00 · Weekends 09:00–11:00")
+        route.setWindow(NotificationTimeWindow(windowStart: "08:15", windowEnd: "09:15"), for: [.wed])
+        #expect(NotificationWindowPattern.matching(legs: [route], days: DayOfWeek.allCases) == .custom)
+        #expect(route.window(on: .mon).windowStart == "07:00")
+        #expect(route.window(on: .sun).windowStart == "09:00")
+        #expect(route.window(on: .wed).windowStart == "08:15")
+    }
+
+    @Test func weekendActivationAndNextStartUseTheCorrectWindow() throws {
+        let calendar = try londonCalendar()
+        var route = leg(from: "KTH", to: "VIC", start: "07:00", end: "09:00")
+        route.setWindow(NotificationTimeWindow(windowStart: "09:00", windowEnd: "11:00"), for: DayOfWeek.weekend)
+        let subscription = scheduledSubscription(legs: [route], days: DayOfWeek.allCases)
+        let saturdayEarly = try date(2026, 9, 5, 8, 0, calendar: calendar)
+        let saturdayStart = try date(2026, 9, 5, 9, 0, calendar: calendar)
+        let saturdayEnd = try date(2026, 9, 5, 11, 0, calendar: calendar)
+        #expect(NotificationScheduleActivationPolicy.activeWindowEnd(for: subscription, leg: route, now: saturdayEarly, calendar: calendar) == nil)
+        #expect(NotificationScheduleActivationPolicy.nextStart(for: subscription, leg: route, now: saturdayEarly, calendar: calendar) == saturdayStart)
+        #expect(NotificationScheduleActivationPolicy.activeWindowEnd(for: subscription, leg: route, now: saturdayStart, calendar: calendar) == saturdayEnd)
+        #expect(NotificationScheduleActivationPolicy.activeWindowEnd(for: subscription, leg: route, now: saturdayEnd, calendar: calendar) == nil)
+        #expect(ScheduledJourneyActivationResolver.legs(for: subscription, matchingFrom: "KTH", to: "VIC", now: saturdayStart, calendar: calendar).count == 1)
+        #expect(ScheduledJourneyActivationResolver.legs(for: subscription, matchingFrom: "KTH", to: "VIC", now: saturdayEarly, calendar: calendar).isEmpty)
+        let weekdaysOnly = scheduledSubscription(legs: [route])
+        #expect(NotificationScheduleActivationPolicy.activeWindowEnd(for: weekdaysOnly, leg: route, now: saturdayStart, calendar: calendar) == nil)
+        #expect(JourneyUpdateSchedulePresentation.detail(for: route, subscription: subscription, scheduled: true) == "• Weekdays 07:00–09:00 · Weekends 09:00–11:00")
+    }
+
+    @Test func friendlyDayLabelsDescribeTheActualSelection() {
+        #expect(DayOfWeek.friendlyLabel(for: DayOfWeek.allCases) == "Every day")
+        #expect(DayOfWeek.friendlyLabel(for: DayOfWeek.weekdays) == "Weekdays")
+        #expect(DayOfWeek.friendlyLabel(for: DayOfWeek.weekend) == "Weekends")
+        #expect(DayOfWeek.friendlyLabel(for: [.fri, .mon, .tue]) == "Monday, Tuesday and Friday")
+        #expect(DayOfWeek.friendlyLabel(for: [.mon, .fri]) == "Monday and Friday")
+        #expect(DayOfWeek.friendlyLabel(for: [.wed]) == "Wednesday")
+    }
+
+    @Test func reversingHeadingsKeepsEachSectionsScheduleInPlace() {
+        var outbound = leg(from: "KTH", to: "VIC", start: "07:00", end: "12:00")
+        outbound.setWindow(NotificationTimeWindow(windowStart: "09:00", windowEnd: "14:00"), for: DayOfWeek.weekend)
+        outbound.travelDate = "2026-09-07"
+        var inbound = leg(from: "VIC", to: "KTH", start: "16:00", end: "18:00")
+        inbound.enabled = false
+        inbound.travelDate = "2026-09-08"
+        let original = [outbound, inbound]
+        let reversed = NotificationScheduleEditing.reversingDirections(in: original, outboundLegCount: 1)
+        #expect(reversed.map(\.id) == ["VIC->KTH", "KTH->VIC"])
+        for (before, after) in zip(original, reversed) {
+            #expect(before.windowStart == after.windowStart)
+            #expect(before.windowEnd == after.windowEnd)
+            #expect(before.dayWindows == after.dayWindows)
+            #expect(before.enabled == after.enabled)
+            #expect(before.travelDate == after.travelDate)
+        }
+        #expect(NotificationScheduleEditing.reversingDirections(in: reversed, outboundLegCount: 1) == original)
+    }
+
+    @Test func reversingMultiLegDirectionsKeepsConnectionsAndTimePositions() {
+        let original = [
+            leg(from: "KTH", to: "HNH", start: "07:00", end: "09:00"),
+            leg(from: "HNH", to: "ZFD", start: "08:00", end: "10:00"),
+            leg(from: "ZFD", to: "HNH", start: "16:00", end: "18:00"),
+            leg(from: "HNH", to: "KTH", start: "17:00", end: "19:00")
+        ]
+        let reversed = NotificationScheduleEditing.reversingDirections(in: original, outboundLegCount: 2)
+        #expect(reversed.map(\.id) == ["ZFD->HNH", "HNH->KTH", "KTH->HNH", "HNH->ZFD"])
+        #expect(reversed.map(\.windowStart) == original.map(\.windowStart))
+        #expect(NotificationScheduleEditing.reversingDirections(in: reversed, outboundLegCount: 2) == original)
+    }
+
     private func londonCalendar() throws -> Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try #require(TimeZone(identifier: "Europe/London"))
@@ -143,13 +259,13 @@ struct NotificationScheduleActivationPolicyTests {
         )
     }
 
-    private func scheduledSubscription(legs: [NotificationLeg]) -> NotificationSubscription {
+    private func scheduledSubscription(legs: [NotificationLeg], days: [DayOfWeek] = [.mon]) -> NotificationSubscription {
         NotificationSubscription(
             id: "scheduled-return-test",
             deviceId: "device-1",
             routeKey: "KTH-VIC",
             scheduleKind: .regular,
-            daysOfWeek: [.mon],
+            daysOfWeek: days,
             notificationTypes: [.delays],
             legs: legs,
             muteOnArrival: true,

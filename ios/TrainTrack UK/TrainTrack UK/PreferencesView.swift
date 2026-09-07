@@ -24,7 +24,6 @@ struct PreferencesView: View {
     @AppStorage("journeySortMode") private var journeySortModeRaw: String = JourneySortMode.distance.rawValue
     @AppStorage(ApiHostPreference.storageKey, store: ApiHostPreference.store) private var apiHostRaw: String = ApiHost.prod.rawValue
     @AppStorage("autoReturnToFavouritesMinutes") private var autoReturnMinutes: Int = 0
-    @AppStorage("autoMuteOnArrival") private var autoMuteOnArrival: Bool = true
     @AppStorage("muteDelayMinutes") private var muteDelayMinutes: Int = 3
     @AppStorage("showClosestJourneyLegOnly") private var showClosestJourneyLegOnly: Bool = true
     @AppStorage("showTransferWarnings") private var showTransferWarnings: Bool = true
@@ -34,13 +33,10 @@ struct PreferencesView: View {
     @AppStorage(NotificationPreferences.platformKey, store: NotificationPreferences.store) private var notifyPlatform: Bool = true
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
     @EnvironmentObject private var railwayBackgroundStore: RailwayBackgroundStore
-    @State private var notificationPendingDelete: NotificationSubscription? = nil
-    @State private var showNotificationDeleteDialog = false
-    #if DEBUG
+    @AppStorage("troubleshootingLogsEnabled", store: UserDefaults(suiteName: "group.dev.skynolimit.traintrack")) private var troubleshootingLogsEnabled = false
     @State private var showDebugLogs = false
     @State private var showTroubleshootingShare = false
     @State private var troubleshootingLogURL: URL?
-    #endif
     @State private var notificationPreferencesError: String? = nil
     @State private var notificationPreferencesSyncTask: Task<Void, Never>? = nil
     @State private var devicePreferencesSyncTask: Task<Void, Never>? = nil
@@ -76,7 +72,6 @@ struct PreferencesView: View {
             journeySortModeRaw,
             apiHostRaw,
             autoReturnMinutes,
-            autoMuteOnArrival,
             muteDelayMinutes,
             showClosestJourneyLegOnly,
             showTransferWarnings,
@@ -96,7 +91,6 @@ struct PreferencesView: View {
             journeySortMode: journeySortModeRaw,
             apiHost: apiHostRaw,
             autoReturnToFavouritesMinutes: autoReturnMinutes,
-            autoMuteOnArrival: autoMuteOnArrival,
             muteDelayMinutes: muteDelayMinutes,
             autoEndLiveActivity: false,
             showClosestJourneyLegOnly: showClosestJourneyLegOnly,
@@ -110,34 +104,11 @@ struct PreferencesView: View {
 
     var body: some View {
         Form {
-
-            Section {
-                Text("Use the Start button at the top of a journey to begin a Live Activity and journey update notifications.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-
-                Toggle("Mute notifications after leaving station", isOn: $autoMuteOnArrival)
-                Text("When you arrive at a departure station, journey updates continue. Once you leave the 250m station area, notifications for that journey are muted. Requires 'Always' location permission.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-
-                Picker("Live Activity duration", selection: $liveActivityDurationMinutes) {
-                    Text("30 min").tag(30)
-                    Text("1 hr").tag(60)
-                    Text("90 min").tag(90)
-                    Text("2 hr").tag(120)
-                }
-                .pickerStyle(.segmented)
-                Text("How long a Live Activity stays visible unless dismissed manually. Default is 1 hour.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
             Section {
                 Toggle(NotificationType.summary.displayName, isOn: notificationTypeBinding(.summary))
                 Toggle(NotificationType.delays.displayName, isOn: notificationTypeBinding(.delays))
                 Toggle(NotificationType.platform.displayName, isOn: notificationTypeBinding(.platform))
-                Text("Pick at least one type. Service status summary at start time only applies to scheduled notifications.")
+                Text("Pick at least one notification type.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 if let notificationPreferencesError {
@@ -147,41 +118,6 @@ struct PreferencesView: View {
                 }
             } header: {
                 RailwayBackgroundSectionHeader(title: "Notification Preferences")
-            }
-
-            Section {
-                if notificationStore.isLoading {
-                    ProgressView("Loading…")
-                } else if !notificationStore.hasAuthoritativeRemoteState {
-                    Text("Unable to refresh scheduled notifications.")
-                        .foregroundStyle(.secondary)
-                } else if notificationStore.subscriptions.isEmpty {
-                    Text("No scheduled notifications yet.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(notificationStore.subscriptions) { sub in
-                        if let schedule = resolvedScheduledRoute(for: sub) {
-                            NavigationLink {
-                                NotificationScheduleView(
-                                    group: schedule.group,
-                                    reverseGroup: schedule.reverseGroup,
-                                    existingSubscription: sub
-                                )
-                                .environmentObject(notificationStore)
-                            } label: {
-                                scheduledNotificationRow(for: sub)
-                            }
-                        } else {
-                            scheduledNotificationRow(for: sub)
-                        }
-                    }
-                    .onDelete(perform: deleteScheduledNotifications)
-                }
-                Text("Notification types above apply to all schedules. You can create up to \(ServerConfigStore.shared.maxSubscriptionsPerDevice) schedules.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            } header: {
-                RailwayBackgroundSectionHeader(title: "Scheduled Notifications")
             }
 
             Section {
@@ -225,8 +161,8 @@ struct PreferencesView: View {
             }
 
             Section {
-                Toggle("Only show closest leg", isOn: $showClosestJourneyLegOnly)
-                Text("When enabled, only the journey leg whose start station is closest to you appears in lists. Use Reverse journey in the details view to see the return leg.")
+                Toggle("Show nearest direction only", isOn: $showClosestJourneyLegOnly)
+                Text("For saved outbound and return pairs, shows one journey card with the direction whose start station is nearest to you. Turn this off to show both directions as separate cards. Requires your location.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } header: {
@@ -287,6 +223,12 @@ struct PreferencesView: View {
             #if DEBUG
             Section {
                 NavigationLink {
+                    OperatorColoursDebugView()
+                } label: {
+                    Label("Operator colours", systemImage: "paintpalette.fill")
+                }
+
+                NavigationLink {
                     JourneySimulationHarnessView()
                 } label: {
                     Label("Journey Simulator", systemImage: "tram.fill")
@@ -343,8 +285,12 @@ struct PreferencesView: View {
             }
             #endif
 
-            #if DEBUG
             Section {
+                Toggle("Record troubleshooting logs", isOn: $troubleshootingLogsEnabled)
+                    .onChange(of: troubleshootingLogsEnabled) { _, enabled in
+                        if !enabled { DebugLogStore.shared.clear() }
+                    }
+
                 Button {
                     Task {
                         await JourneyTrackingCoordinator.shared.logDiagnosticSnapshot(
@@ -360,20 +306,18 @@ struct PreferencesView: View {
                 Button("View Debug Logs") {
                     showDebugLogs = true
                 }
-                Text("DEBUG builds only. Includes journey state, service matching, notification delivery, monitored regions, location authorization and detailed GPS evaluations stored locally on this device.")
+                Text("Enable when troubleshooting a journey. Logs may include journey and location details and are stored only on this device until you choose to share them. Turning this off clears stored logs.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } header: {
                 RailwayBackgroundSectionHeader(title: "Diagnostics")
             }
-            #endif
         }
         .scrollContentBackground(.hidden)
         .navigationTitle("Preferences")
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await notificationStore.refresh()
-            try? await StationsService.shared.loadStations()
             syncDevicePreferences()
         }
         .onChange(of: veryCloseMiles) { _, newValue in
@@ -389,17 +333,6 @@ struct PreferencesView: View {
         .onChange(of: devicePreferencesSignature) {
             syncDevicePreferences()
         }
-        .alert("Delete schedule?", isPresented: $showNotificationDeleteDialog, presenting: notificationPendingDelete) { sub in
-            Button("Delete", role: .destructive) {
-                Task {
-                    try? await notificationStore.delete(id: sub.id)
-                }
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: { _ in
-            Text("This will remove the scheduled notifications for this journey.")
-        }
-        #if DEBUG
         .sheet(isPresented: $showDebugLogs) {
             DebugLogView()
         }
@@ -408,8 +341,7 @@ struct PreferencesView: View {
                 ShareSheet(items: [troubleshootingLogURL])
             }
         }
-        #endif
-        .railwayBackgroundPOC()
+        .railwayBackgroundPOC(showsInfoButton: false)
     }
 
     private func notificationTypeBinding(_ type: NotificationType) -> Binding<Bool> {
@@ -472,106 +404,6 @@ struct PreferencesView: View {
         }
     }
 
-    private func deleteScheduledNotifications(at offsets: IndexSet) {
-        guard let index = offsets.first,
-              notificationStore.subscriptions.indices.contains(index) else { return }
-        notificationPendingDelete = notificationStore.subscriptions[index]
-        showNotificationDeleteDialog = true
-    }
-
-    private func scheduledNotificationRow(for sub: NotificationSubscription) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(scheduledNotificationTitle(for: sub))
-                .font(.subheadline)
-                .fontWeight(.semibold)
-            Text("\(sub.daysLabel) • \(sub.windowLabel)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func scheduledNotificationTitle(for subscription: NotificationSubscription) -> String {
-        if let splitIndex = returnSplitIndex(for: subscription) {
-            let outbound = Array(subscription.legs.prefix(splitIndex))
-            guard let first = outbound.first, let last = outbound.last else {
-                return subscription.routeTitle
-            }
-            let from = first.fromName ?? first.from
-            let to = last.toName ?? last.to
-            return "\(from) → \(to) (and return)"
-        }
-        return subscription.routeTitle
-    }
-
-    private func resolvedScheduledRoute(for subscription: NotificationSubscription) -> ResolvedScheduledRoute? {
-        guard !subscription.legs.isEmpty else { return nil }
-        if let splitIndex = returnSplitIndex(for: subscription) {
-            let outbound = Array(subscription.legs.prefix(splitIndex))
-            let inbound = Array(subscription.legs.dropFirst(splitIndex))
-            return ResolvedScheduledRoute(
-                group: makeJourneyGroup(from: outbound),
-                reverseGroup: makeJourneyGroup(from: inbound)
-            )
-        }
-
-        return ResolvedScheduledRoute(
-            group: makeJourneyGroup(from: subscription.legs),
-            reverseGroup: nil
-        )
-    }
-
-    private func returnSplitIndex(for subscription: NotificationSubscription) -> Int? {
-        guard subscription.legs.count >= 2 else { return nil }
-
-        for splitIndex in 1..<subscription.legs.count {
-            let outbound = Array(subscription.legs.prefix(splitIndex))
-            let inbound = Array(subscription.legs.dropFirst(splitIndex))
-            if stationSequence(for: inbound) == stationSequence(for: outbound).reversed() {
-                return splitIndex
-            }
-        }
-
-        return nil
-    }
-
-    private func stationSequence(for legs: [NotificationLeg]) -> [String] {
-        guard let first = legs.first else { return [] }
-        return [first.from.uppercased()] + legs.map { $0.to.uppercased() }
-    }
-
-    private func makeJourneyGroup(from legs: [NotificationLeg]) -> JourneyGroup {
-        let groupId = UUID()
-        let journeys = legs.enumerated().map { index, leg in
-            Journey(
-                id: UUID(),
-                groupId: groupId,
-                legIndex: index,
-                fromStation: station(from: leg.from, name: leg.fromName),
-                toStation: station(from: leg.to, name: leg.toName),
-                createdAt: Date(),
-                favorite: false
-            )
-        }
-        return JourneyGroup(id: groupId, legs: journeys)
-    }
-
-    private func station(from crs: String, name: String?) -> Station {
-        if let actual = StationsService.shared.stations.first(where: { $0.crs.caseInsensitiveCompare(crs) == .orderedSame }) {
-            return actual
-        }
-        return Station(
-            crs: crs.uppercased(),
-            name: name ?? crs.uppercased(),
-            longitude: "0",
-            latitude: "0"
-        )
-    }
-}
-
-private struct ResolvedScheduledRoute {
-    let group: JourneyGroup
-    let reverseGroup: JourneyGroup?
 }
 
 #Preview {

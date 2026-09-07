@@ -150,6 +150,9 @@ struct ContentView: View {
         }
         .sensoryFeedback(.selection, trigger: tabSelectionFeedbackTrigger)
         .animation(.easeOut(duration: 0.25), value: toastStore.toast)
+        .task(id: showsInProgressBadge) {
+            await AppIconBadgeManager.update(isJourneyInProgress: showsInProgressBadge)
+        }
         .onAppear {
             // Ensure polling starts even if App.onAppear wasn't fired
             depStore.startPolling(journeyStore: journeyStore)

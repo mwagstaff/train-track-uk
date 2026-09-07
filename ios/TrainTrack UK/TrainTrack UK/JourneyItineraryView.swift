@@ -584,6 +584,16 @@ struct JourneyItineraryView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            if let service = JourneyCardPresentation.serviceLabel(
+                for: departure,
+                details: depStore.serviceDetailsById[departure.serviceID]
+            ) {
+                Text(service)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
