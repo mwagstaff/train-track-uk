@@ -268,7 +268,7 @@ export async function listDevicePreferences() {
     return records.map(stripMongoId);
 }
 
-export async function recordGeofenceEvent({ deviceId, clientTimestamp, event, regionId, from, to, ip } = {}) {
+export async function recordGeofenceEvent({ deviceId, clientTimestamp, event, regionId, from, to, ip, metadata } = {}) {
     const entry = {
         id: crypto.randomUUID(),
         received_at: new Date(),
@@ -278,7 +278,8 @@ export async function recordGeofenceEvent({ deviceId, clientTimestamp, event, re
         region_id: regionId || null,
         from: from || null,
         to: to || null,
-        ip: ip || null
+        ip: ip || null,
+        ...(metadata && typeof metadata === 'object' ? { metadata } : {})
     };
     try {
         const collection = await getMongoCollection(COLLECTIONS.geofenceEvents);

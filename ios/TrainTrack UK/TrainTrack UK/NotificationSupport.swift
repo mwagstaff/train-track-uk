@@ -86,7 +86,24 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
         // geofence manager's CLLocationManager is initialised before iOS
         // delivers the queued CLLocationManagerDelegate callbacks.
         if launchOptions?[.location] != nil {
+            // Diagnose whether continuous tracking was alive before this wake.
+            // A stale heartbeat (or "never") means the process was terminated by iOS
+            // and we're relaunching now via CLCircularRegion or significant-change.
+            let heartbeatAge: String
+            let heartbeatTs = UserDefaults.standard.double(forKey: "geofence_continuous_heartbeat")
+            if heartbeatTs > 0 {
+                let age = Date().timeIntervalSince1970 - heartbeatTs
+                heartbeatAge = String(format: "%.0fs ago (%.1fh)", age, age / 3600)
+            } else {
+                heartbeatAge = "never"
+            }
+            ClientDiagnosticsLogger.log("location", "background_location_wake", metadata: [
+                "continuous_tracking_last_heartbeat": heartbeatAge
+            ])
             _ = NotificationGeofenceManager.shared
+            GeofenceEventSender.shared.sendDiagnostic(type: "cold_launch", metadata: [
+                "continuous_tracking_last_heartbeat": heartbeatAge
+            ])
         }
         return true
     }

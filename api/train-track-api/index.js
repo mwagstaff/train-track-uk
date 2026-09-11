@@ -812,10 +812,10 @@ app.post('/api/v2/notifications/terminate', async (req, res) => {
 });
 
 app.post('/api/v2/notifications/geofence-event', async (req, res) => {
-    const { device_id, timestamp, event, region_id, from, to } = req.body || {};
+    const { device_id, timestamp, event, region_id, from, to, metadata } = req.body || {};
     const ip = req.headers['x-forwarded-for'] || req.ip || null;
     logNotificationRequest('geofence_event', req, { device_id, event, from, to });
-    await recordGeofenceEvent({ deviceId: device_id, clientTimestamp: timestamp, event, regionId: region_id, from, to, ip });
+    await recordGeofenceEvent({ deviceId: device_id, clientTimestamp: timestamp, event, regionId: region_id, from, to, ip, metadata });
     res.json({ status: 'ok' });
 });
 

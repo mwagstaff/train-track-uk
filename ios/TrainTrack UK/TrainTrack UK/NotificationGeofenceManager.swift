@@ -71,7 +71,9 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     private var monitoredTargets: [String: StationArrivalTarget] = [:]
     private var confirmationStates: [String: StationArrivalConfirmationState] = [:]
     private var isContinuousTrackingActive = false
+    private var isSignificantLocationMonitoringActive = false
     private var hasRequestedFullAccuracyThisSession = false
+    private let continuousTrackingHeartbeatKey = "geofence_continuous_heartbeat"
 
     // iOS 18+ uses CLServiceSession to express the app's "Always" authorization need
     // for this geofencing workflow. Stored as Any? to avoid @available spreading
@@ -332,6 +334,24 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 print("📍 [GeofenceManager] Invalidated CLServiceSession (no active geofences)")
             }
             locationServiceSession = nil
+        }
+
+        if hasActiveGeofences {
+            if !isSignificantLocationMonitoringActive {
+                manager.startMonitoringSignificantLocationChanges()
+                isSignificantLocationMonitoringActive = true
+                let msg = "Started significant location change monitoring"
+                Task { @MainActor in DebugLogStore.shared.log(msg, category: "Geofence") }
+                print("📍 [GeofenceManager] \(msg)")
+            }
+        } else {
+            if isSignificantLocationMonitoringActive {
+                manager.stopMonitoringSignificantLocationChanges()
+                isSignificantLocationMonitoringActive = false
+                let msg = "Stopped significant location change monitoring"
+                Task { @MainActor in DebugLogStore.shared.log(msg, category: "Geofence") }
+                print("📍 [GeofenceManager] \(msg)")
+            }
         }
     }
 
@@ -628,6 +648,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     nonisolated func locationManager(_ manager: CLLocationManager, didEnterRegion region: CLRegion) {
         guard let circular = region as? CLCircularRegion else { return }
         guard let parsed = parseRegionIdentifier(circular.identifier) else { return }
+        let appState = UIApplication.shared.applicationState
 
         // Always log boundary crossings to the server regardless of mute window,
         // so geofence health is visible in the admin even when the app is force-closed.
@@ -637,6 +658,13 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             to: parsed.to,
             eventType: "enter"
         )
+        let stateForDiag = appState == .active ? "active" : appState == .background ? "background" : "inactive"
+        GeofenceEventSender.shared.sendDiagnostic(type: "region_enter", metadata: [
+            "region_id": circular.identifier,
+            "from": parsed.from,
+            "to": parsed.to,
+            "app_state": stateForDiag
+        ])
 
         // Claim a background task synchronously BEFORE this method returns.
         // Without this, iOS can re-suspend the app immediately after didEnterRegion
@@ -645,7 +673,8 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         // has been awaited and enqueueMute has been called.
         let muteFlowToken = AppBackgroundTaskToken(name: "geofence-entry-mute-flow")
 
-        let message = "Entered region: \(circular.identifier)\nSub: \(parsed.subscriptionId)\nFrom: \(parsed.from.uppercased()) To: \(parsed.to.uppercased())"
+        let stateStr = appState == .active ? "active" : appState == .background ? "background" : "inactive"
+        let message = "Entered region [\(stateStr)]: \(circular.identifier)\nSub: \(parsed.subscriptionId)\nFrom: \(parsed.from.uppercased()) To: \(parsed.to.uppercased())"
         Task { @MainActor in
             defer { muteFlowToken.end() }
             DebugLogStore.shared.log(message, category: "Geofence")
@@ -725,6 +754,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     nonisolated func locationManager(_ manager: CLLocationManager, didDetermineState state: CLRegionState, for region: CLRegion) {
         guard let circular = region as? CLCircularRegion,
               let parsed = parseRegionIdentifier(circular.identifier) else { return }
+        let appState = UIApplication.shared.applicationState
 
         let stateStr: String
         switch state {
@@ -734,7 +764,8 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         @unknown default: stateStr = "unknown"
         }
 
-        let msg = "Region state [\(stateStr)]: \(circular.identifier)"
+        let appStateStr = appState == .active ? "active" : appState == .background ? "background" : "inactive"
+        let msg = "Region state [\(stateStr)] app=[\(appStateStr)]: \(circular.identifier)"
         Task { @MainActor in
             DebugLogStore.shared.log(msg, category: "Geofence")
         }
@@ -752,9 +783,66 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
+        let appState = UIApplication.shared.applicationState
         Task { @MainActor in
-            self.evaluateArrival(using: location, source: "continuous")
+            if self.isContinuousTrackingActive {
+                // Persist heartbeat so we can diagnose process termination after the fact:
+                // if the heartbeat is stale at cold-launch time, the process was killed.
+                UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: self.continuousTrackingHeartbeatKey)
+                self.evaluateArrival(using: location, source: "continuous")
+            } else {
+                // Not currently running startUpdatingLocation — this is a significant
+                // location change (or requestLocation response) that woke/relaunched the app.
+                let stateStr = appState == .active ? "active" : appState == .background ? "background" : "inactive"
+                let msg = String(
+                    format: "Significant location update (%@) lat=%.4f lng=%.4f accuracy=%.0fm",
+                    stateStr,
+                    location.coordinate.latitude,
+                    location.coordinate.longitude,
+                    location.horizontalAccuracy
+                )
+                DebugLogStore.shared.log(msg, category: "Geofence")
+                print("📍 \(msg)")
+                self.handleSignificantLocationChange(location)
+            }
         }
+    }
+
+    private func handleSignificantLocationChange(_ location: CLLocation) {
+        guard !monitoredTargets.isEmpty else { return }
+
+        // If within 1500m of any target, restart continuous high-accuracy tracking
+        // so we can confirm arrival precisely. Sig-change fires every ~500m of movement,
+        // giving ~3 min of warning at typical station-approach speeds.
+        let proximityThresholdMeters: CLLocationDistance = 1500
+        var nearestTargetId: String? = nil
+        var nearestDistance: CLLocationDistance = .infinity
+        for target in monitoredTargets.values {
+            let d = location.distance(from: target.stationLocation)
+            if d < nearestDistance { nearestDistance = d; nearestTargetId = target.identifier }
+        }
+        let isNearAnyTarget = nearestDistance <= proximityThresholdMeters
+
+        GeofenceEventSender.shared.sendDiagnostic(type: "sig_change", metadata: [
+            "lat": location.coordinate.latitude,
+            "lng": location.coordinate.longitude,
+            "accuracy": Int(location.horizontalAccuracy),
+            "nearest_target": nearestTargetId ?? "none",
+            "nearest_distance_m": Int(nearestDistance),
+            "triggered_continuous": isNearAnyTarget,
+            "monitored_targets": monitoredTargets.count
+        ])
+
+        if isNearAnyTarget {
+            startContinuousTrackingIfNeeded(reason: "sig-change-nearby")
+            for region in manager.monitoredRegions {
+                guard region.identifier.hasPrefix(regionPrefix),
+                      let circular = region as? CLCircularRegion else { continue }
+                manager.requestState(for: circular)
+            }
+        }
+
+        evaluateArrival(using: location, source: "sig-change")
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
@@ -1181,18 +1269,7 @@ final class GeofenceEventSender: NSObject, URLSessionDelegate, URLSessionTaskDel
     private override init() { super.init() }
 
     func sendEvent(regionId: String, from: String, to: String, eventType: String) {
-        let baseURL = ApiHostPreference.currentBaseURL
-        guard let url = URL(string: "\(baseURL)/notifications/geofence-event") else {
-            print("❌ [GeofenceEvent] Invalid URL")
-            return
-        }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(DeviceIdentity.deviceToken, forHTTPHeaderField: "X-Device-Token")
-
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "device_id": DeviceIdentity.deviceToken,
             "timestamp": ISO8601DateFormatter().string(from: Date()),
             "event": eventType,
@@ -1200,25 +1277,51 @@ final class GeofenceEventSender: NSObject, URLSessionDelegate, URLSessionTaskDel
             "from": from,
             "to": to
         ]
-        guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
-
         let msg = "Sending geofence event: \(eventType) \(from)→\(to)"
         Task { @MainActor in DebugLogStore.shared.log(msg, category: "Geofence") }
         print("📡 [GeofenceEvent] \(msg)")
+        upload(payload: payload, taskName: "geofence-event-upload", logPrefix: "GeofenceEvent")
+    }
+
+    /// Sends a location diagnostic event to the server for remote troubleshooting.
+    /// Uses the same /notifications/geofence-event endpoint with event="location_diagnostic"
+    /// so events appear alongside region boundary crossings in the admin portal.
+    func sendDiagnostic(type: String, metadata: [String: Any]) {
+        let payload: [String: Any] = [
+            "device_id": DeviceIdentity.deviceToken,
+            "timestamp": ISO8601DateFormatter().string(from: Date()),
+            "event": "location_diagnostic",
+            "metadata": ["type": type].merging(metadata) { _, new in new }
+        ]
+        print("📡 [GeofenceEvent] Sending diagnostic: \(type)")
+        upload(payload: payload, taskName: "geofence-diagnostic-upload", logPrefix: "GeofenceDiag")
+    }
+
+    private func upload(payload: [String: Any], taskName: String, logPrefix: String) {
+        let baseURL = ApiHostPreference.currentBaseURL
+        guard let url = URL(string: "\(baseURL)/notifications/geofence-event") else {
+            print("❌ [\(logPrefix)] Invalid URL")
+            return
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(DeviceIdentity.deviceToken, forHTTPHeaderField: "X-Device-Token")
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
 
         let tempDir = FileManager.default.temporaryDirectory
-        let fileURL = tempDir.appendingPathComponent("geofence_event_\(UUID().uuidString).json")
+        let fileURL = tempDir.appendingPathComponent("\(taskName)_\(UUID().uuidString).json")
         if (try? body.write(to: fileURL, options: .atomic)) != nil {
             let task = session.uploadTask(with: request, fromFile: fileURL)
             syncQueue.async {
                 self.uploadFiles[task.taskIdentifier] = fileURL
-                self.backgroundTasks[task.taskIdentifier] = AppBackgroundTaskToken(name: "geofence-event-upload")
+                self.backgroundTasks[task.taskIdentifier] = AppBackgroundTaskToken(name: taskName)
             }
             task.resume()
         } else {
             let task = session.uploadTask(with: request, from: body)
             syncQueue.async {
-                self.backgroundTasks[task.taskIdentifier] = AppBackgroundTaskToken(name: "geofence-event-upload")
+                self.backgroundTasks[task.taskIdentifier] = AppBackgroundTaskToken(name: taskName)
             }
             task.resume()
         }
