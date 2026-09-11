@@ -321,7 +321,8 @@ final class DeparturesStore: ObservableObject {
 
     private func normalizedPlatform(_ platform: String?) -> String? {
         guard let trimmed = platform?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !trimmed.isEmpty else {
+              !trimmed.isEmpty,
+              trimmed.caseInsensitiveCompare("TBC") != .orderedSame else {
             return nil
         }
         return trimmed

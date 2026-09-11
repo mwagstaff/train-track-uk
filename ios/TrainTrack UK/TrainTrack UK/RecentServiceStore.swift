@@ -147,7 +147,9 @@ final class RecentServiceStore: ObservableObject {
     }
 
     private func normalized(_ value: String?) -> String? {
-        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty,
+              value.caseInsensitiveCompare("TBC") != .orderedSame else {
             return nil
         }
         return value

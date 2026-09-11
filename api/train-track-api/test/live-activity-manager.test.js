@@ -121,6 +121,47 @@ test('arrived live activity content keeps the client-confirmed arrival when serv
     assert.equal(content.delayMinutes, 2);
 });
 
+test('live activity alerts when a platform is first assigned', () => {
+    const manager = new LiveActivityManager();
+    const alert = manager.buildAlert({}, {
+        departures: [{ serviceID: 'service-1', scheduled: '08:27', platform: null }]
+    }, {
+        departures: [{ serviceID: 'service-1', scheduled: '08:27', platform: '2' }]
+    });
+
+    assert.deepEqual(alert, {
+        title: 'Platform Assigned',
+        body: 'Platform 2 has been assigned.'
+    });
+});
+
+test('live activity alerts when an assigned platform changes number', () => {
+    const manager = new LiveActivityManager();
+    const alert = manager.buildAlert({}, {
+        departures: [{ serviceID: 'service-1', scheduled: '08:27', platform: '3' }]
+    }, {
+        departures: [{ serviceID: 'service-1', scheduled: '08:27', platform: '5' }]
+    });
+
+    assert.deepEqual(alert, {
+        title: 'Platform Change',
+        body: 'Platform changed from 3 to 5.'
+    });
+});
+
+test('live activity keeps the last numbered platform when the feed returns TBC', () => {
+    const manager = new LiveActivityManager();
+    const previousSnapshot = {
+        departures: [{ serviceID: 'service-1', scheduled: '08:27', platform: '3' }]
+    };
+    const snapshot = manager.applyLastKnownPlatforms({
+        departures: [{ serviceID: 'service-1', scheduled: '08:27', platform: 'TBC' }]
+    }, previousSnapshot);
+
+    assert.equal(snapshot.departures[0].platform, '3');
+    assert.equal(manager.buildAlert({}, previousSnapshot, snapshot), null);
+});
+
 test('journey phase pins the live activity to the service matched on device', async () => {
     const manager = new LiveActivityManager();
     const subscription = {

@@ -715,10 +715,16 @@ export class LiveActivityManager {
             return null;
         }
 
-        // Platform change (only alert when both sides have a known platform)
+        // Alert when the primary service gains a platform or changes platform.
         const previousPlatform = this.normalizePlatform(prev.platform);
         const nextPlatform = this.normalizePlatform(next.platform);
-        if (previousPlatform && nextPlatform && previousPlatform !== nextPlatform) {
+        if (nextPlatform && previousPlatform !== nextPlatform) {
+            if (!previousPlatform) {
+                return {
+                    title: 'Platform Assigned',
+                    body: `Platform ${nextPlatform} has been assigned.`
+                };
+            }
             return {
                 title: 'Platform Change',
                 body: `Platform changed from ${previousPlatform} to ${nextPlatform}.`
@@ -1305,7 +1311,7 @@ export class LiveActivityManager {
     normalizePlatform(value) {
         if (typeof value !== 'string') return null;
         const trimmed = value.trim();
-        return trimmed.length > 0 ? trimmed : null;
+        return trimmed.length > 0 && trimmed.toUpperCase() !== 'TBC' ? trimmed : null;
     }
 
     applyLastKnownPlatforms(snapshot, previousSnapshot) {

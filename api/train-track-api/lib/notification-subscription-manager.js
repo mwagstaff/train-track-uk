@@ -1400,7 +1400,7 @@ export class NotificationSubscriptionManager {
 
             if (notificationTypes.includes('platform')) {
                 const previousPlatform = normalizePlatform(prev.platform);
-                if (isNextDeparture && previousPlatform && current.platform && previousPlatform !== current.platform) {
+                if (isNextDeparture && current.platform && previousPlatform !== current.platform) {
                     await this.sendNotification(subscription, buildPlatformMessage(subscription, leg, current), leg, updateReason);
                 }
             }
@@ -2608,7 +2608,7 @@ function formatUnknownDelayPlatformSuffix(dep) {
 function normalizePlatform(value) {
     if (typeof value !== 'string') return null;
     const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
+    return trimmed.length > 0 && trimmed.toUpperCase() !== 'TBC' ? trimmed : null;
 }
 
 function buildNotificationPayload(

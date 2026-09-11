@@ -466,7 +466,7 @@ function normalizePlatform(platform) {
         return null;
     }
     const trimmed = platform.trim();
-    return trimmed.length > 0 ? trimmed : null;
+    return trimmed.length > 0 && trimmed.toUpperCase() !== 'TBC' ? trimmed : null;
 }
 
 function platformCacheKey(from, to, serviceID) {
