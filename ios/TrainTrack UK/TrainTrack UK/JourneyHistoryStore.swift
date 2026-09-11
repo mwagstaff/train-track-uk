@@ -299,7 +299,7 @@ final class JourneyHistoryStore: ObservableObject {
                 "scheduled_arrival": record.scheduledArrivalAt,
                 "actual_arrival": record.actualArrivalAt,
                 "delay_minutes": record.delayMinutes,
-                "delay_repay_eligible": record.isDelayRepay15Plus
+                "delay_repay_eligible": record.isDelayRepayEligible
             ]
         )
         return records.first(where: { $0.id == journeyID })
@@ -461,7 +461,7 @@ final class JourneyHistoryStore: ObservableObject {
                 "recorded_destination_crs": addedRecord.recordedDestinationCRS,
                 "leg_count": addedRecord.legs.count,
                 "delay_minutes": addedRecord.delayMinutes,
-                "delay_repay_eligible": addedRecord.isDelayRepay15Plus,
+                "delay_repay_eligible": addedRecord.isDelayRepayEligible,
                 "record_count": records.count,
                 "pruned_count": prunedCount,
                 "in_memory_only": isUsingInMemoryFallback

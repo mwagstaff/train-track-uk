@@ -687,7 +687,7 @@ struct InProgressJourneyView: View {
                 .accessibilityHint("Continues recording this journey to \(completion.checkpoint.plannedDestination.name)")
             }
 
-            if let record, record.isDelayRepay15Plus {
+            if let record, record.isDelayRepayEligible {
                 JourneyHistoryDelayRepayActions(record: record)
                     .frame(maxWidth: 360)
             }

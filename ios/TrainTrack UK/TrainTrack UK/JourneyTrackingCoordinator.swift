@@ -1478,9 +1478,9 @@ final class JourneyTrackingCoordinator: ObservableObject {
         }
         log("completed_journey_remote_update_applied", "Applied official timing update to completed journey \(journeyUUID.uuidString)", metadata: remoteNotificationMetadata(userInfo).merging([
             "delay_minutes": updated.delayMinutes,
-            "delay_repay_eligible": updated.isDelayRepay15Plus
+            "delay_repay_eligible": updated.isDelayRepayEligible
         ]) { _, new in new })
-        if actualArrival != nil, updated.isDelayRepay15Plus {
+        if actualArrival != nil, updated.isDelayRepayEligible {
             await postDelayRepayNotification(for: updated)
         }
         return true
@@ -2101,7 +2101,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
             "recorded_destination_crs": active.lastConfirmedOnRouteStation.crs
         ])
         if outcome == .completed {
-            if record.isDelayRepay15Plus {
+            if record.isDelayRepayEligible {
                 await postDelayRepayNotification(for: record)
             }
         } else {

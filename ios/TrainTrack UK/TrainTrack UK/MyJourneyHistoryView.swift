@@ -3,8 +3,11 @@ import UIKit
 
 struct MyJourneyHistoryView: View {
     @EnvironmentObject private var historyStore: JourneyHistoryStore
+    @Environment(\.openURL) private var openURL
+    @ObservedObject private var serverConfig = ServerConfigStore.shared
     @State private var searchText = ""
     @State private var showingStats: Bool
+    @State private var showingClaims = false
     @State private var dateFilter: JourneyHistoryDateFilter = .all
     @State private var customStartDate = Calendar.current.date(byAdding: .month, value: -1, to: Date()) ?? Date()
     @State private var customEndDate = Date()
@@ -14,6 +17,9 @@ struct MyJourneyHistoryView: View {
     @State private var exportError: String?
     @State private var delayRepayOnly = false
     @State private var showOlderDelayRepayJourneys = false
+    @State private var isChoosingDelayRepayOperator = false
+    @State private var isOpeningDelayRepayClaim = false
+    @State private var delayRepayClaimError: String?
     #if DEBUG
     @State private var isGeneratingTestHistory = false
     @State private var testHistoryMessage: String?
@@ -41,7 +47,7 @@ struct MyJourneyHistoryView: View {
         historyStore.records.filter { record in
             guard record.matchesSearch(searchText), matchesDateFilter(record) else { return false }
             guard delayRepayOnly else { return true }
-            guard record.isDelayRepay15Plus else { return false }
+            guard record.isDelayRepayEligible else { return false }
             return showOlderDelayRepayJourneys
                 || JourneyHistoryDelayPolicy.isWithinSubmissionWindow(completedAt: record.completedAt)
         }
@@ -121,7 +127,7 @@ struct MyJourneyHistoryView: View {
                                             .padding(.top, 8)
                                             .padding(.bottom, 4)
                                     }
-                                    if record.isDelayRepay15Plus {
+                                    if record.isDelayRepayEligible {
                                         Divider()
                                             .padding(.top, 4)
                                         JourneyHistoryDelayRepayActions(record: record)
@@ -181,6 +187,14 @@ struct MyJourneyHistoryView: View {
 
                 if shouldShowHistoryActions {
                     Menu {
+                        Button("Delay Repay claim", systemImage: "sterlingsign.circle") {
+                            beginHistoryClaim()
+                        }
+                        .disabled(isOpeningDelayRepayClaim)
+                        Button("My claims", systemImage: "list.bullet.clipboard") {
+                            showingClaims = true
+                        }
+                        Divider()
                         Button("Stats", systemImage: "chart.bar.xaxis") {
                             showingStats = true
                         }
@@ -217,6 +231,9 @@ struct MyJourneyHistoryView: View {
         .navigationDestination(isPresented: $showingStats) {
             JourneyHistoryStatsView()
         }
+        .navigationDestination(isPresented: $showingClaims) {
+            JourneyHistoryClaimsView()
+        }
         .sheet(isPresented: $showingCustomDates) {
             NavigationStack {
                 Form {
@@ -247,6 +264,19 @@ struct MyJourneyHistoryView: View {
         .sheet(item: $shareItem) { item in
             JourneyHistoryShareSheet(url: item.url)
         }
+        .sheet(isPresented: $isChoosingDelayRepayOperator) {
+            JourneyHistoryDelayRepayOperatorPicker(
+                eligibleDelayMinutes: nil,
+                includesPrecedingCancellation: false,
+                options: historyClaimOperatorOptions,
+                isJourneySpecific: false
+            ) { option in
+                isChoosingDelayRepayOperator = false
+                openHistoryClaimPage(for: option)
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
         .alert("Unable to share history", isPresented: Binding(
             get: { exportError != nil },
             set: { if !$0 { exportError = nil } }
@@ -254,6 +284,14 @@ struct MyJourneyHistoryView: View {
             Button("OK", role: .cancel) { exportError = nil }
         } message: {
             Text(exportError ?? "The export could not be created.")
+        }
+        .alert("Unable to open Delay Repay", isPresented: Binding(
+            get: { delayRepayClaimError != nil },
+            set: { if !$0 { delayRepayClaimError = nil } }
+        )) {
+            Button("OK", role: .cancel) { delayRepayClaimError = nil }
+        } message: {
+            Text(delayRepayClaimError ?? "The claim page could not be opened.")
         }
         #if DEBUG
         .alert("Test journey history", isPresented: Binding(
@@ -317,6 +355,70 @@ struct MyJourneyHistoryView: View {
         }
     }
 
+    private var historyClaimOperatorOptions: [JourneyHistoryDelayRepayOperatorOption] {
+        if let configuredOperators = serverConfig.operatorBranding?.operators,
+           !configuredOperators.isEmpty {
+            return configuredOperators
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                .map { operatorBrand in
+                    JourneyHistoryDelayRepayOperatorOption(
+                        id: operatorBrand.id,
+                        operatorName: operatorBrand.name,
+                        operatorCode: operatorBrand.operatorCodes.first,
+                        legAssessments: [],
+                        isRecommended: false,
+                        recommendationReason: nil
+                    )
+                }
+        }
+
+        return JourneyHistoryDelayPolicy.operatorOptions(for: historyStore.records.flatMap(\.legs))
+            .map { option in
+                JourneyHistoryDelayRepayOperatorOption(
+                    id: option.id,
+                    operatorName: option.operatorName,
+                    operatorCode: option.operatorCode,
+                    legAssessments: [],
+                    isRecommended: false,
+                    recommendationReason: nil
+                )
+            }
+    }
+
+    private func beginHistoryClaim() {
+        guard !historyClaimOperatorOptions.isEmpty else {
+            delayRepayClaimError = "Train operator information is currently unavailable."
+            return
+        }
+        isChoosingDelayRepayOperator = true
+    }
+
+    private func openHistoryClaimPage(for option: JourneyHistoryDelayRepayOperatorOption) {
+        guard !isOpeningDelayRepayClaim else { return }
+
+        isOpeningDelayRepayClaim = true
+        Task {
+            defer { isOpeningDelayRepayClaim = false }
+            do {
+                let url = try await NetworkServicePhone.shared.fetchDelayRepayClaimURL(
+                    operatorCode: option.operatorCode,
+                    operatorName: option.operatorName
+                )
+                guard url.scheme?.lowercased() == "https" else {
+                    delayRepayClaimError = "The operator’s claim page did not provide a secure link."
+                    return
+                }
+                openURL(url) { accepted in
+                    if !accepted {
+                        delayRepayClaimError = "The operator’s claim page could not be opened."
+                    }
+                }
+            } catch {
+                delayRepayClaimError = "The claim page for \(option.operatorName) is currently unavailable."
+            }
+        }
+    }
+
     #if DEBUG
     private func generateTestHistory() {
         guard !isGeneratingTestHistory else { return }
@@ -348,6 +450,85 @@ struct MyJourneyHistoryView: View {
         }
     }
     #endif
+}
+
+enum JourneyHistoryClaimsFilter: String, CaseIterable, Identifiable {
+    case inProgress
+    case completed
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .inProgress: return "In progress"
+        case .completed: return "Completed"
+        }
+    }
+
+    func includes(_ status: JourneyHistoryDelayRepayClaimStatus?) -> Bool {
+        switch self {
+        case .inProgress:
+            return status == .processing
+        case .completed:
+            return status == .successful || status == .rejected
+        }
+    }
+}
+
+private struct JourneyHistoryClaimsView: View {
+    @EnvironmentObject private var historyStore: JourneyHistoryStore
+    @State private var filter: JourneyHistoryClaimsFilter = .inProgress
+
+    private var records: [JourneyHistoryRecord] {
+        historyStore.records
+            .filter { filter.includes($0.delayRepayClaimStatus) }
+            .sorted { $0.completedAt > $1.completedAt }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("Claim status", selection: $filter) {
+                ForEach(JourneyHistoryClaimsFilter.allCases) { option in
+                    Text(option.displayName).tag(option)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal)
+            .padding(.vertical, 12)
+
+            if records.isEmpty {
+                ContentUnavailableView(
+                    filter == .inProgress ? "No claims in progress" : "No completed claims",
+                    systemImage: filter == .inProgress ? "hourglass" : "checkmark.circle",
+                    description: Text(filter == .inProgress
+                        ? "Journeys with claims marked as processing will appear here."
+                        : "Successful and rejected claims will appear here."
+                    )
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(records) { record in
+                    VStack(spacing: 0) {
+                        NavigationLink {
+                            JourneyHistoryDetailView(record: record)
+                        } label: {
+                            JourneyHistoryRow(record: record)
+                        }
+
+                        Divider()
+                            .padding(.top, 4)
+                        JourneyHistoryDelayRepayActions(record: record)
+                            .padding(.top, 8)
+                            .padding(.bottom, 4)
+                    }
+                }
+                .scrollContentBackground(.hidden)
+            }
+        }
+        .navigationTitle("My claims")
+        .navigationBarTitleDisplayMode(.inline)
+        .railwayBackgroundPOC(showsInfoButton: false)
+    }
 }
 
 private enum JourneyHistoryDateFilter: String, CaseIterable, Identifiable {
@@ -474,7 +655,7 @@ private struct JourneyHistoryPrecedingCancellationNotice: View {
             }
         }
         .font(.footnote.weight(.medium))
-        .foregroundStyle(record.isDelayRepay15Plus ? Color.red : Color.orange)
+        .foregroundStyle(record.isDelayRepayEligible ? Color.red : Color.orange)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
     }
@@ -487,7 +668,7 @@ private struct JourneyHistoryPrecedingCancellationNotice: View {
         let route = record.legs.count > 1
             ? " from \(leg.fromStation.name) to \(leg.toStation.name)"
             : ""
-        let eligibility = record.isDelayRepay15Plus
+        let eligibility = record.isDelayRepayEligible
             ? " This disruption makes the journey eligible for Delay Repay."
             : ""
         return "The \(cancellation.scheduledDepartureTime) service before the \(caughtTime) service you caught\(route) was cancelled, adding \(cancellation.minutesBeforeCaughtService) minutes to your journey.\(eligibility)"
@@ -518,7 +699,7 @@ struct JourneyHistoryDelayRepayActions: View {
         if isResolvingClaimURL {
             return "Opening claim page…"
         }
-        return record.delayRepayClaimStatus?.displayName ?? "Claim delay repay"
+        return record.delayRepayClaimStatus?.displayName ?? "Submit Delay Repay claim"
     }
 
     private var statusSystemImage: String? {
@@ -539,7 +720,7 @@ struct JourneyHistoryDelayRepayActions: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(isResolvingClaimURL)
-                .accessibilityLabel(isResolvingClaimURL ? "Opening claim page" : "Claim Delay Repay")
+                .accessibilityLabel(isResolvingClaimURL ? "Opening claim page" : "Submit Delay Repay claim")
                 .accessibilityHint("Opens Delay Repay claim options")
             } else {
                 statusCapsule
@@ -551,7 +732,7 @@ struct JourneyHistoryDelayRepayActions: View {
                 Button {
                     beginClaim()
                 } label: {
-                    Label("Claim Delay Repay", systemImage: "sterlingsign.circle")
+                    Label("Submit Delay Repay claim", systemImage: "sterlingsign.circle")
                 }
 
                 Divider()
@@ -601,7 +782,8 @@ struct JourneyHistoryDelayRepayActions: View {
             JourneyHistoryDelayRepayOperatorPicker(
                 eligibleDelayMinutes: record.delayRepayEligibleDelayMinutes,
                 includesPrecedingCancellation: record.hasPrecedingCancellation,
-                options: operatorOptions
+                options: operatorOptions,
+                isJourneySpecific: true
             ) { option in
                 isChoosingClaimOperator = false
                 openClaimPage(for: option)
@@ -677,6 +859,7 @@ private struct JourneyHistoryDelayRepayOperatorPicker: View {
     let eligibleDelayMinutes: Int?
     let includesPrecedingCancellation: Bool
     let options: [JourneyHistoryDelayRepayOperatorOption]
+    let isJourneySpecific: Bool
     let onSelect: (JourneyHistoryDelayRepayOperatorOption) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -704,11 +887,14 @@ private struct JourneyHistoryDelayRepayOperatorPicker: View {
                             )
                         }
 
-                        Text("Choose the operator most likely to have caused your final delay. If you pick the wrong one, they should normally forward your claim.")
+                        Text(isJourneySpecific
+                            ? "Choose the operator most likely to have caused your final delay. If you pick the wrong one, they should normally forward your claim."
+                            : "Choose the train operator you travelled with to open its Delay Repay claim page."
+                        )
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
 
-                        if let recommendedOption {
+                        if isJourneySpecific, let recommendedOption {
                             VStack(alignment: .leading, spacing: 5) {
                                 Label(
                                     "Timing suggests \(recommendedOption.operatorName)",
@@ -1018,6 +1204,10 @@ struct JourneyHistoryDetailView: View {
                 RailwayBackgroundSectionHeader(title: "Testing")
             }
             #endif
+
+            Section {
+                JourneyHistoryDelayRepayActions(record: record)
+            }
 
             Section {
                 Button("Remove this journey", role: .destructive) {

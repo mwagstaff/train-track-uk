@@ -77,6 +77,8 @@ struct JourneyHistoryTests {
 
         #expect(record.recordedDestinationName == "East Croydon")
         #expect(record.routeTitle == "East Croydon → Cambridge South")
+        #expect(record.isDelayRepayEligible)
+        #expect(record.delayRepayEligibleDelayMinutes == nil)
     }
 
     @Test func delayRepayRequiresConfirmedActualArrival() {
@@ -94,6 +96,22 @@ struct JourneyHistoryTests {
             scheduledArrival: scheduled,
             actualArrival: scheduled.addingTimeInterval(15 * 60)
         ) == JourneyHistoryDelayPolicy.delayRepayThresholdMinutes)
+    }
+
+    @Test func myClaimsSeparatesProcessingFromCompletedClaims() {
+        let hiddenStatus = JourneyHistoryDelayRepayClaimStatus.hidden
+
+        #expect(JourneyHistoryClaimsFilter.inProgress.includes(.processing))
+        #expect(!JourneyHistoryClaimsFilter.inProgress.includes(.successful))
+        #expect(!JourneyHistoryClaimsFilter.inProgress.includes(.rejected))
+        #expect(JourneyHistoryClaimsFilter.inProgress.includes(hiddenStatus) == false)
+        #expect(!JourneyHistoryClaimsFilter.inProgress.includes(nil))
+
+        #expect(!JourneyHistoryClaimsFilter.completed.includes(.processing))
+        #expect(JourneyHistoryClaimsFilter.completed.includes(.successful))
+        #expect(JourneyHistoryClaimsFilter.completed.includes(.rejected))
+        #expect(JourneyHistoryClaimsFilter.completed.includes(hiddenStatus) == false)
+        #expect(!JourneyHistoryClaimsFilter.completed.includes(nil))
     }
 
     @Test func immediatelyPrecedingCancelledServiceIsCapturedWithoutAnOriginArrivalTime() throws {
@@ -236,7 +254,7 @@ struct JourneyHistoryTests {
 
         #expect(record.delayMinutes == 0)
         #expect(record.delayRepayEligibleDelayMinutes == 15)
-        #expect(record.isDelayRepay15Plus)
+        #expect(record.isDelayRepayEligible)
         #expect(JourneyHistoryDelayPolicy.responsibleOperatorLeg(in: record)?.operatorCode == "SE")
     }
 

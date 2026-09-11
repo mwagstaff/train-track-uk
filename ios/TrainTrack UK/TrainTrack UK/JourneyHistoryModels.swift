@@ -401,7 +401,8 @@ extension JourneyHistoryRecord {
         (try? JSONDecoder().decode([JourneyHistoryStationEvent].self, from: stationEventsData)) ?? []
     }
 
-    var isDelayRepay15Plus: Bool {
+    var isDelayRepayEligible: Bool {
+        if outcome == .endedEarly { return true }
         guard let delayRepayEligibleDelayMinutes else { return false }
         return delayRepayEligibleDelayMinutes >= JourneyHistoryDelayPolicy.delayRepayThresholdMinutes
     }
