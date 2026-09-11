@@ -685,6 +685,26 @@ app.delete('/api/v2/notifications/subscriptions', async (req, res) => {
     res.json({ status: removed ? 'deleted' : 'not_found' });
 });
 
+// Device-level holiday mode: pauses all scheduled-journey notifications for
+// the device while enabled. Live sessions are unaffected.
+app.post('/api/v2/notifications/holiday_mode', async (req, res) => {
+    const { device_id, enabled } = req.body || {};
+    logNotificationRequest('holiday_mode', req, { device_id, enabled: Boolean(enabled) });
+    if (!device_id) {
+        return res.status(400).json({ error: 'device_id is required' });
+    }
+    try {
+        const isEnabled = await notificationSubscriptionManager.setHolidayMode({
+            deviceId: device_id,
+            enabled: Boolean(enabled)
+        });
+        res.json({ status: 'ok', device_id, enabled: isEnabled });
+    } catch (error) {
+        console.error(`[notifications] holiday_mode update failed for ${device_id}: ${error?.message || error}`);
+        res.status(500).json({ error: error?.message || error });
+    }
+});
+
 app.post('/api/v2/notifications/live_sessions', async (req, res) => {
     const {
         device_id,

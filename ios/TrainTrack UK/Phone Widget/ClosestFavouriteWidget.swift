@@ -365,6 +365,7 @@ private struct ClosestFavouriteEntry: TimelineEntry {
     let departures: [DepartureV2]
     let detailsById: [String: ServiceDetails]
     let debugInfo: String?
+    var isHolidayMode: Bool = false
 }
 
 // MARK: - Provider
@@ -386,7 +387,9 @@ private struct ClosestFavouriteProvider: TimelineProvider {
         Task {
             let entry = await buildEntry(context: context)
             // Aim to refresh roughly every minute to keep departures fresh.
-            let next = Date().addingTimeInterval(60)
+            // While paused there is nothing to keep fresh; the app reloads
+            // timelines when holiday mode is toggled.
+            let next = Date().addingTimeInterval(entry.isHolidayMode ? 1800 : 60)
             Logger.widget.info("Timeline built: journey?=\(entry.journey != nil ? "yes" : "no", privacy: .public) deps=\(entry.departures.count, privacy: .public)")
             completion(Timeline(entries: [entry], policy: .after(next)))
         }
@@ -447,6 +450,9 @@ private struct ClosestFavouriteProvider: TimelineProvider {
     }
 
     private func buildEntry(context: Context) async -> ClosestFavouriteEntry {
+        if WidgetHolidayMode.isEnabled {
+            return ClosestFavouriteEntry(date: Date(), journey: nil, departures: [], detailsById: [:], debugInfo: "holiday_mode", isHolidayMode: true)
+        }
         var dbg: [String] = []
         let journeys = loadJourneys()
         let sharedLoc = loadSharedLocation()
@@ -540,6 +546,14 @@ private struct ClosestFavouriteWidgetView: View {
     }
 
     var body: some View {
+        if entry.isHolidayMode {
+            HolidayModePausedView()
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: family == .systemSmall ? 4 : 6) {
             if let j = entry.journey {
                 // Header

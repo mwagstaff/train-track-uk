@@ -9,6 +9,7 @@ let indexesPromise = null;
 
 export const COLLECTIONS = Object.freeze({
     notificationSubscriptions: 'notification_subscriptions',
+    notificationHolidayModes: 'notification_holiday_modes',
     pushToStartTokens: 'push_to_start_tokens',
     liveActivitySessions: 'live_activity_sessions',
     devicePreferences: 'device_preferences',

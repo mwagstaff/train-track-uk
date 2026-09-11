@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ProfileView: View {
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
+    @EnvironmentObject var holidayMode: HolidayModeStore
     @State private var pendingDeleteUpdate: NotificationSubscription? = nil
     @State private var showUpdateDeleteDialog = false
     @State private var viewingScheduledRoute: IdentifiableScheduledRoute? = nil
@@ -18,6 +19,20 @@ struct ProfileView: View {
                         subtitle: "Notifications, Live Activity, journey sorting, and display settings.",
                         systemImage: "slider.horizontal.3"
                     )
+                }
+
+                if holidayMode.isEnabled || !notificationStore.subscriptions.isEmpty {
+                    Button {
+                        holidayMode.setEnabled(!holidayMode.isEnabled)
+                    } label: {
+                        profileRow(
+                            title: holidayMode.isEnabled ? "Holiday mode enabled" : "Holiday mode",
+                            subtitle: holidayMode.isEnabled
+                                ? "Your scheduled journeys, notifications, and widgets are paused. Tap to switch them back on."
+                                : "Going away? Pause your scheduled journeys — no notifications or widget updates until you turn it off.",
+                            systemImage: "beach.umbrella"
+                        )
+                    }
                 }
 
                 NavigationLink {

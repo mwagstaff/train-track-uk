@@ -216,6 +216,7 @@ struct CJEntry: TimelineEntry {
     let toCRS: String
     fileprivate let departures: [DepartureV2]
     fileprivate let details: [String: ServiceDetails]
+    var isHolidayMode: Bool = false
 }
 
 struct CustomJourneyProvider: AppIntentTimelineProvider {
@@ -226,11 +227,17 @@ struct CustomJourneyProvider: AppIntentTimelineProvider {
     }
     func timeline(for configuration: CustomJourneyIntent, in context: Context) async -> Timeline<CJEntry> {
         let entry = await build(config: configuration)
-        return Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(60)))
+        // While paused there is nothing to keep fresh; the app reloads
+        // timelines when holiday mode is toggled.
+        let refreshSeconds: TimeInterval = entry.isHolidayMode ? 1800 : 60
+        return Timeline(entries: [entry], policy: .after(Date().addingTimeInterval(refreshSeconds)))
     }
     private func build(config: CustomJourneyIntent) async -> CJEntry {
         let from = config.journey?.fromCRS ?? "VIC"
         let to = config.journey?.toCRS ?? "KTH"
+        if WidgetHolidayMode.isEnabled {
+            return CJEntry(date: Date(), fromCRS: from, toCRS: to, departures: [], details: [:], isHolidayMode: true)
+        }
         do {
             var deps = try await NetworkServiceWidgetCJ.shared.fetchDepartures(from: from, to: to)
             deps.sort { l, r in
@@ -263,6 +270,14 @@ private struct CustomJourneyWidgetView: View {
     private func timeColor(_ d: DepartureV2) -> Color { colorForDelay(estimated: d.departureTime.estimated, scheduled: d.departureTime.scheduled) }
 
     var body: some View {
+        if entry.isHolidayMode {
+            HolidayModePausedView()
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: family == .systemSmall ? 4 : 6) {
             // Header
             if family == .systemSmall {

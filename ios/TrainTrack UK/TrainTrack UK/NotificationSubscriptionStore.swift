@@ -44,6 +44,19 @@ final class NotificationSubscriptionService {
         try await delete(id: id, path: "live_sessions")
     }
 
+    func setHolidayMode(enabled: Bool) async throws {
+        guard let url = URL(string: "\(base)/notifications/holiday_mode") else {
+            throw PhoneNetworkError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-Token")
+        request.httpBody = try encoder.encode(HolidayModeRequest(deviceId: deviceId, enabled: enabled))
+        let (data, urlResponse) = try await URLSession.shared.data(for: request)
+        try validateResponse(urlResponse, data: data)
+    }
+
     private func fetchSubscriptions(path: String) async throws -> [NotificationSubscription] {
         guard let url = URL(string: "\(base)/notifications/\(path)?device_id=\(deviceId)") else {
             throw PhoneNetworkError.invalidURL
@@ -520,6 +533,16 @@ private struct NotificationSubscriptionResponse: Codable {
 
 private struct NotificationSubscriptionListResponse: Codable {
     let subscriptions: [NotificationSubscription]
+}
+
+private struct HolidayModeRequest: Codable {
+    let deviceId: String
+    let enabled: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case deviceId = "device_id"
+        case enabled
+    }
 }
 
 private struct NotificationSubscriptionDeleteRequest: Codable {

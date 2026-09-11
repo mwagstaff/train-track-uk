@@ -42,6 +42,7 @@ const DAY_MAP = {
 class NotificationSubscriptionManager {
     constructor() {
         this.subscriptions = new Map();
+        this.holidayModeDevices = new Set();
         this.pushClient = new NotificationPushClient();
         this.liveActivityPushClient = new LiveActivityPushClient();
         this.pollIntervalMs = DEFAULT_POLL_INTERVAL_SECONDS * 1000;
@@ -76,6 +77,7 @@ class NotificationSubscriptionManager {
             attempt += 1;
             try {
                 await this.loadSubscriptionsFromMongo();
+                await this.loadHolidayModesFromMongo();
                 this.hasHydratedFromMongo = true;
             } catch (err) {
                 console.error('[notifications] Failed to load subscriptions from Mongo:', err?.message || err);
@@ -137,6 +139,15 @@ class NotificationSubscriptionManager {
         const pruned = await this.pruneDuplicateScheduledSubscriptions();
         if (pruned > 0) {
             console.log(`[notifications] Pruned ${pruned} duplicate scheduled subscription(s) from Mongo`);
+        }
+    }
+
+    async loadHolidayModesFromMongo() {
+        const collection = await getMongoCollection(COLLECTIONS.notificationHolidayModes);
+        const documents = await collection.find({ enabled: true }).toArray();
+        this.holidayModeDevices = new Set(documents.map((document) => document._id));
+        if (this.holidayModeDevices.size > 0) {
+            console.log(`[notifications] Loaded ${this.holidayModeDevices.size} device(s) in holiday mode`);
         }
     }
 
@@ -394,6 +405,43 @@ class NotificationSubscriptionManager {
         return sub;
     }
 
+    // Device-level holiday mode: while enabled, the poll loop skips all
+    // scheduled subscriptions for the device so no scheduled-journey
+    // notifications (summaries, updates, Live Activity starts) are sent.
+    // Live sessions are unaffected.
+    async setHolidayMode({ deviceId, enabled } = {}) {
+        const normalizedDeviceId = typeof deviceId === 'string' ? deviceId.trim() : '';
+        if (!normalizedDeviceId) {
+            throw new Error('deviceId is required');
+        }
+        const isEnabled = Boolean(enabled);
+        const collection = await getMongoCollection(COLLECTIONS.notificationHolidayModes);
+        await collection.updateOne(
+            { _id: normalizedDeviceId },
+            { $set: { _id: normalizedDeviceId, enabled: isEnabled, updatedAt: new Date().toISOString() } },
+            { upsert: true }
+        );
+        if (isEnabled) {
+            this.holidayModeDevices.add(normalizedDeviceId);
+        } else {
+            this.holidayModeDevices.delete(normalizedDeviceId);
+        }
+        console.log('[notifications] holiday_mode', JSON.stringify({
+            device_id: normalizedDeviceId,
+            enabled: isEnabled
+        }));
+        await this.recordSubscriptionAudit({
+            action: 'holiday_mode',
+            device_id: normalizedDeviceId,
+            metadata: { enabled: isEnabled }
+        });
+        return isEnabled;
+    }
+
+    isHolidayModeEnabled(deviceId) {
+        return this.holidayModeDevices.has(deviceId);
+    }
+
     async muteScheduledLegsForToday({ deviceId, legs = [], reason = 'manual_mute', metadata = null } = {}) {
         if (!deviceId || !Array.isArray(legs) || legs.length === 0) {
             return [];
@@ -558,6 +606,9 @@ class NotificationSubscriptionManager {
                 subscriptionId: subscription.id,
                 reason: 'expired_live_session_poll'
             });
+            return;
+        }
+        if (this.subscriptionSource(subscription) === SCHEDULED_SOURCE && this.isHolidayModeEnabled(subscription.deviceId)) {
             return;
         }
         for (const leg of subscription.legs) {

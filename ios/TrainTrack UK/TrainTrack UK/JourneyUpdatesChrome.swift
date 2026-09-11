@@ -7,6 +7,7 @@ struct JourneyUpdatesChrome: ViewModifier {
     @EnvironmentObject private var notificationStore: NotificationSubscriptionStore
     @EnvironmentObject private var deepLink: DeepLinkRouter
     @EnvironmentObject private var toastStore: ToastStore
+    @EnvironmentObject private var holidayMode: HolidayModeStore
     @State private var stoppingJourneyUpdates = false
 
     private var activeJourneyUpdatesBanner: ActiveJourneyUpdatesBanner? {
@@ -42,18 +43,27 @@ struct JourneyUpdatesChrome: ViewModifier {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if let banner = activeJourneyUpdatesBanner {
-                    JourneyUpdatesBannerView(
-                        banner: banner,
-                        isStopping: stoppingJourneyUpdates,
-                        onView: banner.viewRoute == nil ? nil : { openJourney(for: banner) },
-                        onStop: { stopActiveJourneyUpdates() }
-                    )
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                if holidayMode.isEnabled || activeJourneyUpdatesBanner != nil {
+                    VStack(spacing: 8) {
+                        if holidayMode.isEnabled {
+                            HolidayModeBannerView(onDisable: { holidayMode.setEnabled(false) })
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
+                        if let banner = activeJourneyUpdatesBanner {
+                            JourneyUpdatesBannerView(
+                                banner: banner,
+                                isStopping: stoppingJourneyUpdates,
+                                onView: banner.viewRoute == nil ? nil : { openJourney(for: banner) },
+                                onStop: { stopActiveJourneyUpdates() }
+                            )
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
+                    }
                     .padding(.top, 8)
                     .padding(.bottom, 8)
                 }
             }
+            .animation(.easeOut(duration: 0.25), value: holidayMode.isEnabled)
             .animation(.easeOut(duration: 0.25), value: notificationStore.liveSessions)
             .animation(.easeOut(duration: 0.25), value: toastStore.toast)
             .animation(.easeOut(duration: 0.25), value: deepLink.visibleJourneyRoute)
@@ -101,6 +111,41 @@ struct JourneyUpdatesChrome: ViewModifier {
 
             ToastStore.shared.show("Journey updates stopped", icon: "stop.fill")
         }
+    }
+}
+
+private struct HolidayModeBannerView: View {
+    let onDisable: () -> Void
+
+    var body: some View {
+        Button(action: onDisable) {
+            HStack(spacing: 12) {
+                Image(systemName: "beach.umbrella")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Holiday mode enabled")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.primary)
+                    Text("Tap to disable")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
+            }
+            .padding(.vertical, 12)
+            .padding(.horizontal, 14)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.black.opacity(0.08), lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.12), radius: 8, x: 0, y: 4)
+            .padding(.horizontal, 16)
+        }
+        .buttonStyle(.plain)
     }
 }
 
