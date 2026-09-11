@@ -641,7 +641,7 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
             Task { @MainActor in DebugLogStore.shared.log(msg, category: "Mute") }
             print("📤 \(msg)")
             Task { @MainActor in
-                MuteRequestDebugStore.shared.record(payload: bodyString, url: url.absoluteString, status: "queued")
+                MuteRequestDebugStore.shared.record(from: from, to: to)
             }
         }
 

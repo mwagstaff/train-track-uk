@@ -34,6 +34,7 @@ struct PreferencesView: View {
     @AppStorage(NotificationPreferences.delaysKey, store: NotificationPreferences.store) private var notifyDelays: Bool = true
     @AppStorage(NotificationPreferences.platformKey, store: NotificationPreferences.store) private var notifyPlatform: Bool = true
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
+    @ObservedObject private var muteDebugStore = MuteRequestDebugStore.shared
     @State private var notificationPendingDelete: NotificationSubscription? = nil
     @State private var showNotificationDeleteDialog = false
     @State private var showDebugLogs = false
@@ -248,6 +249,43 @@ struct PreferencesView: View {
                     showDebugLogs = true
                 }
             }
+
+            Section("Mute on Arrival Log") {
+                if muteDebugStore.entries.isEmpty {
+                    Text("No mute requests sent this session.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(muteDebugStore.entries) { entry in
+                        HStack(spacing: 10) {
+                            // Kind indicator
+                            Image(systemName: entry.kind == .sent ? "arrow.up.circle" : "arrow.down.circle")
+                                .font(.caption)
+                                .foregroundStyle(muteEntryColor(entry))
+                                .frame(width: 16)
+
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(entry.routeLabel)
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                Text(entry.timeString)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer()
+
+                            Text(entry.detail)
+                                .font(.caption2)
+                                .foregroundStyle(muteEntryColor(entry))
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+                Text("Shows the last \(MuteRequestDebugStore.maxEntries / 2) mute requests sent to the server and their response status. Cleared on app relaunch.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             #endif
         }
         .navigationTitle("Preferences")
@@ -440,6 +478,15 @@ private struct ResolvedScheduledRoute {
     NavigationStack {
         PreferencesView()
             .environmentObject(NotificationSubscriptionStore.shared)
+    }
+}
+
+private func muteEntryColor(_ entry: MuteDebugEntry) -> Color {
+    switch entry.kind {
+    case .sent:
+        return .blue
+    case .response:
+        return entry.detail.hasPrefix("200") ? .green : .red
     }
 }
 

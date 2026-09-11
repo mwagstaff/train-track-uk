@@ -514,18 +514,12 @@ struct JourneyDetailsView: View {
                                 Text("Last mute request")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                                Text("Status: \(last.status)")
+                                Text("\(last.timeString)  \(last.routeLabel)")
                                     .font(.caption2)
-                                Text("Time: \(last.timestamp.formatted(date: .abbreviated, time: .shortened))")
+                                Text(last.detail)
                                     .font(.caption2)
-                                Text("Payload: \(last.payload)")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                if let response = last.response, !response.isEmpty {
-                                    Text("Response: \(response)")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
+                                    .foregroundStyle(last.detail.hasPrefix("200") ? .green :
+                                                     last.kind == .response ? .red : .secondary)
                             }
                         }
                     }

@@ -646,6 +646,12 @@ app.post('/api/v2/notifications/terminate', async (req, res) => {
         to,
         date
     });
+    console.log('[notifications] terminate_received', JSON.stringify({
+        device_suffix: device_id ? device_id.slice(-8) : 'unknown',
+        from: from || 'unknown',
+        to: to || 'unknown',
+        received_at: new Date().toISOString()
+    }));
     if (!device_id || !subscription_id || !from || !to) {
         return res.status(400).json({
             error: 'device_id, subscription_id, from, and to are required'
