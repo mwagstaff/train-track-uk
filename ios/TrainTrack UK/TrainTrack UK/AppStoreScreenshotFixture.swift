@@ -77,6 +77,25 @@ enum AppStoreScreenshotFixture {
             case "favourites": TabRouter.shared.selected = .favourites
             case "history": TabRouter.shared.selected = .history
             case "journey-stats": TabRouter.shared.selected = .history
+            case "journey-ended-early":
+                let route = stations(["KTH", "VIC"])
+                if route.count == 2, let sydenhamHill = stations(["SYH"]).first {
+                    let now = Date()
+                    var stopped = checkpoint(
+                        id: UUID(), route: route,
+                        departure: now.addingTimeInterval(-8 * 60),
+                        durationMinutes: 21, delayMinutes: 3, completed: false
+                    )
+                    stopped.lastConfirmedOnRouteStation = sydenhamHill
+                    // A local-only fixture exercises resume without a real train session.
+                    stopped.legs[0].serviceID = nil
+                    history.add(JourneyHistoryRecord(checkpoint: stopped, outcome: .endedEarly, completedAt: now))
+                    JourneyTrackingCoordinator.shared.installScreenshotCompletion(RecentlyCompletedJourneyCheckpoint(
+                        checkpoint: stopped, outcome: .endedEarly,
+                        completedAt: now, autoDismissAt: now.addingTimeInterval(10 * 60)
+                    ))
+                    TabRouter.shared.selected = .inProgress
+                }
             case "in-progress", "route-map":
                 let route = stations(["ECR", "GTW"])
                 if route.count == 2 {

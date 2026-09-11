@@ -747,8 +747,63 @@ struct RailwayRoutingTests {
         #expect(estimate.nextStationIndex == 0)
     }
 
-    @Test func onboardGPSCannotPassAStationBeforeItsTimetableSafetyInterval() throws {
-        let now = date(year: 2026, month: 8, day: 25, hour: 17, minute: 37, second: 20)
+    @Test func onboardGPSFollowsTheJourneyWhenALaterServiceWasMatched() async throws {
+        let route = try await RailwayRoutingService.shared.route(forStationCRSs: [
+            "VIC", "BRX", "HNH", "WDU", "SYH", "PNE", "KTH"
+        ])
+        let laterService = [
+            callingPoint(crs: "VIC", scheduled: "17:42"),
+            callingPoint(crs: "BRX", scheduled: "17:49"),
+            callingPoint(crs: "HNH", scheduled: "17:51"),
+            callingPoint(crs: "WDU", scheduled: "17:54"),
+            callingPoint(crs: "SYH", scheduled: "17:57"),
+            callingPoint(crs: "PNE", scheduled: "18:00"),
+            callingPoint(crs: "KTH", scheduled: "18:02")
+        ]
+        // Recorded positions on the 17:27 at West Dulwich and towards Sydenham Hill.
+        // The later service's timetable previously held GPS at Victoria, then Brixton.
+        let observations: [(minute: Int, second: Int, latitude: Double, longitude: Double)] = [
+            (40, 11, 51.44096184698178, -0.09141130468082398),
+            (41, 58, 51.43754523586432, -0.08821788715470089),
+            (43, 0, 51.434915202125765, -0.08578696799337829)
+        ]
+        for observation in observations {
+            let now = date(
+                year: 2026, month: 9, day: 9, hour: 17,
+                minute: observation.minute, second: observation.second
+            )
+            let userLocation = CLLocation(
+                coordinate: CLLocationCoordinate2D(
+                    latitude: observation.latitude, longitude: observation.longitude
+                ),
+                altitude: 0,
+                horizontalAccuracy: 15,
+                verticalAccuracy: -1,
+                timestamp: now
+            )
+            let estimate = ServiceProgressEstimator.estimate(
+                for: laterService, at: now, calendar: calendar
+            )
+            let position = try #require(RailwayOnboardLocationResolver.position(
+                apiCoordinate: route.coordinate(atFloatingStationIndex: estimate.floatingIndex),
+                userLocation: userLocation,
+                route: route,
+                now: now
+            ))
+
+            #expect(estimate.floatingIndex == 0)
+            #expect(position.floatingStationIndex > 2.5)
+            #expect(position.floatingStationIndex < 4)
+            let projectedLocation = CLLocation(
+                latitude: position.coordinate.latitude,
+                longitude: position.coordinate.longitude
+            )
+            #expect(projectedLocation.distance(from: userLocation) < 100)
+        }
+    }
+
+    @Test func staleInaccurateAndOffRouteGPSCannotOverrideTheTrainPosition() throws {
+        let now = date(year: 2026, month: 9, day: 9, hour: 17, minute: 41)
         let route = ServiceRailwayRoute(
             coordinates: [
                 CLLocationCoordinate2D(latitude: 51.45, longitude: -0.11),
@@ -758,33 +813,39 @@ struct RailwayRoutingTests {
             cumulativeDistances: [0, 700, 1_400],
             stationCoordinateIndices: [0, 1, 2]
         )
-        let userLocation = CLLocation(
-            coordinate: CLLocationCoordinate2D(latitude: 51.45, longitude: -0.095),
-            altitude: 0,
-            horizontalAccuracy: 15,
-            verticalAccuracy: -1,
-            timestamp: now
-        )
-        let maximumIndex = ServiceProgressEstimator.maximumPermittedFloatingIndex(
-            for: [
-                callingPoint(crs: "BRX", scheduled: "17:34", actual: "On time"),
-                callingPoint(crs: "HNH", scheduled: "17:37", actual: "On time"),
-                callingPoint(crs: "WDU", scheduled: "17:39")
-            ],
-            at: now,
-            calendar: calendar
-        )
-        let position = try #require(RailwayOnboardLocationResolver.position(
-            apiCoordinate: route.coordinate(atStation: 1),
-            userLocation: userLocation,
-            route: route,
-            maximumFloatingStationIndex: maximumIndex,
-            now: now
-        ))
+        let invalidReadings: [(age: TimeInterval, accuracy: CLLocationAccuracy, latitude: Double)] = [
+            (121, 15, 51.45),
+            (-31, 15, 51.45),
+            (0, 201, 51.45),
+            (0, -1, 51.45),
+            (0, 15, 51.46)
+        ]
+        let apiCoordinate = try #require(route.coordinate(atStation: 0))
+        for reading in invalidReadings {
+            let userLocation = CLLocation(
+                coordinate: CLLocationCoordinate2D(latitude: reading.latitude, longitude: -0.095),
+                altitude: 0,
+                horizontalAccuracy: reading.accuracy,
+                verticalAccuracy: -1,
+                timestamp: now.addingTimeInterval(-reading.age)
+            )
+            let position = RailwayOnboardLocationResolver.position(
+                apiCoordinate: apiCoordinate,
+                userLocation: userLocation,
+                route: route,
+                now: now
+            )
+            let fallback = try #require(RailwayOnboardLocationResolver.coordinate(
+                apiCoordinate: apiCoordinate,
+                userLocation: userLocation,
+                routeCoordinates: route.coordinates,
+                now: now
+            ))
 
-        #expect(maximumIndex == 1)
-        #expect(position.floatingStationIndex == 1)
-        #expect(position.coordinate.longitude == route.coordinate(atStation: 1)?.longitude)
+            #expect(position == nil)
+            #expect(fallback.latitude == apiCoordinate.latitude)
+            #expect(fallback.longitude == apiCoordinate.longitude)
+        }
     }
 
     @Test func unknownDelayHoldsTheEstimateAtTheLastActualStation() {

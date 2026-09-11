@@ -596,15 +596,6 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         }
         monitoredConditionIdentifiers = await monitor.identifiers.filter(isManagedRegion)
 
-        // CLMonitor records persist across process death. Re-evaluate satisfied records so
-        // arming while already inside a station does not depend on a future boundary event.
-        for identifier in desired.keys {
-            guard let event = await monitor.record(for: identifier)?.lastEvent else { continue }
-            if case .satisfied = event.state {
-                handleConditionMonitorEvent(event)
-            }
-        }
-
         stopMonitoring(Array(manager.monitoredRegions.filter { isManagedRegion($0.identifier) }))
         updateBackgroundLocationState(hasActiveGeofences: !desired.isEmpty)
         if !desired.isEmpty {
@@ -646,6 +637,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 confirmationStates[identifier] = StationArrivalConfirmationState()
             }
         }
+        monitoredTargets = Self.targetsByPrioritizingExplicitJourneys(monitoredTargets)
         confirmationStates = confirmationStates.filter { monitoredTargets[$0.key] != nil }
         persistMonitoredTargets()
     }
@@ -696,6 +688,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
     private func handleConditionMonitorEvent(_ event: CLMonitor.Event) {
         guard isManagedRegion(event.identifier) else { return }
+        let eventAge = Date().timeIntervalSince(event.date)
         let stateDescription: String
         switch event.state {
         case .satisfied: stateDescription = "satisfied"
@@ -707,6 +700,8 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         logGeofenceDiagnostic("condition_monitor_event", metadata: [
             "region_id": event.identifier,
             "state": stateDescription,
+            "event_date": event.date,
+            "event_age_seconds": eventAge,
             "accuracy_limited": event.accuracyLimited,
             "authorization_denied": event.authorizationDenied,
             "condition_limit_exceeded": event.conditionLimitExceeded,
@@ -714,6 +709,19 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             "persistence_unavailable": event.persistenceUnavailable,
             "service_session_required": event.serviceSessionRequired
         ])
+
+        guard StationDetectionPolicy.isConditionEventActionable(recordedAt: event.date) else {
+            logGeofenceDiagnostic("stale_condition_event_ignored", metadata: [
+                "region_id": event.identifier,
+                "state": stateDescription,
+                "event_date": event.date,
+                "event_age_seconds": eventAge
+            ])
+            if canMonitorWithCurrentAuthorization {
+                manager.requestLocation()
+            }
+            return
+        }
 
         let compatibilityRegion = CLCircularRegion(
             center: CLLocationCoordinate2D(latitude: 0, longitude: 0),
@@ -989,7 +997,20 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                 )
             }
         }
-        return targets
+        return Self.targetsByPrioritizingExplicitJourneys(targets)
+    }
+
+    static func targetsByPrioritizingExplicitJourneys(
+        _ targets: [String: StationArrivalTarget]
+    ) -> [String: StationArrivalTarget] {
+        let explicitJourneyOrigins = Set(targets.values.compactMap { target in
+            target.isScheduledActivation == true ? nil : target.from
+        })
+        guard !explicitJourneyOrigins.isEmpty else { return targets }
+
+        return targets.filter { _, target in
+            target.isScheduledActivation != true || !explicitJourneyOrigins.contains(target.from)
+        }
     }
 
     private func desiredRegions(
@@ -1445,6 +1466,14 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 
     private func evaluateArrival(using location: CLLocation, for target: StationArrivalTarget, source: String) {
+        guard !hasConfirmedCompetingTarget(
+            subscriptionId: target.subscriptionId,
+            from: target.from,
+            to: target.to
+        ) else {
+            confirmationStates[target.identifier]?.reset()
+            return
+        }
         guard !NotificationMuteStorage.isMutedToday(from: target.from, to: target.to) else {
             confirmationStates[target.identifier]?.reset()
             return
@@ -1753,6 +1782,19 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             to: parsed.to
         )
         guard await ensureTargetExists(identifier: targetIdentifier, parsed: parsed) != nil else { return }
+        guard !hasConfirmedCompetingTarget(
+            subscriptionId: parsed.subscriptionId,
+            from: parsed.from,
+            to: parsed.to
+        ) else {
+            logGeofenceDiagnostic("competing_origin_arrival_ignored", metadata: [
+                "subscription_id": parsed.subscriptionId,
+                "from": parsed.from.uppercased(),
+                "to": parsed.to.uppercased(),
+                "source": source
+            ])
+            return
+        }
         guard !NotificationMuteStorage.isMutedToday(from: parsed.from, to: parsed.to) else { return }
 
         let msg = "Arrival confirmed via tight geofence for \(parsed.from)→\(parsed.to)"
@@ -1771,6 +1813,20 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             to: parsed.to,
             source: source
         )
+    }
+
+    private func hasConfirmedCompetingTarget(subscriptionId: String, from: String, to: String) -> Bool {
+        let fromCode = from.uppercased()
+        let toCode = to.uppercased()
+        return monitoredTargets.values.contains { target in
+            guard target.from == fromCode else { return false }
+            guard target.subscriptionId != subscriptionId || target.to != toCode else { return false }
+            return NotificationMuteStorage.hasPendingStationDepartureCleanup(
+                from: target.from,
+                to: target.to,
+                subscriptionId: target.subscriptionId
+            )
+        }
     }
 
     private func armDepartureCleanupAfterArrival(

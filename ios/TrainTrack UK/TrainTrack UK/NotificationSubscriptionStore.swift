@@ -495,6 +495,9 @@ final class NotificationSubscriptionStore: ObservableObject {
             + resolvedActivation.legs.map { $0.to.uppercased() }
 
         let coordinator = JourneyTrackingCoordinator.shared
+        guard !ScheduledLiveActivityAutoStartManager.shared.shouldSkipForAdHocJourney(
+            leg: resolvedActivation.legs[0], now: now
+        ) else { return false }
         if !JourneyTrackingCoordinator.shouldArmCandidate(
             subscriptionID: activation.subscription.id,
             activeSubscriptionID: coordinator.activeJourney?.subscriptionId

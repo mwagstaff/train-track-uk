@@ -62,7 +62,7 @@ final class DebugLogStore: ObservableObject {
 
         return [
             environmentSummary(),
-            "## Debug Logs\n\(debugLogs.isEmpty ? "(no entries)" : debugLogs)",
+            "## Recent In-App Diagnostics\n\(debugLogs.isEmpty ? "(no entries)" : debugLogs)",
             ClientDiagnosticsLogger.exportStoredLogs()
         ].joined(separator: "\n\n")
     }

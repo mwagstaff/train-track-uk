@@ -485,6 +485,37 @@ struct TrainTrack_UKTests {
         ))
     }
 
+    @Test func onlyRecentConditionEventsCanDriveGeofenceTransitions() {
+        let now = Date(timeIntervalSince1970: 100_000)
+
+        #expect(StationDetectionPolicy.isConditionEventActionable(
+            recordedAt: now.addingTimeInterval(-30),
+            now: now
+        ))
+        #expect(!StationDetectionPolicy.isConditionEventActionable(
+            recordedAt: now.addingTimeInterval(-(StationDetectionPolicy.conditionEventActionLifetime + 1)),
+            now: now
+        ))
+        #expect(!StationDetectionPolicy.isConditionEventActionable(
+            recordedAt: now.addingTimeInterval(1),
+            now: now
+        ))
+    }
+
+    @Test @MainActor func explicitJourneySuppressesAnOverlappingScheduleAtTheSameOrigin() {
+        let scheduled = arrivalTarget(id: "scheduled", from: "KTH", to: "VIC", scheduled: true)
+        let explicit = arrivalTarget(id: "explicit", from: "KTH", to: "BFR", scheduled: false)
+        let reverseSchedule = arrivalTarget(id: "reverse", from: "VIC", to: "KTH", scheduled: true)
+
+        let selected = NotificationGeofenceManager.targetsByPrioritizingExplicitJourneys([
+            scheduled.identifier: scheduled,
+            explicit.identifier: explicit,
+            reverseSchedule.identifier: reverseSchedule
+        ])
+
+        #expect(Set(selected.keys) == ["explicit", "reverse"])
+    }
+
     @Test func conditionBudgetMatchesCoreLocationLimit() {
         #expect(StationDetectionPolicy.maximumMonitoredConditions == 20)
         #expect(StationDetectionPolicy.canAllocateStationCoordinate(currentConditionCount: 18))
@@ -975,6 +1006,29 @@ struct TrainTrack_UKTests {
 
     private func station(crs: String, name: String) -> Station {
         Station(crs: crs, name: name, longitude: "0", latitude: "0")
+    }
+
+    private func arrivalTarget(
+        id: String,
+        from: String,
+        to: String,
+        scheduled: Bool
+    ) -> StationArrivalTarget {
+        StationArrivalTarget(
+            identifier: id,
+            subscriptionId: id,
+            from: from,
+            to: to,
+            station: station(crs: from, name: from),
+            activeUntil: nil,
+            muteOnArrival: true,
+            isScheduledActivation: scheduled,
+            scheduleKind: nil,
+            daysOfWeek: nil,
+            windowStart: nil,
+            windowEnd: nil,
+            travelDate: nil
+        )
     }
 
     private func serviceDetails(

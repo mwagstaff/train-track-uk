@@ -325,6 +325,7 @@ function normalizeRegistration(payload) {
     }
     return {
         ...required,
+        source: payload.source === 'scheduled' ? 'scheduled' : 'adhoc',
         useSandbox: payload.useSandbox === true
     };
 }
@@ -403,6 +404,7 @@ function buildProgressPayload(session, details, progress) {
 function publicSession(session) {
     return {
         id: session.id,
+        source: session.source,
         journey_id: session.journeyId,
         subscription_id: session.subscriptionId,
         service_id: session.serviceId,

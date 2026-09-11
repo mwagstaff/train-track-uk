@@ -14,7 +14,7 @@ const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.LIVE_ACTIVITY_POLL_INTE
 const DEFAULT_END_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_END_AFTER_SECONDS || '7200'); // default 2 hours
 const DEFAULT_STALE_DATE_REFRESH_SECONDS = Number(process.env.LIVE_ACTIVITY_STALE_DATE_REFRESH_SECONDS || '240'); // refresh stale-date every 4 minutes
 const APP_CHECKIN_WARNING_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_APP_CHECKIN_WARNING_AFTER_SECONDS || '120');
-const DEFAULT_MAX_ACTIVE_PER_DEVICE = Number(process.env.LIVE_ACTIVITY_MAX_ACTIVE_PER_DEVICE || '5');
+const DEFAULT_MAX_ACTIVE_PER_DEVICE = 1;
 const JOURNEY_COMPLETION_GRACE_MS = 10 * 60 * 1000;
 
 export class LiveActivityManager {
@@ -68,6 +68,7 @@ export class LiveActivityManager {
             this.scheduleEnd(subscription);
             loaded += 1;
         }
+        await this.tidyDuplicateSessions();
         console.log(`[live-activity] Loaded ${loaded} active session(s) from Mongo`);
     }
 
@@ -158,10 +159,6 @@ export class LiveActivityManager {
         };
 
         this.subscriptions.set(key, subscription);
-        this.scheduleEnd(subscription);
-        this.saveSubscriptionToMongo(subscription).catch((error) => {
-            console.error(`[live-activity] Failed to persist registered session ${key}: ${error?.message || error}`);
-        });
         const evicted = this.evictDuplicateSessionsForDevice(deviceId, activityId);
         for (const stale of evicted) {
             this.sendEndPushForEvictedSubscription(stale, 'register_duplicate_evict').catch((error) => {
@@ -169,6 +166,13 @@ export class LiveActivityManager {
                 console.error(`[live-activity] evicted end push failed for ${staleKey}: ${error?.message || error}`);
             });
         }
+
+        // A late scheduled registration must not replace an ongoing manual journey.
+        if (!this.subscriptions.has(key)) return subscription;
+        this.scheduleEnd(subscription);
+        this.saveSubscriptionToMongo(subscription).catch((error) => {
+            console.error(`[live-activity] Failed to persist registered session ${key}: ${error?.message || error}`);
+        });
 
         // Log registration event for admin visibility
         recordNotificationEvent({
@@ -310,6 +314,7 @@ export class LiveActivityManager {
     }
 
     async pollSubscription(subscription, { force = false, dryRun = false } = {}) {
+        if (subscription.evicted) return { sent: false, reason: 'activity_evicted' };
         if (this.deletedDeviceIds.has(subscription?.deviceId)) {
             return { sent: false, reason: 'device_data_deleted' };
         }
@@ -338,6 +343,7 @@ export class LiveActivityManager {
                 ),
                 subscription.lastSnapshot
             );
+            if (subscription.evicted) return { sent: false, reason: 'activity_evicted' };
             const appIsActive = this.shouldShowAppActive(subscription);
             const appIsActiveChanged = Boolean(subscription.appIsActive) !== appIsActive;
             const hasChanged = force || appIsActiveChanged || !this.snapshotsEqual(snapshot, subscription.lastSnapshot);
@@ -430,7 +436,7 @@ export class LiveActivityManager {
         }
     }
 
-    async sendEndUpdate(subscription, { reason = subscription.endReason || 'unknown', trigger = 'unknown' } = {}) {
+    async sendEndUpdate(subscription, { reason = subscription.endReason || 'unknown', trigger = 'unknown', preserveNotificationLiveSession = false } = {}) {
         const key = this.buildKey(subscription.deviceId, subscription.activityId);
         const endContext = {
             end_reason: reason,
@@ -440,7 +446,9 @@ export class LiveActivityManager {
             end_after_ms: Number.isFinite(subscription.endAfterMs) ? subscription.endAfterMs : null,
             window_end_buffer_ms: Number.isFinite(subscription.windowEndBufferMs) ? subscription.windowEndBufferMs : null
         };
-        const snapshot = subscription.lastSnapshot || (
+        const snapshot = trigger === 'eviction'
+            ? { ...(subscription.lastSnapshot || { departures: [] }), fetchedAt: new Date().toISOString() }
+            : subscription.lastSnapshot || (
             await this.getDeparturesSnapshot(
                 subscription.fromStation,
                 subscription.toStation,
@@ -467,7 +475,7 @@ export class LiveActivityManager {
         this.clearEndTimer(subscription);
         this.subscriptions.delete(key);
         await this.deleteSubscriptionFromMongo(subscription);
-        await this.deleteMatchingLiveSessions(subscription);
+        if (!preserveNotificationLiveSession) await this.deleteMatchingLiveSessions(subscription);
 
         // Log if token was bad/expired (expected when activity was already dismissed)
         if (pushResponse?.isBadToken) {
@@ -1432,6 +1440,11 @@ export class LiveActivityManager {
             subs = this.findSubscriptionsByDeviceIds([normalizedCanonicalDeviceId, ...requestedDeviceIds]);
         }
 
+        for (const currentDeviceId of new Set(subs.map((sub) => sub.deviceId))) {
+            await this.tidyDuplicateSessionsForDevice(currentDeviceId);
+        }
+        subs = subs.filter((sub) => this.subscriptions.get(this.buildKey(sub.deviceId, sub.activityId)) === sub);
+
         const nowIso = new Date().toISOString();
         for (const sub of subs) {
             sub.tokenUpdatedAt = nowIso;
@@ -1518,10 +1531,14 @@ export class LiveActivityManager {
         const preferred = preferredActivityId
             ? sorted.find((sub) => sub.activityId === preferredActivityId)
             : null;
-        const keep = preferred || sorted[0];
+        const manual = sorted.filter((sub) => !sub.scheduleKey && sub.journeyPhase !== 'arrived'
+            && (!sub.endAt || Date.parse(sub.endAt) > Date.now()));
+        const keep = manual.find((sub) => sub.activityId === preferredActivityId)
+            || manual[0] || preferred || sorted[0];
         const remove = sorted.filter((sub) => sub.activityId !== keep.activityId);
 
         for (const sub of remove) {
+            sub.evicted = true;
             this.clearEndTimer(sub);
             this.subscriptions.delete(this.buildKey(sub.deviceId, sub.activityId));
             this.deleteSubscriptionFromMongo(sub).catch((error) => {
@@ -1567,7 +1584,7 @@ export class LiveActivityManager {
 
     async sendEndPushForEvictedSubscription(subscription, reason = 'evicted') {
         try {
-            await this.sendEndUpdate(subscription, { reason, trigger: 'eviction' });
+            await this.sendEndUpdate(subscription, { reason, trigger: 'eviction', preserveNotificationLiveSession: true });
         } catch (error) {
             const key = this.buildKey(subscription.deviceId, subscription.activityId);
             console.error(`[live-activity] end push failed for evicted ${key} (${reason}): ${error?.message || error}`);
@@ -1726,13 +1743,14 @@ export class LiveActivityManager {
         const collection = await getMongoCollection(COLLECTIONS.liveActivitySessions);
         if (this.deletedDeviceIds.has(subscription.deviceId)) return;
         const key = this.buildKey(subscription.deviceId, subscription.activityId);
+        if (this.subscriptions.get(key) !== subscription) return;
         const record = this.serializeSubscription(subscription);
         await collection.updateOne(
             { _id: key },
             { $set: { _id: key, ...record } },
             { upsert: true }
         );
-        if (this.deletedDeviceIds.has(subscription.deviceId)) {
+        if (this.deletedDeviceIds.has(subscription.deviceId) || !this.subscriptions.has(key)) {
             await collection.deleteOne({ _id: key });
         }
     }

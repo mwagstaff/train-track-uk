@@ -37,6 +37,10 @@ import {
 } from './lib/device-data-deletion-state.js';
 import path from 'path';
 
+notificationSubscriptionManager.getDeviceLiveActivities = (deviceId) =>
+    Array.from(liveActivityManager.subscriptions.values()).filter((session) => session.deviceId === deviceId);
+notificationSubscriptionManager.getDeviceTrackingSessions = (deviceId) => journeyTrackingManager.listSessions(deviceId);
+
 journeyTrackingManager.setJourneyCompletionHandler(async (completion) => {
     await notificationSubscriptionManager.reconcileJourneyCompletion({
         deviceId: completion.deviceId,
@@ -924,6 +928,22 @@ app.post('/api/v2/notifications/geofence-event', async (req, res) => {
     res.json({ status: 'ok' });
 });
 
+app.post('/api/v2/notifications/scheduled/skip', async (req, res) => {
+    const { device_id, schedule_key } = req.body || {};
+    const { canonicalDeviceId } = resolveRequestDeviceIds(req, device_id);
+    if (!canonicalDeviceId || typeof schedule_key !== 'string' || !schedule_key.trim()) {
+        return res.status(400).json({ error: 'device_id and schedule_key are required' });
+    }
+    try {
+        const result = await notificationSubscriptionManager.reportSkippedSchedule({
+            deviceId: canonicalDeviceId, scheduleKey: schedule_key
+        });
+        res.json({ status: 'skipped', ...result });
+    } catch (error) {
+        res.status(400).json({ error: error?.message || String(error) });
+    }
+});
+
 // Ephemeral service monitoring for an in-progress journey. Journey history remains
 // local to the device; this state exists only to deliver official timing updates.
 app.post('/api/v2/journey_tracking/sessions', (req, res) => {
@@ -936,6 +956,7 @@ app.post('/api/v2/journey_tracking/sessions', (req, res) => {
         from,
         to,
         destination_crs,
+        source,
         use_sandbox
     } = req.body || {};
     const { canonicalDeviceId } = resolveRequestDeviceIds(req, device_id);
@@ -952,6 +973,7 @@ app.post('/api/v2/journey_tracking/sessions', (req, res) => {
             from,
             to,
             destinationCRS: destination_crs,
+            source,
             useSandbox: Boolean(use_sandbox)
         });
         res.json({

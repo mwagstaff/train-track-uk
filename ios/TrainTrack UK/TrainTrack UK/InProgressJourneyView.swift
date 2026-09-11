@@ -44,6 +44,7 @@ struct InProgressJourneyView: View {
     @State private var isShowingEndConfirmation = false
     @State private var replacementChoice: JourneyChoice?
     @State private var isWorking = false
+    @State private var resumeError: String?
 
     @MainActor private var choices: [JourneyChoice] {
         var result = coordinator.armedCandidates.map(JourneyChoice.init(candidate:))
@@ -215,6 +216,14 @@ struct InProgressJourneyView: View {
             Button("Cancel", role: .cancel) { replacementChoice = nil }
         } message: { _ in
             Text("The current journey will be recorded as ended early.")
+        }
+        .alert("Unable to resume recording", isPresented: Binding(
+            get: { resumeError != nil },
+            set: { if !$0 { resumeError = nil } }
+        )) {
+            Button("OK", role: .cancel) { resumeError = nil }
+        } message: {
+            Text(resumeError ?? "Please try again.")
         }
         .task(id: refreshKey) { await refreshContent() }
         .task(id: onboardLocationServiceID) {
@@ -642,16 +651,40 @@ struct InProgressJourneyView: View {
             Image(systemName: completion.outcome == .completed ? "checkmark.circle.fill" : "flag.checkered")
                 .font(.system(size: 54))
                 .foregroundStyle(completion.outcome == .completed ? Color.green : Color.orange)
+                .accessibilityHidden(true)
             VStack(spacing: 6) {
                 Text(completion.outcome.displayName)
                     .font(.title2.bold())
+                    .foregroundStyle(.primary)
+                    .accessibilityAddTraits(.isHeader)
                 Text("\(completion.checkpoint.plannedOrigin.name) to \(completion.checkpoint.plannedDestination.name)")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.primary.opacity(0.75))
                     .multilineTextAlignment(.center)
                 Text(completionTimingSummary(completion, record: record))
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.primary.opacity(0.75))
                     .monospacedDigit()
+            }
+            .fixedSize(horizontal: false, vertical: true)
+
+            if completion.outcome == .endedEarly,
+               coordinator.canResumeRecentlyCompletedJourney {
+                Button(action: resumeRecording) {
+                    HStack(spacing: 8) {
+                        if coordinator.isResumingJourney {
+                            ProgressView()
+                                .tint(.white)
+                        }
+                        Text(coordinator.isResumingJourney ? "Resuming recording…" : "Resume recording")
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .font(.headline)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .disabled(coordinator.isResumingJourney)
+                .accessibilityHint("Continues recording this journey to \(completion.checkpoint.plannedDestination.name)")
             }
 
             if let record, record.isDelayRepay15Plus {
@@ -665,27 +698,45 @@ struct InProgressJourneyView: View {
                 } label: {
                     Label("View in your journey history", systemImage: "clock.arrow.circlepath")
                         .font(.subheadline.weight(.semibold))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(minHeight: 44)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(.primary)
+                .disabled(coordinator.isResumingJourney)
             }
 
             Button("Close") {
                 coordinator.clearRecentlyCompletedJourney()
                 router.selected = .history
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.bordered)
+            .tint(Color.primary)
             .controlSize(.large)
-            Text("This screen closes automatically 10 minutes after arrival.")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
+            .disabled(coordinator.isResumingJourney)
+            Text("This screen closes automatically 10 minutes after recording ends.")
+                .font(.footnote)
+                .foregroundStyle(Color.primary.opacity(0.75))
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .multilineTextAlignment(.center)
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 34)
+        .padding(24)
+        .background(Color(uiColor: .systemBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .task(id: completion.checkpoint.id) {
             guard let record else { return }
             _ = await historyStore.refreshOfficialArrival(for: record)
+        }
+    }
+
+    private func resumeRecording() {
+        guard !coordinator.isResumingJourney else { return }
+        Task {
+            do {
+                try await coordinator.resumeRecentlyCompletedJourney()
+            } catch {
+                resumeError = error.localizedDescription
+            }
         }
     }
 

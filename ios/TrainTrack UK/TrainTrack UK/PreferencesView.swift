@@ -33,8 +33,6 @@ struct PreferencesView: View {
     @AppStorage(NotificationPreferences.platformKey, store: NotificationPreferences.store) private var notifyPlatform: Bool = true
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
     @EnvironmentObject private var railwayBackgroundStore: RailwayBackgroundStore
-    @AppStorage("troubleshootingLogsEnabled", store: UserDefaults(suiteName: "group.dev.skynolimit.traintrack")) private var troubleshootingLogsEnabled = false
-    @State private var showDebugLogs = false
     @State private var showTroubleshootingShare = false
     @State private var troubleshootingLogURL: URL?
     @State private var notificationPreferencesError: String? = nil
@@ -286,11 +284,6 @@ struct PreferencesView: View {
             #endif
 
             Section {
-                Toggle("Record troubleshooting logs", isOn: $troubleshootingLogsEnabled)
-                    .onChange(of: troubleshootingLogsEnabled) { _, enabled in
-                        if !enabled { DebugLogStore.shared.clear() }
-                    }
-
                 Button {
                     Task {
                         await JourneyTrackingCoordinator.shared.logDiagnosticSnapshot(
@@ -303,10 +296,7 @@ struct PreferencesView: View {
                     Label("Share journey troubleshooting logs", systemImage: "square.and.arrow.up")
                 }
 
-                Button("View Debug Logs") {
-                    showDebugLogs = true
-                }
-                Text("Enable when troubleshooting a journey. Logs may include journey and location details and are stored only on this device until you choose to share them. Turning this off clears stored logs.")
+                Text("Journey troubleshooting details are recorded automatically for the 10 most recent journeys. Logs may include journey and location details and are stored only on this device until you choose to share them.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } header: {
@@ -332,9 +322,6 @@ struct PreferencesView: View {
         }
         .onChange(of: devicePreferencesSignature) {
             syncDevicePreferences()
-        }
-        .sheet(isPresented: $showDebugLogs) {
-            DebugLogView()
         }
         .sheet(isPresented: $showTroubleshootingShare) {
             if let troubleshootingLogURL {

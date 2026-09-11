@@ -5,27 +5,12 @@ import Testing
 @Suite(.serialized)
 struct ProductionDiagnosticsTests {
     @Test @MainActor
-    func troubleshootingIsOptInAndCanBeExportedAndCleared() throws {
-        let defaults = try #require(UserDefaults(suiteName: "group.dev.skynolimit.traintrack"))
-        let key = "troubleshootingLogsEnabled"
-        let previous = defaults.object(forKey: key)
+    func troubleshootingIsAlwaysOnAndCanBeExportedAndCleared() throws {
         defer {
-            defaults.set(previous, forKey: key)
             DebugLogStore.shared.clear()
         }
 
-        defaults.set(false, forKey: key)
         DebugLogStore.shared.clear()
-        var evaluated = false
-        func message() -> String {
-            evaluated = true
-            return "disabled-log-must-not-be-evaluated"
-        }
-        DebugLogStore.shared.log(message())
-        #expect(!evaluated)
-        #expect(DebugLogStore.shared.logs.isEmpty)
-
-        defaults.set(true, forKey: key)
         let marker = "release-diagnostics-\(UUID().uuidString)"
         DebugLogStore.shared.log(marker)
         ClientDiagnosticsLogger.log("test", marker)
@@ -36,9 +21,27 @@ struct ProductionDiagnosticsTests {
         #expect(try String(contentsOf: url, encoding: .utf8).contains(marker))
         try FileManager.default.removeItem(at: url)
 
-        defaults.set(false, forKey: key)
         DebugLogStore.shared.clear()
         #expect(DebugLogStore.shared.logs.isEmpty)
         #expect(!ClientDiagnosticsLogger.exportStoredLogs().contains(marker))
+    }
+
+    @Test @MainActor
+    func troubleshootingKeepsOnlyTheTenMostRecentJourneys() {
+        defer { DebugLogStore.shared.clear() }
+        DebugLogStore.shared.clear()
+
+        let journeyIDs = (0..<11).map { _ in UUID().uuidString }
+        for journeyID in journeyIDs {
+            ClientDiagnosticsLogger.log("journey_history", "journey_started", metadata: [
+                "journey_id": journeyID
+            ])
+        }
+
+        let export = ClientDiagnosticsLogger.exportStoredLogs()
+        #expect(!export.contains(journeyIDs[0]))
+        for journeyID in journeyIDs.dropFirst() {
+            #expect(export.contains(journeyID))
+        }
     }
 }

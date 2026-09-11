@@ -294,6 +294,10 @@ enum ScheduledNotificationLiveSessionRegistrar {
         source: String,
         metadata: [String: Any?]
     ) async -> String? {
+        guard !ScheduledLiveActivityAutoStartManager.shared.shouldSkipForAdHocJourney(scheduleKey: scheduleKey) else {
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "live_session_skipped_adhoc_in_progress", metadata: metadata)
+            return nil
+        }
         await NotificationAuthorizationManager.registerIfAuthorized()
         NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
 
@@ -332,6 +336,10 @@ enum ScheduledNotificationLiveSessionRegistrar {
             return subscriptionId
         }
 
+        guard !ScheduledLiveActivityAutoStartManager.shared.shouldSkipForAdHocJourney(scheduleKey: scheduleKey) else {
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "live_session_skipped_adhoc_in_progress", metadata: logMetadata)
+            return nil
+        }
         let activeUntilResult = liveSessionActiveUntil(windowStart: windowStart, windowEnd: windowEnd)
         let activeUntil = activeUntilResult.date
         let request = NotificationSubscriptionRequest(
@@ -508,13 +516,113 @@ final class ScheduledLiveActivityAutoStartManager {
 
     private let suiteName = "group.dev.skynolimit.traintrack"
     private let recordsKey = "scheduled_live_activity_records"
+    private let skippedScheduleKeysKey = "scheduled_live_activity_adhoc_skipped_keys"
+    private let reportedSkipKeysKey = "scheduled_live_activity_adhoc_reported_keys"
     private let duplicateGuardInterval: TimeInterval = 30
     private let autoStartAlertType = "scheduled_live_activity_start"
     private var inFlightKeys: Set<String> = []
+    private var inFlightSkipReportKeys: Set<String> = []
+    private let skipDefaults: UserDefaults
 
-    private init() {}
+    init(skipDefaults: UserDefaults? = nil) {
+        self.skipDefaults = skipDefaults ?? UserDefaults(suiteName: suiteName) ?? .standard
+    }
+
+    func shouldSkipForAdHocJourney(leg: NotificationLeg, now: Date = Date()) -> Bool {
+        let window = leg.window(on: currentDayOfWeek(now: now))
+        return shouldSkipForAdHocJourney(scheduleKey: ScheduledLiveActivityTrigger.scheduleKey(
+            from: leg.from, to: leg.to,
+            windowStart: window.windowStart, windowEnd: window.windowEnd, now: now
+        ))
+    }
+
+    func shouldSkipForAdHocJourney(scheduleKey: String?) -> Bool {
+        let defaults = skipDefaults
+        let savedKeys = defaults.stringArray(forKey: skippedScheduleKeysKey) ?? []
+        let todayKey = ScheduledLiveActivityTrigger.currentDateKey()
+        var skippedKeys = savedKeys.filter { $0.split(separator: "|").last.map(String.init) == todayKey }
+        let hasAdHocJourney = JourneyTrackingCoordinator.shared.hasInProgressAdHocJourney
+        if hasAdHocJourney, let scheduleKey, !skippedKeys.contains(scheduleKey) {
+            skippedKeys.append(scheduleKey)
+        }
+        if skippedKeys != savedKeys {
+            defaults.set(skippedKeys, forKey: skippedScheduleKeysKey)
+        }
+        let shouldSkip = hasAdHocJourney || scheduleKey.map { skippedKeys.contains($0) } == true
+        if shouldSkip, let scheduleKey {
+            reportSkippedScheduleIfNeeded(scheduleKey: scheduleKey)
+        }
+        return shouldSkip
+    }
+
+    private func reportSkippedScheduleIfNeeded(scheduleKey: String) {
+        let defaults = skipDefaults
+        let savedKeys = defaults.stringArray(forKey: reportedSkipKeysKey) ?? []
+        let todayKey = ScheduledLiveActivityTrigger.currentDateKey()
+        let reportedKeys = savedKeys.filter { $0.split(separator: "|").last.map(String.init) == todayKey }
+        if reportedKeys != savedKeys {
+            defaults.set(reportedKeys, forKey: reportedSkipKeysKey)
+        }
+        guard !reportedKeys.contains(scheduleKey),
+              inFlightSkipReportKeys.insert(scheduleKey).inserted else { return }
+
+        Task {
+            defer { inFlightSkipReportKeys.remove(scheduleKey) }
+            do {
+                guard let url = URL(string: "\(ApiHostPreference.currentBaseURL)/notifications/scheduled/skip") else {
+                    throw URLError(.badURL)
+                }
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue(DeviceIdentity.deviceToken, forHTTPHeaderField: "X-Device-Token")
+                request.httpBody = try JSONEncoder().encode([
+                    "device_id": DeviceIdentity.deviceToken,
+                    "schedule_key": scheduleKey
+                ])
+                let (_, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                    ClientDiagnosticsLogger.log("scheduled_live_activity", "skip_report_failed", metadata: [
+                        "schedule_key": scheduleKey,
+                        "http_status": (response as? HTTPURLResponse)?.statusCode
+                    ])
+                    return
+                }
+                var latestKeys = defaults.stringArray(forKey: reportedSkipKeysKey) ?? []
+                if !latestKeys.contains(scheduleKey) {
+                    latestKeys.append(scheduleKey)
+                    defaults.set(latestKeys, forKey: reportedSkipKeysKey)
+                }
+                ClientDiagnosticsLogger.log("scheduled_live_activity", "skip_report_succeeded", metadata: [
+                    "schedule_key": scheduleKey
+                ])
+            } catch {
+                if !Task.isCancelled {
+                    ClientDiagnosticsLogger.log("scheduled_live_activity", "skip_report_failed", metadata: [
+                        "schedule_key": scheduleKey,
+                        "error": error.localizedDescription
+                    ])
+                }
+            }
+        }
+    }
 
     func handleRemoteNotification(userInfo: [AnyHashable: Any]) async -> Bool {
+        if userInfo["alert_type"] as? String == "scheduled_journey_skipped" {
+            guard let scheduleKey = userInfo["schedule_key"] as? String, !scheduleKey.isEmpty else { return false }
+            let todayKey = ScheduledLiveActivityTrigger.currentDateKey()
+            for key in [skippedScheduleKeysKey, reportedSkipKeysKey] {
+                var keys = (skipDefaults.stringArray(forKey: key) ?? []).filter {
+                    $0.split(separator: "|").last.map(String.init) == todayKey
+                }
+                if !keys.contains(scheduleKey) { keys.append(scheduleKey) }
+                skipDefaults.set(keys, forKey: key)
+            }
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "remote_skipped_occurrence_recorded", metadata: [
+                "schedule_key": scheduleKey
+            ])
+            return true
+        }
         guard let trigger = ScheduledLiveActivityTrigger(userInfo: userInfo),
               trigger.alertType == autoStartAlertType else {
             ClientDiagnosticsLogger.log("scheduled_live_activity", "remote_trigger_ignored", metadata: [
@@ -592,6 +700,11 @@ final class ScheduledLiveActivityAutoStartManager {
             ClientDiagnosticsLogger.log("scheduled_live_activity", "start_skipped_empty_schedule_key", metadata: trigger.logMetadata)
             return false
         }
+        guard !shouldSkipForAdHocJourney(scheduleKey: scheduleKey) else {
+            // The server deduplicates the notice across local and scheduled starts.
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "start_skipped_adhoc_in_progress", metadata: trigger.logMetadata)
+            return false
+        }
         guard !inFlightKeys.contains(scheduleKey) else {
             ClientDiagnosticsLogger.log("scheduled_live_activity", "start_skipped_in_flight", metadata: trigger.logMetadata)
             return false
@@ -606,6 +719,7 @@ final class ScheduledLiveActivityAutoStartManager {
             from: trigger.from,
             to: trigger.to
         )
+        guard !shouldSkipForAdHocJourney(scheduleKey: scheduleKey) else { return false }
         ClientDiagnosticsLogger.log("scheduled_live_activity", "local_tracking_arm_finished", metadata: [
             "subscription_id": trigger.subscriptionId,
             "from": trigger.from,
@@ -675,6 +789,7 @@ final class ScheduledLiveActivityAutoStartManager {
             )
             return false
         }
+        guard !shouldSkipForAdHocJourney(scheduleKey: scheduleKey) else { return false }
 
         if LiveActivityManager.shared.isActive(for: journey) {
             let liveSessionID = await ensureLiveSessionIfNeeded(
@@ -827,8 +942,8 @@ final class ScheduledLiveActivityAutoStartManager {
         return (hour * 60) + minute
     }
 
-    private func currentDayOfWeek() -> DayOfWeek {
-        switch Calendar.current.component(.weekday, from: Date()) {
+    private func currentDayOfWeek(now: Date = Date()) -> DayOfWeek {
+        switch Calendar.current.component(.weekday, from: now) {
         case 1: return .sun
         case 2: return .mon
         case 3: return .tue
@@ -882,7 +997,11 @@ private struct ScheduledLiveActivityTrigger {
     let windowEnd: String
 
     var scheduleKey: String {
-        "\(from.uppercased())-\(to.uppercased())|\(windowStart)|\(windowEnd)|\(Self.currentDateKey())"
+        Self.scheduleKey(from: from, to: to, windowStart: windowStart, windowEnd: windowEnd)
+    }
+
+    static func scheduleKey(from: String, to: String, windowStart: String, windowEnd: String, now: Date = Date()) -> String {
+        "\(from.uppercased())-\(to.uppercased())|\(windowStart)|\(windowEnd)|\(Self.currentDateKey(now: now))"
     }
 
     var logMetadata: [String: Any?] {
@@ -949,13 +1068,13 @@ private struct ScheduledLiveActivityTrigger {
         return nil
     }
 
-    static func currentDateKey() -> String {
+    static func currentDateKey(now: Date = Date()) -> String {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_GB")
         formatter.timeZone = TimeZone.current
         formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date())
+        return formatter.string(from: now)
     }
 }
 

@@ -3,15 +3,10 @@ import Foundation
 nonisolated enum ClientDiagnosticsLogger {
     private static let suiteName = "group.dev.skynolimit.traintrack"
     private static let queue = DispatchQueue(label: "dev.skynolimit.traintrack.client-diagnostics")
+    private static let maxJourneyCount = 10
     private static let maxFileBytes = 2 * 1024 * 1024
 
-    static var isEnabled: Bool {
-        let defaults = UserDefaults(suiteName: suiteName)
-        #if DEBUG
-        if defaults?.object(forKey: "troubleshootingLogsEnabled") == nil { return true }
-        #endif
-        return defaults?.bool(forKey: "troubleshootingLogsEnabled") ?? false
-    }
+    static let isEnabled = true
 
     static func log(
         _ category: String,
@@ -38,7 +33,7 @@ nonisolated enum ClientDiagnosticsLogger {
             }
 
             append(lineData, to: url)
-            trimIfNeeded(url)
+            trimIfNeeded(url, afterLogging: event)
         }
     }
 
@@ -97,12 +92,34 @@ nonisolated enum ClientDiagnosticsLogger {
         }
     }
 
-    private static func trimIfNeeded(_ url: URL) {
-        guard let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber,
-              size.intValue > maxFileBytes,
+    private static func trimIfNeeded(_ url: URL, afterLogging event: String) {
+        let size = ((try? FileManager.default.attributesOfItem(atPath: url.path)[.size]) as? NSNumber)?.intValue ?? 0
+        guard event == "journey_started" || size > maxFileBytes,
               let data = try? Data(contentsOf: url) else { return }
-        let suffix = data.suffix(maxFileBytes / 2)
-        try? Data(suffix).write(to: url, options: .atomic)
+
+        var lines = Array(data).split(separator: 0x0A).map { Data($0) }
+        if event == "journey_started" {
+            var seenJourneyIDs = Set<String>()
+            let journeyStartIndices = lines.indices.filter { index in
+                guard let entry = try? JSONSerialization.jsonObject(with: lines[index]) as? [String: Any] else {
+                    return false
+                }
+                guard entry["event"] as? String == "journey_started",
+                      let journeyID = (entry["metadata"] as? [String: Any])?["journey_id"] as? String else {
+                    return false
+                }
+                return seenJourneyIDs.insert(journeyID).inserted
+            }
+            if journeyStartIndices.count > maxJourneyCount {
+                lines = Array(lines[journeyStartIndices[journeyStartIndices.count - maxJourneyCount]...])
+            }
+        }
+
+        var retained = lines.joinedWithNewlines()
+        if retained.count > maxFileBytes {
+            retained = Data(retained.suffix(maxFileBytes / 2)).droppingPartialFirstLine()
+        }
+        try? retained.write(to: url, options: .atomic)
     }
 
     private static func sanitize(_ metadata: [String: Any?]) -> [String: Any] {
@@ -131,5 +148,23 @@ nonisolated enum ClientDiagnosticsLogger {
         default:
             return String(describing: value)
         }
+    }
+}
+
+private extension Array where Element == Data {
+    func joinedWithNewlines() -> Data {
+        var result = Data()
+        for line in self {
+            result.append(line)
+            result.append(0x0A)
+        }
+        return result
+    }
+}
+
+private extension Data {
+    func droppingPartialFirstLine() -> Data {
+        guard let newlineIndex = firstIndex(of: 0x0A) else { return Data() }
+        return Data(self[index(after: newlineIndex)...])
     }
 }

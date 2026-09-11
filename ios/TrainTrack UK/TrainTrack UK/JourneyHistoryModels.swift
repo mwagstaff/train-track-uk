@@ -215,6 +215,18 @@ struct ArmedJourneyHistoryCandidate: Codable, Hashable, Identifiable {
     func isCurrent(at date: Date) -> Bool {
         activeUntil.map { $0 > date } ?? true
     }
+
+    mutating func inheritBoardingEvidence(from other: ArmedJourneyHistoryCandidate, now: Date = Date()) {
+        guard isCurrent(at: now), other.isCurrent(at: now), source == other.source,
+              stations.map({ $0.crs.uppercased() }) == other.stations.map({ $0.crs.uppercased() }),
+              let arrivedAt = other.originArrivedAt,
+              (0...24 * 60 * 60).contains(now.timeIntervalSince(arrivedAt)) else { return }
+        originArrivedAt = min(originArrivedAt ?? arrivedAt, arrivedAt)
+        let existingIDs = Set(candidateDepartures.map(\.serviceID))
+        candidateDepartures.append(contentsOf: other.candidateDepartures.filter {
+            !existingIDs.contains($0.serviceID)
+        })
+    }
 }
 
 struct ActiveJourneyHistoryCheckpoint: Codable, Hashable, Identifiable {
@@ -255,6 +267,25 @@ struct RecentlyCompletedJourneyCheckpoint: Codable, Hashable {
     let outcome: JourneyHistoryOutcome
     let completedAt: Date
     let autoDismissAt: Date
+
+    func resumableCheckpoint(at now: Date = Date()) -> ActiveJourneyHistoryCheckpoint? {
+        let age = now.timeIntervalSince(checkpoint.detectedDepartureAt)
+        guard outcome == .endedEarly, age >= 0, age < 24 * 60 * 60,
+              checkpoint.plannedStations.count >= 2,
+              checkpoint.plannedStations.indices.dropLast().contains(checkpoint.plannedLegIndex),
+              !checkpoint.legs.isEmpty else { return nil }
+        var resumed = checkpoint
+        resumed.phase = checkpoint.phase == .atInterchange ? .atInterchange : .inTransit
+        resumed.detectedArrivalAt = nil
+        resumed.deviceBasedArrivalAt = nil
+        resumed.backendSessionID = nil
+        resumed.unexpectedStation = nil
+        resumed.unexpectedStationObservedAt = nil
+        resumed.serviceDepartedStationCRS = nil
+        resumed.serviceDepartedStationAt = nil
+        resumed.updatedAt = now
+        return resumed
+    }
 }
 
 struct JourneyHistoryCheckpointEnvelope: Codable {
@@ -301,6 +332,7 @@ final class JourneyHistoryRecord {
     var serviceMatchConfidence: Double
     var legsData: Data
     var stationEventsData: Data
+    var resumeCheckpointData: Data?
 
     init(
         checkpoint: ActiveJourneyHistoryCheckpoint,
@@ -334,10 +366,25 @@ final class JourneyHistoryRecord {
         serviceMatchConfidence = checkpoint.serviceMatchConfidence
         legsData = (try? JSONEncoder().encode(checkpoint.legs)) ?? Data()
         stationEventsData = (try? JSONEncoder().encode(checkpoint.stationEvents)) ?? Data()
+        resumeCheckpointData = outcome == .endedEarly
+            ? try? JSONEncoder().encode(checkpoint)
+            : nil
     }
 }
 
 extension JourneyHistoryRecord {
+    var resumableJourney: RecentlyCompletedJourneyCheckpoint? {
+        guard outcome == .endedEarly, let resumeCheckpointData,
+              let checkpoint = try? JSONDecoder().decode(ActiveJourneyHistoryCheckpoint.self, from: resumeCheckpointData),
+              checkpoint.id == id else { return nil }
+        return RecentlyCompletedJourneyCheckpoint(
+            checkpoint: checkpoint,
+            outcome: outcome,
+            completedAt: completedAt,
+            autoDismissAt: completedAt
+        )
+    }
+
     var source: JourneyHistorySource {
         JourneyHistorySource(rawValue: sourceRawValue) ?? .adhoc
     }

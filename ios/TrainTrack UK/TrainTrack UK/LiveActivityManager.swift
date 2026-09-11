@@ -10,6 +10,33 @@ import UIKit
 // Type alias for convenience - ActivityAttributes conformance is now in the shared package
 typealias JourneyActivityAttributes = JourneyActivityShared.JourneyActivityAttributes
 
+enum LiveActivityExclusivityPolicy {
+    struct Candidate {
+        let id: String
+        let isScheduled: Bool
+        let hasArrived: Bool
+    }
+
+    static func activityIDToKeep(
+        _ candidates: [Candidate],
+        preferredID: String?,
+        hasInProgressAdHocJourney: Bool
+    ) -> String? {
+        candidates.filter { !hasInProgressAdHocJourney || !$0.isScheduled }
+            .sorted { lhs, rhs in
+                // An unfinished ad hoc journey keeps ownership when a scheduled
+                // push races with local tracking, including after an app restart.
+                let lhsPriority = lhs.hasArrived ? 2 : (lhs.isScheduled ? 1 : 0)
+                let rhsPriority = rhs.hasArrived ? 2 : (rhs.isScheduled ? 1 : 0)
+                if lhsPriority != rhsPriority { return lhsPriority < rhsPriority }
+                if (lhs.id == preferredID) != (rhs.id == preferredID) {
+                    return lhs.id == preferredID
+                }
+                return lhs.id < rhs.id
+            }.first?.id
+    }
+}
+
 #if DEBUG
 enum DebugJourneySimulationError: LocalizedError {
     case liveActivitiesDisabled
@@ -24,7 +51,7 @@ enum DebugJourneySimulationError: LocalizedError {
         case .noJourney:
             return "Choose a saved journey to run the simulation."
         case .journeyAlreadyActive:
-            return "This route already has a Live Activity. End it or choose another route before starting the simulation."
+            return "A journey already has a Live Activity. End it before starting the simulation."
         case .activityCreationFailed(let message):
             return "Could not create the simulated Live Activity: \(message)"
         }
@@ -42,12 +69,9 @@ final class LiveActivityManager: ObservableObject {
         let deepLinkToCRS: String
     }
 
-    // Journey details can now run up to 3 sessions in parallel, each with up to 3 legs.
-    private let maxConcurrentActivities = 9
-
     private let logger = Logger(subsystem: "dev.skynolimit.traintrack.app", category: "LiveActivityManager")
 
-    // Track multiple activities with their associated data
+    // Keep lifecycle data by ID while recovering or removing duplicate activities.
     private struct TrackedActivity {
         let activity: Activity<JourneyActivityAttributes>
         let fromCRS: String
@@ -62,6 +86,8 @@ final class LiveActivityManager: ObservableObject {
         var fallbackEndTimer: Timer?
     }
     private var trackedActivities: [String: TrackedActivity] = [:] // keyed by activity.id
+    private var preferredActivityID: String?
+    private var activitiesBeingDiscarded: Set<String> = []
 
     private var activityUpdatesTask: Task<Void, Never>? = nil
     private var stateMonitorTasks: [Activity<JourneyActivityAttributes>.ID: Task<Void, Never>] = [:]
@@ -223,13 +249,7 @@ final class LiveActivityManager: ObservableObject {
         await stopDebugJourneySimulation()
 
         let route = routePresentation(for: journey)
-        let hasRouteConflict = currentSystemActivities().contains { activity in
-            let state = activity.content.state
-            let from = (state.deepLinkFromCRS ?? state.fromCRS).uppercased()
-            let to = (state.deepLinkToCRS ?? state.toCRS).uppercased()
-            return from == route.deepLinkFromCRS && to == route.deepLinkToCRS
-        }
-        guard !hasRouteConflict else {
+        guard canRequestActivity else {
             throw DebugJourneySimulationError.journeyAlreadyActive
         }
 
@@ -271,6 +291,9 @@ final class LiveActivityManager: ObservableObject {
         state.journeyDestinationName = group.endStation.name
         state.lastUpdated = Date()
 
+        guard !Task.isCancelled, canRequestActivity else {
+            throw DebugJourneySimulationError.journeyAlreadyActive
+        }
         do {
             let activity = try Activity<JourneyActivityAttributes>.request(
                 attributes: JourneyActivityAttributes(displayName: route.title),
@@ -546,6 +569,7 @@ final class LiveActivityManager: ObservableObject {
     }
 
     func refreshIfActive(journeyStore: JourneyStore, depStore: DeparturesStore) async {
+        await enforceSingleActivity()
         if trackedActivities.isEmpty {
             await registerAnyUnregisteredActivities()
         }
@@ -607,6 +631,15 @@ final class LiveActivityManager: ObservableObject {
         if !bypassSuppression, let lastEndedAt, Date().timeIntervalSince(lastEndedAt) < autoRestartSuppressionWindow {
             debugLog("🚫 [LiveActivity] Start suppressed to avoid immediate auto-restart (last end \(Date().timeIntervalSince(lastEndedAt))s ago)")
             return
+        }
+
+        await enforceSingleActivity()
+        if shouldSkipScheduledStart(scheduleKey: scheduleKey) {
+            debugLog("🚫 [LiveActivity] Scheduled start skipped while an ad hoc journey is in progress")
+            return
+        }
+        for activity in currentSystemActivities() where activity.content.state.journeyPhase == .arrived {
+            await discardConflictingActivity(activity)
         }
 
         let applicationState = UIApplication.shared.applicationState
@@ -678,7 +711,7 @@ final class LiveActivityManager: ObservableObject {
 
         let info = ActivityAuthorizationInfo()
         debugLog("🚂 [LiveActivity] ===== START REQUESTED =====")
-        debugLog("🚂 [LiveActivity] Current active activities: \(trackedActivities.count)/\(maxConcurrentActivities)")
+        debugLog("🚂 [LiveActivity] Current active activities: \(activeCount)/1")
         debugLog("🚂 [LiveActivity] areActivitiesEnabled=\(info.areActivitiesEnabled)")
         debugLog("🚂 [LiveActivity] frequentPushesEnabled=\(info.frequentPushesEnabled)")
 
@@ -688,10 +721,9 @@ final class LiveActivityManager: ObservableObject {
             return
         }
 
-        // If at max capacity, end the oldest activity first
-        if trackedActivities.count >= maxConcurrentActivities {
-            debugLog("⚠️ [LiveActivity] At max capacity (\(maxConcurrentActivities)), ending oldest activity")
-            await endOldestActivity()
+        guard canRequestActivity else {
+            lastMessage = "A journey already has a Live Activity. End it before starting another."
+            return
         }
 
         debugLog("🚂 [LiveActivity] Attributes type=\(String(reflecting: JourneyActivityAttributes.self))")
@@ -709,6 +741,12 @@ final class LiveActivityManager: ObservableObject {
         )
         debugLog("🚂 [LiveActivity] Initial state: platform=\(initial.platform), est=\(initial.estimated), dest=\(initial.destinationTitle)")
 
+        // Content preparation suspends. Recheck ActivityKit and our local state
+        // immediately before requesting so overlapping starts cannot both win.
+        guard !Task.isCancelled, canRequestActivity else { return }
+        if shouldSkipScheduledStart(scheduleKey: scheduleKey) {
+            return
+        }
         do {
             let route = routePresentation(for: journey)
             let attr = JourneyActivityAttributes(displayName: route.title)
@@ -724,29 +762,6 @@ final class LiveActivityManager: ObservableObject {
             debugLog("✅ [LiveActivity] SUCCESS! Activity created!")
             debugLog("✅ [LiveActivity] Activity ID: \(act.id)")
             debugLog("✅ [LiveActivity] Activity state: \(act.activityState)")
-
-            // Listen for push token updates so we can register with the backend for APNs live updates.
-            watchPushToken(for: act, fromCRS: journey.fromStation.crs, toCRS: journey.toStation.crs)
-            if act.pushToken == nil {
-                debugLog("⏳ [LiveActivity] Waiting for push token via pushTokenUpdates stream (requested pushType=.token)")
-            } else {
-                debugLog("📡 [LiveActivity] Initial push token already available; will still watch for updates")
-                let tokenString = encodePushToken(act.pushToken!)
-                _ = await sendLiveActivityRegistration(
-                    activityID: act.id,
-                    tokenString: tokenString,
-                    fromCRS: journey.fromStation.crs,
-                    toCRS: journey.toStation.crs,
-                    routeTitle: route.title,
-                    deepLinkFromCRS: route.deepLinkFromCRS,
-                    deepLinkToCRS: route.deepLinkToCRS,
-                    preferredServiceID: preferredServiceID,
-                    journeyUpdatesEnabled: journeyUpdatesEnabled,
-                    scheduleKey: scheduleKey,
-                    windowStart: windowStart,
-                    windowEnd: windowEnd
-                )
-            }
 
             // Create tracked activity with its own timers
             var tracked = TrackedActivity(
@@ -774,9 +789,33 @@ final class LiveActivityManager: ObservableObject {
 
             // Store the tracked activity
             trackedActivities[act.id] = tracked
+            preferredActivityID = act.id
 
             // Update published state
             updatePublishedState()
+
+            // Listen for push token updates so we can register with the backend for APNs live updates.
+            watchPushToken(for: act, fromCRS: journey.fromStation.crs, toCRS: journey.toStation.crs)
+            if act.pushToken == nil {
+                debugLog("⏳ [LiveActivity] Waiting for push token via pushTokenUpdates stream (requested pushType=.token)")
+            } else {
+                debugLog("📡 [LiveActivity] Initial push token already available; will still watch for updates")
+                let tokenString = encodePushToken(act.pushToken!)
+                _ = await sendLiveActivityRegistration(
+                    activityID: act.id,
+                    tokenString: tokenString,
+                    fromCRS: journey.fromStation.crs,
+                    toCRS: journey.toStation.crs,
+                    routeTitle: route.title,
+                    deepLinkFromCRS: route.deepLinkFromCRS,
+                    deepLinkToCRS: route.deepLinkToCRS,
+                    preferredServiceID: preferredServiceID,
+                    journeyUpdatesEnabled: journeyUpdatesEnabled,
+                    scheduleKey: scheduleKey,
+                    windowStart: windowStart,
+                    windowEnd: windowEnd
+                )
+            }
 
             // Check all active activities
             let allActivities = currentSystemActivities()
@@ -827,20 +866,6 @@ final class LiveActivityManager: ObservableObject {
                 lastMessage = "Unable to start Live Activity: \(error.localizedDescription)"
             }
         }
-    }
-
-    /// End the oldest tracked activity to make room for a new one
-    private func endOldestActivity() async {
-        guard let oldest = trackedActivities.min(by: { $0.value.startedAt < $1.value.startedAt }) else {
-            debugLog("⚠️ [LiveActivity] No activities to end")
-            return
-        }
-
-        let activityID = oldest.key
-        let tracked = oldest.value
-        debugLog("🛑 [LiveActivity] Ending oldest activity \(activityID) (\(tracked.fromCRS) → \(tracked.toCRS)) started at \(tracked.startedAt)")
-
-        await stopActivity(activityID: activityID)
     }
 
     /// Stop all active Live Activities
@@ -1123,7 +1148,24 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func currentSystemActivities() -> [Activity<JourneyActivityAttributes>] {
-        Activity<JourneyActivityAttributes>.activities.filter(isUsableSystemActivity)
+        Activity<JourneyActivityAttributes>.activities.filter {
+            isUsableSystemActivity($0) && !activitiesBeingDiscarded.contains($0.id)
+        }
+    }
+
+    private var canRequestActivity: Bool {
+        currentSystemActivities().isEmpty
+            && !trackedActivities.values.contains { isUsableSystemActivity($0.activity) }
+            && activitiesBeingDiscarded.isEmpty
+    }
+
+    private func shouldSkipScheduledStart(scheduleKey: String?) -> Bool {
+        guard let scheduleKey = scheduleKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !scheduleKey.isEmpty else { return false }
+        return ScheduledLiveActivityAutoStartManager.shared.shouldSkipForAdHocJourney(scheduleKey: scheduleKey)
+            || currentSystemActivities().contains {
+                scheduledActivityKey(for: $0) == nil && $0.content.state.journeyPhase != .arrived
+            }
     }
 
     private func isUsableSystemActivity(_ activity: Activity<JourneyActivityAttributes>) -> Bool {
@@ -1220,6 +1262,7 @@ final class LiveActivityManager: ObservableObject {
         monitorTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                await self.enforceSingleActivity()
                 let list = self.currentSystemActivities()
                 let states = list.map { "\($0.id): \($0.activityState)" }.joined(separator: "; ")
                 debugLog("🛰️ [LiveActivity] Monitor tick - activities: \(states)")
@@ -1831,6 +1874,9 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func handleActivityUpdate(_ activity: Activity<JourneyActivityAttributes>) async {
+        await enforceSingleActivity(including: activity)
+        guard activity.id == preferredActivityID,
+              isUsableSystemActivity(activity), !activitiesBeingDiscarded.contains(activity.id) else { return }
         #if DEBUG
         if isDebugJourneySimulationActivity(activity) {
             debugJourneySimulationActivityID = activity.id
@@ -1851,6 +1897,7 @@ final class LiveActivityManager: ObservableObject {
         }
         #endif
         await registerRemoteStartedActivityIfNeeded(activity)
+        guard trackedActivities[activity.id] != nil else { return }
         #if DEBUG
         self.logger.debug("[ActivityMonitor] Activity emitted id=\(activity.id, privacy: .public) state=\(self.describe(state: activity.activityState), privacy: .public)")
         #endif
@@ -1877,7 +1924,9 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func registerRemoteStartedActivityIfNeeded(_ activity: Activity<JourneyActivityAttributes>) async {
-        await replaceScheduledActivityIfNeeded(with: activity)
+        await enforceSingleActivity(including: activity)
+        guard activity.id == preferredActivityID,
+              isUsableSystemActivity(activity), !activitiesBeingDiscarded.contains(activity.id) else { return }
 
         let fromCRS = activity.content.state.fromCRS.uppercased()
         let toCRS = activity.content.state.toCRS.uppercased()
@@ -1939,6 +1988,9 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func scheduledActivityKey(for activity: Activity<JourneyActivityAttributes>) -> String? {
+        #if DEBUG
+        if isDebugJourneySimulationActivity(activity) { return nil }
+        #endif
         guard let scheduleKey = activity.content.state.scheduleKey?.trimmingCharacters(in: .whitespacesAndNewlines),
               !scheduleKey.isEmpty else {
             return nil
@@ -2020,6 +2072,7 @@ final class LiveActivityManager: ObservableObject {
         fromCRS: String,
         toCRS: String
     ) async {
+        guard trackedActivities[activity.id] != nil, isUsableSystemActivity(activity) else { return }
         guard !notificationLiveSessionEnsuredActivityIDs.contains(activity.id) else { return }
         guard let scheduleKey = scheduledActivityKey(for: activity) else {
             ClientDiagnosticsLogger.log("live_activity", "remote_started_live_session_skipped_missing_schedule", metadata: [
@@ -2048,6 +2101,10 @@ final class LiveActivityManager: ObservableObject {
         }
         let fromName = stationName(for: fromCRS)
         let toName = stationName(for: toCRS)
+
+        guard trackedActivities[activity.id] != nil,
+              isUsableSystemActivity(activity),
+              !JourneyTrackingCoordinator.shared.hasInProgressAdHocJourney else { return }
 
         let liveSessionID = await ScheduledNotificationLiveSessionRegistrar.ensureLiveSession(
             existingLiveSessionID: nil,
@@ -2114,6 +2171,7 @@ final class LiveActivityManager: ObservableObject {
     /// to foreground the app.
     @discardableResult
     func registerAnyUnregisteredActivities() async -> Bool {
+        await enforceSingleActivity()
         let systemActivities = currentSystemActivities()
         let unregistered = systemActivities.filter { activity in
             guard trackedActivities[activity.id] == nil else { return false }
@@ -2161,35 +2219,55 @@ final class LiveActivityManager: ObservableObject {
         return !unregistered.isEmpty
     }
 
-    private func replaceScheduledActivityIfNeeded(with activity: Activity<JourneyActivityAttributes>) async {
-        guard let scheduleKey = activity.content.state.scheduleKey,
-              !scheduleKey.isEmpty else {
-            return
+    private func enforceSingleActivity(including activity: Activity<JourneyActivityAttributes>? = nil) async {
+        var activities = Dictionary(uniqueKeysWithValues: currentSystemActivities().map { ($0.id, $0) })
+        for tracked in trackedActivities.values where isUsableSystemActivity(tracked.activity) {
+            activities[tracked.activity.id] = tracked.activity
         }
-
-        let trackedDuplicateIDs = trackedActivities.compactMap { entry -> String? in
-            guard entry.key != activity.id,
-                  entry.value.activity.content.state.scheduleKey == scheduleKey else {
+        if let activity, isUsableSystemActivity(activity), !activitiesBeingDiscarded.contains(activity.id) {
+            activities[activity.id] = activity
+        }
+        let candidates = activities.values.compactMap { activity -> LiveActivityExclusivityPolicy.Candidate? in
+            if let scheduleKey = scheduledActivityKey(for: activity),
+               ScheduledLiveActivityAutoStartManager.shared.shouldSkipForAdHocJourney(scheduleKey: scheduleKey) {
                 return nil
             }
-            return entry.key
+            return LiveActivityExclusivityPolicy.Candidate(
+                id: activity.id,
+                isScheduled: scheduledActivityKey(for: activity) != nil,
+                hasArrived: activity.content.state.journeyPhase == .arrived
+            )
         }
+        preferredActivityID = LiveActivityExclusivityPolicy.activityIDToKeep(
+            candidates,
+            preferredID: preferredActivityID,
+            hasInProgressAdHocJourney: JourneyTrackingCoordinator.shared.hasInProgressAdHocJourney
+        )
+        for activity in activities.values where activity.id != preferredActivityID {
+            await discardConflictingActivity(activity)
+        }
+    }
 
-        for activityID in trackedDuplicateIDs {
-            await stopActivity(activityID: activityID)
-        }
-
-        let untrackedDuplicates = currentSystemActivities().filter {
-            $0.id != activity.id
-                && $0.content.state.scheduleKey == scheduleKey
-                && trackedActivities[$0.id] == nil
-        }
-
-        for duplicate in untrackedDuplicates {
-            await duplicate.end(nil, dismissalPolicy: .immediate)
-            await sendLiveActivityUnregistration(activityID: duplicate.id)
-            ScheduledLiveActivityAutoStartManager.shared.removeRecord(activityID: duplicate.id)
-        }
+    private func discardConflictingActivity(_ activity: Activity<JourneyActivityAttributes>) async {
+        guard activitiesBeingDiscarded.insert(activity.id).inserted else { return }
+        defer { activitiesBeingDiscarded.remove(activity.id) }
+        // Remove ownership before suspending, so lifecycle callbacks cannot adopt
+        // this activity again or delete the continuing journey's notification session.
+        let tracked = trackedActivities.removeValue(forKey: activity.id)
+        tracked?.timer?.invalidate()
+        tracked?.fallbackEndTimer?.invalidate()
+        stateMonitorTasks.removeValue(forKey: activity.id)?.cancel()
+        pushTokenTasks.removeValue(forKey: activity.id)?.cancel()
+        notificationLiveSessionEnsuredActivityIDs.remove(activity.id)
+        ScheduledLiveActivityAutoStartManager.shared.removeRecord(activityID: activity.id)
+        ClientDiagnosticsLogger.log("live_activity", "duplicate_activity_discarded", metadata: [
+            "activity_id": activity.id,
+            "kept_activity_id": preferredActivityID,
+            "schedule_key": activity.content.state.scheduleKey
+        ])
+        await activity.end(nil, dismissalPolicy: .immediate)
+        await sendLiveActivityUnregistration(activityID: activity.id, preserveNotificationLiveSession: true)
+        updatePublishedState()
     }
 
     private func describe(state: ActivityState) -> String {
@@ -2477,6 +2555,8 @@ final class LiveActivityManager: ObservableObject {
                 var retryCount = 0
                 var success = false
                 while !success && retryCount < 3 {
+                    guard !Task.isCancelled, self.trackedActivities[activity.id] != nil,
+                          self.isUsableSystemActivity(activity) else { return }
                     let preferredServiceID = self.trackedActivities[activity.id]?.preferredServiceID
                     success = await self.sendLiveActivityRegistration(
                         activityID: activity.id,
@@ -2554,6 +2634,9 @@ final class LiveActivityManager: ObservableObject {
         windowStart: String? = nil,
         windowEnd: String? = nil
     ) async -> Bool {
+        guard !Task.isCancelled,
+              let tracked = trackedActivities[activityID],
+              isUsableSystemActivity(tracked.activity) else { return false }
         let base = ApiHostPreference.currentBaseURL
         let urlString = "\(base)/live_activities"
         guard let url = URL(string: urlString) else {
@@ -2651,6 +2734,12 @@ final class LiveActivityManager: ObservableObject {
             if let http = response as? HTTPURLResponse {
                 let body = String(data: data, encoding: .utf8) ?? "<no body>"
                 let success = (200...299).contains(http.statusCode)
+                if success, trackedActivities[activityID] == nil || !isUsableSystemActivity(tracked.activity) {
+                    // A duplicate can be ended while this request is in flight.
+                    // Remove any late registration without muting the surviving journey.
+                    await sendLiveActivityUnregistration(activityID: activityID, preserveNotificationLiveSession: true)
+                    return false
+                }
                 if success {
                     debugLog("✅ [LiveActivity] Registration successful: status=\(http.statusCode) token=\(tokenPreview)")
                     #if DEBUG

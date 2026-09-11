@@ -223,7 +223,8 @@ On launch, the app then:
 
 1. restores persisted targets from the app-group store
 2. promptly recreates the Always service session and named monitor event sequence
-3. starts the low-power recovery path and evaluates the latest usable location when available
+3. ignores old replayed condition events rather than treating a persisted state as a new crossing
+4. starts the low-power recovery path and evaluates the latest usable location when available
 
 This makes region events useful even when the app process was previously dead.
 
@@ -232,7 +233,8 @@ This makes region events useful even when the app process was previously dead.
 When a journey-updates session becomes geofence-eligible:
 
 1. load the station list if needed
-2. build monitored targets from active live sessions
+2. build monitored targets from active live sessions, letting an explicit journey override a
+   scheduled route from the same origin
 3. request Always authorization if needed
 4. request temporary full accuracy if the app is active and accuracy is reduced
 5. start significant-change monitoring and request one current location

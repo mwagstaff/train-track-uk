@@ -893,9 +893,12 @@ struct JourneyHistoryRecordDestination: View {
 struct JourneyHistoryDetailView: View {
     let record: JourneyHistoryRecord
     @EnvironmentObject private var historyStore: JourneyHistoryStore
+    @EnvironmentObject private var router: TabRouter
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var coordinator = JourneyTrackingCoordinator.shared
     @State private var shareItem: JourneyHistoryShareItem?
     @State private var exportError: String?
+    @State private var resumeError: String?
     @State private var isShowingRemovalConfirmation = false
     #if DEBUG
     @State private var debugEditedLeg: JourneyHistoryLeg?
@@ -903,6 +906,27 @@ struct JourneyHistoryDetailView: View {
 
     var body: some View {
         List {
+            if coordinator.canResumeJourney(record) {
+                Section {
+                    Button(action: resumeRecording) {
+                        HStack(spacing: 8) {
+                            if coordinator.isResumingJourney {
+                                ProgressView()
+                                    .tint(.white)
+                            }
+                            Text(coordinator.isResumingJourney ? "Resuming recording…" : "Resume recording")
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(coordinator.isResumingJourney)
+                    .accessibilityHint("Continues recording this journey to \(record.plannedDestinationName)")
+                }
+            }
+
             Section {
                 LabeledContent("Planned", value: "\(record.plannedOriginName) → \(record.plannedDestinationName)")
                 journeyRouteMapLink
@@ -999,6 +1023,7 @@ struct JourneyHistoryDetailView: View {
                 Button("Remove this journey", role: .destructive) {
                     isShowingRemovalConfirmation = true
                 }
+                .disabled(coordinator.isResumingJourney)
             }
         }
         .scrollContentBackground(.hidden)
@@ -1045,6 +1070,14 @@ struct JourneyHistoryDetailView: View {
         } message: {
             Text(exportError ?? "The export could not be created.")
         }
+        .alert("Unable to resume recording", isPresented: Binding(
+            get: { resumeError != nil },
+            set: { if !$0 { resumeError = nil } }
+        )) {
+            Button("OK", role: .cancel) { resumeError = nil }
+        } message: {
+            Text(resumeError ?? "Please try again.")
+        }
         .alert(
             "Remove this journey?",
             isPresented: $isShowingRemovalConfirmation
@@ -1058,6 +1091,19 @@ struct JourneyHistoryDetailView: View {
             Text("This cannot be undone.")
         }
         .railwayBackgroundPOC(showsInfoButton: false)
+    }
+
+    private func resumeRecording() {
+        guard !coordinator.isResumingJourney else { return }
+        Task {
+            do {
+                try await coordinator.resumeJourney(record)
+                dismiss()
+                router.selected = .inProgress
+            } catch {
+                resumeError = error.localizedDescription
+            }
+        }
     }
 
     @ViewBuilder

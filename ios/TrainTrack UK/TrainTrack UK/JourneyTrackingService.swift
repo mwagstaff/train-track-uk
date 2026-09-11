@@ -11,6 +11,7 @@ private struct JourneyTrackingSessionResponse: Decodable {
 private struct JourneyTrackingRegistrationRequest: Encodable {
     let journeyId: String
     let subscriptionId: String
+    let source: String
     let deviceId: String
     let pushToken: String
     let serviceId: String
@@ -22,6 +23,7 @@ private struct JourneyTrackingRegistrationRequest: Encodable {
     enum CodingKeys: String, CodingKey {
         case journeyId = "journey_id"
         case subscriptionId = "subscription_id"
+        case source
         case deviceId = "device_id"
         case pushToken = "push_token"
         case serviceId = "service_id"
@@ -77,6 +79,7 @@ final class JourneyTrackingService {
         request.httpBody = try JSONEncoder().encode(JourneyTrackingRegistrationRequest(
             journeyId: checkpoint.id.uuidString,
             subscriptionId: checkpoint.subscriptionId,
+            source: checkpoint.source.rawValue,
             deviceId: DeviceIdentity.deviceToken,
             pushToken: pushToken,
             serviceId: serviceID,

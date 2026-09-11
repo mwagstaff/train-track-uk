@@ -6,6 +6,7 @@ nonisolated enum StationDetectionPolicy {
     static let conditionsPerStationCoordinate = 2
     static let departureAccuracyMarginMeters: CLLocationDistance = 50
     static let departureConfirmationSeconds: TimeInterval = 6
+    static let conditionEventActionLifetime: TimeInterval = 2 * 60
     static let persistedStateLifetime: TimeInterval = 4 * 60 * 60
 
     static func isDefinitelyOutsideStation(
@@ -24,6 +25,14 @@ nonisolated enum StationDetectionPolicy {
     static func canAllocateStationCoordinate(currentConditionCount: Int) -> Bool {
         guard currentConditionCount >= 0 else { return false }
         return currentConditionCount + conditionsPerStationCoordinate <= maximumMonitoredConditions
+    }
+
+    static func isConditionEventActionable(recordedAt: Date, now: Date = Date()) -> Bool {
+        isPersistedStateCurrent(
+            recordedAt: recordedAt,
+            now: now,
+            lifetime: conditionEventActionLifetime
+        )
     }
 
     static func isPersistedStateCurrent(

@@ -63,6 +63,10 @@ export class NotificationSubscriptionManager {
         this.pollTimer = null;
         this.holidayModeDeviceIds = new Set();
         this.deletedDeviceIds = new Set();
+        this.getDeviceLiveActivities = options.getDeviceLiveActivities || (() => []);
+        this.getDeviceTrackingSessions = options.getDeviceTrackingSessions || (() => []);
+        this.scheduledStartTasks = new Map();
+        this.scheduleSkipTasks = new Map();
         // Polling loop is started by init() after Mongo hydration.
     }
 
@@ -312,6 +316,9 @@ export class NotificationSubscriptionManager {
         const requestedLiveSessionOrigin = source === LIVE_SESSION_SOURCE
             ? normalizeLiveSessionOrigin(liveSessionOriginInput)
             : null;
+        if (requestedLiveSessionOrigin === 'scheduled' && this.activeAdHocJourneyForDevice(deviceId)) {
+            throw new Error('Scheduled journey skipped because an ad hoc journey is still in progress');
+        }
         const existingById = subscriptionId
             ? this.subscriptions.get(subscriptionId)
             : null;
@@ -378,6 +385,8 @@ export class NotificationSubscriptionManager {
             lastSummarySentByLeg: resetScheduledDeliveryState ? {} : (existing?.lastSummarySentByLeg || {}),
             lastAutoStartSentByLeg: resetScheduledDeliveryState ? {} : (existing?.lastAutoStartSentByLeg || {}),
             lastAutoStartSentAtByLeg: resetScheduledDeliveryState ? {} : (existing?.lastAutoStartSentAtByLeg || {}),
+            skippedAdHocScheduleKeys: existing?.skippedAdHocScheduleKeys || {},
+            skippedAdHocNoticeKeys: existing?.skippedAdHocNoticeKeys || {},
             lastActivationPromptSentByLeg: resetScheduledDeliveryState ? {} : (existing?.lastActivationPromptSentByLeg || {}),
             lastPushToStartMissingLoggedByLeg: resetScheduledDeliveryState ? {} : (existing?.lastPushToStartMissingLoggedByLeg || {}),
             lastStateByLeg: resetScheduledDeliveryState ? {} : (existing?.lastStateByLeg || {}),
@@ -750,6 +759,7 @@ export class NotificationSubscriptionManager {
             const leg = resolveLegWindow(subscription, storedLeg, now);
             const legKey = `${leg.from}-${leg.to}`;
             if (this.isMutedToday(subscription, legKey)) continue;
+            if (await this.skipScheduledJourneyForAdHoc(subscription, leg, legKey)) continue;
             subscription.lastActiveAt = new Date().toISOString();
             // Fire-and-forget: persist lastActiveAt without blocking the poll.
             this._saveSubscription(subscription).catch((err) => {
@@ -759,6 +769,7 @@ export class NotificationSubscriptionManager {
                 await getDeparturesSnapshot(leg.from, leg.to),
                 subscription.lastStateByLeg[legKey]
             );
+            if (await this.skipScheduledJourneyForAdHoc(subscription, leg, legKey)) continue;
             if (!snapshot.departures.length) {
                 continue;
             }
@@ -840,7 +851,87 @@ export class NotificationSubscriptionManager {
         }) || null;
     }
 
+    activeAdHocJourneyForDevice(deviceId) {
+        const tracking = this.getDeviceTrackingSessions(deviceId).find((candidate) => candidate.source !== 'scheduled');
+        if (tracking) return tracking;
+        const activity = this.getDeviceLiveActivities(deviceId).find((candidate) =>
+            !candidate.scheduleKey && candidate.journeyPhase !== 'arrived'
+                && (!candidate.endAt || Date.parse(candidate.endAt) > Date.now())
+        );
+        if (activity) return activity;
+        return Array.from(this.subscriptions.values()).find((candidate) =>
+            candidate.deviceId === deviceId
+                && this.subscriptionSource(candidate) === LIVE_SESSION_SOURCE
+                && normalizeLiveSessionOrigin(candidate.liveSessionOrigin) === 'manual'
+                && !this.isExpiredLiveSession(candidate)
+                && candidate.legs?.some((leg) => leg.enabled && !this.isMutedToday(candidate, legKeyForMute(leg)))
+        ) || null;
+    }
+
+    async reportSkippedSchedule({ deviceId, scheduleKey }) {
+        if (!allowDeviceData(deviceId)) throw new Error('Device data deletion is in progress');
+        let matched = 0;
+        for (const subscription of this.subscriptions.values()) {
+            if (subscription.deviceId !== deviceId || this.subscriptionSource(subscription) !== SCHEDULED_SOURCE) continue;
+            for (const storedLeg of subscription.legs) {
+                if (!storedLeg.enabled || !shouldPollNow(subscription, storedLeg, new Date())) continue;
+                const leg = resolveLegWindow(subscription, storedLeg, new Date());
+                if (buildScheduleKeyForLeg(leg) !== scheduleKey) continue;
+                await this.skipScheduledJourneyForAdHoc(subscription, leg, `${leg.from}-${leg.to}`, { reportedByDevice: true });
+                matched += 1;
+            }
+        }
+        return { matched };
+    }
+
+    async skipScheduledJourneyForAdHoc(subscription, leg, legKey, { reportedByDevice = false } = {}) {
+        if (this.subscriptionSource(subscription) !== SCHEDULED_SOURCE) return false;
+        const scheduleKey = buildScheduleKeyForLeg(leg);
+        const skipped = subscription.skippedAdHocScheduleKeys?.[legKey] === scheduleKey;
+        if (!skipped && !reportedByDevice && !this.activeAdHocJourneyForDevice(subscription.deviceId)) return false;
+
+        const taskKey = `${subscription.id}:${scheduleKey}`;
+        if (this.scheduleSkipTasks.has(taskKey)) return this.scheduleSkipTasks.get(taskKey);
+        // Record the skipped occurrence before any I/O so concurrent polls cannot start it.
+        subscription.skippedAdHocScheduleKeys = {
+            ...(subscription.skippedAdHocScheduleKeys || {}), [legKey]: scheduleKey
+        };
+        const task = (async () => {
+            await this._saveSubscription(subscription);
+            if (subscription.skippedAdHocNoticeKeys?.[legKey] === scheduleKey) return true;
+            const active = this.getActiveSubscriptionForPush(subscription.id, leg, 'schedule_skipped_ad_hoc');
+            if (!active) return true;
+            const notification = buildNotificationPayload(
+                'Scheduled journey skipped',
+                `Your ${leg.windowStart} journey from ${sanitizeDisplayLabel(leg.fromName || leg.from)} to ${sanitizeDisplayLabel(leg.toName || leg.to)} was not started because your ad hoc journey is still in progress. We'll keep tracking your current journey.`,
+                { alert_type: 'scheduled_journey_skipped', schedule_key: scheduleKey,
+                    skipped_subscription_id: subscription.id },
+                'scheduled_journey_skipped',
+                'JOURNEY_HISTORY',
+                { includeContentAvailable: true }
+            );
+            const result = await this.pushClient.sendNotification(active.pushToken, notification.payload, {
+                useSandbox: active.useSandbox,
+                event: notification.type,
+                context: buildPushContext(active, leg, 'ad_hoc_journey_in_progress')
+            });
+            this.logSendEvent(active, leg, notification, result);
+            if (result?.status >= 200 && result.status < 300) {
+                active.skippedAdHocNoticeKeys = {
+                    ...(active.skippedAdHocNoticeKeys || {}), [legKey]: scheduleKey
+                };
+                await this._saveSubscription(active);
+            } else if (result?.isBadToken) {
+                await this.handleBadNotificationToken(active, 'schedule_skipped_ad_hoc', result);
+            }
+            return true;
+        })();
+        this.scheduleSkipTasks.set(taskKey, task);
+        try { return await task; } finally { this.scheduleSkipTasks.delete(taskKey); }
+    }
+
     async sendSummaryIfNeeded(subscription, leg, legKey, snapshot) {
+        if (await this.skipScheduledJourneyForAdHoc(subscription, leg, legKey)) return;
         if (this.isMutedToday(subscription, legKey)) {
             return;
         }
@@ -907,9 +998,37 @@ export class NotificationSubscriptionManager {
     }
 
     async sendScheduledLiveActivityStartIfNeeded(subscription, leg, legKey, snapshot) {
+        const previous = this.scheduledStartTasks.get(subscription.deviceId) || Promise.resolve();
+        const task = previous.catch(() => {}).then(() =>
+            this.sendScheduledLiveActivityStart(subscription, leg, legKey, snapshot)
+        );
+        this.scheduledStartTasks.set(subscription.deviceId, task);
+        try { return await task; } finally {
+            if (this.scheduledStartTasks.get(subscription.deviceId) === task) {
+                this.scheduledStartTasks.delete(subscription.deviceId);
+            }
+        }
+    }
+
+    deviceHasLiveActivity(deviceId) {
+        if (this.getDeviceLiveActivities(deviceId).some((activity) =>
+            !activity.endAt || Date.parse(activity.endAt) > Date.now()
+        )) return true;
+        // A successful remote start occupies the device even before iOS returns its token.
+        return Array.from(this.subscriptions.values()).some((candidate) =>
+            candidate.deviceId === deviceId && candidate.legs?.some((storedLeg) => {
+                const leg = resolveLegWindow(candidate, storedLeg, new Date());
+                return candidate.lastAutoStartSentByLeg?.[`${leg.from}-${leg.to}`] === currentScheduleDateKey()
+                    && shouldPollNow(candidate, storedLeg, new Date());
+            })
+        );
+    }
+
+    async sendScheduledLiveActivityStart(subscription, leg, legKey, snapshot) {
         if (this.isMutedToday(subscription, legKey)) {
             return false;
         }
+        if (await this.skipScheduledJourneyForAdHoc(subscription, leg, legKey)) return false;
 
         const startWindow = getLiveActivityStartWindowState(leg);
         if (!startWindow.allowed) {
@@ -984,6 +1103,9 @@ export class NotificationSubscriptionManager {
             return false;
         }
 
+        // Recheck after token lookup: a manual start may have registered during the await.
+        if (await this.skipScheduledJourneyForAdHoc(activeSubscription, leg, legKey)) return false;
+        if (this.deviceHasLiveActivity(activeSubscription.deviceId)) return false;
         const payload = buildScheduledLiveActivityStartPayload(activeSubscription, leg, snapshot);
         const pushResult = await this.liveActivityPushClient.sendLiveActivityUpdate(
             pushToStartRecord.pushToStartToken,

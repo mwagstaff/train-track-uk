@@ -100,6 +100,19 @@ final class JourneyHistoryStore: ObservableObject {
         ])
     }
 
+    func removePrematureRecord(journeyID: UUID) throws {
+        guard let record = records.first(where: { $0.id == journeyID && $0.outcome == .endedEarly }) else { return }
+        container.mainContext.delete(record)
+        do {
+            try container.mainContext.save()
+            reload()
+        } catch {
+            container.mainContext.rollback()
+            reload()
+            throw error
+        }
+    }
+
     func clear() {
         do {
             try container.mainContext.delete(model: JourneyHistoryRecord.self)

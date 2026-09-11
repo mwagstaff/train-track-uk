@@ -432,7 +432,6 @@ enum RailwayOnboardLocationResolver {
         apiCoordinate: CLLocationCoordinate2D?,
         userLocation: CLLocation?,
         route: ServiceRailwayRoute,
-        maximumFloatingStationIndex: Double,
         now: Date = Date()
     ) -> RailwayOnboardPosition? {
         guard let coordinate = validatedUserCoordinate(
@@ -443,13 +442,14 @@ enum RailwayOnboardLocationResolver {
         ), let projectedIndex = route.floatingStationIndex(closestTo: coordinate) else {
             return nil
         }
-        let cappedIndex = min(projectedIndex, maximumFloatingStationIndex)
-        guard let cappedCoordinate = route.coordinate(atFloatingStationIndex: cappedIndex) else {
+        // A matched service can be wrong or its live progress stale. Once GPS is
+        // validated against the route, its position must not follow that timetable.
+        guard let projectedCoordinate = route.coordinate(atFloatingStationIndex: projectedIndex) else {
             return nil
         }
         return RailwayOnboardPosition(
-            coordinate: cappedCoordinate,
-            floatingStationIndex: cappedIndex
+            coordinate: projectedCoordinate,
+            floatingStationIndex: projectedIndex
         )
     }
 
@@ -1097,10 +1097,7 @@ struct ServiceRailwayMapView: View {
         RailwayOnboardLocationResolver.position(
             apiCoordinate: apiTrainCoordinate,
             userLocation: onboardLocation,
-            route: route,
-            maximumFloatingStationIndex: ServiceProgressEstimator.maximumPermittedFloatingIndex(
-                for: stations
-            )
+            route: route
         )
     }
 

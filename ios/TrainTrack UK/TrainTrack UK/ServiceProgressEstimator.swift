@@ -65,22 +65,6 @@ enum ServiceProgressEstimator {
         )
     }
 
-    static func maximumPermittedFloatingIndex(
-        for stations: [CallingPoint],
-        at now: Date = Date(),
-        calendar: Calendar = .current
-    ) -> Double {
-        guard !stations.isEmpty else { return -1 }
-        let scheduledDates = resolvedScheduledDates(for: stations, near: now, calendar: calendar)
-        for index in stations.indices where !stations[index].isCancelledAtStation {
-            guard let scheduledDate = scheduledDates[index] else { continue }
-            if now < scheduledDate.addingTimeInterval(departureSafetyInterval) {
-                return Double(index)
-            }
-        }
-        return Double(stations.count - 1)
-    }
-
     static func isDeparturePermitted(
         at stationIndex: Int,
         in stations: [CallingPoint],
