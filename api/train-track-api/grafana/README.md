@@ -2,7 +2,7 @@
 
 Import the JSON files in `observability/grafana/dashboards/` into Grafana for deploy-tool compatibility.
 
-`grafana/dashboards/` contains the same dashboard JSON files as a convenience copy.
+`grafana/dashboards/` contains convenience copies of the original operational dashboards.
 
 Dashboards:
 
@@ -10,6 +10,7 @@ Dashboards:
 - `api-calls.json`
 - `request-overview.json`
 - `push-notifications.json`
+- `journey-usage.json` (deployment directory only)
 
 Each dashboard includes:
 

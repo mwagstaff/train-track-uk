@@ -18,6 +18,15 @@ struct ProfileView: View {
         )
     }
 
+    private var journeyUpdatesState: ProfileJourneyUpdatesState {
+        ProfileJourneyUpdatesState.resolve(
+            isLoading: notificationStore.isLoading,
+            hasLoadedOnce: notificationStore.hasLoadedOnce,
+            hasError: notificationStore.lastError != nil,
+            hasContent: !notificationStore.combinedSubscriptions.isEmpty
+        )
+    }
+
     var body: some View {
         Form {
             Section {
@@ -83,23 +92,18 @@ struct ProfileView: View {
             #endif
 
             Section {
-                if notificationStore.isLoading && !notificationStore.hasLoadedOnce {
-                    ProgressView("Loading…")
-                } else if !notificationStore.hasAuthoritativeRemoteState {
-                    Text("Unable to refresh journey updates.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                } else if notificationStore.combinedSubscriptions.isEmpty {
+                switch journeyUpdatesState {
+                case .initialLoading, .unavailable:
+                    ProgressView("Getting latest data from server...")
+                case .refreshing, .stale:
+                    ProgressView("Getting latest data from server...")
+                    journeyUpdateCards(sortedJourneyUpdates)
+                case .loaded:
+                    journeyUpdateCards(sortedJourneyUpdates)
+                case .empty:
                     Text("No active journey updates.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                } else {
-                    ForEach(sortedJourneyUpdates) { sub in
-                        journeyUpdateCard(for: sub)
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
-                            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                    }
                 }
             } header: {
                 RailwayBackgroundSectionHeader(title: "Journey Updates")
@@ -109,7 +113,9 @@ struct ProfileView: View {
         .navigationTitle("Profile")
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            await notificationStore.refresh()
+            await refreshJourneyUpdatesUntilSuccessful()
+        }
+        .task {
             try? await StationsService.shared.loadStations()
         }
         .task {
@@ -144,6 +150,43 @@ struct ProfileView: View {
             LiveSessionInfoSheet(session: session)
         }
         .railwayBackgroundPOC()
+    }
+
+    private func refreshJourneyUpdatesUntilSuccessful() async {
+        var failedAttempt = 0
+        while !Task.isCancelled {
+            await notificationStore.refresh()
+            while notificationStore.isLoading && !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                } catch {
+                    return
+                }
+            }
+            if notificationStore.hasAuthoritativeRemoteState {
+                return
+            }
+
+            let delay = ProfileJourneyUpdatesRetryPolicy.delayNanoseconds(
+                afterFailedAttempt: failedAttempt
+            )
+            failedAttempt += 1
+            do {
+                try await Task.sleep(nanoseconds: delay)
+            } catch {
+                return
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func journeyUpdateCards(_ updates: [NotificationSubscription]) -> some View {
+        ForEach(updates) { sub in
+            journeyUpdateCard(for: sub)
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+        }
     }
 
     private func profileRow(title: String, subtitle: String, systemImage: String) -> some View {
@@ -378,6 +421,47 @@ struct ProfileView: View {
             longitude: "0",
             latitude: "0"
         )
+    }
+}
+
+enum ProfileJourneyUpdatesState: Equatable {
+    case initialLoading
+    case refreshing
+    case loaded
+    case empty
+    case stale
+    case unavailable
+
+    static func resolve(
+        isLoading: Bool,
+        hasLoadedOnce: Bool,
+        hasError: Bool,
+        hasContent: Bool
+    ) -> Self {
+        if hasContent {
+            if isLoading { return .refreshing }
+            if hasError { return .stale }
+            return .loaded
+        }
+        if isLoading || (!hasLoadedOnce && !hasError) {
+            return .initialLoading
+        }
+        if hasError { return .unavailable }
+        return .empty
+    }
+}
+
+enum ProfileJourneyUpdatesRetryPolicy {
+    static func delayNanoseconds(afterFailedAttempt attempt: Int) -> UInt64 {
+        let seconds: UInt64
+        switch attempt {
+        case ...0: seconds = 2
+        case 1: seconds = 4
+        case 2: seconds = 8
+        case 3: seconds = 15
+        default: seconds = 30
+        }
+        return seconds * 1_000_000_000
     }
 }
 

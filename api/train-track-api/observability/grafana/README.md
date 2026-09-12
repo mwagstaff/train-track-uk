@@ -5,3 +5,6 @@ This directory is the default location expected by `server-tooling/deploy/node_p
 - `observability/grafana/dashboards`
 
 Dashboard files here are used during full deploy dashboard import.
+
+`journey-usage.json` shows current and historical scheduled, one-off, ad-hoc,
+searched, and tracked journey activity, including top station endpoints.

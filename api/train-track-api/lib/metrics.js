@@ -1,4 +1,5 @@
 import os from 'os';
+import fs from 'fs';
 import client from 'prom-client';
 
 const DEFAULT_METRIC_LABELS = Object.freeze({
@@ -131,6 +132,32 @@ const pushActiveSubscriptions = new client.Gauge({
     labelNames: ['channel'],
     registers: [register]
 });
+
+const journeyEventsTotal = new client.Counter({
+    name: 'journey_events_total',
+    help: 'Total journey actions recorded by the API',
+    labelNames: ['event', 'journey_type'],
+    registers: [register]
+});
+
+const journeyStationEventsTotal = new client.Counter({
+    name: 'journey_station_events_total',
+    help: 'Total journey actions by station and station role',
+    labelNames: ['event', 'journey_type', 'station', 'station_name', 'role'],
+    registers: [register]
+});
+
+const journeysCurrent = new client.Gauge({
+    name: 'journeys_current',
+    help: 'Current saved, active, and tracked journeys by type',
+    labelNames: ['state', 'journey_type'],
+    registers: [register]
+});
+
+const stationNamesByCRS = new Map(
+    JSON.parse(fs.readFileSync(new URL('../resources/stations.json', import.meta.url), 'utf8'))
+        .map((station) => [station.crs, station.name])
+);
 
 // User and subscription activity gauges
 const uniqueDevices1m = new client.Gauge({
@@ -458,6 +485,39 @@ export function recordPushTokenRegistration({ channel, environment }) {
 export function updatePushSubscriptionGauges({ notification = 0, liveActivity = 0 } = {}) {
     pushActiveSubscriptions.set({ channel: 'notification' }, Math.max(0, Number(notification) || 0));
     pushActiveSubscriptions.set({ channel: 'live_activity' }, Math.max(0, Number(liveActivity) || 0));
+}
+
+export function recordJourneyEvent({ event, journeyType, stations = [] }) {
+    journeyEventsTotal.inc({ event, journey_type: journeyType });
+
+    for (const { crs, role } of stations) {
+        const station = typeof crs === 'string' ? crs.trim().toUpperCase() : '';
+        const stationName = stationNamesByCRS.get(station);
+        if (!stationName || (role !== 'origin' && role !== 'destination')) continue;
+        journeyStationEventsTotal.inc({
+            event,
+            journey_type: journeyType,
+            station,
+            station_name: stationName,
+            role
+        });
+    }
+}
+
+export function updateJourneyGauges({
+    savedScheduled = 0,
+    savedOneOff = 0,
+    activeScheduled = 0,
+    activeAdhoc = 0,
+    trackedScheduled = 0,
+    trackedAdhoc = 0
+} = {}) {
+    journeysCurrent.set({ state: 'saved', journey_type: 'scheduled' }, Math.max(0, Number(savedScheduled) || 0));
+    journeysCurrent.set({ state: 'saved', journey_type: 'one_off' }, Math.max(0, Number(savedOneOff) || 0));
+    journeysCurrent.set({ state: 'active', journey_type: 'scheduled' }, Math.max(0, Number(activeScheduled) || 0));
+    journeysCurrent.set({ state: 'active', journey_type: 'adhoc' }, Math.max(0, Number(activeAdhoc) || 0));
+    journeysCurrent.set({ state: 'tracked', journey_type: 'scheduled' }, Math.max(0, Number(trackedScheduled) || 0));
+    journeysCurrent.set({ state: 'tracked', journey_type: 'adhoc' }, Math.max(0, Number(trackedAdhoc) || 0));
 }
 
 function extractDeviceToken(req) {

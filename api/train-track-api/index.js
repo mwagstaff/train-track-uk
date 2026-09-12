@@ -9,7 +9,9 @@ import {
     metricsMiddleware,
     getMetrics,
     forgetDeviceLastSeen,
+    recordJourneyEvent,
     recordPushTokenRegistration,
+    updateJourneyGauges,
     updateNotificationSubscriptionGauges,
     updatePushSubscriptionGauges
 } from './lib/metrics.js';
@@ -272,6 +274,23 @@ app.get('/metrics', async (req, res) => {
         notification: notificationSubscriptionManager.getSubscriptionCount(),
         liveActivity: liveActivityManager.getSubscriptionCount()
     });
+    const journeyCounts = notificationSubscriptionManager.listAllSubscriptions().reduce((counts, subscription) => {
+        if (subscription.source === 'scheduled') {
+            if (subscription.schedule_type === 'one_off') counts.savedOneOff += 1;
+            else counts.savedScheduled += 1;
+        } else if (subscription.live_session_origin === 'scheduled') {
+            counts.activeScheduled += 1;
+        } else {
+            counts.activeAdhoc += 1;
+        }
+        return counts;
+    }, { savedScheduled: 0, savedOneOff: 0, activeScheduled: 0, activeAdhoc: 0 });
+    const trackingCounts = journeyTrackingManager.listSessions().reduce((counts, session) => {
+        if (session.source === 'scheduled') counts.trackedScheduled += 1;
+        else counts.trackedAdhoc += 1;
+        return counts;
+    }, { trackedScheduled: 0, trackedAdhoc: 0 });
+    updateJourneyGauges({ ...journeyCounts, ...trackingCounts });
     res.send(await getMetrics());
 });
 
@@ -676,6 +695,16 @@ app.post('/api/v2/notifications/subscriptions', async (req, res) => {
             source: 'scheduled',
             auditContext: buildRequestAuditContext(req)
         });
+        if (subscription.created_at === subscription.updated_at) {
+            recordJourneyEvent({
+                event: 'saved',
+                journeyType: subscription.schedule_type === 'one_off' ? 'one_off' : 'scheduled',
+                stations: subscription.legs.flatMap((leg) => [
+                    { crs: leg.from, role: 'origin' },
+                    { crs: leg.to, role: 'destination' }
+                ])
+            });
+        }
         recordPushTokenRegistration({
             channel: 'notification',
             environment: Boolean(use_sandbox) ? 'sandbox' : 'prod'
@@ -764,6 +793,16 @@ app.post('/api/v2/notifications/live_sessions', async (req, res) => {
             activeUntil: active_until,
             auditContext: buildRequestAuditContext(req)
         });
+        if (subscription.created_at === subscription.updated_at) {
+            recordJourneyEvent({
+                event: 'used',
+                journeyType: subscription.live_session_origin === 'scheduled' ? 'scheduled' : 'adhoc',
+                stations: subscription.legs.flatMap((leg) => [
+                    { crs: leg.from, role: 'origin' },
+                    { crs: leg.to, role: 'destination' }
+                ])
+            });
+        }
         recordPushTokenRegistration({
             channel: 'notification',
             environment: Boolean(use_sandbox) ? 'sandbox' : 'prod'
@@ -976,6 +1015,16 @@ app.post('/api/v2/journey_tracking/sessions', (req, res) => {
             source,
             useSandbox: Boolean(use_sandbox)
         });
+        if (session.created_at === session.updated_at) {
+            recordJourneyEvent({
+                event: 'tracked',
+                journeyType: session.source,
+                stations: [
+                    { crs: session.from, role: 'origin' },
+                    { crs: session.to, role: 'destination' }
+                ]
+            });
+        }
         res.json({
             status: 'registered',
             poll_interval_seconds: Math.round(journeyTrackingManager.pollIntervalMs / 1000),
@@ -1123,7 +1172,16 @@ app.get('/api/v1/departures/from/:fromStation', async (req, res) => {
 
 // V1 API - Original format for backward compatibility
 app.get('/api/v1/departures/from/:fromStation/to/:toStation', async (req, res) => {
-    res.json(await getTrainTimes(req.params.fromStation, req.params.toStation));
+    const departures = await getTrainTimes(req.params.fromStation, req.params.toStation);
+    recordJourneyEvent({
+        event: 'searched',
+        journeyType: 'unknown',
+        stations: [
+            { crs: req.params.fromStation, role: 'origin' },
+            { crs: req.params.toStation, role: 'destination' }
+        ]
+    });
+    res.json(departures);
 });
 
 app.get('/api/v2/departures/from/:fromStation/to/:toStation/at/:departureTime', async (req, res) => {
@@ -1182,6 +1240,14 @@ app.get('/api/v2/departures/from/:fromStation/to/:toStation/at/:departureTime', 
             departure_time: normalizedTime,
             duration_ms: Date.now() - startedAt,
             service_id: departure.serviceID
+        });
+        recordJourneyEvent({
+            event: 'searched',
+            journeyType: 'unknown',
+            stations: [
+                { crs: fromStation, role: 'origin' },
+                { crs: toStation, role: 'destination' }
+            ]
         });
         return res.json(departure);
     } catch (error) {
@@ -1273,6 +1339,17 @@ app.get('/api/v2/departures/from/:fromStation/to/:toStation*', async (req, res) 
                 return formatDepartureJourneyResult(key, data, includeStatus);
             })
         );
+
+        for (const pair of journeyPairs) {
+            recordJourneyEvent({
+                event: 'searched',
+                journeyType: 'unknown',
+                stations: [
+                    { crs: pair.from, role: 'origin' },
+                    { crs: pair.to, role: 'destination' }
+                ]
+            });
+        }
 
         logDepartureRequest('fetch_v2_completed', req, {
             device_id: deviceId,

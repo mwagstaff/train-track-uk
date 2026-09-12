@@ -98,6 +98,55 @@ struct TrainTrack_UKTests {
         #expect(legacyLiveSession.liveSessionOrigin == nil)
     }
 
+    @Test func journeyUpdatesPresentationDistinguishesLoadingStaleAndEmptyStates() {
+        #expect(ProfileJourneyUpdatesState.resolve(
+            isLoading: false,
+            hasLoadedOnce: false,
+            hasError: false,
+            hasContent: false
+        ) == .initialLoading)
+        #expect(ProfileJourneyUpdatesState.resolve(
+            isLoading: true,
+            hasLoadedOnce: true,
+            hasError: false,
+            hasContent: true
+        ) == .refreshing)
+        #expect(ProfileJourneyUpdatesState.resolve(
+            isLoading: false,
+            hasLoadedOnce: true,
+            hasError: false,
+            hasContent: true
+        ) == .loaded)
+        #expect(ProfileJourneyUpdatesState.resolve(
+            isLoading: false,
+            hasLoadedOnce: true,
+            hasError: true,
+            hasContent: true
+        ) == .stale)
+        #expect(ProfileJourneyUpdatesState.resolve(
+            isLoading: false,
+            hasLoadedOnce: true,
+            hasError: true,
+            hasContent: false
+        ) == .unavailable)
+        #expect(ProfileJourneyUpdatesState.resolve(
+            isLoading: false,
+            hasLoadedOnce: true,
+            hasError: false,
+            hasContent: false
+        ) == .empty)
+    }
+
+    @Test func journeyUpdatesRetryBackoffIsBounded() {
+        let second: UInt64 = 1_000_000_000
+
+        #expect(ProfileJourneyUpdatesRetryPolicy.delayNanoseconds(afterFailedAttempt: 0) == 2 * second)
+        #expect(ProfileJourneyUpdatesRetryPolicy.delayNanoseconds(afterFailedAttempt: 1) == 4 * second)
+        #expect(ProfileJourneyUpdatesRetryPolicy.delayNanoseconds(afterFailedAttempt: 2) == 8 * second)
+        #expect(ProfileJourneyUpdatesRetryPolicy.delayNanoseconds(afterFailedAttempt: 3) == 15 * second)
+        #expect(ProfileJourneyUpdatesRetryPolicy.delayNanoseconds(afterFailedAttempt: 20) == 30 * second)
+    }
+
     @Test func oneOffScheduleDecodesTravelDates() throws {
         let data = Data("""
         {
