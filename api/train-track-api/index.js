@@ -509,7 +509,7 @@ app.delete('/api/v2/live_activities', async (req, res) => {
         preserve_notification_live_session: preserve_notification_live_session === true || preserve_notification_live_session === 'true'
     });
 
-    const removedSubscription = liveActivityManager.unregisterSubscription(canonicalDeviceId, activity_id, {
+    const removedSubscription = await liveActivityManager.unregisterSubscription(canonicalDeviceId, activity_id, {
         fallbackDeviceIds,
         preserveNotificationLiveSession: preserve_notification_live_session === true || preserve_notification_live_session === 'true'
     });

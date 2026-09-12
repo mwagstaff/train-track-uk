@@ -451,6 +451,7 @@ final class LiveActivityManager: ObservableObject {
 
                 guard let leg = currentLeg else {
                     await activity.update(ActivityContent(state: state, staleDate: nil))
+                    JourneyActivityLifecycleStore.update(activityID: activity.id, state: state)
                     continue
                 }
                 if let serviceID = leg.serviceID,
@@ -497,6 +498,7 @@ final class LiveActivityManager: ObservableObject {
             }
 
             await activity.update(ActivityContent(state: state, staleDate: nil))
+            JourneyActivityLifecycleStore.update(activityID: activity.id, state: state)
 
             // A locally updated journey activity can otherwise be replaced by the
             // backend's next-departure board on its next poll. Pin the backend to
@@ -804,6 +806,7 @@ final class LiveActivityManager: ObservableObject {
             // Store the tracked activity
             trackedActivities[act.id] = tracked
             preferredActivityID = act.id
+            JourneyActivityLifecycleStore.update(activityID: act.id, state: initial)
 
             // Activity.activityUpdates is primarily needed for activities the system
             // starts on our behalf. Observe locally requested activities explicitly so
@@ -1479,7 +1482,7 @@ final class LiveActivityManager: ObservableObject {
                 $0.value.fromCRS == journey.fromStation.crs && $0.value.toCRS == journey.toStation.crs
             }?.value
         }()
-        let state = await contentState(
+        var state = await contentState(
             for: journey,
             depStore: depStore,
             preferredServiceID: preferredServiceID,
@@ -1501,7 +1504,11 @@ final class LiveActivityManager: ObservableObject {
         }
 
         if let a = activity {
+            // Timetable refreshes must not regress a journey phase owned by the
+            // tracking coordinator (for example, atStart back to pendingStart).
+            state.journeyPhase = a.content.state.journeyPhase
             await a.update(ActivityContent(state: state, staleDate: nil))
+            JourneyActivityLifecycleStore.update(activityID: a.id, state: state)
             let formatter = DateFormatter()
             formatter.dateFormat = "HH:mm:ss"
             let timeStr = formatter.string(from: state.lastUpdated)
@@ -1951,6 +1958,7 @@ final class LiveActivityManager: ObservableObject {
                     }
                     if endsJourney {
                         let content = activity.content.state
+                        JourneyActivityLifecycleStore.markDismissedBeforeStart(activityID: activity.id)
                         JourneyTrackingCoordinator.shared.disarmPendingJourney(
                             fromCRS: content.deepLinkFromCRS ?? content.fromCRS,
                             toCRS: content.deepLinkToCRS ?? content.toCRS
@@ -2028,6 +2036,7 @@ final class LiveActivityManager: ObservableObject {
             windowEnd: activity.content.state.windowEnd
         )
         trackedActivities[activity.id] = tracked
+        JourneyActivityLifecycleStore.update(activityID: activity.id, state: activity.content.state)
         watchPushToken(for: activity, fromCRS: fromCRS, toCRS: toCRS)
         updatePublishedState()
         await ensureNotificationLiveSessionForRemoteStartedActivity(activity, fromCRS: fromCRS, toCRS: toCRS)
@@ -2191,6 +2200,7 @@ final class LiveActivityManager: ObservableObject {
         }
 
         notificationLiveSessionEnsuredActivityIDs.insert(activity.id)
+        JourneyActivityLifecycleStore.setLiveSessionID(liveSessionID, activityID: activity.id)
         ClientDiagnosticsLogger.log("live_activity", "remote_started_live_session_ensured", metadata: [
             "activity_id": activity.id,
             "schedule_key": scheduleKey,
@@ -2217,6 +2227,7 @@ final class LiveActivityManager: ObservableObject {
     /// to foreground the app.
     @discardableResult
     func registerAnyUnregisteredActivities() async -> Bool {
+        await reconcileDismissedPendingActivities()
         await enforceSingleActivity()
         let systemActivities = currentSystemActivities()
         let unregistered = systemActivities.filter { activity in
@@ -2263,6 +2274,27 @@ final class LiveActivityManager: ObservableObject {
             await ensureNotificationLiveSessionForRemoteStartedActivity(activity, fromCRS: fromCRS, toCRS: toCRS)
         }
         return !unregistered.isEmpty
+    }
+
+    private func reconcileDismissedPendingActivities() async {
+        for record in JourneyActivityLifecycleStore.dismissedBeforeStartRecords() {
+            JourneyTrackingCoordinator.shared.disarmPendingJourney(
+                fromCRS: record.fromCRS,
+                toCRS: record.toCRS
+            )
+            guard let liveSessionID = record.liveSessionID else { continue }
+            do {
+                try await NotificationSubscriptionStore.shared.deleteLiveSession(id: liveSessionID)
+                JourneyActivityLifecycleStore.remove(activityID: record.activityID)
+            } catch {
+                ClientDiagnosticsLogger.log("live_activity", "dismissed_pending_cleanup_retry_failed", metadata: [
+                    "activity_id": record.activityID,
+                    "schedule_key": record.scheduleKey,
+                    "live_session_id": liveSessionID,
+                    "error": error.localizedDescription
+                ])
+            }
+        }
     }
 
     private func enforceSingleActivity(including activity: Activity<JourneyActivityAttributes>? = nil) async {

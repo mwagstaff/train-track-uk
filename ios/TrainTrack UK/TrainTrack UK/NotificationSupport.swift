@@ -742,6 +742,9 @@ final class ScheduledLiveActivityAutoStartManager {
                     records.append(existing.withLiveSessionID(liveSessionID))
                     saveRecords(records)
                 }
+                if let liveSessionID {
+                    JourneyActivityLifecycleStore.setLiveSessionID(liveSessionID, activityID: existing.activityID)
+                }
                 ClientDiagnosticsLogger.log("scheduled_live_activity", "start_skipped_existing_recent", metadata: [
                     "schedule_key": scheduleKey,
                     "activity_id": existing.activityID,
@@ -764,6 +767,9 @@ final class ScheduledLiveActivityAutoStartManager {
                     records.removeAll { $0.scheduleKey == scheduleKey }
                     records.append(existing.withLiveSessionID(liveSessionID))
                     saveRecords(records)
+                }
+                if let liveSessionID {
+                    JourneyActivityLifecycleStore.setLiveSessionID(liveSessionID, activityID: existing.activityID)
                 }
                 ClientDiagnosticsLogger.log("scheduled_live_activity", "start_skipped_existing_active", metadata: [
                     "schedule_key": scheduleKey,
@@ -797,6 +803,10 @@ final class ScheduledLiveActivityAutoStartManager {
                 trigger: trigger,
                 journey: journey
             )
+            if let liveSessionID,
+               let activityID = LiveActivityManager.shared.activityID(for: journey) {
+                JourneyActivityLifecycleStore.setLiveSessionID(liveSessionID, activityID: activityID)
+            }
             ClientDiagnosticsLogger.log("scheduled_live_activity", "start_skipped_journey_already_active", metadata: trigger.logMetadata.merging([
                 "live_session_id": liveSessionID
             ]) { _, new in new })
@@ -851,6 +861,9 @@ final class ScheduledLiveActivityAutoStartManager {
             startedAt: Date()
         ))
         saveRecords(updatedRecords)
+        if let liveSessionID {
+            JourneyActivityLifecycleStore.setLiveSessionID(liveSessionID, activityID: activityID)
+        }
         ClientDiagnosticsLogger.log("scheduled_live_activity", "start_succeeded", metadata: [
             "schedule_key": scheduleKey,
             "activity_id": activityID,

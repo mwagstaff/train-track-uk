@@ -1383,7 +1383,7 @@ export class LiveActivityManager {
         });
     }
 
-    unregisterSubscription(deviceId, activityId, {
+    async unregisterSubscription(deviceId, activityId, {
         fallbackDeviceIds = [],
         preserveNotificationLiveSession = false
     } = {}) {
@@ -1395,16 +1395,20 @@ export class LiveActivityManager {
         const key = this.buildKey(subscription.deviceId, subscription.activityId);
         this.clearEndTimer(subscription);
         this.subscriptions.delete(key);
-        this.deleteSubscriptionFromMongo(subscription).catch((error) => {
+        try {
+            await this.deleteSubscriptionFromMongo(subscription);
+        } catch (error) {
             console.error(`[live-activity] Failed to delete unregistered session ${key}: ${error?.message || error}`);
-        });
+        }
         this.log(`[live-activity] unregistered ${deviceId}/${activityId}`);
         if (preserveNotificationLiveSession) {
             this.log(`[live-activity] preserved_notification_live_session ${deviceId}/${activityId}`);
         } else {
-            this.deleteMatchingLiveSessions(subscription, { fallbackDeviceIds }).catch((error) => {
+            try {
+                await this.deleteMatchingLiveSessions(subscription, { fallbackDeviceIds });
+            } catch (error) {
                 console.error(`[live-activity] Failed to delete matching live sessions for ${key}: ${error?.message || error}`);
-            });
+            }
         }
         return subscription;
     }

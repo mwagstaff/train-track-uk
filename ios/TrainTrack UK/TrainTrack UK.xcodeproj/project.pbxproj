@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		E75AE1402F3272D200591535 /* NotificationServiceExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E75AE1392F3272D200591535 /* NotificationServiceExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		E75AE1452F32999900591535 /* JourneyActivityShared in Frameworks */ = {isa = PBXBuildFile; productRef = E75AE1462F32999900591535 /* JourneyActivityShared */; };
 		E7BD08012ED8A1D5009FAC62 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E7D479E62EBB4B10002D81D7 /* WidgetKit.framework */; };
 		E7BD08022ED8A1D5009FAC62 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E7D479E82EBB4B10002D81D7 /* SwiftUI.framework */; };
 		E7BD08192ED8A495009FAC62 /* JourneyActivityShared in Frameworks */ = {isa = PBXBuildFile; productRef = E7BD08182ED8A495009FAC62 /* JourneyActivityShared */; };
@@ -229,6 +230,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E75AE1452F32999900591535 /* JourneyActivityShared in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -381,6 +383,7 @@
 			);
 			name = "TrainTrack UKTests";
 			packageProductDependencies = (
+				E75AE1462F32999900591535 /* JourneyActivityShared */,
 			);
 			productName = "TrainTrack UKTests";
 			productReference = E7186E382EBAB5E90038C96B /* TrainTrack UKTests.xctest */;
@@ -1540,6 +1543,11 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		E75AE1462F32999900591535 /* JourneyActivityShared */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E7F5ED772EBCE3F7002DE37A /* XCLocalSwiftPackageReference "JourneyActivityShared" */;
+			productName = JourneyActivityShared;
+		};
 		E7BD08182ED8A495009FAC62 /* JourneyActivityShared */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = E7F5ED772EBCE3F7002DE37A /* XCLocalSwiftPackageReference "JourneyActivityShared" */;

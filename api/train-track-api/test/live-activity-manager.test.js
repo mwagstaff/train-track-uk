@@ -226,3 +226,52 @@ test('arrived journey phase schedules the live activity to end ten minutes after
     assert.ok(Math.abs(Date.parse(subscription.endAt) - (completedAt.getTime() + 10 * 60 * 1000)) < 10);
     manager.clearEndTimer(subscription);
 });
+
+test('unregister waits for matching notification live sessions to be deleted', async () => {
+    const manager = new LiveActivityManager();
+    const subscription = {
+        deviceId: 'device-dismissed',
+        activityId: 'activity-dismissed',
+        fromStation: 'VIC',
+        toStation: 'KTH'
+    };
+    manager.subscriptions.set(manager.buildKey(subscription.deviceId, subscription.activityId), subscription);
+    const operations = [];
+    manager.deleteSubscriptionFromMongo = async () => {
+        await Promise.resolve();
+        operations.push('live-activity');
+    };
+    manager.deleteMatchingLiveSessions = async (removed) => {
+        assert.equal(removed, subscription);
+        await Promise.resolve();
+        operations.push('notification-live-session');
+    };
+
+    const removed = await manager.unregisterSubscription(
+        'device-dismissed',
+        'activity-dismissed'
+    );
+
+    assert.equal(removed, subscription);
+    assert.deepEqual(operations, ['live-activity', 'notification-live-session']);
+    assert.equal(manager.subscriptions.has(manager.buildKey(subscription.deviceId, subscription.activityId)), false);
+});
+
+test('unregister preserves notification tracking after the journey starts', async () => {
+    const manager = new LiveActivityManager();
+    const subscription = {
+        deviceId: 'device-en-route',
+        activityId: 'activity-en-route',
+        fromStation: 'VIC',
+        toStation: 'KTH'
+    };
+    manager.subscriptions.set(manager.buildKey(subscription.deviceId, subscription.activityId), subscription);
+    manager.deleteSubscriptionFromMongo = async () => {};
+    manager.deleteMatchingLiveSessions = async () => {
+        assert.fail('notification live session should be preserved');
+    };
+
+    await manager.unregisterSubscription('device-en-route', 'activity-en-route', {
+        preserveNotificationLiveSession: true
+    });
+});

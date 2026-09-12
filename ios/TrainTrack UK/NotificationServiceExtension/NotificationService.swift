@@ -1,4 +1,9 @@
+import ActivityKit
+import Foundation
+import JourneyActivityShared
 import UserNotifications
+
+private typealias NotificationJourneyActivityAttributes = JourneyActivityShared.JourneyActivityAttributes
 
 /// Notification Service Extension that intercepts remote notifications before they're displayed
 /// This allows us to filter out muted notifications client-side as a backup to the backend mute
@@ -6,6 +11,8 @@ class NotificationService: UNNotificationServiceExtension {
 
     var contentHandler: ((UNNotificationContent) -> Void)?
     var bestAttemptContent: UNMutableNotificationContent?
+    private let completionLock = NSLock()
+    private var suppressOnExpiry = false
 
     override func didReceive(_ request: UNNotificationRequest, withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
         self.contentHandler = contentHandler
@@ -17,30 +24,129 @@ class NotificationService: UNNotificationServiceExtension {
             enhanceNotificationIfNeeded(content: bestAttemptContent)
             if shouldSuppressScheduledSummaryOutsideWindow(content: bestAttemptContent) {
                 NotificationServiceDiagnosticsLogger.log("suppressed_outside_window", metadata: diagnosticMetadata(for: bestAttemptContent, identifier: request.identifier))
-                contentHandler(UNNotificationContent())
+                finish(with: UNNotificationContent())
+                return
+            }
+            if let lifecycle = dismissedPendingActivity(for: bestAttemptContent) {
+                suppressOnExpiry = true
+                NotificationServiceDiagnosticsLogger.log("suppressed_dismissed_pending_activity", metadata: diagnosticMetadata(for: bestAttemptContent, identifier: request.identifier).merging([
+                    "activity_id": lifecycle.activityID,
+                    "journey_phase": lifecycle.phase.rawValue,
+                    "live_session_id": lifecycle.liveSessionID
+                ]) { _, new in new })
+                Task {
+                    let deleted = await self.deleteLiveSession(
+                        lifecycle.liveSessionID ?? self.stringValue(for: "subscription_id", in: bestAttemptContent.userInfo)
+                    )
+                    NotificationServiceDiagnosticsLogger.log("dismissed_pending_activity_cleanup", metadata: self.diagnosticMetadata(for: bestAttemptContent, identifier: request.identifier).merging([
+                        "activity_id": lifecycle.activityID,
+                        "live_session_id": lifecycle.liveSessionID,
+                        "server_cleanup_succeeded": deleted
+                    ]) { _, new in new })
+                    self.finish(with: UNNotificationContent())
+                }
                 return
             }
             // Check if this notification should be muted based on local arrival tracking
             if shouldMuteNotification(content: bestAttemptContent) {
                 // Don't deliver the notification
                 NotificationServiceDiagnosticsLogger.log("suppressed_muted_leg", metadata: diagnosticMetadata(for: bestAttemptContent, identifier: request.identifier))
-                contentHandler(UNNotificationContent())
+                finish(with: UNNotificationContent())
                 return
             }
 
             // Deliver the notification as-is
             NotificationServiceDiagnosticsLogger.log("delivered", metadata: diagnosticMetadata(for: bestAttemptContent, identifier: request.identifier))
-            contentHandler(bestAttemptContent)
+            finish(with: bestAttemptContent)
         }
     }
 
     override func serviceExtensionTimeWillExpire() {
         // Called just before the extension will be terminated by the system.
         // Use this as an opportunity to deliver your "best attempt" at modified content, otherwise the original push payload will be used.
-        if let contentHandler = contentHandler, let bestAttemptContent = bestAttemptContent {
+        if let bestAttemptContent = bestAttemptContent {
             NotificationServiceDiagnosticsLogger.log("time_will_expire", metadata: diagnosticMetadata(for: bestAttemptContent, identifier: nil))
-            contentHandler(bestAttemptContent)
+            finish(with: suppressOnExpiry ? UNNotificationContent() : bestAttemptContent)
         }
+    }
+
+    private func finish(with content: UNNotificationContent) {
+        completionLock.lock()
+        let handler = contentHandler
+        contentHandler = nil
+        completionLock.unlock()
+        handler?(content)
+    }
+
+    private func dismissedPendingActivity(
+        for content: UNNotificationContent,
+        now: Date = Date()
+    ) -> JourneyActivityLifecycleRecord? {
+        guard let scheduleKey = stringValue(for: "schedule_key", in: content.userInfo),
+              let record = JourneyActivityLifecycleStore.record(scheduleKey: scheduleKey, now: now) else {
+            return nil
+        }
+
+        if record.dismissedBeforeStart {
+            return record
+        }
+
+        if let activity = Activity<NotificationJourneyActivityAttributes>.activities.first(where: {
+            $0.id == record.activityID
+        }) {
+            let state = activity.content.state
+            JourneyActivityLifecycleStore.update(activityID: activity.id, state: state, now: now)
+            guard activity.activityState == .dismissed || activity.activityState == .ended,
+                  state.journeyPhase == .pendingStart else {
+                return nil
+            }
+        } else {
+            // Avoid treating a just-created activity as dismissed while ActivityKit is
+            // still making it visible to the extension process.
+            guard record.phase == .pendingStart,
+                  now.timeIntervalSince(record.updatedAt) >= 5 else {
+                return nil
+            }
+        }
+
+        JourneyActivityLifecycleStore.markDismissedBeforeStart(activityID: record.activityID, now: now)
+        return JourneyActivityLifecycleStore.record(scheduleKey: scheduleKey, now: now) ?? record
+    }
+
+    private func deleteLiveSession(_ liveSessionID: String?) async -> Bool {
+        guard let liveSessionID, !liveSessionID.isEmpty,
+              let defaults = UserDefaults(suiteName: "group.dev.skynolimit.traintrack"),
+              let deviceID = defaults.string(forKey: "device_token"), !deviceID.isEmpty,
+              let url = URL(string: "\(apiBaseURL(defaults: defaults))/notifications/live_sessions") else {
+            return false
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.timeoutInterval = 8
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceID, forHTTPHeaderField: "X-Device-Token")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "device_id": deviceID,
+            "subscription_id": liveSessionID
+        ])
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else { return false }
+            return (200..<300).contains(httpResponse.statusCode)
+        } catch {
+            return false
+        }
+    }
+
+    private func apiBaseURL(defaults: UserDefaults) -> String {
+        #if DEBUG
+        if defaults.string(forKey: "api_host_preference") == "dev" {
+            return "http://Mikes-MacBook-Air.local:3000/api/v2"
+        }
+        #endif
+        return "https://api.skynolimit.dev/train-track/api/v2"
     }
 
     private func shouldSuppressScheduledSummaryOutsideWindow(content: UNNotificationContent, now: Date = Date()) -> Bool {
@@ -190,6 +296,7 @@ class NotificationService: UNNotificationServiceExtension {
             "route_key": stringValue(for: "route_key", in: content.userInfo),
             "leg_key": stringValue(for: "leg_key", in: content.userInfo),
             "schedule_key": stringValue(for: "schedule_key", in: content.userInfo),
+            "subscription_id": stringValue(for: "subscription_id", in: content.userInfo),
             "window_start": stringValue(for: "window_start", in: content.userInfo),
             "window_end": stringValue(for: "window_end", in: content.userInfo),
             "category": content.categoryIdentifier,
