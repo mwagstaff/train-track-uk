@@ -14,7 +14,7 @@ test('notifies when the next train is assigned a platform', async () => {
     ), ['platform']);
 
     assert.equal(notifications.length, 1);
-    assert.equal(notifications[0].aps.alert.body, '17:12 - platform 2.');
+    assert.equal(notifications[0].aps.alert.body, 'Platform announced: 17:12 - platform 2.');
 });
 
 test('notifies when the next train changes numbered platform', async () => {
@@ -28,7 +28,7 @@ test('notifies when the next train changes numbered platform', async () => {
     ), ['platform']);
 
     assert.equal(notifications.length, 1);
-    assert.equal(notifications[0].aps.alert.body, '17:12 - platform 5.');
+    assert.equal(notifications[0].aps.alert.body, 'Platform alteration: 17:12 - now platform 5.');
 });
 
 test('does not notify when an assigned platform becomes TBC', async () => {

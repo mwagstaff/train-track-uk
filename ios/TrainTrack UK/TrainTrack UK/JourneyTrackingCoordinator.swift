@@ -873,6 +873,20 @@ final class JourneyTrackingCoordinator: ObservableObject {
         ])
     }
 
+    func disarmPendingJourney(fromCRS: String, toCRS: String) {
+        let fromCode = fromCRS.uppercased()
+        let toCode = toCRS.uppercased()
+        let matchingIDs = armedCandidates.compactMap { candidate -> String? in
+            guard candidate.originArrivedAt == nil,
+                  candidate.stations.first?.crs.uppercased() == fromCode,
+                  candidate.stations.last?.crs.uppercased() == toCode else {
+                return nil
+            }
+            return candidate.subscriptionId
+        }
+        matchingIDs.forEach(disarm(subscriptionID:))
+    }
+
     func handleOriginArrival(
         subscriptionID: String,
         from: String? = nil,

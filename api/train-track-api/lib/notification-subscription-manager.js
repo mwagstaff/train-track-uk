@@ -1401,7 +1401,12 @@ export class NotificationSubscriptionManager {
             if (notificationTypes.includes('platform')) {
                 const previousPlatform = normalizePlatform(prev.platform);
                 if (isNextDeparture && current.platform && previousPlatform !== current.platform) {
-                    await this.sendNotification(subscription, buildPlatformMessage(subscription, leg, current), leg, updateReason);
+                    await this.sendNotification(
+                        subscription,
+                        buildPlatformMessage(subscription, leg, current, previousPlatform),
+                        leg,
+                        updateReason
+                    );
                 }
             }
         }
@@ -2449,13 +2454,14 @@ function buildCancellationMessage(subscription, leg, dep, nextDeparture = null) 
     return buildNotificationPayload(legRouteTitle(leg), body, buildLegMeta(subscription, leg, 'cancellation'), 'cancellation');
 }
 
-function buildPlatformMessage(subscription, leg, dep) {
+function buildPlatformMessage(subscription, leg, dep, previousPlatform) {
     const platform = normalizePlatform(dep.platform);
     if (!platform) {
         return null;
     }
-    const expected = dep.estimated && dep.estimated !== dep.scheduled ? `, expected ${dep.estimated}` : '';
-    const body = `${dep.scheduled} - platform ${platform}${expected}.`;
+    const body = previousPlatform
+        ? `Platform alteration: ${dep.scheduled} - now platform ${platform}.`
+        : `Platform announced: ${dep.scheduled} - platform ${platform}.`;
     return buildNotificationPayload(legRouteTitle(leg), body, buildLegMeta(subscription, leg, 'platform'), 'platform');
 }
 

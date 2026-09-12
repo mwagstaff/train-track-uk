@@ -37,6 +37,20 @@ enum LiveActivityExclusivityPolicy {
     }
 }
 
+enum LiveActivityDismissalPolicy {
+    static func shouldEndJourney(
+        in phase: JourneyActivityAttributes.JourneyPhase
+    ) -> Bool {
+        phase == .pendingStart
+    }
+
+    static func shouldPreserveJourneyTracking(
+        in phase: JourneyActivityAttributes.JourneyPhase
+    ) -> Bool {
+        phase == .atStart || phase == .enRoute
+    }
+}
+
 #if DEBUG
 enum DebugJourneySimulationError: LocalizedError {
     case liveActivitiesDisabled
@@ -790,6 +804,11 @@ final class LiveActivityManager: ObservableObject {
             // Store the tracked activity
             trackedActivities[act.id] = tracked
             preferredActivityID = act.id
+
+            // Activity.activityUpdates is primarily needed for activities the system
+            // starts on our behalf. Observe locally requested activities explicitly so
+            // a swipe dismissal is handled as soon as ActivityKit reports it.
+            startStateMonitor(for: act)
 
             // Update published state
             updatePublishedState()
@@ -1902,6 +1921,10 @@ final class LiveActivityManager: ObservableObject {
         self.logger.debug("[ActivityMonitor] Activity emitted id=\(activity.id, privacy: .public) state=\(self.describe(state: activity.activityState), privacy: .public)")
         #endif
         logActivitySnapshot(activity, context: "activityUpdates emit")
+        startStateMonitor(for: activity)
+    }
+
+    private func startStateMonitor(for activity: Activity<JourneyActivityAttributes>) {
         stateMonitorTasks[activity.id]?.cancel()
         stateMonitorTasks[activity.id] = Task { [weak self] in
             guard let self else { return }
@@ -1913,7 +1936,30 @@ final class LiveActivityManager: ObservableObject {
                 if state == .ended || state == .dismissed {
                     pushTokenTasks[activity.id]?.cancel()
                     pushTokenTasks[activity.id] = nil
-                    self.cleanupAfterRemoteEnd(for: activity)
+                    let phase = activity.content.state.journeyPhase
+                    let endsJourney = state == .dismissed
+                        && LiveActivityDismissalPolicy.shouldEndJourney(in: phase)
+                    let preserveJourneyTracking = state == .dismissed
+                        && LiveActivityDismissalPolicy.shouldPreserveJourneyTracking(in: phase)
+                    if state == .dismissed {
+                        ClientDiagnosticsLogger.log("live_activity", "activity_dismissed", metadata: [
+                            "activity_id": activity.id,
+                            "journey_phase": phase.rawValue,
+                            "ends_journey": endsJourney,
+                            "preserves_journey_tracking": preserveJourneyTracking
+                        ])
+                    }
+                    if endsJourney {
+                        let content = activity.content.state
+                        JourneyTrackingCoordinator.shared.disarmPendingJourney(
+                            fromCRS: content.deepLinkFromCRS ?? content.fromCRS,
+                            toCRS: content.deepLinkToCRS ?? content.toCRS
+                        )
+                    }
+                    self.cleanupAfterRemoteEnd(
+                        for: activity,
+                        preserveJourneyTracking: preserveJourneyTracking
+                    )
                 }
             }
             #if DEBUG
@@ -2313,7 +2359,10 @@ final class LiveActivityManager: ObservableObject {
 
     // When the system ends/dismisses an activity (e.g. via remote push with dismissalPolicy.immediate),
     // clean up timers/state locally so the app doesn't keep thinking it's active.
-    private func cleanupAfterRemoteEnd(for activity: Activity<JourneyActivityAttributes>) {
+    private func cleanupAfterRemoteEnd(
+        for activity: Activity<JourneyActivityAttributes>,
+        preserveJourneyTracking: Bool = false
+    ) {
         let activityID = activity.id
         guard let tracked = trackedActivities[activityID] else {
             debugLog("⚠️ [LiveActivity] Cleanup requested for unknown activity \(activityID)")
@@ -2356,7 +2405,17 @@ final class LiveActivityManager: ObservableObject {
                 await NotificationSubscriptionStore.shared.removeLiveSessionsLocally(containingFrom: tracked.fromCRS, to: tracked.toCRS)
             } else {
                 await sendLiveActivityUnregistration(activityID: activityID)
-                await NotificationSubscriptionStore.shared.deleteLiveSessions(containingFrom: tracked.fromCRS, to: tracked.toCRS)
+                if preserveJourneyTracking {
+                    DebugLogStore.shared.log(
+                        "Live Activity dismissed after origin arrival; journey tracking remains active for \(tracked.fromCRS)→\(tracked.toCRS)",
+                        category: "JourneyHistory"
+                    )
+                } else {
+                    await NotificationSubscriptionStore.shared.deleteLiveSessions(
+                        containingFrom: tracked.fromCRS,
+                        to: tracked.toCRS
+                    )
+                }
             }
         }
 

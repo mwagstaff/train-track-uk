@@ -123,29 +123,29 @@ test('arrived live activity content keeps the client-confirmed arrival when serv
 
 test('live activity alerts when a platform is first assigned', () => {
     const manager = new LiveActivityManager();
-    const alert = manager.buildAlert({}, {
+    const alert = manager.buildAlert({ displayName: 'Kent House → London Victoria' }, {
         departures: [{ serviceID: 'service-1', scheduled: '08:27', platform: null }]
     }, {
         departures: [{ serviceID: 'service-1', scheduled: '08:27', platform: '2' }]
     });
 
     assert.deepEqual(alert, {
-        title: 'Platform Assigned',
-        body: 'Platform 2 has been assigned.'
+        title: 'Kent House → London Victoria',
+        body: 'Platform announced: 08:27 - platform 2.'
     });
 });
 
 test('live activity alerts when an assigned platform changes number', () => {
     const manager = new LiveActivityManager();
-    const alert = manager.buildAlert({}, {
+    const alert = manager.buildAlert({ displayName: 'Kent House → London Victoria' }, {
         departures: [{ serviceID: 'service-1', scheduled: '08:27', platform: '3' }]
     }, {
         departures: [{ serviceID: 'service-1', scheduled: '08:27', platform: '5' }]
     });
 
     assert.deepEqual(alert, {
-        title: 'Platform Change',
-        body: 'Platform changed from 3 to 5.'
+        title: 'Kent House → London Victoria',
+        body: 'Platform alteration: 08:27 - now platform 5.'
     });
 });
 

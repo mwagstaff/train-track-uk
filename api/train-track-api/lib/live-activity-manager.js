@@ -719,15 +719,16 @@ export class LiveActivityManager {
         const previousPlatform = this.normalizePlatform(prev.platform);
         const nextPlatform = this.normalizePlatform(next.platform);
         if (nextPlatform && previousPlatform !== nextPlatform) {
+            const title = this.ensureString(subscription?.displayName, 'Platform update');
             if (!previousPlatform) {
                 return {
-                    title: 'Platform Assigned',
-                    body: `Platform ${nextPlatform} has been assigned.`
+                    title,
+                    body: `Platform announced: ${next.scheduled} - platform ${nextPlatform}.`
                 };
             }
             return {
-                title: 'Platform Change',
-                body: `Platform changed from ${previousPlatform} to ${nextPlatform}.`
+                title,
+                body: `Platform alteration: ${next.scheduled} - now platform ${nextPlatform}.`
             };
         }
 

@@ -1,4 +1,5 @@
 import Testing
+import JourneyActivityShared
 @testable import TrainTrack_UK
 
 struct LiveActivityExclusivityTests {
@@ -70,5 +71,27 @@ struct LiveActivityExclusivityTests {
             preferredID: "adhoc",
             hasInProgressAdHocJourney: false
         ) == "scheduled")
+    }
+}
+
+struct LiveActivityDismissalPolicyTests {
+    @Test
+    func dismissalBeforeOriginArrivalEndsJourney() {
+        #expect(LiveActivityDismissalPolicy.shouldEndJourney(in: .pendingStart))
+        #expect(!LiveActivityDismissalPolicy.shouldPreserveJourneyTracking(in: .pendingStart))
+    }
+
+    @Test
+    func dismissalAtOriginOrOnTrainPreservesJourneyTracking() {
+        #expect(LiveActivityDismissalPolicy.shouldPreserveJourneyTracking(in: .atStart))
+        #expect(LiveActivityDismissalPolicy.shouldPreserveJourneyTracking(in: .enRoute))
+        #expect(!LiveActivityDismissalPolicy.shouldEndJourney(in: .atStart))
+        #expect(!LiveActivityDismissalPolicy.shouldEndJourney(in: .enRoute))
+    }
+
+    @Test
+    func dismissalAfterFinalArrivalDoesNotPreserveJourneyTracking() {
+        #expect(!LiveActivityDismissalPolicy.shouldPreserveJourneyTracking(in: .arrived))
+        #expect(!LiveActivityDismissalPolicy.shouldEndJourney(in: .arrived))
     }
 }
