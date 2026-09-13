@@ -275,3 +275,27 @@ test('unregister preserves notification tracking after the journey starts', asyn
         preserveNotificationLiveSession: true
     });
 });
+
+test('unregisters every Live Activity belonging to a dismissed schedule', async () => {
+    const manager = new LiveActivityManager();
+    const subscriptions = ['activity-1', 'activity-2'].map((activityId) => ({
+        deviceId: 'device-scheduled',
+        activityId,
+        fromStation: 'VIC',
+        toStation: 'KTH',
+        scheduleKey: 'VIC-KTH|16:30|20:30|2026-09-13'
+    }));
+    for (const subscription of subscriptions) {
+        manager.subscriptions.set(manager.buildKey(subscription.deviceId, subscription.activityId), subscription);
+    }
+    manager.deleteSubscriptionFromMongo = async () => {};
+    manager.deleteMatchingLiveSessions = async () => {};
+
+    const removed = await manager.unregisterSubscriptionsForSchedule(
+        'device-scheduled',
+        'VIC-KTH|16:30|20:30|2026-09-13'
+    );
+
+    assert.equal(removed, 2);
+    assert.equal(manager.subscriptions.size, 0);
+});

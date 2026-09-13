@@ -1966,7 +1966,8 @@ final class LiveActivityManager: ObservableObject {
                     }
                     self.cleanupAfterRemoteEnd(
                         for: activity,
-                        preserveJourneyTracking: preserveJourneyTracking
+                        preserveJourneyTracking: preserveJourneyTracking,
+                        dismissedBeforeStart: endsJourney
                     )
                 }
             }
@@ -2282,16 +2283,16 @@ final class LiveActivityManager: ObservableObject {
                 fromCRS: record.fromCRS,
                 toCRS: record.toCRS
             )
-            guard let liveSessionID = record.liveSessionID else { continue }
-            do {
-                try await NotificationSubscriptionStore.shared.deleteLiveSession(id: liveSessionID)
+            let dismissed = await ScheduledLiveActivityAutoStartManager.shared.dismissScheduledJourney(
+                scheduleKey: record.scheduleKey
+            )
+            if dismissed {
                 JourneyActivityLifecycleStore.remove(activityID: record.activityID)
-            } catch {
+            } else {
                 ClientDiagnosticsLogger.log("live_activity", "dismissed_pending_cleanup_retry_failed", metadata: [
                     "activity_id": record.activityID,
                     "schedule_key": record.scheduleKey,
-                    "live_session_id": liveSessionID,
-                    "error": error.localizedDescription
+                    "live_session_id": record.liveSessionID
                 ])
             }
         }
@@ -2393,7 +2394,8 @@ final class LiveActivityManager: ObservableObject {
     // clean up timers/state locally so the app doesn't keep thinking it's active.
     private func cleanupAfterRemoteEnd(
         for activity: Activity<JourneyActivityAttributes>,
-        preserveJourneyTracking: Bool = false
+        preserveJourneyTracking: Bool = false,
+        dismissedBeforeStart: Bool = false
     ) {
         let activityID = activity.id
         guard let tracked = trackedActivities[activityID] else {
@@ -2425,6 +2427,11 @@ final class LiveActivityManager: ObservableObject {
         // stops, but keep the notification live-session subscription on arrival-driven ends.
         // `/notifications/terminate` needs that record to send the welcome + muted-status pushes.
         Task { @MainActor in
+            if dismissedBeforeStart, let scheduleKey = tracked.scheduleKey {
+                _ = await ScheduledLiveActivityAutoStartManager.shared.dismissScheduledJourney(
+                    scheduleKey: scheduleKey
+                )
+            }
             if preserveNotificationLiveSession {
                 NotificationMuteRequestSender.shared.deferLiveActivityUnregistration(
                     activityID: activityID,

@@ -630,7 +630,7 @@ enum JourneyUpdateSchedulePresentation {
     ) -> String {
         if scheduled, subscription.scheduleKind != .oneOff, leg.travelDate == nil,
            !(leg.dayWindows ?? [:]).isEmpty {
-            return "• \(leg.windowLabel(for: subscription.daysOfWeek))"
+            return "• \(leg.windowLabel(for: subscription.daysOfWeek).replacingOccurrences(of: " · ", with: "\n• "))"
         }
         let window = "• \(leg.windowStart) - \(leg.windowEnd)"
         guard scheduled else { return window }

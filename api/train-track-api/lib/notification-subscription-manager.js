@@ -884,6 +884,65 @@ export class NotificationSubscriptionManager {
         return { matched };
     }
 
+    async dismissScheduledOccurrence({ deviceId, scheduleKey, fallbackDeviceIds = [] }) {
+        if (!allowDeviceData(deviceId)) throw new Error('Device data deletion is in progress');
+        const normalizedScheduleKey = typeof scheduleKey === 'string' ? scheduleKey.trim() : '';
+        if (!deviceId || !normalizedScheduleKey) {
+            throw new Error('device_id and schedule_key are required');
+        }
+
+        const candidateDeviceIds = new Set(
+            [deviceId, ...fallbackDeviceIds]
+                .filter((value) => typeof value === 'string' && value.trim().length > 0)
+                .map((value) => value.trim())
+        );
+        const todayKey = currentScheduleDateKey();
+        let matched = 0;
+        let removedLiveSessions = 0;
+
+        for (const subscription of this.subscriptions.values()) {
+            if (!candidateDeviceIds.has(subscription.deviceId)
+                || this.subscriptionSource(subscription) !== SCHEDULED_SOURCE) continue;
+
+            const matchingLegs = subscription.legs
+                .map((storedLeg) => resolveLegWindow(subscription, storedLeg, new Date()))
+                .filter((leg) => buildScheduleKeyForLeg(leg) === normalizedScheduleKey);
+            if (matchingLegs.length === 0) continue;
+
+            const before = cloneSubscription(subscription);
+            const dismissedAt = new Date().toISOString();
+            subscription.mutedByLegDay = subscription.mutedByLegDay || {};
+            subscription.mutedAtByLegDay = subscription.mutedAtByLegDay || {};
+            for (const leg of matchingLegs) {
+                const legKey = legKeyForMute(leg);
+                subscription.mutedByLegDay[legKey] = todayKey;
+                subscription.mutedAtByLegDay[legKey] = dismissedAt;
+                removedLiveSessions += await this.deleteLiveSessionsForLeg({
+                    deviceId: subscription.deviceId,
+                    from: leg.from,
+                    to: leg.to,
+                    fallbackDeviceIds
+                });
+                matched += 1;
+            }
+
+            await this._saveSubscription(subscription);
+            await this.recordSubscriptionAudit({
+                action: 'dismiss_scheduled_occurrence',
+                reason: 'live_activity_dismissed_before_start',
+                source: SCHEDULED_SOURCE,
+                before,
+                after: subscription,
+                metadata: {
+                    schedule_key: normalizedScheduleKey,
+                    dismissed_at: dismissedAt
+                }
+            });
+        }
+
+        return { matched, removedLiveSessions };
+    }
+
     async skipScheduledJourneyForAdHoc(subscription, leg, legKey, { reportedByDevice = false } = {}) {
         if (this.subscriptionSource(subscription) !== SCHEDULED_SOURCE) return false;
         const scheduleKey = buildScheduleKeyForLeg(leg);
@@ -2647,6 +2706,8 @@ function buildNotificationPayload(
 }
 
 function buildLegMeta(subscription, leg, alertType) {
+    const legKey = `${leg.from}-${leg.to}`;
+    const autoStartedToday = subscription.lastAutoStartSentByLeg?.[legKey] === currentScheduleDateKey();
     const meta = {
         subscription_id: subscription.id,
         route_key: legRouteKey(leg),
@@ -2659,6 +2720,13 @@ function buildLegMeta(subscription, leg, alertType) {
         window_start: leg.windowStart,
         window_end: leg.windowEnd
     };
+    if (autoStartedToday) {
+        meta.live_activity_auto_started = true;
+        const autoStartedAt = subscription.lastAutoStartSentAtByLeg?.[legKey];
+        if (typeof autoStartedAt === 'string' && autoStartedAt) {
+            meta.live_activity_auto_started_at = autoStartedAt;
+        }
+    }
     if (leg.fromName) meta.from_name = sanitizeDisplayLabel(leg.fromName);
     if (leg.toName) meta.to_name = sanitizeDisplayLabel(leg.toName);
     return meta;

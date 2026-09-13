@@ -35,13 +35,14 @@ class NotificationService: UNNotificationServiceExtension {
                     "live_session_id": lifecycle.liveSessionID
                 ]) { _, new in new })
                 Task {
-                    let deleted = await self.deleteLiveSession(
-                        lifecycle.liveSessionID ?? self.stringValue(for: "subscription_id", in: bestAttemptContent.userInfo)
+                    let dismissed = await self.dismissScheduledJourney(
+                        scheduleKey: lifecycle.scheduleKey,
+                        fallbackLiveSessionID: lifecycle.liveSessionID
                     )
                     NotificationServiceDiagnosticsLogger.log("dismissed_pending_activity_cleanup", metadata: self.diagnosticMetadata(for: bestAttemptContent, identifier: request.identifier).merging([
                         "activity_id": lifecycle.activityID,
                         "live_session_id": lifecycle.liveSessionID,
-                        "server_cleanup_succeeded": deleted
+                        "server_cleanup_succeeded": dismissed
                     ]) { _, new in new })
                     self.finish(with: UNNotificationContent())
                 }
@@ -82,17 +83,13 @@ class NotificationService: UNNotificationServiceExtension {
         for content: UNNotificationContent,
         now: Date = Date()
     ) -> JourneyActivityLifecycleRecord? {
-        guard let scheduleKey = stringValue(for: "schedule_key", in: content.userInfo),
-              let record = JourneyActivityLifecycleStore.record(scheduleKey: scheduleKey, now: now) else {
+        guard let scheduleKey = stringValue(for: "schedule_key", in: content.userInfo) else {
             return nil
         }
 
-        if record.dismissedBeforeStart {
-            return record
-        }
-
+        let savedRecord = JourneyActivityLifecycleStore.record(scheduleKey: scheduleKey, now: now)
         if let activity = Activity<NotificationJourneyActivityAttributes>.activities.first(where: {
-            $0.id == record.activityID
+            $0.content.state.scheduleKey == scheduleKey || $0.id == savedRecord?.activityID
         }) {
             let state = activity.content.state
             JourneyActivityLifecycleStore.update(activityID: activity.id, state: state, now: now)
@@ -100,27 +97,86 @@ class NotificationService: UNNotificationServiceExtension {
                   state.journeyPhase == .pendingStart else {
                 return nil
             }
-        } else {
-            // Avoid treating a just-created activity as dismissed while ActivityKit is
-            // still making it visible to the extension process.
-            guard record.phase == .pendingStart,
-                  now.timeIntervalSince(record.updatedAt) >= 5 else {
-                return nil
-            }
+            JourneyActivityLifecycleStore.markDismissedBeforeStart(activityID: activity.id, now: now)
+            return JourneyActivityLifecycleStore.record(scheduleKey: scheduleKey, now: now)
         }
 
-        JourneyActivityLifecycleStore.markDismissedBeforeStart(activityID: record.activityID, now: now)
-        return JourneyActivityLifecycleStore.record(scheduleKey: scheduleKey, now: now) ?? record
+        if let savedRecord {
+            if savedRecord.dismissedBeforeStart {
+                return savedRecord
+            }
+            // Avoid treating a just-created activity as dismissed while ActivityKit is
+            // still making it visible to the extension process.
+            guard savedRecord.phase == .pendingStart,
+                  now.timeIntervalSince(savedRecord.updatedAt) >= 5 else {
+                return nil
+            }
+            JourneyActivityLifecycleStore.markDismissedBeforeStart(activityID: savedRecord.activityID, now: now)
+            return JourneyActivityLifecycleStore.record(scheduleKey: scheduleKey, now: now) ?? savedRecord
+        }
+
+        guard boolValue(for: "live_activity_auto_started", in: content.userInfo),
+              let startedAtText = stringValue(for: "live_activity_auto_started_at", in: content.userInfo),
+              let startedAt = iso8601Date(from: startedAtText),
+              now.timeIntervalSince(startedAt) >= 5,
+              let fromCRS = stringValue(for: "from", in: content.userInfo),
+              let toCRS = stringValue(for: "to", in: content.userInfo) else {
+            return nil
+        }
+        JourneyActivityLifecycleStore.seedPendingRemoteStart(
+            scheduleKey: scheduleKey,
+            fromCRS: fromCRS,
+            toCRS: toCRS,
+            startedAt: startedAt
+        )
+        guard let seededRecord = JourneyActivityLifecycleStore.record(scheduleKey: scheduleKey, now: now) else {
+            return nil
+        }
+        JourneyActivityLifecycleStore.markDismissedBeforeStart(activityID: seededRecord.activityID, now: now)
+        return JourneyActivityLifecycleStore.record(scheduleKey: scheduleKey, now: now) ?? seededRecord
     }
 
-    private func deleteLiveSession(_ liveSessionID: String?) async -> Bool {
-        guard let liveSessionID, !liveSessionID.isEmpty,
-              let defaults = UserDefaults(suiteName: "group.dev.skynolimit.traintrack"),
+    private func dismissScheduledJourney(
+        scheduleKey: String,
+        fallbackLiveSessionID: String?
+    ) async -> Bool {
+        guard let defaults = UserDefaults(suiteName: "group.dev.skynolimit.traintrack"),
               let deviceID = defaults.string(forKey: "device_token"), !deviceID.isEmpty,
-              let url = URL(string: "\(apiBaseURL(defaults: defaults))/notifications/live_sessions") else {
+              let url = URL(string: "\(apiBaseURL(defaults: defaults))/notifications/scheduled/dismiss") else {
             return false
         }
 
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 8
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceID, forHTTPHeaderField: "X-Device-Token")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "device_id": deviceID,
+            "schedule_key": scheduleKey
+        ])
+
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else { return false }
+            if (200..<300).contains(httpResponse.statusCode) {
+                return true
+            }
+        } catch {
+            // Fall through to the older live-session cleanup as a best effort.
+        }
+        return await deleteLiveSession(fallbackLiveSessionID, defaults: defaults, deviceID: deviceID)
+    }
+
+    private func deleteLiveSession(
+        _ liveSessionID: String?,
+        defaults: UserDefaults,
+        deviceID: String
+    ) async -> Bool {
+        guard let liveSessionID, !liveSessionID.isEmpty,
+              let url = URL(string: "\(apiBaseURL(defaults: defaults))/notifications/live_sessions") else {
+            return false
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
         request.timeoutInterval = 8
@@ -130,14 +186,27 @@ class NotificationService: UNNotificationServiceExtension {
             "device_id": deviceID,
             "subscription_id": liveSessionID
         ])
-
         do {
             let (_, response) = try await URLSession.shared.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else { return false }
-            return (200..<300).contains(httpResponse.statusCode)
+            return (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } == true
         } catch {
             return false
         }
+    }
+
+    private func boolValue(for key: String, in userInfo: [AnyHashable: Any]) -> Bool {
+        if let value = userInfo[key] as? Bool { return value }
+        if let value = userInfo[key] as? NSNumber { return value.boolValue }
+        if let value = stringValue(for: key, in: userInfo) {
+            return value.caseInsensitiveCompare("true") == .orderedSame || value == "1"
+        }
+        return false
+    }
+
+    private func iso8601Date(from value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
     }
 
     private func apiBaseURL(defaults: UserDefaults) -> String {
@@ -215,7 +284,7 @@ class NotificationService: UNNotificationServiceExtension {
     private func ensureCategoriesRegistered() {
         let muteAction = UNNotificationAction(
             identifier: "MUTE_LEG_TODAY",
-            title: "Mute for today",
+            title: "Mute this journey",
             options: [.foreground]
         )
 
@@ -297,6 +366,8 @@ class NotificationService: UNNotificationServiceExtension {
             "leg_key": stringValue(for: "leg_key", in: content.userInfo),
             "schedule_key": stringValue(for: "schedule_key", in: content.userInfo),
             "subscription_id": stringValue(for: "subscription_id", in: content.userInfo),
+            "live_activity_auto_started": boolValue(for: "live_activity_auto_started", in: content.userInfo),
+            "live_activity_auto_started_at": stringValue(for: "live_activity_auto_started_at", in: content.userInfo),
             "window_start": stringValue(for: "window_start", in: content.userInfo),
             "window_end": stringValue(for: "window_end", in: content.userInfo),
             "category": content.categoryIdentifier,

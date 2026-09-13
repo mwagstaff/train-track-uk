@@ -440,11 +440,19 @@ struct RailwayBackgroundViewer: View {
         .background {
             RailwayBackgroundViewerDismissRecognizer(
                 isEnabled: !isPhotoZoomed,
-                onDismiss: { dismiss() }
+                onDismiss: dismissWithoutAnimation
             )
         }
         .preferredColorScheme(.dark)
         .railwayBackgroundMotionLifecycle()
+    }
+
+    private func dismissWithoutAnimation() {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            dismiss()
+        }
     }
 }
 

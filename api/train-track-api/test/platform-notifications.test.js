@@ -44,6 +44,59 @@ test('does not notify when an assigned platform becomes TBC', async () => {
     assert.equal(notifications.length, 0);
 });
 
+test('scheduled alerts identify a remotely started Live Activity', async () => {
+    const { manager, notifications, subscription, leg } = await testSetup();
+
+    await manager.sendUpdateNotifications(subscription, leg, 'VIC-KTH', departures(
+        departure(null)
+    ), ['platform']);
+    await manager.sendUpdateNotifications(subscription, leg, 'VIC-KTH', departures(
+        departure('2')
+    ), ['platform']);
+    const scheduleDate = notifications[0].schedule_key.split('|').at(-1);
+    subscription.lastAutoStartSentByLeg = { 'VIC-KTH': scheduleDate };
+    subscription.lastAutoStartSentAtByLeg = { 'VIC-KTH': '2026-09-13T16:30:00.000Z' };
+
+    await manager.sendUpdateNotifications(subscription, leg, 'VIC-KTH', departures(
+        departure('3')
+    ), ['platform']);
+
+    assert.equal(notifications[1].live_activity_auto_started, true);
+    assert.equal(notifications[1].live_activity_auto_started_at, '2026-09-13T16:30:00.000Z');
+});
+
+test('dismissing a scheduled occurrence mutes that occurrence and deletes its live session', async () => {
+    const { manager, notifications, subscription, leg } = await testSetup();
+    await manager.sendUpdateNotifications(subscription, leg, 'VIC-KTH', departures(
+        departure(null)
+    ), ['platform']);
+    await manager.sendUpdateNotifications(subscription, leg, 'VIC-KTH', departures(
+        departure('2')
+    ), ['platform']);
+    const scheduleKey = notifications[0].schedule_key;
+    let removedLiveSessions = 0;
+    manager.deleteLiveSessionsForLeg = async ({ from, to }) => {
+        assert.equal(from, 'VIC');
+        assert.equal(to, 'KTH');
+        removedLiveSessions += 1;
+        return 1;
+    };
+
+    const result = await manager.dismissScheduledOccurrence({
+        deviceId: subscription.deviceId,
+        scheduleKey
+    });
+
+    assert.deepEqual(result, { matched: 1, removedLiveSessions: 1 });
+    assert.equal(manager.isMutedToday(subscription, 'VIC-KTH'), true);
+    assert.equal(removedLiveSessions, 1);
+
+    await manager.sendUpdateNotifications(subscription, leg, 'VIC-KTH', departures(
+        departure('3')
+    ), ['platform']);
+    assert.equal(notifications.length, 1);
+});
+
 async function testSetup() {
     const manager = new NotificationSubscriptionManager();
     const notifications = [];

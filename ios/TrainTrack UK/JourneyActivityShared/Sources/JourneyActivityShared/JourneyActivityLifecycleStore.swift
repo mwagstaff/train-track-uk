@@ -40,6 +40,30 @@ public enum JourneyActivityLifecycleStore {
         save(records, defaults: store)
     }
 
+    public static func seedPendingRemoteStart(
+        scheduleKey: String,
+        fromCRS: String,
+        toCRS: String,
+        startedAt: Date,
+        defaults: UserDefaults? = nil
+    ) {
+        guard let scheduleKey = normalized(scheduleKey) else { return }
+        let store = defaults ?? UserDefaults(suiteName: suiteName) ?? .standard
+        var records = load(now: Date(), defaults: store)
+        guard records.contains(where: { $0.scheduleKey == scheduleKey }) == false else { return }
+        records.append(JourneyActivityLifecycleRecord(
+            activityID: "remote-start|\(scheduleKey)",
+            scheduleKey: scheduleKey,
+            fromCRS: fromCRS.uppercased(),
+            toCRS: toCRS.uppercased(),
+            phase: .pendingStart,
+            liveSessionID: nil,
+            updatedAt: startedAt,
+            dismissedBeforeStart: false
+        ))
+        save(records, defaults: store)
+    }
+
     public static func setLiveSessionID(
         _ liveSessionID: String,
         activityID: String,

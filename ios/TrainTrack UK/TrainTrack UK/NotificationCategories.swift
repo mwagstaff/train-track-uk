@@ -5,7 +5,7 @@ enum NotificationCategoryRegistrar {
     static func register() {
         let muteAction = UNNotificationAction(
             identifier: NotificationActionId.muteLegForToday,
-            title: "Mute for today",
+            title: "Mute this journey",
             options: [.foreground]
         )
 

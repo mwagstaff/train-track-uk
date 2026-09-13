@@ -607,6 +607,40 @@ final class ScheduledLiveActivityAutoStartManager {
         }
     }
 
+    func dismissScheduledJourney(scheduleKey: String) async -> Bool {
+        let todayKey = ScheduledLiveActivityTrigger.currentDateKey()
+        for key in [skippedScheduleKeysKey, reportedSkipKeysKey] {
+            var keys = (skipDefaults.stringArray(forKey: key) ?? []).filter {
+                $0.split(separator: "|").last.map(String.init) == todayKey
+            }
+            if !keys.contains(scheduleKey) { keys.append(scheduleKey) }
+            skipDefaults.set(keys, forKey: key)
+        }
+
+        guard let url = URL(string: "\(ApiHostPreference.currentBaseURL)/notifications/scheduled/dismiss") else {
+            return false
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(DeviceIdentity.deviceToken, forHTTPHeaderField: "X-Device-Token")
+        do {
+            request.httpBody = try JSONEncoder().encode([
+                "device_id": DeviceIdentity.deviceToken,
+                "schedule_key": scheduleKey
+            ])
+            let (_, response) = try await URLSession.shared.data(for: request)
+            return (response as? HTTPURLResponse).map { (200..<300).contains($0.statusCode) } == true
+        } catch {
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "dismiss_report_failed", metadata: [
+                "schedule_key": scheduleKey,
+                "error": error.localizedDescription
+            ])
+            return false
+        }
+    }
+
     func handleRemoteNotification(userInfo: [AnyHashable: Any]) async -> Bool {
         if userInfo["alert_type"] as? String == "scheduled_journey_skipped" {
             guard let scheduleKey = userInfo["schedule_key"] as? String, !scheduleKey.isEmpty else { return false }

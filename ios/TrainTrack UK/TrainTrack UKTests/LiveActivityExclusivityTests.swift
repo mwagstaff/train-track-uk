@@ -99,6 +99,31 @@ struct LiveActivityDismissalPolicyTests {
 
 struct JourneyActivityLifecycleStoreTests {
     @Test
+    func remoteStartCanSeedDismissalStateBeforeTheAppDiscoversTheActivity() {
+        let suiteName = "JourneyActivityLifecycleStoreTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let startedAt = Date().addingTimeInterval(-60)
+
+        JourneyActivityLifecycleStore.seedPendingRemoteStart(
+            scheduleKey: "VIC-KTH|16:30|20:30|2026-09-13",
+            fromCRS: "VIC",
+            toCRS: "KTH",
+            startedAt: startedAt,
+            defaults: defaults
+        )
+
+        let record = JourneyActivityLifecycleStore.record(
+            scheduleKey: "VIC-KTH|16:30|20:30|2026-09-13",
+            defaults: defaults
+        )
+        #expect(record?.phase == .pendingStart)
+        #expect(record?.fromCRS == "VIC")
+        #expect(record?.toCRS == "KTH")
+        #expect(record?.updatedAt == startedAt)
+    }
+
+    @Test
     func pendingDismissalIsRememberedButLaterJourneyPhasesArePreserved() {
         let suiteName = "JourneyActivityLifecycleStoreTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

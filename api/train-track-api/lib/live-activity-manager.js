@@ -1413,6 +1413,21 @@ export class LiveActivityManager {
         return subscription;
     }
 
+    async unregisterSubscriptionsForSchedule(deviceId, scheduleKey, { fallbackDeviceIds = [] } = {}) {
+        const deviceIds = new Set(this.uniqueDeviceIds([deviceId, ...fallbackDeviceIds]));
+        const normalizedScheduleKey = typeof scheduleKey === 'string' ? scheduleKey.trim() : '';
+        if (deviceIds.size === 0 || !normalizedScheduleKey) return 0;
+        const matching = Array.from(this.subscriptions.values()).filter((subscription) =>
+            deviceIds.has(subscription.deviceId) && subscription.scheduleKey === normalizedScheduleKey
+        );
+        await Promise.all(matching.map((subscription) => this.unregisterSubscription(
+            subscription.deviceId,
+            subscription.activityId,
+            { fallbackDeviceIds }
+        )));
+        return matching.length;
+    }
+
     async setJourneyUpdatesEnabled(deviceId, activityId, enabled, { fallbackDeviceIds = [], forceRefresh = true } = {}) {
         const subscription = this.getSubscription(deviceId, activityId, { fallbackDeviceIds });
         if (!subscription) return null;

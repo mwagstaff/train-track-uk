@@ -983,6 +983,33 @@ app.post('/api/v2/notifications/scheduled/skip', async (req, res) => {
     }
 });
 
+app.post('/api/v2/notifications/scheduled/dismiss', async (req, res) => {
+    const { device_id, schedule_key } = req.body || {};
+    const { canonicalDeviceId, fallbackDeviceIds } = resolveRequestDeviceIds(req, device_id);
+    if (!canonicalDeviceId || typeof schedule_key !== 'string' || !schedule_key.trim()) {
+        return res.status(400).json({ error: 'device_id and schedule_key are required' });
+    }
+    try {
+        const result = await notificationSubscriptionManager.dismissScheduledOccurrence({
+            deviceId: canonicalDeviceId,
+            scheduleKey: schedule_key,
+            fallbackDeviceIds
+        });
+        const removedLiveActivities = await liveActivityManager.unregisterSubscriptionsForSchedule(
+            canonicalDeviceId,
+            schedule_key,
+            { fallbackDeviceIds }
+        );
+        res.json({
+            status: 'dismissed',
+            ...result,
+            removed_live_activities: removedLiveActivities
+        });
+    } catch (error) {
+        res.status(400).json({ error: error?.message || String(error) });
+    }
+});
+
 // Ephemeral service monitoring for an in-progress journey. Journey history remains
 // local to the device; this state exists only to deliver official timing updates.
 app.post('/api/v2/journey_tracking/sessions', (req, res) => {

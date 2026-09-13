@@ -139,9 +139,9 @@ struct HorizontalTabSwipeModifier: ViewModifier {
                         if case .tab(let tab) = target {
                             selection = tab
                         }
-                    }
-                    if target == .backgroundPhoto {
-                        onOpenBackgroundPhoto?()
+                        if target == .backgroundPhoto {
+                            onOpenBackgroundPhoto?()
+                        }
                     }
                 } else {
                     withAnimation(resetAnimation) {

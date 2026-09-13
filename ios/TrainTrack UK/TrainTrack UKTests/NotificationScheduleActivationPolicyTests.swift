@@ -179,7 +179,7 @@ struct NotificationScheduleActivationPolicyTests {
         #expect(ScheduledJourneyActivationResolver.legs(for: subscription, matchingFrom: "KTH", to: "VIC", now: saturdayEarly, calendar: calendar).isEmpty)
         let weekdaysOnly = scheduledSubscription(legs: [route])
         #expect(NotificationScheduleActivationPolicy.activeWindowEnd(for: weekdaysOnly, leg: route, now: saturdayStart, calendar: calendar) == nil)
-        #expect(JourneyUpdateSchedulePresentation.detail(for: route, subscription: subscription, scheduled: true) == "• Weekdays 07:00–09:00 · Weekends 09:00–11:00")
+        #expect(JourneyUpdateSchedulePresentation.detail(for: route, subscription: subscription, scheduled: true) == "• Weekdays 07:00–09:00\n• Weekends 09:00–11:00")
     }
 
     @Test func friendlyDayLabelsDescribeTheActualSelection() {
