@@ -49,6 +49,28 @@ final class AsyncOperationSerialiser {
     }
 }
 
+enum BackgroundActivitySessionPolicy {
+    static func shouldRetainSession(
+        hasActiveGeofences: Bool,
+        hasExplicitJourneyTarget: Bool,
+        isHighSensitivityTracking: Bool,
+        usesWhenInUseAuthorization: Bool
+    ) -> Bool {
+        hasActiveGeofences && (
+            hasExplicitJourneyTarget
+                || isHighSensitivityTracking
+                || usesWhenInUseAuthorization
+        )
+    }
+
+    static func canCreateSession(
+        applicationIsActive: Bool,
+        hasOutstandingSession: Bool
+    ) -> Bool {
+        applicationIsActive || hasOutstandingSession
+    }
+}
+
 struct StationArrivalTarget: Codable {
     let identifier: String
     let subscriptionId: String
@@ -158,6 +180,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
     private let manager = CLLocationManager()
     private let persistedTargetsKey = "stationArrivalMonitoredTargets"
+    private let backgroundActivitySessionOutstandingKey = "stationArrivalBackgroundActivitySessionOutstanding"
     private let conditionMonitorName = "TrainTrackStationDetection"
     private nonisolated let regionPrefix = "tt_notify_mute"
     private nonisolated let arrivalRegionPrefix = "tt_notify_arrival"
@@ -188,6 +211,18 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
     private var hasLocationTrackingWork: Bool {
         !monitoredTargets.isEmpty || JourneyTrackingCoordinator.shared.hasActiveJourney
+    }
+
+    private var hasExplicitJourneyTargetRequiringBackgroundTracking: Bool {
+        monitoredTargets.values.contains { target in
+            guard target.isScheduledActivation != true else { return false }
+            guard !NotificationMuteStorage.isMutedToday(from: target.from, to: target.to) else { return false }
+            return target.isActive() || NotificationMuteStorage.hasPendingStationDepartureCleanup(
+                from: target.from,
+                to: target.to,
+                subscriptionId: target.subscriptionId
+            )
+        }
     }
 
     // iOS 18+ uses CLServiceSession to express the app's "Always" authorization need
@@ -839,7 +874,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             configureHighSensitivityTrackingProfile()
             manager.allowsBackgroundLocationUpdates = true
             manager.showsBackgroundLocationIndicator = true
-            ensureBackgroundActivitySessionIfNeeded()
+            ensureBackgroundActivitySessionIfNeeded(reason: "precision-sampling")
             manager.startUpdatingLocation()
             trackingMode = .highSensitivity
         }
@@ -901,8 +936,14 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         debugLog("📍 [GeofenceManager] updateBackgroundLocationState active=\(hasActiveGeofences) allowsBackground=\(manager.allowsBackgroundLocationUpdates)")
 
         if #available(iOS 17.0, *) {
-            if needsWhenInUseBackgroundSession || trackingMode == .highSensitivity {
-                ensureBackgroundActivitySessionIfNeeded()
+            let shouldRetainBackgroundSession = BackgroundActivitySessionPolicy.shouldRetainSession(
+                hasActiveGeofences: hasActiveGeofences,
+                hasExplicitJourneyTarget: hasExplicitJourneyTargetRequiringBackgroundTracking,
+                isHighSensitivityTracking: trackingMode == .highSensitivity,
+                usesWhenInUseAuthorization: needsWhenInUseBackgroundSession
+            )
+            if shouldRetainBackgroundSession {
+                ensureBackgroundActivitySessionIfNeeded(reason: "background-state")
             } else {
                 stopBackgroundActivitySessionIfPossible(force: !hasActiveGeofences)
             }
@@ -924,12 +965,32 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         ])
     }
 
-    private func ensureBackgroundActivitySessionIfNeeded() {
+    private func ensureBackgroundActivitySessionIfNeeded(reason: String) {
         guard isGeofencingSupported else { return }
         guard #available(iOS 17.0, *), backgroundActivitySession == nil else { return }
+
+        let applicationIsActive = UIApplication.shared.applicationState == .active
+        let hasOutstandingSession = UserDefaults.standard.bool(
+            forKey: backgroundActivitySessionOutstandingKey
+        )
+        guard BackgroundActivitySessionPolicy.canCreateSession(
+            applicationIsActive: applicationIsActive,
+            hasOutstandingSession: hasOutstandingSession
+        ) else {
+            logGeofenceDiagnostic("background_activity_start_deferred", metadata: [
+                "reason": reason,
+                "requires_foreground_start": true
+            ])
+            return
+        }
+
         let session = CLBackgroundActivitySession()
         backgroundActivitySession = session
-        logGeofenceDiagnostic("background_activity_started")
+        UserDefaults.standard.set(true, forKey: backgroundActivitySessionOutstandingKey)
+        logGeofenceDiagnostic("background_activity_started", metadata: [
+            "reason": reason,
+            "start_mode": applicationIsActive ? "foreground" : "background-rejoin"
+        ])
         debugLog("📍 [GeofenceManager] Started CLBackgroundActivitySession")
     }
 
@@ -948,6 +1009,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             session.invalidate()
         }
         backgroundActivitySession = nil
+        UserDefaults.standard.set(false, forKey: backgroundActivitySessionOutstandingKey)
         logGeofenceDiagnostic("background_activity_stopped")
         debugLog("📍 [GeofenceManager] Stopped CLBackgroundActivitySession")
     }

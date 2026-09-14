@@ -4,6 +4,39 @@ import Testing
 
 @MainActor
 struct NotificationGeofenceConcurrencyTests {
+    @Test func explicitJourneyPreparesBackgroundSessionBeforeLeavingForeground() {
+        #expect(BackgroundActivitySessionPolicy.shouldRetainSession(
+            hasActiveGeofences: true,
+            hasExplicitJourneyTarget: true,
+            isHighSensitivityTracking: false,
+            usesWhenInUseAuthorization: false
+        ))
+        #expect(BackgroundActivitySessionPolicy.canCreateSession(
+            applicationIsActive: true,
+            hasOutstandingSession: false
+        ))
+    }
+
+    @Test func scheduledGeofencesDoNotKeepBackgroundSessionAlive() {
+        #expect(!BackgroundActivitySessionPolicy.shouldRetainSession(
+            hasActiveGeofences: true,
+            hasExplicitJourneyTarget: false,
+            isHighSensitivityTracking: false,
+            usesWhenInUseAuthorization: false
+        ))
+    }
+
+    @Test func backgroundCanOnlyRejoinAnOutstandingSession() {
+        #expect(!BackgroundActivitySessionPolicy.canCreateSession(
+            applicationIsActive: false,
+            hasOutstandingSession: false
+        ))
+        #expect(BackgroundActivitySessionPolicy.canCreateSession(
+            applicationIsActive: false,
+            hasOutstandingSession: true
+        ))
+    }
+
     @Test func scheduledGeofenceCannotDetectDepartureAfterWindowEnds() throws {
         let now = Date()
         var calendar = Calendar.current
