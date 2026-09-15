@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import CoreLocation
 import Testing
 import JourneyActivityShared
 @testable import TrainTrack_UK
@@ -491,6 +492,40 @@ struct TrainTrack_UKTests {
         #expect(stations == [apiStation])
     }
 
+    @Test func nearbyStationSuggestionsAreDeduplicatedAndSortedNearestFirst() {
+        let currentLocation = CLLocationCoordinate2D(latitude: 51.5, longitude: -0.1)
+        let stations = [
+            Station(crs: "FAR", name: "Far", longitude: "-0.1", latitude: "51.6"),
+            Station(crs: "NBR", name: "Nearby", longitude: "-0.1", latitude: "51.501"),
+            Station(crs: "MID", name: "Middle", longitude: "-0.1", latitude: "51.52"),
+            Station(crs: "nbr", name: "Nearby duplicate", longitude: "-0.1", latitude: "51.502"),
+            Station(crs: "BAD", name: "Missing coordinate", longitude: "0", latitude: "0")
+        ]
+
+        let nearby = StationSuggestionPolicy.nearbyStations(
+            in: stations,
+            from: currentLocation
+        )
+
+        #expect(nearby.map(\.station.crs) == ["NBR", "MID", "FAR"])
+        #expect(nearby.map(\.distance) == nearby.map(\.distance).sorted())
+        #expect(StationSuggestionPolicy.defaultNearbyCount == 3)
+    }
+
+    @Test func recentStationSuggestionsPreserveJourneyRecencyAndRemoveDuplicates() {
+        let victoria = station(crs: "VIC", name: "London Victoria")
+        let kentHouse = station(crs: "KTH", name: "Kent House")
+        let bromleySouth = station(crs: "BMS", name: "Bromley South")
+
+        let recent = StationSuggestionPolicy.recentStations(from: [
+            [victoria, kentHouse],
+            [Station(crs: "vic", name: "Victoria duplicate", longitude: "0", latitude: "0"), bromleySouth]
+        ])
+
+        #expect(recent.map(\.crs) == ["VIC", "KTH", "BMS"])
+        #expect(StationSuggestionPolicy.defaultRecentCount == 10)
+    }
+
     @Test func departureRequiresAccuracyEnvelopeBeyondHysteresis() {
         #expect(!StationDetectionPolicy.isDefinitelyOutsideStation(
             rawDistance: 340,
@@ -534,11 +569,11 @@ struct TrainTrack_UKTests {
         ))
     }
 
-    @Test func onlyRecentConditionEventsCanDriveGeofenceTransitions() {
+    @Test func delayedConditionEventsCanDriveTransitionsWithinRecoveryLifetime() {
         let now = Date(timeIntervalSince1970: 100_000)
 
         #expect(StationDetectionPolicy.isConditionEventActionable(
-            recordedAt: now.addingTimeInterval(-30),
+            recordedAt: now.addingTimeInterval(-4 * 60),
             now: now
         ))
         #expect(!StationDetectionPolicy.isConditionEventActionable(

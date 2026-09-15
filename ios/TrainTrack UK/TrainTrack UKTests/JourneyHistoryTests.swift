@@ -346,7 +346,8 @@ struct JourneyHistoryTests {
             armedCandidate(subscriptionID: "completed", now: now),
             armedCandidate(subscriptionID: "muted", now: now),
             armedCandidate(subscriptionID: "future", now: now, from: "VIC", to: "KTH"),
-            armedCandidate(subscriptionID: "expired", now: now, activeUntil: now.addingTimeInterval(-1))
+            armedCandidate(subscriptionID: "expired", now: now,
+                           activeUntil: now.addingTimeInterval(-StationDetectionPolicy.recoveryLifetime - 1))
         ]
 
         let restored = JourneyTrackingCoordinator.restorableCandidates(
@@ -785,6 +786,160 @@ struct JourneyHistoryTests {
                 now: now.addingTimeInterval(-1)
             ) == 0)
         }
+    }
+
+    @Test @MainActor func scheduledOccurrenceRetainsDelayedEvidenceWithoutExtendingActivation() throws {
+        let end = Date(timeIntervalSince1970: 2_000_000_000)
+        var candidate = armedCandidate(subscriptionID: "scheduled", now: end.addingTimeInterval(-7200), activeUntil: end)
+        candidate.activeFrom = end.addingTimeInterval(-7200)
+        let receivedAt = end.addingTimeInterval(4 * 60)
+        let restored = JourneyTrackingCoordinator.restorableCandidates(
+            [candidate], activeSubscriptionID: nil, recentlyCompletedSubscriptionID: nil,
+            now: receivedAt, isMutedToday: { _, _ in false }
+        )
+        #expect(restored.count == 1)
+        #expect(!candidate.isCurrent(at: receivedAt))
+        #expect(JourneyTrackingCoordinator.candidateIndexForRouteEvent(
+            in: restored, subscriptionID: "scheduled", now: end.addingTimeInterval(-4 * 60)
+        ) == 0)
+        #expect(JourneyTrackingCoordinator.candidateIndexForRouteEvent(
+            in: restored, subscriptionID: "scheduled", now: receivedAt
+        ) == nil)
+        #expect(!candidate.isCurrent(at: end.addingTimeInterval(-86400)))
+        #expect(!candidate.isRetained(at: end.addingTimeInterval(StationDetectionPolicy.recoveryLifetime)))
+        let decoded = try JSONDecoder().decode(ArmedJourneyHistoryCandidate.self, from: JSONEncoder().encode(candidate))
+        #expect(decoded.activeFrom == candidate.activeFrom)
+        #expect(decoded.activeUntil == end)
+    }
+
+    @Test @MainActor func delayedJourneyLocationsUseObservationOrderAndHaveABoundedLifetime() {
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        let observed = start.addingTimeInterval(240)
+        let received = observed.addingTimeInterval(240)
+        #expect(JourneyArrivalLocationPolicy.canReplayObservation(
+            observedAt: observed, receivedAt: received, journeyStartedAt: start, lastProcessedAt: nil
+        ))
+        for previous in [observed, observed.addingTimeInterval(1)] {
+            #expect(!JourneyArrivalLocationPolicy.canReplayObservation(
+                observedAt: observed, receivedAt: received, journeyStartedAt: start, lastProcessedAt: previous
+            ))
+        }
+        #expect(!JourneyArrivalLocationPolicy.canReplayObservation(
+            observedAt: start.addingTimeInterval(-1), receivedAt: received,
+            journeyStartedAt: start, lastProcessedAt: nil
+        ))
+        #expect(!JourneyArrivalLocationPolicy.canReplayObservation(
+            observedAt: received.addingTimeInterval(1), receivedAt: received,
+            journeyStartedAt: start, lastProcessedAt: nil
+        ))
+        #expect(!JourneyArrivalLocationPolicy.canReplayObservation(
+            observedAt: observed, receivedAt: observed.addingTimeInterval(StationDetectionPolicy.recoveryLifetime + 1),
+            journeyStartedAt: start, lastProcessedAt: nil
+        ))
+    }
+
+    @Test @MainActor func todaysMuteDoesNotDiscardAnEarlierOccurrenceAwaitingReplay() {
+        let midnight = Calendar.current.startOfDay(for: Date(timeIntervalSince1970: 2_000_000_000))
+        let now = midnight.addingTimeInterval(2 * 60)
+        var candidate = armedCandidate(subscriptionID: "previous-day", now: midnight.addingTimeInterval(-3600),
+                                       activeUntil: midnight)
+        candidate.activeFrom = midnight.addingTimeInterval(-3600)
+        candidate.originArrivedAt = midnight.addingTimeInterval(-4 * 60)
+        let restored = JourneyTrackingCoordinator.restorableCandidates(
+            [candidate], activeSubscriptionID: nil, recentlyCompletedSubscriptionID: nil,
+            now: now, isMutedToday: { _, _ in true }
+        )
+        #expect(restored.map(\.subscriptionId) == ["previous-day"])
+    }
+
+    @Test @MainActor func aConfirmedStationArrivalCanDepartAfterTheScheduleWindowEnds() {
+        let end = Date(timeIntervalSince1970: 2_000_000_000)
+        var candidate = armedCandidate(subscriptionID: "scheduled", now: end.addingTimeInterval(-7200), activeUntil: end)
+        candidate.activeFrom = end.addingTimeInterval(-7200)
+        let departedAt = end.addingTimeInterval(4 * 60)
+        let receivedAt = departedAt.addingTimeInterval(60)
+        #expect(!candidate.isEligibleDeparture(at: departedAt, receivedAt: receivedAt))
+        candidate.originArrivedAt = end.addingTimeInterval(-4 * 60)
+        #expect(candidate.isEligibleDeparture(at: departedAt, receivedAt: receivedAt))
+        #expect(JourneyTrackingCoordinator.candidateIndexForDepartureEvent(
+            in: [candidate], subscriptionID: "scheduled", from: "KTH", to: "VIC",
+            observedAt: departedAt, receivedAt: receivedAt
+        ) == 0)
+        #expect(JourneyTrackingCoordinator.candidateIndexForRouteEvent(
+            in: [candidate], subscriptionID: "scheduled", now: departedAt
+        ) == nil)
+        #expect(!candidate.isEligibleDeparture(
+            at: end.addingTimeInterval(StationDetectionPolicy.recoveryLifetime),
+            receivedAt: end.addingTimeInterval(StationDetectionPolicy.recoveryLifetime)
+        ))
+        candidate.originArrivedAt = end.addingTimeInterval(60)
+        #expect(!candidate.isEligibleDeparture(at: departedAt, receivedAt: receivedAt))
+        candidate.originArrivedAt = candidate.activeFrom?.addingTimeInterval(-1)
+        #expect(!candidate.isEligibleDeparture(at: departedAt, receivedAt: receivedAt))
+    }
+
+    @Test @MainActor func recoveryRequiresOrderedTravelAndKeepsTheTrainAndDepartureUnknown() throws {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let origin = Station(crs: "AAA", name: "Origin", longitude: "0", latitude: "51")
+        let first = Station(crs: "BBB", name: "First stop", longitude: "0.02", latitude: "51")
+        let second = Station(crs: "CCC", name: "Second stop", longitude: "0.04", latitude: "51")
+        let destination = Station(crs: "DDD", name: "Destination", longitude: "0.06", latitude: "51")
+        let route = [first, second, destination]
+        var candidate = ArmedJourneyHistoryCandidate(
+            subscriptionId: "scheduled", source: .scheduled, stations: [origin, destination],
+            createdAt: now.addingTimeInterval(-3600), activeUntil: now.addingTimeInterval(60),
+            originArrivedAt: nil, candidateDepartures: [], activeFrom: now.addingTimeInterval(-3600)
+        )
+        let firstObservations: [JourneyRecoveryObservation] = try #require(JourneyRecoveryPolicy.observations(
+            appending: first, observedAt: now, receivedAt: now,
+            candidate: candidate, routeStations: route
+        ))
+        candidate.recoveryObservations = firstObservations
+        #expect(JourneyTrackingCoordinator.recoveredCheckpoint(from: candidate) == nil)
+        #expect(JourneyRecoveryPolicy.observations(
+            appending: first, observedAt: now.addingTimeInterval(120), receivedAt: now.addingTimeInterval(120),
+            candidate: candidate, routeStations: route
+        ) == nil)
+        #expect(JourneyRecoveryPolicy.observations(
+            appending: second, observedAt: now.addingTimeInterval(1), receivedAt: now.addingTimeInterval(1),
+            candidate: candidate, routeStations: route
+        ) == nil)
+        #expect(JourneyRecoveryPolicy.observations(
+            appending: second, observedAt: now.addingTimeInterval(1200), receivedAt: now.addingTimeInterval(1200),
+            candidate: candidate, routeStations: route
+        ) == nil)
+        let recoveredObservations: [JourneyRecoveryObservation] = try #require(JourneyRecoveryPolicy.observations(
+            appending: second, observedAt: now.addingTimeInterval(120), receivedAt: now.addingTimeInterval(240),
+            candidate: candidate, routeStations: route
+        ))
+        candidate.recoveryObservations = recoveredObservations
+        #expect(JourneyRecoveryPolicy.observations(
+            appending: first, observedAt: now.addingTimeInterval(240), receivedAt: now.addingTimeInterval(240),
+            candidate: candidate, routeStations: route
+        ) == nil)
+        let restored = try JSONDecoder().decode(ArmedJourneyHistoryCandidate.self, from: JSONEncoder().encode(candidate))
+        let checkpoint = try #require(JourneyTrackingCoordinator.recoveredCheckpoint(from: restored))
+        #expect(checkpoint.originDepartureWasMissed == true)
+        #expect(checkpoint.scheduleOccurrenceStart == candidate.activeFrom)
+        let currentWindow = DateInterval(start: candidate.activeFrom!, end: candidate.activeUntil!)
+        #expect(JourneyTrackingCoordinator.completionBelongsToOccurrence(checkpoint, window: currentWindow))
+        #expect(!JourneyTrackingCoordinator.completionBelongsToOccurrence(
+            checkpoint,
+            window: DateInterval(start: currentWindow.start.addingTimeInterval(86400),
+                                 end: currentWindow.end.addingTimeInterval(86400))
+        ))
+        #expect(checkpoint.plannedOrigin.crs == "AAA")
+        #expect(checkpoint.currentLeg?.fromStation.crs == "BBB")
+        #expect(checkpoint.currentLeg?.detectedDepartureAt == nil)
+        #expect(checkpoint.currentLeg?.serviceID == nil)
+        #expect(checkpoint.currentLeg?.outcome == .uncertain)
+        #expect(checkpoint.stationEvents.allSatisfy { $0.kind == .arrival })
+        #expect(checkpoint.stationEvents.map { $0.station.crs } == ["BBB", "CCC"])
+        let record = JourneyHistoryRecord(checkpoint: checkpoint, outcome: .uncertain, completedAt: now.addingTimeInterval(240))
+        #expect(record.originDepartureWasMissed == true)
+        let columns = JourneyHistoryExporter.csv(records: [record]).split(separator: "\n")[1]
+            .split(separator: ",", omittingEmptySubsequences: false)
+        #expect(columns[5].isEmpty)
     }
 
     private func armedCandidate(

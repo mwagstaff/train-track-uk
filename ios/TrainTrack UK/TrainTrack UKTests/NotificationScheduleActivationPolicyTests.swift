@@ -137,6 +137,115 @@ struct NotificationScheduleActivationPolicyTests {
         ) == (try date(2026, 8, 25, 1, 0, calendar: calendar)))
     }
 
+    @Test func lateDeliveryKeepsTheObservationInItsOriginalOccurrence() throws {
+        let calendar = try londonCalendar()
+        let route = leg(from: "VIC", to: "KTH", start: "16:00", end: "18:00")
+        let subscription = scheduledSubscription(legs: [route])
+        let observation = try date(2026, 8, 24, 17, 56, calendar: calendar)
+        let delivery = try date(2026, 8, 24, 18, 0, calendar: calendar)
+        let occurrence = try #require(NotificationScheduleActivationPolicy.recoverableWindow(
+            for: subscription, leg: route, observedAt: observation, receivedAt: delivery, calendar: calendar
+        ))
+        #expect(occurrence.start == (try date(2026, 8, 24, 16, 0, calendar: calendar)))
+        #expect(occurrence.end == delivery)
+        #expect(NotificationScheduleActivationPolicy.recoverableWindow(
+            for: subscription, leg: route, observedAt: delivery, receivedAt: delivery, calendar: calendar
+        ) == nil)
+    }
+
+    @Test func recoveryRejectsExpiredEvidenceAndFutureClockErrors() throws {
+        let calendar = try londonCalendar()
+        let route = leg(from: "VIC", to: "KTH", start: "16:00", end: "18:00")
+        let subscription = scheduledSubscription(legs: [route])
+        let observation = try date(2026, 8, 24, 17, 56, calendar: calendar)
+        #expect(NotificationScheduleActivationPolicy.recoverableWindow(
+            for: subscription, leg: route, observedAt: observation,
+            receivedAt: observation.addingTimeInterval(61 * 60), calendar: calendar
+        ) == nil)
+        #expect(NotificationScheduleActivationPolicy.recoverableWindow(
+            for: subscription, leg: route, observedAt: observation,
+            receivedAt: observation.addingTimeInterval(-1), calendar: calendar
+        ) == nil)
+    }
+
+    @Test func aRecurringScheduleResolvesWeeksLaterWithoutPersistingDailyCandidates() throws {
+        let calendar = try londonCalendar()
+        let route = leg(from: "VIC", to: "KTH", start: "16:00", end: "18:00")
+        let subscription = scheduledSubscription(legs: [route])
+        let observation = try date(2026, 9, 14, 17, 0, calendar: calendar)
+        let occurrence = try #require(NotificationScheduleActivationPolicy.activeWindow(
+            for: subscription, leg: route, now: observation, calendar: calendar
+        ))
+        #expect(occurrence.start == (try date(2026, 9, 14, 16, 0, calendar: calendar)))
+        #expect(occurrence.end == (try date(2026, 9, 14, 18, 0, calendar: calendar)))
+    }
+
+    @Test func downstreamRecoveryUsesTheRecentOccurrenceWithoutExtendingBoardingEligibility() throws {
+        let calendar = try londonCalendar()
+        let route = leg(from: "VIC", to: "KTH", start: "16:00", end: "18:00")
+        let subscription = scheduledSubscription(legs: [route])
+        let downstream = try date(2026, 8, 24, 18, 15, calendar: calendar)
+        let end = try date(2026, 8, 24, 18, 0, calendar: calendar)
+        #expect(NotificationScheduleActivationPolicy.windowForRouteRecovery(
+            for: subscription, leg: route, observedAt: downstream, receivedAt: downstream, calendar: calendar
+        )?.end == end)
+        #expect(NotificationScheduleActivationPolicy.recoverableWindow(
+            for: subscription, leg: route, observedAt: downstream, receivedAt: downstream, calendar: calendar
+        ) == nil)
+        #expect(NotificationScheduleActivationPolicy.windowForRouteRecovery(
+            for: subscription, leg: route, observedAt: downstream,
+            receivedAt: end.addingTimeInterval(60 * 60), calendar: calendar
+        ) == nil)
+        let beforeWindow = try date(2026, 8, 24, 15, 59, calendar: calendar)
+        #expect(NotificationScheduleActivationPolicy.windowForRouteRecovery(
+            for: subscription, leg: route, observedAt: beforeWindow, receivedAt: beforeWindow, calendar: calendar
+        ) == nil)
+    }
+
+    @Test func aPreWindowVisitDoesNotBecomeAnEligibleArrivalByDelayedDelivery() throws {
+        let calendar = try londonCalendar()
+        let route = leg(from: "VIC", to: "KTH", start: "16:00", end: "18:00")
+        let subscription = scheduledSubscription(legs: [route])
+        #expect(NotificationScheduleActivationPolicy.recoverableWindow(
+            for: subscription, leg: route,
+            observedAt: try date(2026, 8, 24, 15, 55, calendar: calendar),
+            receivedAt: try date(2026, 8, 24, 16, 5, calendar: calendar), calendar: calendar
+        ) == nil)
+    }
+
+    @Test func recoveryGeometryUsesTheBranchContainingTheScheduledDestination() {
+        let codes = ScheduledJourneyRecoveryGeometryPolicy.intermediateStationCodes(
+            in: [["AAA", "BBB", "CCC"], ["AAA", "DDD", "EEE", "FFF", "ZZZ"]],
+            from: "aaa", to: "zzz"
+        )
+        #expect(codes == ["DDD", "EEE"])
+        #expect(ScheduledJourneyRecoveryGeometryPolicy.intermediateStationCodes(
+            in: [["ZZZ", "DDD", "AAA"]], from: "AAA", to: "ZZZ"
+        ) == nil)
+    }
+
+    @Test func overnightOneOffSurvivesUntilItsWindowEndsTheFollowingDay() throws {
+        let calendar = try londonCalendar()
+        var route = leg(from: "VIC", to: "KTH", start: "23:30", end: "01:00")
+        route.travelDate = "2026-08-24"
+        var subscription = scheduledSubscription(legs: [route])
+        subscription.scheduleKind = .oneOff
+        let observation = try date(2026, 8, 25, 0, 56, calendar: calendar)
+        let delivery = try date(2026, 8, 25, 1, 3, calendar: calendar)
+        #expect(NotificationScheduleExpiry.expirationDate(for: subscription, calendar: calendar)
+            == (try date(2026, 8, 25, 1, 1, calendar: calendar)))
+        #expect(!NotificationScheduleExpiry.isExpired(subscription, now: observation, calendar: calendar))
+        #expect(NotificationScheduleActivationPolicy.recoverableWindow(
+            for: subscription, leg: route, observedAt: observation, receivedAt: delivery, calendar: calendar
+        )?.start == (try date(2026, 8, 24, 23, 30, calendar: calendar)))
+    }
+
+    @Test func aDirectCallingPatternNeedsOnlyTheDestinationSentinel() {
+        #expect(ScheduledJourneyRecoveryGeometryPolicy.intermediateStationCodes(
+            in: [["AAA", "ZZZ"]], from: "AAA", to: "ZZZ"
+        ) == [])
+    }
+
     @Test func dayWindowsRoundTripAndLegacyLegsKeepTheirDefaults() throws {
         let legacy = Data(#"{"from":"KTH","to":"VIC","enabled":true,"window_start":"07:00","window_end":"09:00"}"#.utf8)
         var route = try JSONDecoder().decode(NotificationLeg.self, from: legacy)

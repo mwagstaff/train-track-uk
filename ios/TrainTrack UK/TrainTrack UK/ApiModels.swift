@@ -5,10 +5,18 @@ import SwiftUI
 struct DepartureTimeV2: Codable, Hashable {
     let scheduled: String
     let estimated: String
+    let actual: String?
+
+    init(scheduled: String, estimated: String, actual: String? = nil) {
+        self.scheduled = scheduled
+        self.estimated = estimated
+        self.actual = actual
+    }
 
     enum CodingKeys: String, CodingKey {
         case scheduled
         case estimated
+        case actual
     }
 }
 
@@ -32,6 +40,8 @@ struct DepartureV2: Codable, Identifiable, Hashable {
     let timestamp: Date?
     let `operator`: String?
     let operatorCode: String?
+    let siri: SiriDepartureProvenance?
+    let hasProviderServiceID: Bool
 
     var id: String { serviceID }
 
@@ -40,6 +50,8 @@ struct DepartureV2: Codable, Identifiable, Hashable {
         case serviceType, platform, isCancelled, length
         case destination, origin
         case serviceID, delayReason, cancelReason, timestamp, `operator`, operatorCode
+        case siri
+        case hasProviderServiceID = "has_provider_service_id"
     }
 
     init(
@@ -55,7 +67,9 @@ struct DepartureV2: Codable, Identifiable, Hashable {
         cancelReason: String?,
         timestamp: Date?,
         operator: String? = nil,
-        operatorCode: String? = nil
+        operatorCode: String? = nil,
+        siri: SiriDepartureProvenance? = nil,
+        hasProviderServiceID: Bool = true
     ) {
         self.departureTime = departureTime
         self.serviceType = serviceType
@@ -70,6 +84,8 @@ struct DepartureV2: Codable, Identifiable, Hashable {
         self.timestamp = timestamp
         self.operator = `operator`
         self.operatorCode = operatorCode
+        self.siri = siri
+        self.hasProviderServiceID = hasProviderServiceID
     }
 
     init(from decoder: Decoder) throws {
@@ -100,7 +116,12 @@ struct DepartureV2: Codable, Identifiable, Hashable {
             self.origin = nil
         }
 
-        self.serviceID = (try? c.decode(String.self, forKey: .serviceID)) ?? UUID().uuidString
+        let providerID = try? c.decode(String.self, forKey: .serviceID)
+        let identityPresent = try c.decodeIfPresent(Bool.self, forKey: .hasProviderServiceID)
+        self.serviceID = providerID ?? UUID().uuidString
+        self.hasProviderServiceID = providerID?.isEmpty == false
+            && identityPresent != false
+        self.siri = try c.decodeIfPresent(SiriDepartureProvenance.self, forKey: .siri)
         self.delayReason = try? c.decode(String.self, forKey: .delayReason)
         self.cancelReason = try? c.decode(String.self, forKey: .cancelReason)
         self.timestamp = try? c.decode(Date.self, forKey: .timestamp)
@@ -122,7 +143,9 @@ struct DepartureV2: Codable, Identifiable, Hashable {
             cancelReason: cancelReason,
             timestamp: timestamp,
             operator: `operator`,
-            operatorCode: operatorCode
+            operatorCode: operatorCode,
+            siri: siri,
+            hasProviderServiceID: hasProviderServiceID
         )
     }
 }
@@ -147,21 +170,25 @@ struct JourneyDeparturesSnapshot: Decodable, Hashable {
     let departures: [DepartureV2]
     let dataStatus: JourneyDataStatus
     let lastSuccessfulUpdate: Date?
+    let siri: SiriBoardProvenance?
 
     enum CodingKeys: String, CodingKey {
         case departures
         case dataStatus = "data_status"
         case lastSuccessfulUpdate = "last_successful_update"
+        case siri
     }
 
     init(
         departures: [DepartureV2],
         dataStatus: JourneyDataStatus,
-        lastSuccessfulUpdate: Date?
+        lastSuccessfulUpdate: Date?,
+        siri: SiriBoardProvenance? = nil
     ) {
         self.departures = departures
         self.dataStatus = dataStatus
         self.lastSuccessfulUpdate = lastSuccessfulUpdate
+        self.siri = siri
     }
 
     init(from decoder: Decoder) throws {
@@ -170,12 +197,14 @@ struct JourneyDeparturesSnapshot: Decodable, Hashable {
             departures = legacyDepartures
             dataStatus = .live
             lastSuccessfulUpdate = nil
+            siri = nil
             return
         }
 
         let container = try decoder.container(keyedBy: CodingKeys.self)
         departures = try container.decode([DepartureV2].self, forKey: .departures)
         dataStatus = try container.decode(JourneyDataStatus.self, forKey: .dataStatus)
+        siri = try container.decodeIfPresent(SiriBoardProvenance.self, forKey: .siri)
         if let value = try container.decodeIfPresent(String.self, forKey: .lastSuccessfulUpdate) {
             lastSuccessfulUpdate = Self.parseISO8601Date(value)
         } else {

@@ -26,6 +26,9 @@ final class JourneyStore: ObservableObject {
             userDefaults.removeObject(forKey: journeysKey)
             userDefaults.removeObject(forKey: favouriteManualOrderKey)
             userDefaults.removeObject(forKey: myJourneysManualOrderKey)
+            userDefaults.removeObject(forKey: "siri_default_route_id_v1")
+            userDefaults.removeObject(forKey: "siri_route_names_v1")
+            userDefaults.removeObject(forKey: "siri_route_names_v2")
         }
         #endif
         loadJourneys()
@@ -52,7 +55,9 @@ final class JourneyStore: ObservableObject {
     private func saveJourneys() {
         do {
             let data = try JSONEncoder().encode(journeys)
+            SiriRouteStore.shared.preserveLegacyNames()
             userDefaults.set(data, forKey: journeysKey)
+            SiriRouteStore.shared.refresh()
             WidgetCenter.shared.reloadAllTimelines()
         } catch {
             // Ignore encoding error for now

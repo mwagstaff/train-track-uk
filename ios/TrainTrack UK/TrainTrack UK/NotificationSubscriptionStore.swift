@@ -126,6 +126,14 @@ final class NotificationSubscriptionService {
 private struct PersistedScheduledJourneyActivation: Codable {
     let subscription: NotificationSubscription
     let stations: [Station]
+    var recoveryGeometries: [PersistedScheduledRecoveryGeometry]? = nil
+}
+
+private struct PersistedScheduledRecoveryGeometry: Codable {
+    let from: String
+    let to: String
+    let stations: [Station]
+    let attemptedAt: Date
 }
 
 @MainActor
@@ -145,6 +153,7 @@ final class NotificationSubscriptionStore: ObservableObject {
     private let scheduledActivationsKey = "scheduledJourneyActivationsV1"
     private var cachedScheduledActivations: [PersistedScheduledJourneyActivation] = []
     private(set) var hasAuthoritativeScheduledActivationCache = false
+    private var isRefreshingRecoveryGeometry = false
 
     // Forward ServerConfigStore changes through this store so that computed
     // properties like canCreateNew (which read from ServerConfigStore) cause
@@ -203,6 +212,7 @@ final class NotificationSubscriptionStore: ObservableObject {
             lastError = nil
             NotificationMuteRequestSender.shared.retryPendingMuteRequests(trigger: "subscription-refresh")
             await syncGeofences()
+            await refreshScheduledRecoveryGeometry()
         } catch {
             lastError = error.localizedDescription
         }
@@ -286,6 +296,7 @@ final class NotificationSubscriptionStore: ObservableObject {
         subscriptions.append(subscription)
         await refreshScheduledActivationCache()
         await syncGeofences()
+        await refreshScheduledRecoveryGeometry()
         await refresh()
         return subscriptions.first(where: { $0.id == subscription.id }) ?? subscription
     }
@@ -293,6 +304,8 @@ final class NotificationSubscriptionStore: ObservableObject {
     func delete(id: String) async throws {
         try await service.deleteSubscription(id: id)
         subscriptions.removeAll { $0.id == id }
+        cachedScheduledActivations.removeAll { $0.subscription.id == id }
+        JourneyTrackingCoordinator.shared.disarm(subscriptionID: id)
         await refreshScheduledActivationCache()
         rescheduleOneOffExpiration()
         var known = knownSubscriptionIDs
@@ -456,10 +469,52 @@ final class NotificationSubscriptionStore: ObservableObject {
 
     var locallyCachedScheduledStations: [String: Station] {
         cachedScheduledActivations.reduce(into: [String: Station]()) { result, activation in
-            for station in activation.stations where station.hasUsableCoordinate {
+            let recoveryStations = activation.recoveryGeometries?.flatMap(\.stations) ?? []
+            for station in activation.stations + recoveryStations where station.hasUsableCoordinate {
                 result[station.crs.uppercased()] = station
             }
         }
+    }
+
+    /// Available before any window starts or any origin departure is detected.
+    func locallyCachedScheduledRecoveryStations(from: String, to: String) -> [Station] {
+        let from = from.uppercased()
+        let to = to.uppercased()
+        let geometry = cachedScheduledActivations.flatMap { $0.recoveryGeometries ?? [] }
+            .filter { $0.from == from && $0.to == to }
+            .max { $0.attemptedAt < $1.attemptedAt }
+        var stations = Array((geometry?.stations ?? []).prefix(2))
+        if let destination = locallyCachedScheduledStations[to] {
+            stations.append(destination)
+        }
+        var seen = Set([from])
+        return stations.filter { $0.hasUsableCoordinate && seen.insert($0.crs.uppercased()).inserted }
+    }
+
+    @discardableResult
+    func armScheduledJourneyForRecoveryFromCache(
+        subscriptionID: String,
+        from: String,
+        to: String,
+        observedAt: Date
+    ) async -> Bool {
+        let receivedAt = Date()
+        guard let activation = cachedScheduledActivations.first(where: { $0.subscription.id == subscriptionID }) else { return false }
+        let windows = activation.subscription.legs.filter {
+            $0.enabled && $0.from.caseInsensitiveCompare(from) == .orderedSame
+                && $0.to.caseInsensitiveCompare(to) == .orderedSame
+        }.compactMap {
+            NotificationScheduleActivationPolicy.windowForRouteRecovery(
+                for: activation.subscription, leg: $0, observedAt: observedAt, receivedAt: receivedAt
+            )
+        }
+        guard let window = windows.max(by: { $0.start < $1.start }) else { return false }
+        // The reference selects the candidate's original window only. The actual
+        // downstream observation is recorded separately by JourneyTrackingCoordinator.
+        let occurrenceReference = min(observedAt, window.end.addingTimeInterval(-0.001))
+        return await armScheduledJourneyFromCache(
+            subscriptionID: subscriptionID, from: from, to: to, now: occurrenceReference
+        )
     }
 
     @discardableResult
@@ -469,6 +524,7 @@ final class NotificationSubscriptionStore: ObservableObject {
         to: String,
         now: Date = Date()
     ) async -> Bool {
+        let receivedAt = Date()
         var resolvedActivation: (activation: PersistedScheduledJourneyActivation, legs: [NotificationLeg])?
         for activation in cachedScheduledActivations {
             if let subscriptionID, activation.subscription.id != subscriptionID {
@@ -480,7 +536,10 @@ final class NotificationSubscriptionStore: ObservableObject {
                 to: to,
                 now: now
             )
-            if !legs.isEmpty {
+            if let first = legs.first,
+               NotificationScheduleActivationPolicy.recoverableWindow(
+                   for: activation.subscription, leg: first, observedAt: now, receivedAt: receivedAt
+               ) != nil {
                 resolvedActivation = (activation, legs)
                 break
             }
@@ -519,7 +578,8 @@ final class NotificationSubscriptionStore: ObservableObject {
         await coordinator.arm(
             subscription: activeSubscription,
             source: .scheduled,
-            cachedStationsByCRS: stationsByCRS
+            cachedStationsByCRS: stationsByCRS,
+            now: now
         )
         await syncGeofences()
         return coordinator.armedCandidates.contains {
@@ -630,7 +690,7 @@ final class NotificationSubscriptionStore: ObservableObject {
     private func monitoringSubscriptions() -> [NotificationSubscription] {
         var byID: [String: NotificationSubscription] = [:]
         for subscription in cachedScheduledActivations.map(\.subscription)
-            where !NotificationScheduleExpiry.isExpired(subscription) {
+            where Self.retainsScheduleForRecovery(subscription) {
             byID[subscription.id] = subscription
         }
         for subscription in subscriptions where !NotificationScheduleExpiry.isExpired(subscription) {
@@ -703,7 +763,7 @@ final class NotificationSubscriptionStore: ObservableObject {
         }
         hasAuthoritativeScheduledActivationCache = true
         cachedScheduledActivations = decoded.filter {
-            !NotificationScheduleExpiry.isExpired($0.subscription)
+            Self.retainsScheduleForRecovery($0.subscription)
         }
     }
 
@@ -720,8 +780,12 @@ final class NotificationSubscriptionStore: ObservableObject {
         let previousByID = Dictionary(uniqueKeysWithValues: cachedScheduledActivations.map {
             ($0.subscription.id, $0)
         })
-        cachedScheduledActivations = subscriptions
-            .filter { !NotificationScheduleExpiry.isExpired($0) }
+        let retainedExpired = cachedScheduledActivations.map(\.subscription).filter { cached in
+            NotificationScheduleExpiry.isExpired(cached) && Self.retainsScheduleForRecovery(cached)
+                && !subscriptions.contains(where: { $0.id == cached.id })
+        }
+        cachedScheduledActivations = (subscriptions + retainedExpired)
+            .filter { Self.retainsScheduleForRecovery($0) }
             .map { subscription in
                 let previousStations = Dictionary(uniqueKeysWithValues: (previousByID[subscription.id]?.stations ?? []).map {
                     ($0.crs.uppercased(), $0)
@@ -733,13 +797,112 @@ final class NotificationSubscriptionStore: ObservableObject {
                     .filter(\.hasUsableCoordinate)
                 return PersistedScheduledJourneyActivation(
                     subscription: subscription,
-                    stations: stations
+                    stations: stations,
+                    recoveryGeometries: previousByID[subscription.id]?.recoveryGeometries?.filter { geometry in
+                        subscription.legs.contains {
+                            $0.enabled && $0.from.uppercased() == geometry.from && $0.to.uppercased() == geometry.to
+                        }
+                    }
                 )
             }
 
+        persistScheduledActivations()
+    }
+
+    private static func retainsScheduleForRecovery(_ subscription: NotificationSubscription, now: Date = Date()) -> Bool {
+        guard let expiration = NotificationScheduleExpiry.expirationDate(for: subscription) else { return true }
+        return now < expiration.addingTimeInterval(StationDetectionPolicy.recoveryLifetime)
+    }
+
+    private func persistScheduledActivations() {
         guard let data = try? JSONEncoder().encode(cachedScheduledActivations) else { return }
         activationDefaults.set(data, forKey: scheduledActivationsKey)
         hasAuthoritativeScheduledActivationCache = true
+    }
+
+    private func refreshScheduledRecoveryGeometry() async {
+        guard !isRefreshingRecoveryGeometry, !Task.isCancelled else { return }
+        let now = Date()
+        var routes: [String: (from: String, to: String)] = [:]
+        for activation in cachedScheduledActivations where !NotificationScheduleExpiry.isExpired(activation.subscription) {
+            for leg in activation.subscription.legs where leg.enabled {
+                let from = leg.from.uppercased()
+                let to = leg.to.uppercased()
+                let previous = activation.recoveryGeometries?.first { $0.from == from && $0.to == to }
+                if let previous, now.timeIntervalSince(previous.attemptedAt) < 24 * 60 * 60 { continue }
+                routes["\(from)_\(to)"] = (from, to)
+            }
+        }
+        guard !routes.isEmpty else { return }
+        isRefreshingRecoveryGeometry = true
+        defer { isRefreshingRecoveryGeometry = false }
+        let stations = StationsService.shared.stations.reduce(into: locallyCachedScheduledStations) { result, station in
+            if station.hasUsableCoordinate { result[station.crs.uppercased()] = station }
+        }
+
+        // Origin and destination conditions are already installed. Bound this optional
+        // enrichment so saving a schedule never depends on a lengthy network response.
+        let work = Task { @MainActor () -> [String: [Station]] in
+            var boards = DeparturesStore.shared.departuresByPair
+            let missingRoutes = routes.filter { (boards[$0.key] ?? []).isEmpty }.map(\.value)
+            if !missingRoutes.isEmpty,
+               let snapshots = try? await NetworkServicePhone.shared.fetchDeparturesAggregated(
+                   pairs: missingRoutes, delayBeforeEachBatch: false
+               ) {
+                for (key, snapshot) in snapshots { boards[key] = snapshot.departures }
+            }
+            guard !Task.isCancelled else { return [:] }
+            let idsByRoute = routes.mapValues { route in
+                Array((boards["\(route.from)_\(route.to)"] ?? []).filter { !$0.isCancelled }.prefix(3).map(\.serviceID))
+            }
+            var details = DeparturesStore.shared.serviceDetailsById
+            let missingIDs = Set(idsByRoute.values.flatMap { $0 }).filter { details[$0] == nil }
+            if !missingIDs.isEmpty,
+               let fetched = try? await NetworkServicePhone.shared.fetchServiceDetailsAggregatedChunked(ids: Array(missingIDs)) {
+                details.merge(fetched) { _, new in new }
+            }
+            guard !Task.isCancelled else { return [:] }
+            var result: [String: [Station]] = [:]
+            for (key, route) in routes {
+                for id in idsByRoute[key] ?? [] {
+                    guard let detail = details[id],
+                          let codes = ScheduledJourneyRecoveryGeometryPolicy.intermediateStationCodes(
+                              in: detail.stationBranches.map { $0.map(\.crs) }, from: route.from, to: route.to
+                          ) else { continue }
+                    result[key] = codes.compactMap { stations[$0] }
+                    break
+                }
+            }
+            return result
+        }
+        let timeout = Task {
+            do { try await Task.sleep(nanoseconds: 20_000_000_000) } catch { return }
+            work.cancel()
+        }
+        defer { timeout.cancel() }
+        let refreshed = await withTaskCancellationHandler {
+            await work.value
+        } onCancel: {
+            work.cancel()
+        }
+        guard !Task.isCancelled else { return }
+        for index in cachedScheduledActivations.indices {
+            var geometries = cachedScheduledActivations[index].recoveryGeometries ?? []
+            for leg in cachedScheduledActivations[index].subscription.legs where leg.enabled {
+                let from = leg.from.uppercased()
+                let to = leg.to.uppercased()
+                let key = "\(from)_\(to)"
+                guard routes[key] != nil else { continue }
+                let previous = geometries.first { $0.from == from && $0.to == to }
+                geometries.removeAll { $0.from == from && $0.to == to }
+                geometries.append(PersistedScheduledRecoveryGeometry(
+                    from: from, to: to, stations: refreshed[key] ?? previous?.stations ?? [], attemptedAt: now
+                ))
+            }
+            cachedScheduledActivations[index].recoveryGeometries = geometries
+        }
+        persistScheduledActivations()
+        await syncGeofences()
     }
 
     private func logGeofenceEligibility(eligible: [NotificationSubscription]) {

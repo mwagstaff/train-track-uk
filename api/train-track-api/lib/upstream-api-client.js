@@ -94,7 +94,7 @@ function getRequestSpacingMsForUrl(url) {
     return normalizeSpacingMs(DEFAULT_GLOBAL_REQUEST_SPACING_MS, 0);
 }
 
-async function waitForRequestSpacing(url) {
+async function waitForRequestSpacing(url, signal) {
     const spacingMs = getRequestSpacingMsForUrl(url);
     if (spacingMs <= 0) {
         return;
@@ -115,19 +115,32 @@ async function waitForRequestSpacing(url) {
 
     hostSpacingTails.set(hostname, previousTail.catch(() => {}).then(() => currentTail));
 
-    await previousTail.catch(() => {});
-
     try {
+        await waitUntilReady(previousTail.catch(() => {}), signal);
         const now = Date.now();
         const nextRequestAtMs = hostNextRequestAtMs.get(hostname) || now;
         const waitMs = Math.max(0, nextRequestAtMs - now);
         if (waitMs > 0) {
-            await sleep(waitMs);
+            await waitUntilReady(sleep(waitMs), signal);
         }
         hostNextRequestAtMs.set(hostname, Date.now() + spacingMs);
     } finally {
         releaseCurrentTail();
     }
+}
+
+function waitUntilReady(promise, signal) {
+    if (!signal) return promise;
+    return new Promise((resolve, reject) => {
+        const cancelled = () => {
+            const error = new Error('Request cancelled');
+            error.code = 'ERR_CANCELED';
+            reject(error);
+        };
+        if (signal.aborted) return cancelled();
+        signal.addEventListener('abort', cancelled, { once: true });
+        promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', cancelled));
+    });
 }
 
 export async function getWithRetry({
@@ -136,7 +149,8 @@ export async function getWithRetry({
     url,
     headers = {},
     maxRetries = DEFAULT_MAX_RETRIES,
-    timeoutMs = DEFAULT_TIMEOUT_MS
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    signal
 }) {
     const method = 'GET';
     const configuredRetries = Number(maxRetries);
@@ -151,10 +165,15 @@ export async function getWithRetry({
     let attempt = 0;
 
     while (attempt <= retries) {
-        await waitForRequestSpacing(url);
+        if (signal?.aborted) {
+            const error = new Error('Request cancelled');
+            error.code = 'ERR_CANCELED';
+            throw error;
+        }
+        await waitForRequestSpacing(url, signal);
         const startedAt = Date.now();
         try {
-            const response = await client.get(url, { headers, timeout: requestTimeoutMs });
+            const response = await client.get(url, { headers, timeout: requestTimeoutMs, signal });
             recordUpstreamApiRequest({
                 api,
                 operation,
@@ -175,7 +194,7 @@ export async function getWithRetry({
                 durationMs: Date.now() - startedAt
             });
 
-            const retryable = shouldRetry(error);
+            const retryable = !signal?.aborted && error?.code !== 'ERR_CANCELED' && shouldRetry(error);
             const hasAttemptsRemaining = attempt < retries;
             const retryReason = retryReasonFromError(error);
             const retryAfterMs = parseRetryAfterMs(error?.response?.headers?.['retry-after']);
@@ -232,7 +251,7 @@ export async function getWithRetry({
                 backoffMs
             });
 
-            await sleep(backoffMs);
+            await waitUntilReady(sleep(backoffMs), signal);
             attempt += 1;
         }
     }

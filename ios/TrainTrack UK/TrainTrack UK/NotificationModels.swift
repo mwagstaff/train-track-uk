@@ -360,7 +360,12 @@ enum NotificationScheduleExpiry {
                 }
                 components.hour = time.hour
                 components.minute = time.minute
-                guard let windowEnd = calendar.date(from: components) else { return nil }
+                guard var windowEnd = calendar.date(from: components) else { return nil }
+                if let start = timeComponents(from: leg.windowStart),
+                   time.hour * 60 + time.minute < start.hour * 60 + start.minute {
+                    guard let followingDay = calendar.date(byAdding: .day, value: 1, to: windowEnd) else { return nil }
+                    windowEnd = followingDay
+                }
                 return calendar.date(byAdding: .minute, value: 1, to: windowEnd)
             }
             .max()
@@ -430,16 +435,89 @@ enum NotificationScheduleActivationPolicy {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> Date? {
-        activationIntervals(
+        activeWindow(for: subscription, leg: leg, now: now, calendar: calendar)?.end
+    }
+
+    /// Resolve the dated occurrence at the observation time, which may precede delivery.
+    static func activeWindow(
+        for subscription: NotificationSubscription,
+        leg: NotificationLeg,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> DateInterval? {
+        activeWindow(
             scheduleKind: subscription.scheduleKind,
             daysOfWeek: subscription.daysOfWeek,
             windowStart: leg.windowStart,
             windowEnd: leg.windowEnd,
             travelDate: leg.travelDate,
             dayWindows: leg.dayWindows,
+            now: now,
+            calendar: calendar
+        )
+    }
+
+    static func activeWindow(
+        scheduleKind: NotificationScheduleKind?,
+        daysOfWeek: [DayOfWeek],
+        windowStart: String,
+        windowEnd: String,
+        travelDate: String?,
+        dayWindows: [String: NotificationTimeWindow]? = nil,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> DateInterval? {
+        activationIntervals(
+            scheduleKind: scheduleKind,
+            daysOfWeek: daysOfWeek,
+            windowStart: windowStart,
+            windowEnd: windowEnd,
+            travelDate: travelDate,
+            dayWindows: dayWindows,
             around: now,
             calendar: calendar
-        ).first { $0.start <= now && now < $0.end }?.end
+        ).first { $0.start <= now && now < $0.end }
+    }
+
+    static func recoverableWindow(
+        for subscription: NotificationSubscription,
+        leg: NotificationLeg,
+        observedAt: Date,
+        receivedAt: Date,
+        calendar: Calendar = .current
+    ) -> DateInterval? {
+        guard observedAt <= receivedAt,
+              receivedAt.timeIntervalSince(observedAt) <= StationDetectionPolicy.recoveryLifetime,
+              let window = activeWindow(for: subscription, leg: leg, now: observedAt, calendar: calendar),
+              receivedAt < window.end.addingTimeInterval(StationDetectionPolicy.recoveryLifetime) else {
+            return nil
+        }
+        return window
+    }
+
+    /// A downstream observation may identify an occurrence after its boarding window.
+    /// This creates a recovery candidate, not evidence that boarding happened in the window.
+    static func windowForRouteRecovery(
+        for subscription: NotificationSubscription,
+        leg: NotificationLeg,
+        observedAt: Date,
+        receivedAt: Date,
+        calendar: Calendar = .current
+    ) -> DateInterval? {
+        guard observedAt <= receivedAt,
+              receivedAt.timeIntervalSince(observedAt) <= StationDetectionPolicy.recoveryLifetime else { return nil }
+        return activationIntervals(
+            scheduleKind: subscription.scheduleKind,
+            daysOfWeek: subscription.daysOfWeek,
+            windowStart: leg.windowStart,
+            windowEnd: leg.windowEnd,
+            travelDate: leg.travelDate,
+            dayWindows: leg.dayWindows,
+            around: observedAt,
+            calendar: calendar
+        ).filter {
+            $0.start <= observedAt && receivedAt < $0.end.addingTimeInterval(StationDetectionPolicy.recoveryLifetime)
+        }.max { $0.start < $1.start }
     }
 
     static func nextStart(
@@ -565,6 +643,22 @@ enum NotificationScheduleActivationPolicy {
         case 6: return .fri
         default: return .sat
         }
+    }
+}
+
+enum ScheduledJourneyRecoveryGeometryPolicy {
+    /// Geometry learned from a calling pattern is only a wake-up hint, never service evidence.
+    static func intermediateStationCodes(in branches: [[String]], from: String, to: String) -> [String]? {
+        let from = from.uppercased()
+        let to = to.uppercased()
+        for branch in branches {
+            let codes = branch.map { $0.uppercased() }
+            guard let start = codes.firstIndex(of: from),
+                  let end = codes.indices.first(where: { $0 > start && codes[$0] == to }) else { continue }
+            var seen = Set([from, to])
+            return Array(codes[(start + 1)..<end].filter { seen.insert($0).inserted }.prefix(2))
+        }
+        return nil
     }
 }
 

@@ -10,6 +10,7 @@ import {
     getMetrics,
     forgetDeviceLastSeen,
     recordJourneyEvent,
+    recordPlannerRequest,
     recordPushTokenRegistration,
     updateJourneyGauges,
     updateNotificationSubscriptionGauges,
@@ -27,6 +28,7 @@ import { ensureMongoIndexes } from './lib/mongo-client.js';
 import { resolveDelayRepayOperator } from './lib/delay-repay-config.js';
 import { getOperatorBrandingConfig } from './lib/operator-branding-config.js';
 import { registerRailwayBackgroundRoutes } from './lib/railway-backgrounds.js';
+import { registerPlannerRoutes } from './lib/planner-routes.js';
 import {
     deleteSubscriptionAuditEventsForDevice,
     startSubscriptionAuditLogMaintenance
@@ -202,6 +204,9 @@ function getApnsConfigurationState() {
 // Use Express to create a server
 const app = express();
 app.use(cors());
+// Parse planner searches before the legacy 1 MB parser so their stricter limit
+// is effective. Existing namespaces keep their established parser and metrics.
+registerPlannerRoutes(app, { recordRequest: recordPlannerRequest, requestMiddleware: metricsMiddleware });
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
@@ -1320,7 +1325,13 @@ app.get('/api/v2/departures/recent/from/:fromStation/to/:toStation*', async (req
 app.get('/api/v2/departures/from/:fromStation/to/:toStation*', async (req, res) => {
     const path = req.path;
     const deviceId = normalizeDeviceId(req.get('X-Device-Token')) || null;
-    const includeStatus = shouldIncludeDepartureStatus(req.query.includeStatus);
+    const requireFresh = shouldIncludeDepartureStatus(req.query.requireFresh);
+    const includeStatus = requireFresh || shouldIncludeDepartureStatus(req.query.includeStatus);
+    const cancellation = new AbortController();
+    const cancelRequest = () => {
+        if (!res.writableEnded) cancellation.abort();
+    };
+    res.once('close', cancelRequest);
 
     // Parse the path to extract multiple from/to pairs
     // Example: /api/v2/departures/from/ECR/to/VIC/from/EUS/to/WFJ
@@ -1361,7 +1372,10 @@ app.get('/api/v2/departures/from/:fromStation/to/:toStation*', async (req, res) 
         // Fetch all journeys in parallel and return as array
         const results = await Promise.all(
             journeyPairs.map(async (pair) => {
-                const data = await getTrainTimes(pair.from, pair.to);
+                const data = await getTrainTimes(pair.from, pair.to, {
+                    requireFresh,
+                    signal: cancellation.signal
+                });
                 const key = `${pair.from}_${pair.to}`;
                 return formatDepartureJourneyResult(key, data, includeStatus);
             })
@@ -1383,7 +1397,8 @@ app.get('/api/v2/departures/from/:fromStation/to/:toStation*', async (req, res) 
             journey_count: journeyPairs.length,
             duration_ms: Date.now() - startedAt
         });
-        res.json(results);
+        if (requireFresh) res.set('Cache-Control', 'private, no-store');
+        if (!cancellation.signal.aborted) res.json(results);
     } catch (error) {
         logDepartureRequest('fetch_v2_failed', req, {
             device_id: deviceId,
@@ -1392,6 +1407,8 @@ app.get('/api/v2/departures/from/:fromStation/to/:toStation*', async (req, res) 
             error: error?.message || error
         });
         throw error;
+    } finally {
+        res.removeListener('close', cancelRequest);
     }
 });
 

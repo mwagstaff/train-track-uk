@@ -43,6 +43,23 @@ const v2RequestsTotal = new client.Counter({
     registers: [register]
 });
 
+const plannerRequestsTotal = new client.Counter({
+    name: 'planner_requests_total',
+    help: 'Scheduled planner requests by operation and HTTP status',
+    labelNames: ['operation', 'status'], registers: [register]
+});
+const plannerRequestDuration = new client.Histogram({
+    name: 'planner_request_duration_ms',
+    help: 'Scheduled planner request duration including queue and date preparation',
+    labelNames: ['operation'], registers: [register],
+    buckets: [25, 100, 250, 500, 1000, 2500, 5000, 15000, 30000]
+});
+
+export function recordPlannerRequest(operation, status, durationMs) {
+    plannerRequestsTotal.inc({ operation, status: String(status) });
+    plannerRequestDuration.observe({ operation }, durationMs);
+}
+
 // Upstream API call metrics (Rail Data APIs etc.)
 const upstreamApiRequestsTotal = new client.Counter({
     name: 'upstream_api_requests_total',
@@ -313,7 +330,9 @@ export function metricsMiddleware(req, res, next) {
 
     res.end = function(...args) {
         const duration = Date.now() - start;
-        const path = req.route ? req.route.path : req.path;
+        const isPlanner = req.originalUrl?.startsWith('/api/v3/journey-planner/');
+        const path = isPlanner && req.route
+            ? `/api/v3/journey-planner${req.route.path}` : req.route ? req.route.path : req.path;
         const status = res.statusCode;
         const method = req.method;
 
@@ -324,6 +343,8 @@ export function metricsMiddleware(req, res, next) {
         } else if (path.startsWith('/api/v2')) {
             apiVersion = 'v2';
             v2RequestsTotal.inc();
+        } else if (isPlanner) {
+            apiVersion = 'v3';
         }
 
         httpRequestsTotal.inc({ method, path, status, api_version: apiVersion });

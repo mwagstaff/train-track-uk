@@ -746,10 +746,12 @@ struct InProgressJourneyView: View {
     ) -> String {
         let legs = record?.legs ?? completion.checkpoint.legs
         let firstLeg = legs.min { $0.plannedLegIndex < $1.plannedLegIndex }
-        let departure = firstLeg?.actualDepartureAt
+        let originDepartureWasMissed = (record?.originDepartureWasMissed
+            ?? completion.checkpoint.originDepartureWasMissed) == true
+        let trackingStartedAt = record?.detectedDepartureAt ?? completion.checkpoint.detectedDepartureAt
+        let departure = originDepartureWasMissed ? trackingStartedAt : firstLeg?.actualDepartureAt
             ?? firstLeg?.detectedDepartureAt
-            ?? record?.detectedDepartureAt
-            ?? completion.checkpoint.detectedDepartureAt
+            ?? trackingStartedAt
         let finalLeg = legs.max { $0.plannedLegIndex < $1.plannedLegIndex }
         let arrival = record?.actualArrivalAt
             ?? finalLeg?.actualArrivalAt
@@ -772,7 +774,8 @@ struct InProgressJourneyView: View {
         } else {
             status = completion.outcome.displayName.lowercased()
         }
-        return "\(clockTime(departure)) → \(clockTime(arrival)) (\(status))"
+        let startLabel = originDepartureWasMissed ? "Tracking started " : ""
+        return "\(startLabel)\(clockTime(departure)) → \(clockTime(arrival)) (\(status))"
     }
 
     private func statusPresentation(group: JourneyGroup) -> (title: String, detail: String, icon: String, color: Color) {

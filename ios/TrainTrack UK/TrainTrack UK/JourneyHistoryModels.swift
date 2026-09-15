@@ -198,7 +198,14 @@ struct JourneyHistoryStationEvent: Codable, Hashable, Identifiable {
     }
 }
 
+struct JourneyRecoveryObservation: Codable, Hashable {
+    let station: Station
+    let observedAt: Date
+}
+
 struct ArmedJourneyHistoryCandidate: Codable, Hashable, Identifiable {
+    static let recoveryRetentionSeconds = StationDetectionPolicy.recoveryLifetime
+
     var id: String { subscriptionId }
     let subscriptionId: String
     let source: JourneyHistorySource
@@ -207,13 +214,33 @@ struct ArmedJourneyHistoryCandidate: Codable, Hashable, Identifiable {
     let activeUntil: Date?
     var originArrivedAt: Date?
     var candidateDepartures: [DepartureV2]
+    var activeFrom: Date? = nil
+    var recoveryObservations: [JourneyRecoveryObservation]? = nil
 
     var isCurrent: Bool {
         isCurrent(at: Date())
     }
 
     func isCurrent(at date: Date) -> Bool {
-        activeUntil.map { $0 > date } ?? true
+        if let activeFrom, date < activeFrom { return false }
+        return activeUntil.map { $0 > date } ?? true
+    }
+
+    /// Retention allows replay of an observation from this occurrence; it does not
+    /// extend the period in which a new journey can begin.
+    func isRetained(at date: Date = Date()) -> Bool {
+        if let activeFrom, date < activeFrom { return false }
+        guard source == .scheduled, let activeUntil else { return isCurrent(at: date) }
+        return date < activeUntil.addingTimeInterval(Self.recoveryRetentionSeconds)
+    }
+
+    func isEligibleDeparture(at observedAt: Date, receivedAt: Date = Date()) -> Bool {
+        guard isRetained(at: receivedAt),
+              StationDetectionPolicy.isRecoverableObservation(recordedAt: observedAt, now: receivedAt) else { return false }
+        if isCurrent(at: observedAt) { return true }
+        guard source == .scheduled, let originArrivedAt, let activeUntil,
+              isCurrent(at: originArrivedAt), observedAt >= originArrivedAt else { return false }
+        return observedAt < activeUntil.addingTimeInterval(Self.recoveryRetentionSeconds)
     }
 
     mutating func inheritBoardingEvidence(from other: ArmedJourneyHistoryCandidate, now: Date = Date()) {
@@ -253,6 +280,9 @@ struct ActiveJourneyHistoryCheckpoint: Codable, Hashable, Identifiable {
     var serviceDepartedStationCRS: String?
     var serviceDepartedStationAt: Date?
     var updatedAt: Date
+    var lastProcessedLocationTimestamp: Date? = nil
+    var originDepartureWasMissed: Bool? = nil
+    var scheduleOccurrenceStart: Date? = nil
 
     var plannedOrigin: Station { plannedStations.first! }
     var plannedDestination: Station { plannedStations.last! }
@@ -333,6 +363,7 @@ final class JourneyHistoryRecord {
     var legsData: Data
     var stationEventsData: Data
     var resumeCheckpointData: Data?
+    var originDepartureWasMissed: Bool?
 
     init(
         checkpoint: ActiveJourneyHistoryCheckpoint,
@@ -353,6 +384,7 @@ final class JourneyHistoryRecord {
         recordedDestinationCRS = recordedDestination.crs
         recordedDestinationName = recordedDestination.name
         detectedDepartureAt = checkpoint.detectedDepartureAt
+        originDepartureWasMissed = checkpoint.originDepartureWasMissed
         detectedArrivalAt = checkpoint.detectedArrivalAt
         deviceBasedArrivalAt = checkpoint.deviceBasedArrivalAt
         scheduledArrivalAt = finalLeg?.scheduledArrivalAt
@@ -910,7 +942,7 @@ enum JourneyHistoryExporter {
                     record.plannedOriginName,
                     record.plannedDestinationName,
                     record.recordedDestinationName,
-                    dateString(record.detectedDepartureAt),
+                    record.originDepartureWasMissed == true ? "" : dateString(record.detectedDepartureAt),
                     dateString(record.detectedArrivalAt),
                     dateString(record.scheduledArrivalAt),
                     dateString(record.actualArrivalAt),

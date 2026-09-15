@@ -563,7 +563,9 @@ private struct JourneyHistoryRow: View {
             }
 
             HStack(spacing: 6) {
-                Text(JourneyHistoryClockTime.text(record.detectedDepartureAt))
+                Text(record.originDepartureWasMissed == true
+                    ? "Tracking started \(JourneyHistoryClockTime.text(record.detectedDepartureAt))"
+                    : JourneyHistoryClockTime.text(record.detectedDepartureAt))
                 Image(systemName: "arrow.right")
                     .accessibilityHidden(true)
                 if let arrival = JourneyHistoryRowArrivalPolicy.resolve(
@@ -1121,7 +1123,13 @@ struct JourneyHistoryDetailView: View {
                 }
                 LabeledContent("Source", value: record.source.displayName)
                 LabeledContent("Outcome", value: record.outcome.displayName)
-                LabeledContent("Departed", value: record.detectedDepartureAt.formatted(date: .abbreviated, time: .shortened))
+                LabeledContent(
+                    record.originDepartureWasMissed == true ? "Tracking started" : "Departed",
+                    value: record.detectedDepartureAt.formatted(date: .abbreviated, time: .shortened)
+                )
+                if record.originDepartureWasMissed == true {
+                    LabeledContent("Origin departure", value: "Not detected")
+                }
             } header: {
                 RailwayBackgroundSectionHeader(title: "Journey")
             }

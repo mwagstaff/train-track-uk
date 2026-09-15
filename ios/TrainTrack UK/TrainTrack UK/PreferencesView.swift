@@ -103,6 +103,15 @@ struct PreferencesView: View {
     var body: some View {
         Form {
             Section {
+                NavigationLink {
+                    SiriShortcutsSettingsView()
+                } label: {
+                    Label("Siri & Shortcuts", systemImage: "waveform")
+                }
+                .accessibilityIdentifier("preferences.siri-shortcuts")
+            }
+
+            Section {
                 Toggle(NotificationType.summary.displayName, isOn: notificationTypeBinding(.summary))
                 Toggle(NotificationType.delays.displayName, isOn: notificationTypeBinding(.delays))
                 Toggle(NotificationType.platform.displayName, isOn: notificationTypeBinding(.platform))

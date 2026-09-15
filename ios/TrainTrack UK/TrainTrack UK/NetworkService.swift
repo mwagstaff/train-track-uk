@@ -189,6 +189,7 @@ enum PhoneNetworkError: Error, LocalizedError {
     case decodingError
     case noData
     case networkError(Error)
+    case httpStatus(Int)
 
     var errorDescription: String? {
         switch self {
@@ -196,6 +197,7 @@ enum PhoneNetworkError: Error, LocalizedError {
         case .decodingError: return "Decode error"
         case .noData: return "No data"
         case .networkError(let e): return e.localizedDescription
+        case .httpStatus(let status): return "The train service returned HTTP \(status)."
         }
     }
 }
@@ -268,7 +270,9 @@ final class NetworkServicePhone {
 
     func fetchDeparturesAggregated(
         pairs: [(from: String, to: String)],
-        delayBeforeEachBatch: Bool = true
+        delayBeforeEachBatch: Bool = true,
+        requireFresh: Bool = false,
+        timeout: TimeInterval? = nil
     ) async throws -> [String: JourneyDeparturesSnapshot] {
         guard !pairs.isEmpty else { return [:] }
         let chunkSize = max(1, maxDeparturePairsPerRequest)
@@ -281,7 +285,8 @@ final class NetworkServicePhone {
             if delayBeforeEachBatch {
                 try await sleepBeforeDepartureBatch()
             }
-            let partial = try await fetchDeparturesBatch(pairs: chunk)
+            try Task.checkCancellation()
+            let partial = try await fetchDeparturesBatch(pairs: chunk, requireFresh: requireFresh, timeout: timeout)
             for (key, value) in partial {
                 combined[key] = value
             }
@@ -291,20 +296,27 @@ final class NetworkServicePhone {
         return combined
     }
 
-    private func fetchDeparturesBatch(pairs: [(from: String, to: String)]) async throws -> [String: JourneyDeparturesSnapshot] {
+    private func fetchDeparturesBatch(
+        pairs: [(from: String, to: String)],
+        requireFresh: Bool,
+        timeout: TimeInterval?
+    ) async throws -> [String: JourneyDeparturesSnapshot] {
         guard !pairs.isEmpty else { return [:] }
         let path = pairs.map { "from/\($0.from)/to/\($0.to)" }.joined(separator: "/")
         guard var components = URLComponents(string: "\(base)/departures/\(path)") else {
             throw PhoneNetworkError.invalidURL
         }
         components.queryItems = [URLQueryItem(name: "includeStatus", value: "true")]
+        if requireFresh {
+            components.queryItems?.append(URLQueryItem(name: "requireFresh", value: "true"))
+        }
         guard let url = components.url else { throw PhoneNetworkError.invalidURL }
         var request = URLRequest(url: url)
+        if let timeout { request.timeoutInterval = timeout }
         request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw PhoneNetworkError.noData
-        }
+        guard let http = response as? HTTPURLResponse else { throw PhoneNetworkError.noData }
+        guard (200..<300).contains(http.statusCode) else { throw PhoneNetworkError.httpStatus(http.statusCode) }
 
         if let items = try? jsonDecoder.decode([[String: JourneyDeparturesSnapshot]].self, from: data) {
             return items.reduce(into: [:]) { result, item in
@@ -349,7 +361,8 @@ final class NetworkServicePhone {
 
     func fetchServiceDetailsAggregated(
         ids: [String],
-        context: ServiceDetailsLookupContext? = nil
+        context: ServiceDetailsLookupContext? = nil,
+        timeout: TimeInterval? = nil
     ) async throws -> [String: ServiceDetails] {
         guard !ids.isEmpty else { return [:] }
         let path = ids.joined(separator: "/")
@@ -359,9 +372,11 @@ final class NetworkServicePhone {
         components.queryItems = context?.queryItems
         guard let url = components.url else { throw PhoneNetworkError.invalidURL }
         var request = URLRequest(url: url)
-        request.timeoutInterval = 10
+        request.timeoutInterval = timeout ?? 10
         request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw PhoneNetworkError.noData }
+        guard (200..<300).contains(http.statusCode) else { throw PhoneNetworkError.httpStatus(http.statusCode) }
         let arrAny = try JSONSerialization.jsonObject(with: data, options: [])
         let arr = arrAny as? [[String: Any]] ?? []
         var result: [String: ServiceDetails] = [:]

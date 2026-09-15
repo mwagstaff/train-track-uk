@@ -293,3 +293,7 @@ scripts/.osm-routing-venv/
 tools/railway-backgrounds/published/
 tools/railway-backgrounds/candidates/
 tools/unsplash-images/review-images/
+
+# Authorised timetable source files and generated planner datasets
+api/train-track-api/resources/timetable_full/
+api/train-track-api/var/planner/

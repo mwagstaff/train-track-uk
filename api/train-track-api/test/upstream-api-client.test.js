@@ -58,3 +58,21 @@ test('a request can use a shorter timeout than the shared client default', async
         await stopServer(server);
     }
 });
+
+test('cancelling an upstream request stops it without a retry', async () => {
+    let requestCount = 0;
+    const controller = new AbortController();
+    const { server, url } = await startServer(() => {
+        requestCount += 1;
+        controller.abort();
+    });
+    try {
+        await assert.rejects(getWithRetry({
+            api: 'test', operation: 'cancel', url,
+            maxRetries: 3, timeoutMs: 1000, signal: controller.signal
+        }), (error) => error?.code === 'ERR_CANCELED');
+        assert.equal(requestCount, 1);
+    } finally {
+        await stopServer(server);
+    }
+});

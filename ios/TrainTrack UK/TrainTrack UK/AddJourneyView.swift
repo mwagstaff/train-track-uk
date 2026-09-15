@@ -1,3 +1,4 @@
+import CoreLocation
 import SwiftUI
 
 struct AddJourneyView: View {
@@ -10,11 +11,15 @@ struct AddJourneyView: View {
     @State private var postScheduleTab: Tab?
     @State private var isSaving = false
     @State private var isStartingOneOff = false
+    @State private var stationCatalogue = StationsService.shared.stations
+    @State private var recentStationSuggestions: [Station] = []
+    @StateObject private var location = LocationManagerPhone()
 
     @EnvironmentObject var router: TabRouter
     @EnvironmentObject var depStore: DeparturesStore
     @EnvironmentObject var activityMgr: LiveActivityManager
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
+    @EnvironmentObject var historyStore: JourneyHistoryStore
 
     @AppStorage("liveActivityDurationMinutes") private var liveActivityDurationMinutes: Int = 60
 
@@ -139,11 +144,16 @@ struct AddJourneyView: View {
             .scrollContentBackground(.hidden)
             .onAppear {
                 loadStations()
+                refreshRecentStations()
+                location.request()
                 if router.addJourneyPrefillFavourite {
                     markAsFavorite = true
                     router.addJourneyPrefillFavourite = false
                 }
                 updateFocus(for: router.selected)
+            }
+            .onChange(of: historyStore.records.map(\.id)) {
+                refreshRecentStations()
             }
             .onChange(of: scrollTarget) { _, target in
                 guard let target else { return }
@@ -200,7 +210,11 @@ struct AddJourneyView: View {
     }
 
     private func loadStations() {
-        Task { try? await StationsService.shared.loadStations() }
+        Task {
+            try? await StationsService.shared.loadStations()
+            stationCatalogue = StationsService.shared.stations
+            refreshRecentStations()
+        }
     }
 
     private func save() {
@@ -335,7 +349,7 @@ struct AddJourneyView: View {
     private func resolveQueryToStation(_ query: String) -> Station? {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        let all = StationsService.shared.stations
+        let all = stationCatalogue.isEmpty ? StationsService.shared.stations : stationCatalogue
         if all.isEmpty { return nil }
         // Try CRS exact match first
         if let exactCRS = all.first(where: { $0.crs.caseInsensitiveCompare(trimmed) == .orderedSame }) {
@@ -346,7 +360,7 @@ struct AddJourneyView: View {
             return exactName
         }
         // Fallback to first search result
-        return StationsService.shared.search(trimmed).first
+        return StationsService.search(trimmed, in: all).first
     }
 
     private func addStop(_ placement: JourneyStopPlacement) {
@@ -433,7 +447,13 @@ struct AddJourneyView: View {
                     focusedField = focus
                 }
             } else {
-                StationSuggestions(query: input.wrappedValue.query) { station in
+                StationSuggestions(
+                    query: input.wrappedValue.query,
+                    stations: stationCatalogue,
+                    currentLocation: location.lastKnownCoordinate,
+                    recentStations: recentStationSuggestions,
+                    isActive: focusedField == focus
+                ) { station in
                     input.wrappedValue.selected = station
                     input.wrappedValue.query = station.name
                     focusedField = nextFocus
@@ -453,6 +473,25 @@ struct AddJourneyView: View {
         } header: {
             RailwayBackgroundSectionHeader(title: title)
         }
+    }
+
+    private func refreshRecentStations() {
+        let catalogueByCRS = Dictionary(
+            stationCatalogue.map { ($0.crs.uppercased(), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let stationSequences = historyStore.records
+            .sorted { $0.completedAt > $1.completedAt }
+            .map { record -> [Station] in
+                let legs = record.legs.sorted { $0.plannedLegIndex < $1.plannedLegIndex }
+                if let firstLeg = legs.first {
+                    return [firstLeg.fromStation] + legs.map(\.toStation)
+                }
+                return [record.plannedOriginCRS, record.plannedDestinationCRS].compactMap {
+                    catalogueByCRS[$0.uppercased()]
+                }
+            }
+        recentStationSuggestions = StationSuggestionPolicy.recentStations(from: stationSequences)
     }
 
     private func stationFieldAccessibilityIdentifier(for field: Field) -> String {
@@ -518,12 +557,57 @@ private struct StationInput: Identifiable {
     }
 }
 
+struct StationSuggestionPolicy {
+    static let defaultNearbyCount = 3
+    static let defaultRecentCount = 10
+
+    struct NearbyStation: Identifiable {
+        let station: Station
+        let distance: CLLocationDistance
+
+        var id: String { station.crs.uppercased() }
+    }
+
+    static func nearbyStations(
+        in stations: [Station],
+        from coordinate: CLLocationCoordinate2D
+    ) -> [NearbyStation] {
+        let currentLocation = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        var seen = Set<String>()
+        return stations
+            .filter { station in
+                station.hasUsableCoordinate && seen.insert(station.crs.uppercased()).inserted
+            }
+            .map { NearbyStation(station: $0, distance: $0.distance(from: currentLocation)) }
+            .sorted { lhs, rhs in
+                if lhs.distance == rhs.distance {
+                    return lhs.station.name.localizedCaseInsensitiveCompare(rhs.station.name) == .orderedAscending
+                }
+                return lhs.distance < rhs.distance
+            }
+    }
+
+    static func recentStations(from stationSequences: [[Station]]) -> [Station] {
+        var seen = Set<String>()
+        return stationSequences.flatMap { $0 }.filter {
+            seen.insert($0.crs.uppercased()).inserted
+        }
+    }
+}
+
 private struct StationSuggestions: View {
     let query: String
+    let stations: [Station]
+    let currentLocation: CLLocationCoordinate2D?
+    let recentStations: [Station]
+    let isActive: Bool
     var onSelect: (Station) -> Void
 
+    @State private var showsAllNearby = false
+    @State private var showsAllRecent = false
+
     var matches: [Station] {
-        let results = StationsService.shared.search(query)
+        let results = StationsService.search(query, in: stations)
         var seen = Set<String>()
         return results.filter { station in
             let key = station.crs.uppercased()
@@ -531,30 +615,137 @@ private struct StationSuggestions: View {
         }
     }
 
+    private var nearbyStations: [StationSuggestionPolicy.NearbyStation] {
+        guard let currentLocation else { return [] }
+        return StationSuggestionPolicy.nearbyStations(in: stations, from: currentLocation)
+    }
+
+    private var visibleNearbyStations: [StationSuggestionPolicy.NearbyStation] {
+        Array(nearbyStations.prefix(
+            showsAllNearby ? nearbyStations.count : StationSuggestionPolicy.defaultNearbyCount
+        ))
+    }
+
+    private var visibleRecentStations: [Station] {
+        Array(recentStations.prefix(
+            showsAllRecent ? recentStations.count : StationSuggestionPolicy.defaultRecentCount
+        ))
+    }
+
     var body: some View {
-        if !query.isEmpty {
+        if query.isEmpty && isActive {
+            nearbySuggestions
+            recentSuggestions
+        } else if !query.isEmpty {
             if matches.isEmpty {
                 Text("No matching stations")
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(matches) { station in
-                    Button {
-                        onSelect(station)
-                    } label: {
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(station.name)
-                                    .foregroundStyle(.primary)
-                                Text(station.crs)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                        }
-                    }
+                    stationButton(station)
                 }
             }
         }
+    }
+
+    @ViewBuilder
+    private var nearbySuggestions: some View {
+        Label("Nearby stations", systemImage: "location.fill")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+
+        if currentLocation == nil {
+            Text("Allow location access to see the closest stations.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        } else if nearbyStations.isEmpty {
+            Text("No nearby stations available.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        } else {
+            ForEach(visibleNearbyStations) { nearby in
+                stationButton(nearby.station, detail: distanceText(nearby.distance))
+            }
+            if nearbyStations.count > StationSuggestionPolicy.defaultNearbyCount {
+                expansionButton(
+                    isExpanded: showsAllNearby,
+                    showTitle: "Show all nearby stations",
+                    hideTitle: "Show fewer nearby stations"
+                ) {
+                    showsAllNearby.toggle()
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var recentSuggestions: some View {
+        Label("Recently used", systemImage: "clock.arrow.circlepath")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+
+        if recentStations.isEmpty {
+            Text("Stations from completed journeys will appear here.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        } else {
+            ForEach(visibleRecentStations) { station in
+                stationButton(station)
+            }
+            if recentStations.count > StationSuggestionPolicy.defaultRecentCount {
+                expansionButton(
+                    isExpanded: showsAllRecent,
+                    showTitle: "Show all recently used stations",
+                    hideTitle: "Show fewer recently used stations"
+                ) {
+                    showsAllRecent.toggle()
+                }
+            }
+        }
+    }
+
+    private func stationButton(_ station: Station, detail: String? = nil) -> some View {
+        Button {
+            onSelect(station)
+        } label: {
+            HStack {
+                VStack(alignment: .leading) {
+                    Text(station.name)
+                        .foregroundStyle(.primary)
+                    Text(station.crs)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let detail {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+    }
+
+    private func expansionButton(
+        isExpanded: Bool,
+        showTitle: String,
+        hideTitle: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(
+                isExpanded ? hideTitle : showTitle,
+                systemImage: isExpanded ? "chevron.up" : "chevron.down"
+            )
+            .font(.subheadline)
+        }
+    }
+
+    private func distanceText(_ distance: CLLocationDistance) -> String {
+        let miles = distance / 1_609.344
+        if miles < 0.1 { return "<0.1 mi" }
+        return miles.formatted(.number.precision(.fractionLength(1))) + " mi"
     }
 }
 

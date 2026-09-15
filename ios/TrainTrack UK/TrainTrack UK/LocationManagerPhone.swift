@@ -96,6 +96,7 @@ final class LocationManagerPhone: NSObject, ObservableObject, CLLocationManagerD
                 ud.set(loc.coordinate.latitude, forKey: "widget_last_lat")
                 ud.set(loc.coordinate.longitude, forKey: "widget_last_lng")
                 ud.set(loc.timestamp.timeIntervalSince1970, forKey: "widget_last_loc_ts")
+                ud.set(loc.horizontalAccuracy, forKey: "widget_last_horizontal_accuracy")
             }
         }
     }

@@ -22,7 +22,8 @@ export function formatDepartureJourneyResult(key, data, includeStatus = false) {
         [key]: {
             departures,
             data_status: dataStatus,
-            last_successful_update: data?.lastSuccessfulUpdate || null
+            last_successful_update: data?.lastSuccessfulUpdate || null,
+            ...(data?.siri ? { siri: data.siri } : {})
         }
     };
 }

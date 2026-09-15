@@ -1,368 +1,94 @@
 # Station Arrival Detection Strategy
 
-This document describes the background arrival-detection strategy used by TrainTrack UK to decide when a user has reached the starting station for an active "journey updates" session.
+TrainTrack UK detects visits to a journey’s starting station even when the app has remained in the background for days. A confirmed arrival keeps journey updates running while the user remains at the station; departure ends or mutes the matching updates according to the user’s settings.
 
-The goal is to make station-arrival detection reliable enough to:
+The implementation is in `NotificationGeofenceManager.swift`, `StationDetectionPolicy.swift`, and `JourneyTrackingCoordinator.swift` in the app target. Scheduled monitoring also uses `NotificationScheduleActivationPolicy` and the locally cached subscriptions in `NotificationSubscriptionStore`.
 
-- confirm that the user reached the starting station
-- keep journey updates active while the user remains at the station
-- mute notifications and optionally end the matching Live Activity once the user leaves the 250m station area
+## Background lifecycle
 
-The implementation lives in [NotificationGeofenceManager.swift](./TrainTrack%20UK/NotificationGeofenceManager.swift).
+Automatic monitoring uses a named `CLMonitor` and locally persisted station targets. Region conditions are the primary wake mechanism. Significant-location-change events and bounded location requests provide additional observations; scheduled timers and pushes are not prerequisites for detecting a station visit.
 
-## Why This App Needs More Than Geofencing
+The app holds a `CLServiceSession(authorization: .always)` while automatic monitoring remains enabled. This expresses the feature’s authorization requirement; it does not itself request continuous GPS sampling or show a persistent background-activity indicator. The initial session starts while the app is in the foreground. On every later launch, the app promptly recreates the service session, opens the same monitor, and resumes consuming events before waiting for network data.
 
-Simple region entry handling was not reliable enough on its own. The app now uses a named
-`CLMonitor`, whose condition records and last-observed states persist across launches.
+Apple preserves outstanding Core Location sessions across suspension and system termination, but only gives the relaunched app a short period to reclaim them. An Always permission shown in Settings is therefore insufficient on its own: session restoration and a live event consumer must also be correct. [Apple’s session lifecycle guidance](https://sosumi.ai/videos/play/wwdc2024/10212)
 
-Practical issues:
+`CLBackgroundActivitySession` has a different purpose. It extends in-use access with a visible indicator and may support an explicit journey or short precision attempt. A new session must start in the foreground; a background launch can only rejoin an existing session. With Always authorization, automatic scheduled monitoring does not hold one from schedule creation for days or weeks. The degraded When In Use mode may retain a visible background session, but cannot provide the same unattended relaunch behavior as Always authorization. [Background activity sessions](https://sosumi.ai/documentation/corelocation/clbackgroundactivitysession-3mzv3), [background updates](https://sosumi.ai/documentation/corelocation/handling-location-updates-in-the-background)
 
-- iOS region events can arrive late or not at all
-- the app can be cold-launched from a region event with very little execution time
-- Reduced Accuracy location permission makes region monitoring unreliable
-- a user may already be inside the region when monitoring starts
-- train stations are larger than bike docks, but they are still small enough that GPS noise matters
+## Station conditions and geometry
 
-For TrainTrack UK the pattern is therefore a **two-ring geofence** plus a homing heuristic:
+Each selected station coordinate has two primary conditions:
 
-1. **Inner "arrival" ring (~150m, primary).** Entering it is treated as arrival directly.
-   A region boundary crossing reliably wakes even a suspended or terminated app, so this
-   path does **not** depend on continuous background updates surviving the approach — which
-   is the failure mode the homing heuristic alone cannot cover (iOS grants only a brief wake
-   after a geofence event and may re-suspend the app before it homes in, especially once the
-   app has been dormant for a day or two).
-2. **Outer "approach" ring (~250m).** Wakes the app, starts a bounded precision sample,
-   and drives departure detection on exit.
-3. **Homing heuristic (secondary).** While the outer ring is active, judge arrival using
-   both raw distance and the reported horizontal-accuracy envelope, with a short confirmation
-   dwell before arming station-exit cleanup. This still confirms arrival when continuous
-   updates do survive, and complements the inner ring. Arrival confirmation is idempotent, so
-   whichever path fires first wins and the other is a no-op.
+- **Arrival: 150 m.** A satisfied condition supplies direct evidence of station presence. Arrival processing does not require a later continuous location stream.
+- **Departure: 250 m.** Leaving the station area supplies departure evidence after arrival has been established.
 
-## TrainTrack-Specific Adaptation
+A separate **500 m approach condition** gives an earlier opportunity to request a bounded precision sample. Its entry does not confirm arrival and its exit does not enlarge the departure threshold. The existing distance-based arrival heuristic uses a 125 m base threshold.
 
-The original Boris Bikes logic was tuned for cyclists arriving at a very small dock footprint.
+Station coordinates come from the shared station catalogue. Where a station has multiple coordinates, location distance is measured to the nearest coordinate, and departure reasoning considers the union of the monitored station areas. Leaving one anchor’s circle does not mean leaving the whole station. Condition observations carry timestamps and persist across process launches so an old inside state cannot silently become a fresh observation.
 
-TrainTrack UK needs slightly broader thresholds because users may:
+No station-specific coordinates are hardcoded into the detection logic. Additional concourse or platform anchors should be added through the station data only after checking their coverage and false-positive risk. Multiple anchors consume monitoring capacity, so their availability does not guarantee every anchor is currently registered.
 
-- walk to a concourse or side entrance
-- be dropped off at a forecourt or taxi rank
-- park nearby and approach from a larger station perimeter
-- enter a multi-platform station where "arrival" should be recognized before the exact platform area
+Core Location permits at most 20 monitored conditions per app. The app allocates priority station arrival/departure pairs before spending remaining capacity on secondary coordinates and approach conditions. Active journey conditions share the same budget. A larger approach ring improves the opportunity for a wake; it provides no delivery-time guarantee. [Condition monitoring](https://sosumi.ai/documentation/corelocation/monitoring-the-user-s-proximity-to-geographic-regions)
 
-That means this app intentionally allows a larger arrival area than the docking-app version.
+## Observation time and delayed delivery
 
-## Session Model
+The time of an observation and the time it reaches the app are separate values. The app evaluates `CLMonitor.Event.date` and `CLLocation.timestamp` against the relevant journey and schedule; it does not substitute the delivery time.
 
-The app monitors one or more active journey-update legs at a time. Each monitored leg stores:
+For example, an observation recorded at 17:56 and delivered at 18:00 can still establish that the user was at the station during the relevant window. This is historical recovery, not a claim that the user remains at the station at 18:00.
 
-- `subscriptionId`
-- `from` CRS
-- `to` CRS
-- station name
-- station coordinate
-- confirmation state for the current arrival attempt
+The recovery policy:
 
-Monitoring is only active while there are eligible live sessions with `muteOnArrival != false`.
+1. Accepts observations up to 60 minutes old and rejects future observations.
+2. Rejects duplicate or older observations already processed for the same state.
+3. Processes location batches in timestamp order, preserving an earlier arrival followed by a later departure.
+4. Rejects invalid horizontal accuracy, including negative and non-finite values.
+5. Uses observation timestamps for dwell and resets the dwell across gaps longer than 30 seconds.
+6. Persists station condition observations so a process restart does not erase the evidence needed to interpret a later exit. The last observed time and last handled time are stored separately, allowing an interrupted event to replay without processing a completed event twice.
 
-## Permission And Background Requirements
+A `CLMonitor` record contains the last event handled by the app. It is not a fresh position query and does not advance until the app consumes the event. Event timestamps describe observed condition state, not a guaranteed exact time at which a physical boundary was crossed. [Monitor records and event handling](https://sosumi.ai/videos/play/wwdc2023/10147)
 
-The feature prefers Always authorization for the most reliable cold-wake behavior, but will still monitor in a degraded `authorizedWhenInUse` state while continuing to request Always authorization. The app configuration assumes:
+## Bounded precision sampling
 
-- `NSLocationWhenInUseUsageDescription`
-- `NSLocationAlwaysAndWhenInUseUsageDescription`
-- `NSLocationTemporaryUsageDescriptionDictionary`
-- `UIBackgroundModes` includes `location`
-- `allowsBackgroundLocationUpdates = true` only during bounded precision sampling
+A station hint can trigger up to 20 seconds of high-accuracy `CLLocationManager` sampling. The profile requests navigation accuracy, no distance filter, background updates, and disables automatic pausing for the duration of the attempt. Between attempts, the app returns to significant-location-change monitoring and one-shot requests.
 
-When the app detects Reduced Accuracy on iOS 14+, it requests temporary full accuracy using:
+Background high-accuracy delivery remains subject to authorization and the app lifecycle. A precision attempt can improve the evidence but must not be required for a valid arrival condition to advance state. The app does not interpret a failed or interrupted request as evidence that the user is outside the station.
 
-- `accuracyAuthorization`
-- `requestTemporaryFullAccuracyAuthorization(withPurposeKey:)`
+The distance heuristic uses:
 
-Purpose key used by TrainTrack UK:
+- Base arrival threshold: 125 m.
+- Accepted horizontal accuracy: up to 140 m.
+- Activation distance for a precision attempt: 450 m, adjusted for uncertainty.
+- Confirmation dwell: 8 seconds, or 4 seconds after a recent region hint.
+- Confirmation attempt timeout: 150 seconds.
+- Departure fallback: the accuracy envelope lies more than 50 m beyond the 250 m station area for 6 seconds.
 
-- `StationArrivalMonitoring`
+Distance and accuracy are supporting evidence. A broad uncertainty envelope alone must not be reported as a precise arrival time, and a long delivery delay must not be counted as continuous dwell.
 
-This matters because Apple documents that Reduced Accuracy prevents effective region monitoring and ignores higher desired-accuracy settings.
+## Scheduled monitoring
 
-## Tracking Mode
+Enabled recurring schedules must remain represented in the local monitoring plan between their active windows. The next scheduled window cannot depend on an in-process timer, a foreground visit, or a timely push recreating its origin conditions.
 
-While station-arrival monitoring is active, the app uses the same two-stage tracking pattern as the dock-arrival flow in My Boris Bikes:
+Each observation is evaluated against the schedule that applies at its timestamp, including day-specific windows and overnight journeys. Schedule-window validity and delayed-delivery retention are separate decisions. Retaining evidence for recovery does not make an out-of-window visit eligible. If observed station presence begins before the window and extends into it, the app can use the window start as the effective arrival time; it does not require a timer wake at that moment. A visit known to have ended before the window cannot establish arrival for that window, and presence intervals longer than the 60-minute recovery limit are not used for this inference.
 
-1. Use significant-location-change monitoring as the low-power recovery path.
-2. Request a one-shot location on sync and background-push wakes.
-3. Escalate to a maximum 20-second high-sensitivity burst when a region hint arrives or a
-   location fix is plausibly within the station activation distance.
+Origin and destination conditions are available before optional route-geometry enrichment finishes. The local cache can retain up to two downstream intermediate stations from a current service branch, plus the destination. This geometry is refreshed opportunistically and is never evidence that the user caught a particular service. One-off schedules remain available for up to 60 minutes after expiry to evaluate in-window observations; recurring schedules resolve the dated occurrence from the observation time, including weeks after the last foreground session.
 
-The low-power profile uses:
+A missed origin departure can start a partial journey only after two distinct downstream stations are observed in cached route order. The observations must be 15 seconds to 60 minutes apart, station centers at least 300 m apart, and implied average movement between 4 and 100 m/s. Observations must fall within the dated occurrence’s recovery period and remain no more than 60 minutes old when delivered. One destination event alone cannot start a recovered journey.
 
-- significant-location-change monitoring
-- `desiredAccuracy = kCLLocationAccuracyHundredMeters` for one-shot requests
-- `distanceFilter = 100`
-- `activityType = .fitness`
-- `pausesLocationUpdatesAutomatically = true`
+These are conservative recovery heuristics, not proof of a particular train. A recovered record begins at the first observed downstream station, leaves its origin departure undetected, and carries an uncertain outcome. History labels the internal start time “Tracking started” instead of “Departed”. An active checkpoint and local station data restore these conditions without needing a network request during launch.
 
-The high-sensitivity confirmation profile uses:
+## Diagnostics and verification
 
-- `desiredAccuracy = kCLLocationAccuracyBestForNavigation`
-- `distanceFilter = kCLDistanceFilterNone`
-- `activityType = .otherNavigation`
-- `pausesLocationUpdatesAutomatically = false`
-- `allowsBackgroundLocationUpdates = true`
-- `showsBackgroundLocationIndicator = true`
-- maximum burst duration = `20s`
+Log the observation timestamp, delivery timestamp, age, condition identifier, target route, and whether the observation was accepted or rejected. Include the reason for a rejection so delayed delivery can be distinguished from invalid authorization, stale data, a duplicate, or an ineligible schedule.
 
-This avoids continuous GPS use between station decisions. `CLBackgroundActivitySession` is
-held only for a precision burst, except when the user granted only When In Use authorization.
+On iOS 18+, inspect service-session and condition-event diagnostics, including authorization denial, insufficient in-use access, a required service session, accuracy limitations, condition limits, unsupported conditions, and persistence failures. Temporary full accuracy requests use the `StationArrivalMonitoring` purpose key when foregrounded. The app configuration includes the When In Use and Always usage descriptions and the location background mode.
 
-## Role Of Region Monitoring
+Automated tests cover delayed delivery, ordering and deduplication, invalid data, observation-gap dwell, persisted region state, schedule windows, and monitoring-condition limits. These tests verify app decisions, not iOS wake timing.
 
-Condition monitoring is still enabled, but it is not the only detector.
+Physical-device checks must cover:
 
-The app enforces Core Location's 20-condition limit. It reserves an inner/outer pair for
-each highest-priority journey before adding secondary coordinates, prioritising journeys
-awaiting departure, then nearby and soonest-expiring journeys.
+- A normal station visit after the app has stayed backgrounded overnight and across several schedule windows.
+- A system-terminated app restored by location events without network access.
+- An entry and exit delivered together, and events delivered after a schedule window ends.
+- A multi-coordinate station, including exit from one anchor while still inside another.
+- Reduced Accuracy, authorization changes, reboot and first unlock, and user force quit as distinct scenarios.
 
-Current role:
-
-- wake the app when iOS delivers an entry event
-- handle the "already inside" case through `didDetermineState(.inside)`
-- provide a secondary hint that reduces the confirmation dwell slightly
-- continue supporting departure-geofence behavior for Live Activity auto-end
-
-Important rule:
-
-- region entry does not mute immediately
-
-An inner-ring entry confirms arrival and arms departure cleanup immediately. Outer-ring entry
-and inside events:
-
-1. resolve the persisted local target
-2. start a bounded precision burst if required
-3. record a region hint
-4. re-run the same arrival heuristic against the latest usable location
-
-## Arrival Heuristic
-
-Each accepted `CLLocation` is evaluated against every monitored station.
-
-The app computes:
-
-- `rawDistance`
-- `horizontalAccuracy`
-- `compensatedDistance = max(0, rawDistance - horizontalAccuracy)`
-- `effectiveArrivalThreshold`
-
-### Accepted Accuracy
-
-TrainTrack UK ignores fixes with poor accuracy.
-
-Current setting:
-
-- baseline = `arrivalThreshold + 50m`
-- clamp to `60m ... 140m`
-
-With the current threshold this yields a practical acceptance cap of `140m`.
-
-### Base Arrival Threshold
-
-Current setting:
-
-- base arrival threshold = `125m`
-
-This is intentionally wider than the docking-app version because a station approach area is larger and the user experience is better if the app confirms arrival early and waits for station exit rather than missing arrival.
-
-### Threshold Expansion
-
-The app expands the threshold when GPS is noisy.
-
-Current setting:
-
-- add `60%` of excess uncertainty above the base threshold
-- cap expansion at `45m`
-
-So the threshold can grow from `125m` to a maximum of `134m` within the current accepted-accuracy cap.
-
-### Candidate Rule
-
-The location becomes an arrival candidate when:
-
-- `min(rawDistance, compensatedDistance) <= effectiveArrivalThreshold`
-
-This lets the app treat the destination as plausibly reached when the uncertainty envelope overlaps the station strongly enough, instead of trusting the reported point estimate as exact ground truth.
-
-## Confirmation Logic
-
-The app does not fire on the first plausible fix.
-
-Current settings:
-
-- activation distance = `450m`
-- standard dwell = `8s`
-- dwell after a recent region hint = `4s`
-- confirmation timeout = `150s`
-- reset hysteresis = `20m`
-
-Interpretation:
-
-- once the user is reasonably near the station, a plausible fix starts confirmation
-- if qualifying fixes continue long enough, arrival is confirmed
-- if the user clearly moves back away from the station, confirmation resets
-- if the app keeps receiving only poor-quality fixes for too long, confirmation times out and restarts later
-
-The dwell is still short because long dwells tend to increase missed arrivals more than they reduce false positives for this workflow.
-
-## Cold-Wake Behavior
-
-`CLMonitor` persists condition records across launches. TrainTrack also persists the matching
-route and station target locally so a cold wake never needs the stations API before recording
-an arrival or departure.
-
-On launch, the app then:
-
-1. restores persisted targets from the app-group store
-2. promptly recreates the Always service session and named monitor event sequence
-3. ignores old replayed condition events rather than treating a persisted state as a new crossing
-4. starts the low-power recovery path and evaluates the latest usable location when available
-
-This makes region events useful even when the app process was previously dead.
-
-## Session Start
-
-When a journey-updates session becomes geofence-eligible:
-
-1. load the station list if needed
-2. build monitored targets from active live sessions, letting an explicit journey override a
-   scheduled route from the same origin
-3. request Always authorization if needed
-4. request temporary full accuracy if the app is active and accuracy is reduced
-5. start significant-change monitoring and request one current location
-6. add prioritized `CLMonitor` conditions within the 20-condition budget
-7. assume outside when adding a new condition so an already-inside correction produces an event
-
-## Each Location Update
-
-For each new `CLLocation`:
-
-1. reject negative or stale fixes
-2. reject fixes worse than the accepted-accuracy cap
-3. compute raw distance
-4. compute compensated distance
-5. compute the effective threshold
-6. start or continue confirmation if the location qualifies
-7. confirm arrival when the dwell requirement is satisfied
-
-## Session End
-
-When all monitored live sessions disappear:
-
-1. stop significant-change and precision location updates
-2. remove obsolete monitor conditions
-3. invalidate the background activity session if nothing remains
-4. clear in-memory confirmation state
-
-Arrival confirmation keeps monitoring active and arms station-exit cleanup:
-
-1. clear the pending-arrival health marker
-2. mark the leg as awaiting station-exit cleanup
-3. continue Live Activity and notification updates while the user remains within 250m
-4. on outer-region exit, mark the leg muted locally and send the backend terminate request
-5. optionally stop the matching Live Activity, depending on the user's auto-end setting
-6. remove matching notification live-session records locally
-
-## Current TrainTrack UK Tunables
-
-These are the active values in `NotificationGeofenceManager`:
-
-- outer (approach) region radius: `250m`
-- inner (arrival) region radius: `150m`
-- base arrival threshold (homing heuristic): `125m`
-- activation distance: `450m`
-- accepted horizontal accuracy: `60m ... 140m`
-- threshold expansion factor: `0.6`
-- max threshold expansion: `45m`
-- standard dwell: `8s`
-- region-hint dwell: `4s`
-- confirmation timeout: `150s`
-- reset hysteresis: `20m`
-- precision sampling burst: at most `20s`
-- departure fallback: accuracy envelope at least `50m` beyond the `250m` outer radius
-- departure confirmation dwell: `6s`
-- persisted departure-state lifetime: `4h`
-- maximum monitored conditions: `20` (two per station coordinate)
-
-## Tuning Guidance
-
-If the app still misses arrivals:
-
-- increase the accepted horizontal-accuracy ceiling
-- increase the maximum threshold expansion
-- reduce dwell slightly
-- increase activation distance
-
-If the app starts confirming arrival too early:
-
-- reduce the base arrival threshold
-- reduce the maximum threshold expansion
-- increase dwell slightly
-- increase reset hysteresis if confirmation is too eager near busy roads or station-adjacent routes
-
-## Resilience Backstops
-
-Continuous background location updates after a region-enter wake are **not guaranteed to
-persist**. iOS grants only a short execution window for a geofence wake and can re-suspend
-the app before the homing step reaches the arrival threshold — especially once the app has
-been dormant for a day or two (reduced Background App Refresh budget). When that happens the
-user reaches the station but arrival is never confirmed, and historically this failed
-silently (no station-exit cleanup, no indication anything went wrong).
-
-The **inner arrival ring** (above) is the primary fix: a tight region crossing confirms
-arrival without relying on continuous updates. The two backstops below remain as defence in
-depth for the residual cases where even the inner ring's entry event is delayed or dropped
-(iOS region events are best-effort):
-
-1. **Background-wake re-check** (`refreshArrivalFromBackgroundWake`) — every background push
-   requests a fresh location even when no entry event was observed, recovering completely
-   missed entries. After arrival, the same path conservatively confirms a missed exit when
-   `distance - accuracy` remains at least 50m beyond the outer radius for 6 seconds.
-
-2. **Missed-arrival health notification** — when the user **enters** the origin geofence we
-   set a pending-arrival marker (`NotificationMuteStorage.markArrivalDetectionPending`),
-   cleared when arrival is confirmed (`armDepartureCleanupAfterArrival`). If the marker survives to the
-   region **exit** (they reached and left the station without us detecting arrival) — or to a
-   later wake more than 5 minutes after entry — we post a clear, tappable notification
-   (`ARRIVAL_DETECTION_HEALTH` category, `arrival_detection_failed` alert type). Tapping it
-   reopens the app, which re-arms monitoring via the foreground subscription/geofence sync
-   (`NotificationAlertHandler.reArmArrivalDetection`). The marker is consumed atomically so
-   the notification fires at most once per leg per day. The marker is set on outer-region
-   entry and on outer-region `didDetermineState(.inside)`, because scheduled starts can
-   register monitoring after the user is already inside the station area. It is not set from
-   inner arrival-region state alone, which avoids false positives for users whose home is
-   already inside the station geofence.
-
-## Apple APIs Worth Reviewing
-
-- [`CLLocationManager.allowsBackgroundLocationUpdates`](https://developer.apple.com/documentation/corelocation/cllocationmanager/allowsbackgroundlocationupdates)
-- [`CLLocationManager.desiredAccuracy`](https://developer.apple.com/documentation/corelocation/cllocationmanager/desiredaccuracy)
-- [`CLLocationManager.activityType`](https://developer.apple.com/documentation/corelocation/cllocationmanager/activitytype)
-- [`CLLocationManager.pausesLocationUpdatesAutomatically`](https://developer.apple.com/documentation/corelocation/cllocationmanager/pauseslocationupdatesautomatically)
-- [`CLLocationManager.accuracyAuthorization`](https://developer.apple.com/documentation/corelocation/cllocationmanager/accuracyauthorization)
-- [`CLLocationManager.requestTemporaryFullAccuracyAuthorization(withPurposeKey:)`](https://developer.apple.com/documentation/corelocation/cllocationmanager/requesttemporaryfullaccuracyauthorization(withpurposekey:))
-- [`CLMonitor`](https://developer.apple.com/documentation/corelocation/clmonitor-2r51v)
-- [`CLBackgroundActivitySession`](https://developer.apple.com/documentation/corelocation/clbackgroundactivitysession-3mzv3)
-
-## Short Version
-
-For reliable station-arrival detection on iOS:
-
-- use a tight inner geofence as the primary arrival trigger — a region crossing reliably
-  wakes even a suspended/terminated app, so it does not depend on continuous updates
-- do not rely on continuous background location updates surviving a geofence wake; treat the
-  homing heuristic as a secondary confirmation, not the primary path
-- request full accuracy when possible
-- account for GPS uncertainty explicitly in the homing heuristic
-- keep confirmation short, but not instantaneous
-- surface silent failures to the user rather than failing quietly
-
-That is the strategy TrainTrack UK now uses for muting journey updates after the user reaches and then leaves the starting station.
+Apple controls when conditions are observed and when an app is woken. Region events may be delayed or unavailable; no radius guarantees a notification at the instant of arrival. Reboot and user force quit are different from ordinary background suspension and must not be advertised as unconditional recovery cases. Monitor restoration should be checked after the first unlock following reboot. [Apple’s region guidance](https://sosumi.ai/documentation/corelocation/monitoring-the-user-s-proximity-to-geographic-regions)

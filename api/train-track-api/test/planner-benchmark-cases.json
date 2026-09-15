@@ -1,0 +1,16 @@
+[
+  { "origin": "KTH", "destination": "VIC", "time": "2026-09-08T07:00:00+01:00", "timeType": "departAfter" },
+  { "origin": "KTH", "destination": "VIC", "time": "2026-09-08T07:00:01+01:00", "timeType": "departAfter" },
+  { "origin": "KTH", "destination": "BTN", "time": "2026-09-08T07:00:00+01:00", "timeType": "departAfter" },
+  { "origin": "BHM", "destination": "EDB", "time": "2026-09-08T07:00:00+01:00", "timeType": "departAfter" },
+  { "origin": "KTH", "destination": "VIC", "time": "2026-09-08T09:00:00+01:00", "timeType": "arriveBy" },
+  { "origin": "KTH", "destination": "BTN", "time": "2026-09-08T10:00:00+01:00", "timeType": "arriveBy" },
+  { "origin": "BHM", "destination": "EDB", "time": "2026-09-08T14:00:00+01:00", "timeType": "arriveBy" },
+  { "origin": "MAN", "destination": "LDS", "time": "2026-09-12T09:00:00+01:00", "timeType": "departAfter" },
+  { "origin": "VIC", "destination": "BTN", "time": "2026-09-08T23:00:00+01:00", "timeType": "departAfter" },
+  { "origin": "VIC", "destination": "BTN", "time": "2026-09-09T02:00:00+01:00", "timeType": "arriveBy" },
+  { "origin": "KTH", "destination": "INV", "time": "2026-09-15T15:10:00+01:00", "timeType": "departAfter" },
+  { "origin": "KTH", "destination": "INV", "time": "2026-09-15T16:00:00+01:00", "timeType": "departAfter" },
+  { "origin": "KTH", "destination": "INV", "time": "2026-09-15T16:05:00+01:00", "timeType": "departAfter" },
+  { "origin": "KTH", "destination": "INV", "time": "2026-09-16T09:00:00+01:00", "timeType": "arriveBy" }
+]

@@ -30,12 +30,16 @@ nonisolated enum NotificationMuteStorage {
     }
 
     static func currentDateKey() -> String {
+        dateKey(for: Date())
+    }
+
+    static func dateKey(for date: Date) -> String {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_GB")
         formatter.timeZone = TimeZone.current
         formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date())
+        return formatter.string(from: date)
     }
 
     static func legKey(from: String, to: String) -> String {

@@ -143,7 +143,7 @@ struct ContentView: View {
             RailwayBackgroundViewer(asset: railwayBackgroundStore.selectedAsset)
         }
         .fullScreenCover(isPresented: addJourneyPresented) {
-            NavigationStack { AddJourneyView() }
+            NavigationStack { AddJourneyEntryView() }
         }
         .fullScreenCover(item: $deepLink.routeMapDestination) { destination in
             JourneyRouteMapDeepLinkView(destination: destination)

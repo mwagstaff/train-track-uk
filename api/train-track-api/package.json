@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "./.dev.sh",
     "start": "node index.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "test:planner": "node --test test/planner-*.test.js",
+    "planner": "node scripts/planner.js"
   },
   "author": "Mike Wagstaff",
   "license": "ISC",

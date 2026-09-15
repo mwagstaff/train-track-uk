@@ -3,6 +3,15 @@ import { getWithRetry } from './upstream-api-client.js';
 import { testServiceHarness } from './test-service-harness.js';
 
 import { recentDeparturesRepository } from './recent-departures-repository.js';
+import {
+    boardObservation,
+    departureObservation,
+    mergedBoardObservation,
+    qualifySiriResult,
+    SIRI_DEPARTURE_DEADLINE_MS,
+    unavailableSiriResult,
+    waitForSiriResult
+} from './siri-departure-policy.js';
 
 // Cache the most recent known platform for a service so we can keep showing it
 // when upstream drops platform data very close to departure.
@@ -38,7 +47,21 @@ if (typeof platformCacheCleanupTimer.unref === 'function') {
     platformCacheCleanupTimer.unref();
 }
 
-export async function getTrainTimes(from, to) {
+export async function getTrainTimes(from, to, { requireFresh = false, signal } = {}) {
+    if (requireFresh) {
+        if (!from || !to) return unavailableSiriResult('invalidRoute');
+        if (signal?.aborted) return unavailableSiriResult('cancelled');
+        const key = journeyRequestKey(from, to);
+        const cached = qualifySiriResult(getStaleJourneyResult(key));
+        if (!cached.siri.failureReason) return cached;
+        const refresh = inFlightJourneyRequests.get(key)
+            || startJourneyRefresh(key, from, to, { requireFresh: true });
+        return waitForSiriResult(refresh, { signal });
+    }
+    return withoutSiriMetadata(await getCachedTrainTimes(from, to));
+}
+
+async function getCachedTrainTimes(from, to) {
     if (!from || !to) {
         return { error: `Missing from (${from}) or to (${to}) parameter` };
     }
@@ -121,13 +144,20 @@ export function refreshPastDepartures(from, to) {
     return promise;
 }
 
-function startJourneyRefresh(key, from, to) {
+function startJourneyRefresh(key, from, to, { requireFresh = false } = {}) {
     if (inFlightJourneyRequests.has(key)) {
         return inFlightJourneyRequests.get(key);
     }
 
+    // A voice-initiated refresh has a fixed budget, including time in the queue.
+    // Its signal is owned by the shared refresh, not by any individual waiter.
+    const controller = requireFresh ? new AbortController() : null;
+    const timeout = controller
+        ? setTimeout(() => controller.abort(), SIRI_DEPARTURE_DEADLINE_MS)
+        : null;
     const promise = enqueueJourneyRefresh(async () => {
-        const result = await fetchJourneyResult(from, to);
+        if (controller?.signal.aborted) return unavailableSiriResult('timeout');
+        const result = await fetchJourneyResult(from, to, { requireFresh, signal: controller?.signal });
         if (isSuccessfulJourneyResult(result)) {
             setRecentJourneyResult(key, result);
         } else {
@@ -135,6 +165,7 @@ function startJourneyRefresh(key, from, to) {
         }
         return result;
     }).finally(() => {
+        clearTimeout(timeout);
         inFlightJourneyRequests.delete(key);
     });
 
@@ -175,11 +206,11 @@ function normalizedJourneyRefreshConcurrency() {
     return Math.max(1, Math.trunc(JOURNEY_REFRESH_CONCURRENCY));
 }
 
-async function fetchJourneyResult(from, to) {
+async function fetchJourneyResult(from, to, options = {}) {
     // Only fetch now and future; past cache refresh is handled separately
     const [departuresNow, departuresFuture] = await Promise.all([
-        getLiveDepartureBoard(from, to, 0),
-        getLiveDepartureBoard(from, to, 119)
+        getLiveDepartureBoard(from, to, 0, options),
+        getLiveDepartureBoard(from, to, 119, options)
     ]);
 
     const result = mergeJourneyDepartureResponses(departuresNow, departuresFuture);
@@ -199,10 +230,12 @@ async function fetchJourneyResult(from, to) {
     const uniqueDepartures = Array.from(uniqueByService.values());
 
     applyPlatformFallbackCache(uniqueDepartures, from, to);
-    try {
-        await recentDeparturesRepository.recordDepartures(from, to, uniqueDepartures);
-    } catch (error) {
-        console.warn(`Failed to persist recent departures for ${from} -> ${to}: ${error?.message || error}`);
+    if (!options.requireFresh) {
+        try {
+            await recentDeparturesRepository.recordDepartures(from, to, uniqueDepartures);
+        } catch (error) {
+            console.warn(`Failed to persist recent departures for ${from} -> ${to}: ${error?.message || error}`);
+        }
     }
 
     return {
@@ -218,13 +251,17 @@ export function mergeJourneyDepartureResponses(
 ) {
     const nowSucceeded = Array.isArray(departuresNow?.departures) && !departuresNow?.error;
     const futureSucceeded = Array.isArray(departuresFuture?.departures) && !departuresFuture?.error;
+    const metadata = departuresNow?.siri || departuresFuture?.siri || departuresNow?.failureReason || departuresFuture?.failureReason
+        ? { siri: mergedBoardObservation([departuresNow, departuresFuture], lastSuccessfulUpdate) }
+        : {};
 
     if (!nowSucceeded && !futureSucceeded) {
         return {
             departures: [],
             dataStatus: JOURNEY_DATA_STATUS.UNAVAILABLE,
             lastSuccessfulUpdate: null,
-            error: 'Failed to get data from API'
+            error: 'Failed to get data from API',
+            ...metadata
         };
     }
 
@@ -236,12 +273,13 @@ export function mergeJourneyDepartureResponses(
         dataStatus: nowSucceeded && futureSucceeded
             ? JOURNEY_DATA_STATUS.LIVE
             : JOURNEY_DATA_STATUS.PARTIAL,
-        lastSuccessfulUpdate
+        lastSuccessfulUpdate,
+        ...metadata
     };
 }
 
 // Fetches data from the live departure board API to provide upcoming departures
-async function getLiveDepartureBoard(from, to, offset) {
+async function getLiveDepartureBoard(from, to, offset, { requireFresh = false, signal } = {}) {
     if (!from || !to) {
         return { error: `Missing from (${from}) or to (${to}) parameter` };
     }
@@ -252,6 +290,8 @@ async function getLiveDepartureBoard(from, to, offset) {
             api: 'rail_departure_board',
             operation: 'get_departure_board',
             url,
+            ...(requireFresh ? { maxRetries: 0, timeoutMs: SIRI_DEPARTURE_DEADLINE_MS } : {}),
+            signal,
             headers: {
                 'x-apikey': process.env.LIVE_DEPARTURE_BOARD_API_KEY
             }
@@ -260,14 +300,19 @@ async function getLiveDepartureBoard(from, to, offset) {
         if (elapsed > 5000) {
             console.warn(`Slow upstream: ${from}->${to} offset=${offset} took ${elapsed}ms`);
         }
-        return parseResponseDataLiveDepartureBoard(response.data);
+        return parseResponseDataLiveDepartureBoard(response.data, { requestedOffsetMinutes: offset });
     } catch (error) {
         const status = error?.response?.status;
         const statusText = error?.response?.statusText;
         const code = error?.code;
         const message = error?.message;
         console.error(`Failed to get data from API for journey ${from} to ${to} with offset ${offset} (code=${code || 'n/a'}, status=${status || 'n/a'} ${statusText || ''}): ${message || ''}`);
-        return { error: 'Failed to get data from API' };
+        const failureReason = signal?.aborted || code === 'ECONNABORTED' || code === 'ETIMEDOUT'
+            ? 'timeout'
+            : status === 429 ? 'rateLimited'
+                : status === 401 || status === 403 ? 'authentication'
+                    : !status ? 'connectivity' : 'upstream';
+        return { error: 'Failed to get data from API', failureReason };
     }
 }
 
@@ -281,9 +326,13 @@ function getEstimatedDepartureTime(scheduled, estimated) {
 }
 
 // Parse the response data to strip out unnecessary fields
-export async function parseResponseDataLiveDepartureBoard(data) {
+export async function parseResponseDataLiveDepartureBoard(data, {
+    requestedOffsetMinutes = 0,
+    fetchedAt = new Date().toISOString()
+} = {}) {
 
     let departures = [];
+    const siri = boardObservation(data, requestedOffsetMinutes, fetchedAt);
 
     try {
         // In the data, iterate through each object in the trainServices array and extract the relevant fields
@@ -296,7 +345,7 @@ export async function parseResponseDataLiveDepartureBoard(data) {
                         ...(trainService.atd ? { actual: trainService.atd } : {})
                     },
                     operator: trainService.operator,
-                    serviceType: trainService.serviceType,
+                    serviceType: trainService.serviceType || 'train',
                     delayReason: trainService.delayReason,
                     cancelReason: trainService.cancelReason,
                     platform: trainService.platform,
@@ -307,7 +356,8 @@ export async function parseResponseDataLiveDepartureBoard(data) {
                         crs: trainService.origin[0].crs,
                         locationName: trainService.origin[0].locationName
                     },
-                    serviceID: trainService.serviceID
+                    serviceID: trainService.serviceID,
+                    siri: departureObservation(trainService, siri)
                 }
             });
         }
@@ -321,7 +371,7 @@ export async function parseResponseDataLiveDepartureBoard(data) {
                         estimated: getEstimatedDepartureTime(busService.std, busService.etd),
                         ...(busService.atd ? { actual: busService.atd } : {})
                     },
-                    serviceType: busService.serviceType,
+                    serviceType: busService.serviceType || 'bus',
                     delayReason: busService.delayReason,
                     cancelReason: busService.cancelReason,
                     platform: busService.platform,
@@ -330,15 +380,16 @@ export async function parseResponseDataLiveDepartureBoard(data) {
                     destination: {
                         locationName: busService.destination[0].locationName
                     },
-                    serviceID: busService.serviceID
+                    serviceID: busService.serviceID,
+                    siri: departureObservation(busService, siri)
                 }
             }));
         }
 
-        return { departures };
+        return { departures, siri };
     } catch (error) {
         console.error(`Failed to parse response data: ${error}`);
-        return { error: 'Failed to parse response data', error };
+        return { error: 'Failed to parse response data', failureReason: 'malformed' };
     }
 }
 
@@ -377,15 +428,26 @@ function cloneJourneyResult(result) {
 
     return {
         ...result,
+        ...(result.siri ? { siri: { ...result.siri } } : {}),
         departures: Array.isArray(result.departures)
             ? result.departures.map((departure) => ({
                 ...departure,
+                ...(departure.siri ? { siri: { ...departure.siri } } : {}),
                 departure_time: departure?.departure_time ? { ...departure.departure_time } : departure?.departure_time,
                 destination: clonePlaces(departure?.destination),
                 origin: departure?.origin ? { ...departure.origin } : departure?.origin
             }))
             : result.departures
     };
+}
+
+function withoutSiriMetadata(result) {
+    if (!result || typeof result !== 'object') return result;
+    const { siri, ...legacy } = result;
+    if (Array.isArray(legacy.departures)) {
+        legacy.departures = legacy.departures.map(({ siri: observation, ...departure }) => departure);
+    }
+    return legacy;
 }
 
 function clonePlaces(value) {
@@ -547,6 +609,7 @@ function applyPlatformFallbackCache(departures, from, to) {
         if (currentPlatform) {
             platformFallbackCache.set(key, {
                 platform: currentPlatform,
+                observedAt: departure.siri?.providerObservedAt || null,
                 fallbackActive: false,
                 lastUpdatedAtMs: nowMs
             });
@@ -565,6 +628,10 @@ function applyPlatformFallbackCache(departures, from, to) {
         }
 
         departure.platform = cached.platform;
+        if (departure.siri) {
+            departure.siri.platformSource = 'retained';
+            departure.siri.platformObservedAt = cached.observedAt || null;
+        }
         platformFallbackCache.set(key, {
             ...cached,
             fallbackActive: true,
