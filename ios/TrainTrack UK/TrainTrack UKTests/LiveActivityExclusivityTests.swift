@@ -97,6 +97,80 @@ struct LiveActivityDismissalPolicyTests {
     }
 }
 
+struct LiveActivityInProgressUpdatePolicyTests {
+    @Test
+    func staleLocalOnTimeResultDoesNotReplaceDelayedServerEstimate() {
+        let current = state(
+            estimated: "08:06",
+            delayMinutes: 2,
+            statusText: "Currently 3 minutes late",
+            revision: 50
+        )
+        let candidate = state(
+            estimated: "08:03",
+            delayMinutes: 0,
+            statusText: "Currently on time",
+            revision: 50
+        )
+
+        let reconciled = LiveActivityInProgressUpdatePolicy.reconcilingLocalUpdate(
+            candidate,
+            with: current
+        )
+
+        #expect(reconciled.estimated == "08:06")
+        #expect(reconciled.delayMinutes == 2)
+        #expect(reconciled.statusText == "Currently 3 minutes late")
+    }
+
+    @Test
+    func localRefreshCanReportAnIncreasingDelay() {
+        let current = state(
+            estimated: "08:06",
+            delayMinutes: 2,
+            statusText: "Currently 3 minutes late",
+            revision: 50
+        )
+        let candidate = state(
+            estimated: "08:09",
+            delayMinutes: 5,
+            statusText: "Currently 6 minutes late",
+            revision: 50
+        )
+
+        let reconciled = LiveActivityInProgressUpdatePolicy.reconcilingLocalUpdate(
+            candidate,
+            with: current
+        )
+
+        #expect(reconciled.estimated == "08:09")
+        #expect(reconciled.delayMinutes == 5)
+        #expect(reconciled.statusText == "Currently 6 minutes late")
+    }
+
+    private func state(
+        estimated: String,
+        delayMinutes: Int,
+        statusText: String,
+        revision: Int?
+    ) -> JourneyActivityAttributes.ContentState {
+        JourneyActivityAttributes.ContentState(
+            fromCRS: "KTH",
+            toCRS: "VIC",
+            destinationTitle: "London Victoria",
+            arrivalLabel: "Departed 07:44",
+            scheduledDeparture: "07:42",
+            length: 8,
+            platform: "TBC",
+            estimated: estimated,
+            statusText: statusText,
+            delayMinutes: delayMinutes,
+            revision: revision,
+            journeyPhase: .enRoute
+        )
+    }
+}
+
 struct JourneyActivityLifecycleStoreTests {
     @Test
     func remoteStartCanSeedDismissalStateBeforeTheAppDiscoversTheActivity() {

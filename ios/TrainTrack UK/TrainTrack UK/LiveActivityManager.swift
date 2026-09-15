@@ -51,6 +51,28 @@ enum LiveActivityDismissalPolicy {
     }
 }
 
+enum LiveActivityInProgressUpdatePolicy {
+    static func reconcilingLocalUpdate(
+        _ candidate: JourneyActivityAttributes.ContentState,
+        with current: JourneyActivityAttributes.ContentState
+    ) -> JourneyActivityAttributes.ContentState {
+        guard candidate.journeyPhase == .enRoute,
+              current.journeyPhase == .enRoute,
+              current.revision != nil,
+              candidate.delayMinutes < current.delayMinutes else {
+            return candidate
+        }
+
+        // A local service-detail response can briefly fall back to “On time”.
+        // Let the timestamped server stream own improvements once it is established.
+        var reconciled = candidate
+        reconciled.estimated = current.estimated
+        reconciled.delayMinutes = current.delayMinutes
+        reconciled.statusText = current.statusText
+        return reconciled
+    }
+}
+
 #if DEBUG
 enum DebugJourneySimulationError: LocalizedError {
     case liveActivitiesDisabled
@@ -450,6 +472,10 @@ final class LiveActivityManager: ObservableObject {
                 }
 
                 guard let leg = currentLeg else {
+                    state = LiveActivityInProgressUpdatePolicy.reconcilingLocalUpdate(
+                        state,
+                        with: activity.content.state
+                    )
                     await activity.update(ActivityContent(state: state, staleDate: nil))
                     JourneyActivityLifecycleStore.update(activityID: activity.id, state: state)
                     continue
@@ -497,6 +523,10 @@ final class LiveActivityManager: ObservableObject {
                 }
             }
 
+            state = LiveActivityInProgressUpdatePolicy.reconcilingLocalUpdate(
+                state,
+                with: activity.content.state
+            )
             await activity.update(ActivityContent(state: state, staleDate: nil))
             JourneyActivityLifecycleStore.update(activityID: activity.id, state: state)
 
