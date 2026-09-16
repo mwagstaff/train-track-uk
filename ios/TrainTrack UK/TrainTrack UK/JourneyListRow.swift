@@ -506,51 +506,29 @@ struct JourneyCard: View {
 
     @ViewBuilder
     private func departureRow(_ summary: Summary) -> some View {
-        ZStack(alignment: .trailing) {
-            VStack(alignment: .leading, spacing: 8) {
-                VStack(alignment: .leading, spacing: 0) {
-                    if dynamicTypeSize.isAccessibilitySize {
-                        departureTiming(summary)
-                        HStack(spacing: 12) {
-                            platform(for: summary.firstDeparture, cancellation: summary.cancellation)
-                            departureStatus(summary)
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.top, 8)
-                    } else {
-                        HStack(alignment: .top, spacing: 12) {
-                            departureTiming(summary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            platform(for: summary.firstDeparture, cancellation: summary.cancellation)
-                            departureStatus(summary)
-                                .frame(minWidth: 86, alignment: .leading)
-                        }
-                    }
-
-                    departureDetails(summary)
+        DepartureSummaryRow {
+            departureTiming(summary)
+        } platform: {
+            platform(for: summary.firstDeparture, cancellation: summary.cancellation)
+        } status: {
+            departureStatus(summary)
+        } details: {
+            departureDetails(summary)
+        } footer: {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 8) {
+                    detailedStatusView(summary)
+                    operatorLabel(for: summary.firstDeparture)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                 }
-
-                if dynamicTypeSize.isAccessibilitySize {
-                    VStack(alignment: .leading, spacing: 8) {
-                        detailedStatusView(summary)
-                        operatorLabel(for: summary.firstDeparture)
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                    }
-                } else {
-                    HStack(alignment: .bottom, spacing: 8) {
-                        detailedStatusView(summary)
-                        Spacer(minLength: 8)
-                        operatorLabel(for: summary.firstDeparture)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+            } else {
+                HStack(alignment: .bottom, spacing: 8) {
+                    detailedStatusView(summary)
+                    Spacer(minLength: 8)
+                    operatorLabel(for: summary.firstDeparture)
                 }
+                .frame(maxWidth: .infinity, alignment: .trailing)
             }
-            .padding(.trailing, 20)
-
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.tertiary)
-                .accessibilityHidden(true)
         }
     }
 
@@ -876,7 +854,7 @@ struct TrainLengthIndicator: View {
                 }
                 Text("x\(carCount)")
                     .monospacedDigit()
-                    .foregroundStyle(carCount <= warningThreshold ? Color.yellow : Color.secondary)
+                    .foregroundStyle(carCount <= warningThreshold ? Color.plannerWarningText : Color.primary.opacity(0.65))
             }
             .font(.system(size: 8, weight: .medium))
             .frame(height: 9, alignment: .leading)

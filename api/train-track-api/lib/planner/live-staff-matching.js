@@ -5,6 +5,7 @@ const london = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', yea
 const list = value => Array.isArray(value) ? value : [];
 const specified = (value, field) => value[`${field}Specified`] !== false && value[field] != null;
 const identity = (uid, date, operator) => `${uid}|${date}|${operator}`;
+const publicCall = location => !location.isPass && !location.isOperational && !location.isOperationalCall;
 
 // Staff timestamps without an offset are London wall times, not the Node
 // process's local zone. Keep dates and seconds; reject repeated autumn hours.
@@ -39,7 +40,7 @@ function originDate(value) {
 function publicLocations(item, station) {
     if (item.isPassengerService === false || item.isDeleted === true || item.isOperationalCall === true) return null;
     const locations = [...list(item.previousLocations), { ...item, crs: station }, ...list(item.subsequentLocations)]
-        .filter(location => !location.isPass && !location.isOperational);
+        .filter(publicCall);
     if (locations.some(location => location.serviceIsSupressed === true || location.serviceIsSuppressed === true)) return null;
     return locations;
 }
@@ -60,6 +61,7 @@ function matchesSchedule(service, locations, check) {
 
 function callUpdate(location, call, index, observedAt) {
     const update = { index, observedAt, warnings: [], cancelled: location.isCancelled === true };
+    if (Number.isInteger(location.length) && location.length > 0) update.length = location.length;
     if (location.platformIsHidden === true) update.platform = '';
     else if (typeof location.platform === 'string' && location.platform) update.platform = location.platform;
     if (location.uncertainty) update.warnings.push('This train may be affected by disruption; no confirmed change is available yet.');
@@ -123,10 +125,10 @@ export function matchStaffObservations(network, records, { now = Date.now(), che
             const service = verified[0];
             if (!allowed.has(service.id)) continue;
             const previous = updates.get(service.id);
-            if (previous && previous.observedAt >= observedAt) continue;
+            if (previous && previous.observedAt > observedAt) continue;
             const update = { serviceId: service.id, observedAt, warnings: [],
                 calls: locations.map((location, index) => callUpdate(location, service.calls[index], index, observedAt)) };
-            const anchor = list(item.previousLocations).filter(location => !location.isPass && !location.isOperational).length;
+            const anchor = list(item.previousLocations).filter(publicCall).length;
             const later = update.calls.filter(call => call.index > anchor);
             if (item.futureCancellation && !later.some(call => call.cancelled)) {
                 update.unknownCancellationFromIndex = anchor;
@@ -136,6 +138,26 @@ export function matchStaffObservations(network, records, { now = Date.now(), che
                 || call.arrival > service.calls[call.index].arrival || call.departure > service.calls[call.index].departure)) {
                 update.unknownDelayFromIndex = anchor;
                 update.warnings.push('A delay is reported later on this train, but the affected times are not confirmed.');
+            }
+            if (previous?.observedAt === observedAt) {
+                // Equal-age conflicting responses must not let completion order
+                // clear a cancellation or manufacture a confirmed forecast.
+                for (const call of update.calls) {
+                    const old = previous.calls[call.index];
+                    call.cancelled ||= old.cancelled;
+                    if (old.platform === '') call.platform = '';
+                    for (const direction of ['arrival', 'departure']) {
+                        if (call[direction] !== old[direction] || old[`${direction}Unknown`]) {
+                            delete call[direction];
+                            call[`${direction}Unknown`] = true;
+                        }
+                    }
+                    call.warnings = [...new Set([...old.warnings, ...call.warnings])];
+                }
+                for (const field of ['unknownCancellationFromIndex', 'unknownDelayFromIndex']) {
+                    if (Number.isInteger(previous[field])) update[field] = Math.min(previous[field], update[field] ?? Infinity);
+                }
+                update.warnings = [...new Set([...previous.warnings, ...update.warnings])];
             }
             updates.set(service.id, update);
         }

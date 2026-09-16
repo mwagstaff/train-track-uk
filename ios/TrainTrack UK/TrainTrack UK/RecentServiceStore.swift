@@ -45,7 +45,7 @@ final class RecentServiceStore: ObservableObject {
 
     static func observation(_ departure: DepartureV2, fromCRS: String, toCRS: String, now: Date) -> RecentDepartureV2? {
         // Reading a cached board again does not make its estimates new observations.
-        let observedAt = departure.timestamp ?? now
+        let observedAt = departure.evidenceObservedAt ?? now
         guard let scheduled = JourneyHistoryTime.date(
             for: departure.departureTime.scheduled,
             near: observedAt
@@ -66,7 +66,8 @@ final class RecentServiceStore: ObservableObject {
             actualDepartureAt: JourneyHistoryTime.date(for: departure.departureTime.actual, near: scheduled),
             platform: departure.platform,
             isCancelled: departure.isCancelled,
-            lastObservedAt: observedAt
+            lastObservedAt: observedAt,
+            providerObservedAt: departure.evidenceObservedAt
         )
     }
 
@@ -101,8 +102,15 @@ final class RecentServiceStore: ObservableObject {
     }
 
     static func preferred(_ existing: RecentDepartureV2, _ incoming: RecentDepartureV2) -> RecentDepartureV2 {
-        let newer = incoming.lastObservedAt >= existing.lastObservedAt ? incoming : existing
-        let older = incoming.lastObservedAt >= existing.lastObservedAt ? existing : incoming
+        let incomingIsNewer: Bool
+        switch (incoming.providerObservedAt, existing.providerObservedAt) {
+        case let (incomingAt?, existingAt?): incomingIsNewer = incomingAt >= existingAt
+        case (_?, nil): incomingIsNewer = true
+        case (nil, _?): incomingIsNewer = false
+        case (nil, nil): incomingIsNewer = incoming.lastObservedAt >= existing.lastObservedAt
+        }
+        let newer = incomingIsNewer ? incoming : existing
+        let older = incomingIsNewer ? existing : incoming
         let estimate = newer.estimatedDeparture != nil ? newer : older
         // An actual departure remains evidence even if a later board only supplies a forecast.
         let actual = newer.actualDepartureAt != nil ? newer : older
@@ -119,7 +127,8 @@ final class RecentServiceStore: ObservableObject {
             actualDepartureAt: actual.actualDepartureAt,
             platform: normalized(newer.platform) ?? older.platform,
             isCancelled: newer.isCancelled,
-            lastObservedAt: newer.lastObservedAt
+            lastObservedAt: max(existing.lastObservedAt, incoming.lastObservedAt),
+            providerObservedAt: newer.providerObservedAt
         )
     }
 

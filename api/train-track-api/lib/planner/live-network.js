@@ -75,6 +75,8 @@ export function liveLeg(service, boardIndex, alightIndex) {
             status: cancelled ? 'cancelled' : unknown ? 'unknown' : partCancelled ? 'partCancelled'
                 : departureDelayMinutes > 0 || arrivalDelayMinutes > 0 ? 'delayed' : 'onTime',
             updatedAt: iso(value.observedAt), cancelled, partCancelled, warnings,
+            ...(board.plannerLive?.platform ? { platform: board.plannerLive.platform } : {}),
+            ...(board.plannerLive?.length ? { length: board.plannerLive.length } : {}),
             ...(finite(departure) ? { departure: iso(departure), departureDelayMinutes } : {}),
             ...(finite(arrival) ? { arrival: iso(arrival), arrivalDelayMinutes } : {})
         },
@@ -136,6 +138,8 @@ export function applyLiveSnapshot(network, snapshot, { mode = 'apply', check = (
                 arrivalUnknown: observed?.arrivalUnknown === true, departureUnknown: observed?.departureUnknown === true,
                 confirmed: observed?.confirmed === true || finite(arrival) || finite(departure),
                 warnings: [...(observed?.warnings || [])],
+                ...(typeof observed?.platform === 'string' && observed.platform.trim() ? { platform: observed.platform.trim() } : {}),
+                ...(Number.isInteger(observed?.length) && observed.length > 0 ? { length: observed.length } : {}),
                 ...(finite(arrival) ? { arrival, arrivalDelayMinutes: (arrival - call.arrival) / MINUTE } : {}),
                 ...(finite(departure) ? { departure, departureDelayMinutes: (departure - call.departure) / MINUTE } : {})
             };

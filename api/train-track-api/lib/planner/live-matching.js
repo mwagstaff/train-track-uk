@@ -203,12 +203,12 @@ export function matchLiveObservations(network, { boards = [], details = [] }, { 
             previous.observedAt = Math.min(...Object.values(previous.observationTimes));
             update.calls.set(position, previous);
         };
-        const current = { cancelled: cancelledAtStop(detail) ? true : detail.isCancelled, platform: detail.platform,
+        const current = { cancelled: cancelledAtStop(detail) ? true : detail.isCancelled, platform: detail.platform, length: detail.length,
             warnings: [detail.cancelReason, detail.delayReason].filter(Boolean) };
         eventUpdate(current, 'arrival', service.calls[index].arrival, detail.eta, detail.ata);
         eventUpdate(current, 'departure', service.calls[index].departure, detail.etd, detail.atd);
         put(index, current);
-        const boardCurrent = { cancelled: cancelledAtStop(match.service) ? true : match.service.isCancelled, platform: match.service.platform,
+        const boardCurrent = { cancelled: cancelledAtStop(match.service) ? true : match.service.isCancelled, platform: match.service.platform, length: match.service.length,
             warnings: [match.service.cancelReason, match.service.delayReason].filter(Boolean) };
         eventUpdate(boardCurrent, 'arrival', service.calls[index].arrival, match.service.eta, match.service.ata);
         eventUpdate(boardCurrent, 'departure', service.calls[index].departure, match.service.etd, match.service.atd);
@@ -216,7 +216,8 @@ export function matchLiveObservations(network, { boards = [], details = [] }, { 
         for (const [rows, indices, direction] of [[points.previous, points.before, 'departure'], [points.subsequent, points.after, 'arrival']]) {
             rows.forEach((point, position) => {
                 const callIndex = indices[position];
-                const fields = { cancelled: cancelledAtStop(point) ? true : point.isCancelled, warnings: [point.cancelReason, point.delayReason].filter(Boolean) };
+                const fields = { cancelled: cancelledAtStop(point) ? true : point.isCancelled, platform: point.platform, length: point.length,
+                    warnings: [point.cancelReason, point.delayReason].filter(Boolean) };
                 eventUpdate(fields, direction, service.calls[callIndex][direction], point.et, point.at);
                 put(callIndex, fields);
             });

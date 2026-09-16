@@ -80,8 +80,13 @@ struct PlannerLiveContextView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let live {
-                Label(title(live), systemImage: live.mode == "ignore" || live.status == "outsideWindow" ? "calendar" : "antenna.radiowaves.left.and.right")
-                    .fixedSize(horizontal: false, vertical: true)
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Image(systemName: live.mode == "ignore" || live.status == "outsideWindow" ? "calendar" : "antenna.radiowaves.left.and.right")
+                        .foregroundStyle(Color.plannerActionText)
+                        .accessibilityHidden(true)
+                    Text(title(live))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if live.mode == "ignore" {
                     Text("Journey times use the timetable. Live disruption warnings are still shown.")
                         .font(.caption)
@@ -98,7 +103,7 @@ struct PlannerLiveContextView: View {
                 }
                 if let updatedAt = live.updatedAt {
                     Text("Live information checked \(PlannerTime.display(updatedAt))")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(Color.primary.opacity(0.65))
                 }
                 if let expiresAt = live.expiresAt, expiresAt < Date() {
                     Label("Live information may be out of date. Search again for an update.", systemImage: "exclamationmark.triangle")
@@ -108,7 +113,13 @@ struct PlannerLiveContextView: View {
                     Text(warning).font(.caption)
                 }
             } else {
-                Label("Scheduled times only", systemImage: "calendar")
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Image(systemName: "calendar")
+                        .foregroundStyle(Color.plannerActionText)
+                        .accessibilityHidden(true)
+                    Text("Scheduled times only")
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Text("Live updates are not available for this search.").font(.caption)
             }
         }

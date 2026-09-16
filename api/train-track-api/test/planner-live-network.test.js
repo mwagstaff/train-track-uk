@@ -18,6 +18,25 @@ const request = values => ({ origin: 'AAA', destination: 'DDD', time: iso(0), ti
 const snapshot = services => ({ id: 'live-test', observedAt: zero, expiresAt: time(1), services });
 const ids = result => result.journeys.map(journey => journey.legs.filter(leg => leg.kind === 'vehicle').map(leg => leg.scheduledServiceId || leg.serviceId));
 
+test('departure platform and train length belong to the selected boarding stop in both live modes', () => {
+    const original = network([train('train', [['AAA', null, 0], ['BBB', 10, 11], ['DDD', 20, null]])]);
+    const update = snapshot([{ serviceId: 'train', calls: [
+        { index: 0, departure: time(0), platform: ' 2 ', length: 8 },
+        { index: 1, arrival: time(10), departure: time(11), platform: '', length: 0 },
+        { index: 2, arrival: time(20), platform: '4', length: 4 }
+    ] }]);
+    for (const mode of ['apply', 'ignore']) {
+        const live = applyLiveSnapshot(original, update, { mode });
+        const first = annotateLiveJourney(findJourneys(request(), live).journeys[0], live).legs[0].live;
+        assert.equal(first.platform, '2');
+        assert.equal(first.length, 8);
+        const middle = annotateLiveJourney(findJourneys(request({ origin: 'BBB' }), live).journeys[0], live).legs[0].live;
+        assert.equal(middle.platform, undefined);
+        assert.equal(middle.length, undefined);
+    }
+    assert.equal(original.services[0].calls[0].platform, undefined);
+});
+
 test('fresh immutable indexes include a delayed train scheduled before the query', () => {
     const original = network([train('late', [['AAA', null, -10], ['DDD', 10, null]]),
         train('unaffected', [['XXX', null, 0], ['YYY', 10, null]])]);

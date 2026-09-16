@@ -40,8 +40,8 @@ enum JourneyServiceMatchingPolicy {
                 byID[departure.serviceID] = departure
                 continue
             }
-            let previousIsNewer = previous.timestamp.map { previousAt in
-                departure.timestamp.map { $0 < previousAt } ?? true
+            let previousIsNewer = previous.evidenceObservedAt.map { previousAt in
+                departure.evidenceObservedAt.map { $0 < previousAt } ?? true
             } ?? false
             byID[departure.serviceID] = retainingActualDeparture(
                 in: previousIsNewer ? previous : departure,
@@ -53,7 +53,7 @@ enum JourneyServiceMatchingPolicy {
 
     private static func retainingActualDeparture(in newer: DepartureV2, from older: DepartureV2) -> DepartureV2 {
         guard newer.departureTime.actual == nil, let actual = older.departureTime.actual else { return newer }
-        if let newerAt = newer.timestamp, let olderAt = older.timestamp,
+        if let newerAt = newer.evidenceObservedAt, let olderAt = older.evidenceObservedAt,
            newerAt.timeIntervalSince(olderAt) > 12 * 60 * 60 { return newer }
         return DepartureV2(
             departureTime: DepartureTimeV2(scheduled: newer.departureTime.scheduled,
@@ -93,7 +93,7 @@ enum JourneyServiceMatchingPolicy {
         var candidatesByID: [String: Candidate] = [:]
         for departure in mergedDepartures(originSnapshot: [], currentDepartures: departures) {
             guard let scheduled = JourneyHistoryTime.date(
-                for: departure.departureTime.scheduled, near: departure.timestamp ?? detectedAt
+                for: departure.departureTime.scheduled, near: departure.evidenceObservedAt ?? detectedAt
             ) else { continue }
             let estimated = JourneyHistoryTime.date(for: departure.departureTime.estimated, near: scheduled) ?? scheduled
             let actual = JourneyHistoryTime.date(for: departure.departureTime.actual, near: scheduled)
@@ -113,7 +113,10 @@ enum JourneyServiceMatchingPolicy {
                abs(existingCandidate.scheduledDepartureAt.timeIntervalSince(recent.scheduledDepartureAt)) > 12 * 60 * 60 {
                 continue
             }
-            let boardIsNewer = existing?.timestamp.map { $0 > recent.lastObservedAt } ?? false
+            // A history receipt time cannot make an older provider forecast newer.
+            let boardIsNewer = existing?.evidenceObservedAt.map { boardAt in
+                recent.providerObservedAt.map { boardAt > $0 } ?? true
+            } ?? false
             if recent.actualDepartureAt == nil, boardIsNewer { continue }
             let useBoardActual = existingCandidate?.actualDepartureAt != nil
                 && (boardIsNewer || recent.actualDepartureAt == nil)
@@ -134,7 +137,7 @@ enum JourneyServiceMatchingPolicy {
                 serviceID: recent.serviceID,
                 delayReason: existing?.delayReason,
                 cancelReason: existing?.cancelReason,
-                timestamp: max(existing?.timestamp ?? .distantPast, recent.lastObservedAt),
+                timestamp: boardIsNewer ? existing?.evidenceObservedAt : recent.evidenceObservedAt,
                 operator: existing?.operator,
                 operatorCode: existing?.operatorCode,
                 siri: existing?.siri,
@@ -159,7 +162,7 @@ enum JourneyServiceMatchingPolicy {
                 // "Delayed" gives no departure time. A recently observed train can
                 // still be plausible even when its timetable precedes passenger arrival.
                 return candidate.scheduledDepartureAt <= detectedAt
-                    && (candidate.departure.timestamp.map {
+                    && (candidate.departure.evidenceObservedAt.map {
                         $0 >= detectedAt.addingTimeInterval(-departureDetectionLookback)
                     } ?? true)
             }

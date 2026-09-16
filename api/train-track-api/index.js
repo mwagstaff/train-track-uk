@@ -1096,6 +1096,8 @@ app.post('/api/v2/live_activities/status', async (req, res) => {
         to,
         phase,
         service_id,
+        service_match_confirmed,
+        status_observed_at_ms,
         arrival_time,
         arrival_delay_minutes,
         completed_at
@@ -1112,6 +1114,8 @@ app.post('/api/v2/live_activities/status', async (req, res) => {
             toStation: to || null,
             phase,
             preferredServiceId: typeof service_id === 'string' ? service_id : null,
+            serviceMatchConfirmed: typeof service_match_confirmed === 'boolean' ? service_match_confirmed : null,
+            statusObservedAtMs: typeof status_observed_at_ms === 'number' ? status_observed_at_ms : null,
             arrivalTime: typeof arrival_time === 'string' ? arrival_time : null,
             arrivalDelayMinutes: arrival_delay_minutes,
             completedAt: typeof completed_at === 'string' ? completed_at : null,

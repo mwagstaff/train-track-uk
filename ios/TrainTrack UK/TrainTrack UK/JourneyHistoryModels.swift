@@ -163,6 +163,12 @@ struct JourneyHistoryLeg: Codable, Hashable, Identifiable {
 }
 
 extension JourneyHistoryLeg {
+    var hasKnownCallingPattern: Bool {
+        serviceID != nil
+            && callingPoints.contains { $0.crs.caseInsensitiveCompare(fromStation.crs) == .orderedSame }
+            && callingPoints.contains { $0.crs.caseInsensitiveCompare(toStation.crs) == .orderedSame }
+    }
+
     func serviceDetailsMayBeAvailable(at now: Date = Date()) -> Bool {
         let estimatedDepartureAt = scheduledDepartureAt.flatMap {
             JourneyHistoryTime.date(for: estimatedDepartureTime, near: $0)
@@ -264,6 +270,90 @@ struct ArmedJourneyHistoryCandidate: Codable, Hashable, Identifiable {
     }
 }
 
+struct JourneyServiceMatchRecoveryContext: Codable, Hashable {
+    static let retryInterval: TimeInterval = 30
+    static let retryLifetime: TimeInterval = 15 * 60
+
+    let id: UUID
+    let plannedLegIndex: Int
+    let fromStation: Station
+    let detectedAt: Date
+    let reboundFromServiceID: String?
+    let previousLegID: UUID?
+    var departures: [DepartureV2]
+    var legID: UUID?
+    var lastAttemptAt: Date?
+
+    init(
+        plannedLegIndex: Int,
+        fromStation: Station,
+        detectedAt: Date,
+        departures: [DepartureV2],
+        reboundFromServiceID: String? = nil,
+        previousLegID: UUID? = nil
+    ) {
+        self.id = UUID()
+        self.plannedLegIndex = plannedLegIndex
+        self.fromStation = fromStation
+        self.detectedAt = detectedAt
+        self.departures = departures
+        self.reboundFromServiceID = reboundFromServiceID
+        self.previousLegID = previousLegID
+    }
+
+    func canApply(to checkpoint: ActiveJourneyHistoryCheckpoint) -> Bool {
+        guard checkpoint.serviceMatchRecovery?.id == id,
+              checkpoint.plannedLegIndex == plannedLegIndex,
+              checkpoint.originDepartureWasMissed != true,
+              checkpoint.phase == .matchingService || checkpoint.phase == .inTransit else { return false }
+        if let legID { return checkpoint.currentLeg?.id == legID }
+        return checkpoint.currentLeg?.id == previousLegID
+    }
+
+    func shouldRetry(in checkpoint: ActiveJourneyHistoryCheckpoint, at now: Date) -> Bool {
+        guard canApply(to: checkpoint), now >= detectedAt,
+              now.timeIntervalSince(detectedAt) <= Self.retryLifetime,
+              lastAttemptAt.map({ now.timeIntervalSince($0) >= Self.retryInterval }) != false else { return false }
+        return legID == nil || checkpoint.currentLeg?.hasKnownCallingPattern != true
+    }
+
+    func interruptedFallback(in checkpoint: ActiveJourneyHistoryCheckpoint, at now: Date) -> ActiveJourneyHistoryCheckpoint? {
+        guard checkpoint.phase == .matchingService, legID == nil,
+              now.timeIntervalSince(detectedAt) > Self.retryLifetime else { return nil }
+        let leg = JourneyHistoryLeg(
+            plannedLegIndex: plannedLegIndex, fromStation: fromStation,
+            toStation: checkpoint.currentPlannedLegDestination,
+            detectedDepartureAt: detectedAt, outcome: .uncertain,
+            reboundFromServiceID: reboundFromServiceID
+        )
+        guard var updated = applying(leg, to: checkpoint) else { return nil }
+        updated.phase = .inTransit
+        updated.serviceMatchRecovery = nil
+        updated.serviceMatchConfidence = 0
+        updated.backendSessionID = nil
+        updated.updatedAt = now
+        return updated
+    }
+
+    /// A retry enriches the original leg; it must not create another departure.
+    func applying(_ leg: JourneyHistoryLeg, to checkpoint: ActiveJourneyHistoryCheckpoint) -> ActiveJourneyHistoryCheckpoint? {
+        guard canApply(to: checkpoint), leg.plannedLegIndex == plannedLegIndex,
+              leg.detectedDepartureAt == detectedAt else { return nil }
+        var updated = checkpoint
+        if let legID {
+            guard leg.id == legID, let index = updated.legs.indices.last else { return nil }
+            updated.legs[index] = leg
+        } else {
+            if reboundFromServiceID != nil, let index = updated.legs.indices.last {
+                updated.legs[index].outcome = .rebound
+            }
+            updated.legs.append(leg)
+        }
+        updated.serviceMatchRecovery?.legID = leg.id
+        return updated
+    }
+}
+
 struct ActiveJourneyHistoryCheckpoint: Codable, Hashable, Identifiable {
     let id: UUID
     let subscriptionId: String
@@ -292,6 +382,8 @@ struct ActiveJourneyHistoryCheckpoint: Codable, Hashable, Identifiable {
     var originDepartureWasMissed: Bool? = nil
     var scheduleOccurrenceStart: Date? = nil
     var scheduleOccurrenceEnd: Date? = nil
+    // Absence also persists an explicit manual service/unlisted choice: it is never retried.
+    var serviceMatchRecovery: JourneyServiceMatchRecoveryContext? = nil
 
     var plannedOrigin: Station { plannedStations.first! }
     var plannedDestination: Station { plannedStations.last! }
@@ -299,6 +391,20 @@ struct ActiveJourneyHistoryCheckpoint: Codable, Hashable, Identifiable {
         plannedStations[min(plannedLegIndex + 1, plannedStations.count - 1)]
     }
     var currentLeg: JourneyHistoryLeg? { legs.last }
+
+    func matchesInTransitService(journeyID: UUID, legID: UUID, serviceID: String?) -> Bool {
+        id == journeyID && phase == .inTransit
+            && currentLeg?.id == legID && currentLeg?.serviceID == serviceID
+    }
+
+    func originArrivalForServiceMatching(from station: Station) -> Date? {
+        if plannedLegIndex == 0, station.crs.caseInsensitiveCompare(plannedOrigin.crs) == .orderedSame {
+            return originArrivedAt
+        }
+        return stationEvents.last {
+            $0.station.crs.caseInsensitiveCompare(station.crs) == .orderedSame && $0.kind == .arrival
+        }?.detectedAt
+    }
 }
 
 struct RecentlyCompletedJourneyCheckpoint: Codable, Hashable {

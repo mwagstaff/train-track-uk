@@ -6,7 +6,7 @@ const now = Date.parse('2026-09-16T12:00:00Z');
 const credentials = () => ({ board: 'test-board', details: 'test-details' });
 const board = (crs = 'ECR') => ({ crs, generatedAt: '2026-09-16T12:59:50+01:00', trainServices: [{
   serviceID: 'opaque/station+id', rsid: 'SN123400', operatorCode: 'SN', std: '12:45', etd: '13:10',
-  isCancelled: false, futureCancellation: true, currentDestinations: [{ crs: 'BTN' }]
+  isCancelled: false, futureCancellation: true, currentDestinations: [{ crs: 'BTN' }], platform: '2', length: 8
 }] });
 const details = (crs = 'ECR') => ({ crs, generatedAt: '2026-09-16T11:59:55Z', std: '12:45', etd: 'Delayed',
   operatorCode: 'SN', isCancelled: true,
@@ -45,6 +45,8 @@ test('raw boards explicitly request unfiltered bounded past/current/future windo
   assert.equal(observation.services[0].uid, undefined);
   assert.equal(observation.services[0].originDate, undefined);
   assert.equal(observation.services[0].std, '12:45');
+  assert.equal(observation.services[0].platform, '2');
+  assert.equal(observation.services[0].length, 8);
 });
 
 test('details preserve through and branch groups and call-specific cancellations without merging', async () => {
@@ -201,7 +203,8 @@ test('staff recovery is optional, validates targets and cannot expose suppressed
   }
   assert.equal(staffBoardKey({ station: 'VIC', departure: Date.parse('2026-12-16T13:05:00Z') }), 'VIC:20261216T130500');
   for (const raw of [{ ...staffBoard(), crs: 'ECR' }, { ...staffBoard(), trainServices: {} },
-    { ...staffBoard(), trainServices: [{ subsequentLocations: {} }] }]) {
+    { ...staffBoard(), trainServices: [{ subsequentLocations: {} }] },
+    { ...staffBoard(), trainServices: [{ subsequentLocations: [null] }] }]) {
     const provider = new PlannerLiveProvider({ credentials: () => ({ staff: 'test-staff' }), request: async () => ({ data: raw }) });
     assert.equal((await provider.fetchStaffBoards([target])).errors[0].reason, 'malformed');
     assert.equal(provider.cache.size, 0);
@@ -210,6 +213,10 @@ test('staff recovery is optional, validates targets and cannot expose suppressed
     data: { ...staffBoard(), servicesAreUnavailable: true }
   }) });
   assert.deepEqual((await provider.fetchStaffBoards([target])).boards[0].services, []);
+  const hidden = new PlannerLiveProvider({ credentials: () => ({ staff: 'test-staff' }), request: async () => ({
+    data: { ...staffBoard(), platformsAreHidden: true }
+  }) });
+  assert.equal((await hidden.fetchStaffBoards([target])).boards[0].services[0].platformIsHidden, true);
 });
 
 test('public and staff recovery share concurrency, cancellation and budget limits', async () => {

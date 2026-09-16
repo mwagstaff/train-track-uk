@@ -168,6 +168,8 @@ struct PlannerLiveContext: Codable, Equatable {
 
 struct PlannerLiveAnnotation: Codable, Equatable {
     let status: String
+    var platform: String? = nil
+    var length: Int? = nil
     var updatedAt: Date? = nil
     var departure: Date? = nil
     var arrival: Date? = nil

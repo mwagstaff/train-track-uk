@@ -365,9 +365,9 @@ struct InProgressJourneyView: View {
             )
         } else {
             ContentUnavailableView(
-                "Service details unavailable",
+                "Train not yet confirmed",
                 systemImage: "train.side.front.car",
-                description: Text("This journey will continue without live train information. You can still advance it manually.")
+                description: Text("Your journey is still being tracked. You can choose your train below.")
             )
             .frame(minHeight: 180)
         }
@@ -790,7 +790,7 @@ struct InProgressJourneyView: View {
             }
             let detail = activeDeparture.map {
                 "You’re on the \(onboardServiceCaption($0, destination: active.currentPlannedLegDestination.name))."
-            } ?? "You’re travelling to \(active.currentPlannedLegDestination.name) on an unlisted service."
+            } ?? "You’re travelling to \(active.currentPlannedLegDestination.name). Your train hasn’t been confirmed yet."
             return (
                 "Journey underway",
                 detail,
@@ -924,6 +924,7 @@ struct InProgressJourneyView: View {
         var ids = depStore.departures(for: departureContextJourney).prefix(3).map(\.serviceID)
         if let activeID = coordinator.activeJourney?.currentLeg?.serviceID { ids.append(activeID) }
         _ = await depStore.ensureServiceDetails(for: Array(Set(ids)))
+        await coordinator.refreshActiveServiceRecovery()
     }
 
     private func selectService(_ recent: RecentDepartureV2) {

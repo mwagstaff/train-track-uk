@@ -51,6 +51,19 @@ struct JourneyPlannerTests {
         #expect(current.search.maxChanges == 5)
     }
 
+    @Test func departureMetadataDecodesWhenAvailableAndRemainsOptionalForOlderServers() throws {
+        let current = try PlannerTime.decoder().decode(PlannerLiveAnnotation.self, from: Data(
+            #"{"status":"onTime","platform":"2","length":10}"#.utf8
+        ))
+        #expect(current.platform == "2")
+        #expect(current.length == 10)
+        let old = try PlannerTime.decoder().decode(PlannerLiveAnnotation.self, from: Data(
+            #"{"status":"onTime"}"#.utf8
+        ))
+        #expect(old.platform == nil)
+        #expect(old.length == nil)
+    }
+
     @Test func liveModeDefaultsToApplyForOldRecentsAndPreservesManualOverride() throws {
         let original = intent(mode: .now)
         let saved = try JSONEncoder().encode(original)

@@ -41,10 +41,14 @@ final class LiveActivityJourneyStatusSender: NSObject, URLSessionTaskDelegate {
             "device_id": DeviceIdentity.deviceToken,
             "from": from.uppercased(),
             "to": to.uppercased(),
-            "phase": phase.rawValue
+            "phase": phase.rawValue,
+            "status_observed_at_ms": Date().timeIntervalSince1970 * 1000
         ]
         if let serviceID, !serviceID.isEmpty {
             payload["service_id"] = serviceID
+        }
+        if phase == .enRoute || phase == .arrived {
+            payload["service_match_confirmed"] = serviceID?.isEmpty == false
         }
         if let arrivalTime {
             let formatter = DateFormatter()

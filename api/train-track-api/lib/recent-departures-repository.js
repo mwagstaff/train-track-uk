@@ -31,7 +31,9 @@ export class RecentDeparturesRepository {
         const writes = departures.flatMap((departure) => {
             const serviceID = normalizeString(departure?.serviceID);
             const scheduledDisplay = normalizeString(departure?.departure_time?.scheduled);
-            const scheduledDepartureAt = railDateNear(scheduledDisplay, observedAt);
+            const providerObservedAt = observationDate(departure?.timestamp)
+                || observationDate(departure?.siri?.providerObservedAt);
+            const scheduledDepartureAt = railDateNear(scheduledDisplay, providerObservedAt || observedAt);
             if (!serviceID || !scheduledDepartureAt
                 || scheduledDepartureAt < lowerBound
                 || scheduledDepartureAt > upperBound) {
@@ -53,30 +55,55 @@ export class RecentDeparturesRepository {
             const expiresAt = new Date(expiryAnchor.getTime() + RECENT_DEPARTURE_LOOKBACK_MS);
             const identity = `${fromCRS}:${toCRS}:${serviceID}:${scheduledDepartureAt.toISOString()}`;
 
+            // Receipt time is useful diagnostics, but replaying a cached board must
+            // not make its forecast newer than an observation from the provider.
+            // Compare inside the atomic update so concurrent board refreshes cannot
+            // race a newer estimate or cancellation back to an older value.
+            const existingProvider = { $ifNull: ['$providerObservedAt', null] };
+            const replaceForecast = providerObservedAt
+                ? { $or: [
+                    { $eq: [existingProvider, null] },
+                    { $gte: [providerObservedAt, '$providerObservedAt'] }
+                ] }
+                : { $and: [
+                    { $eq: [existingProvider, null] },
+                    { $gte: [observedAt, { $ifNull: ['$lastObservedAt', observedAt] }] }
+                ] };
+            const latest = (field, value) => ({
+                $cond: [replaceForecast, { $literal: value }, { $ifNull: [`$${field}`, null] }]
+            });
             const set = {
-                fromCRS,
-                toCRS,
-                serviceID,
-                serviceType: normalizeString(departure?.serviceType) || 'train',
+                fromCRS: { $literal: fromCRS },
+                toCRS: { $literal: toCRS },
+                serviceID: { $literal: serviceID },
+                serviceType: { $literal: normalizeString(departure?.serviceType) || 'train' },
                 scheduledDepartureAt,
                 scheduledDeparture: scheduledDisplay,
-                isCancelled: Boolean(departure?.isCancelled),
-                lastObservedAt: observedAt
+                isCancelled: latest('isCancelled', Boolean(departure?.isCancelled)),
+                providerObservedAt: latest('providerObservedAt', providerObservedAt),
+                estimatedDeparture: latest('estimatedDeparture', estimatedDisplay || null),
+                estimatedDepartureAt: latest('estimatedDepartureAt', estimatedDepartureAt),
+                lastObservedAt: { $max: [{ $ifNull: ['$lastObservedAt', observedAt] }, observedAt] },
+                firstObservedAt: { $ifNull: ['$firstObservedAt', observedAt] },
+                expiresAt: { $max: [{ $ifNull: ['$expiresAt', expiresAt] }, expiresAt] }
             };
-            assignIfPresent(set, 'estimatedDepartureAt', estimatedDepartureAt);
-            assignIfPresent(set, 'estimatedDeparture', estimatedDisplay);
-            assignIfPresent(set, 'actualDepartureAt', actualDepartureAt);
-            assignIfPresent(set, 'actualDeparture', actualDisplay);
-            assignIfPresent(set, 'platform', normalizeString(departure?.platform));
+            const platform = normalizeString(departure?.platform);
+            if (platform) set.platform = latest('platform', platform);
+            // An older observation can still supply a previously unknown actual
+            // departure. Forecast-only observations never erase that evidence.
+            if (actualDepartureAt) {
+                const replaceActual = { $or: [
+                    { $eq: [{ $ifNull: ['$actualDepartureAt', null] }, null] },
+                    replaceForecast
+                ] };
+                set.actualDepartureAt = { $cond: [replaceActual, actualDepartureAt, '$actualDepartureAt'] };
+                set.actualDeparture = { $cond: [replaceActual, { $literal: actualDisplay }, '$actualDeparture'] };
+            }
 
             return [{
                 updateOne: {
                     filter: { _id: identity },
-                    update: {
-                        $set: set,
-                        $setOnInsert: { firstObservedAt: observedAt },
-                        $max: { expiresAt }
-                    },
+                    update: [{ $set: set }],
                     upsert: true
                 }
             }];
@@ -196,6 +223,7 @@ function serializeRecentDeparture(document) {
         actualDepartureAt: document.actualDepartureAt?.toISOString?.() || document.actualDepartureAt || null,
         platform: document.platform || null,
         isCancelled: Boolean(document.isCancelled),
+        providerObservedAt: document.providerObservedAt?.toISOString?.() || document.providerObservedAt || null,
         lastObservedAt: document.lastObservedAt?.toISOString?.() || document.lastObservedAt
     };
 }
@@ -208,6 +236,8 @@ function normalizeString(value) {
     return typeof value === 'string' ? value.trim() : '';
 }
 
-function assignIfPresent(target, key, value) {
-    if (value !== null && value !== undefined && value !== '') target[key] = value;
+function observationDate(value) {
+    if (!(value instanceof Date) && (typeof value !== 'string' || !value.trim())) return null;
+    const date = new Date(value);
+    return Number.isFinite(date.getTime()) ? date : null;
 }

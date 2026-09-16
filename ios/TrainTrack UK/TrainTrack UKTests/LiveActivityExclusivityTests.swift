@@ -148,6 +148,68 @@ struct LiveActivityInProgressUpdatePolicyTests {
         #expect(reconciled.statusText == "Currently 6 minutes late")
     }
 
+    @Test
+    func anUnconfirmedJourneyClearsTheNextTrainsDetailsDespiteItsServerRevision() {
+        var current = state(estimated: "17:42", delayMinutes: 12, statusText: "Currently 12 minutes late", revision: 50)
+        current.platform = "4"
+        current.isCancelled = true
+        current.upcomingDepartures = [.init(time: "17:57", delayMinutes: 0, isCancelled: false)]
+        var candidate = current
+        candidate.delayMinutes = 0
+        let reconciled = LiveActivityInProgressUpdatePolicy.reconcilingLocalUpdate(
+            candidate, with: current, serviceMatchConfirmed: false
+        )
+        #expect(reconciled.scheduledDeparture == nil)
+        #expect(reconciled.arrivalLabel == nil)
+        #expect(reconciled.length == nil)
+        #expect(reconciled.platform == "TBC")
+        #expect(reconciled.estimated == "—")
+        #expect(reconciled.statusText == "Train not yet confirmed")
+        #expect(!reconciled.isCancelled)
+        #expect(reconciled.delayMinutes == 0)
+        #expect(reconciled.arrivalDelayMinutes == nil)
+        #expect(reconciled.upcomingDepartures.isEmpty)
+        #expect(reconciled.journeyPhase == .enRoute)
+    }
+
+    @Test
+    func anUnconfirmedTrainPreservesTheConfirmedDeviceArrival() {
+        let current = state(estimated: "18:10", delayMinutes: 20, statusText: "Delayed", revision: 50)
+        var arrived = current
+        arrived.journeyPhase = .arrived
+        arrived.arrivalDelayMinutes = 20
+        let reconciled = LiveActivityInProgressUpdatePolicy.reconcilingLocalUpdate(
+            arrived, with: current, serviceMatchConfirmed: false, confirmedArrivalTime: "17:52"
+        )
+        #expect(reconciled.journeyPhase == .arrived)
+        #expect(reconciled.estimated == "17:52")
+        #expect(reconciled.scheduledDeparture == nil)
+        #expect(reconciled.statusText == nil)
+        #expect(reconciled.arrivalDelayMinutes == nil)
+        #expect(reconciled.delayMinutes == 0)
+    }
+
+    @Test
+    func anUnconfirmedArrivalCannotReuseTheNextTrainsEstimatedTime() {
+        var arrived = state(estimated: "18:10", delayMinutes: 20, statusText: "Delayed", revision: 50)
+        arrived.journeyPhase = .arrived
+        let reconciled = LiveActivityInProgressUpdatePolicy.reconcilingLocalUpdate(
+            arrived, with: arrived, serviceMatchConfirmed: false
+        )
+        #expect(reconciled.estimated == "—")
+        #expect(reconciled.arrivalLabel == nil)
+    }
+
+    @Test
+    func aBoardBeforeBoardingStillShowsItsDeparture() {
+        var board = state(estimated: "17:42", delayMinutes: 0, statusText: "On time", revision: 50)
+        board.journeyPhase = .atStart
+        let reconciled = LiveActivityInProgressUpdatePolicy.reconcilingLocalUpdate(
+            board, with: board, serviceMatchConfirmed: false
+        )
+        #expect(reconciled == board)
+    }
+
     private func state(
         estimated: String,
         delayMinutes: Int,

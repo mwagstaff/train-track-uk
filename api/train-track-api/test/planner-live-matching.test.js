@@ -40,6 +40,17 @@ test('station/operator/dated-clock anchors are verified against ordered through 
     assert.equal(applyLiveSnapshot(net, matched).services[0].calls[1].canBoard, false);
 });
 
+test('verified board observations retain departure platform and train length', () => {
+    const input = observations({ platform: '1', length: 8 });
+    input.boards[0].services[0].platform = '2';
+    input.boards[0].services[0].length = 10;
+    input.details[0].detail.subsequentCallingPoints[0].callingPoint[0].length = 4;
+    const matched = matchLiveObservations(network(), input, { now: zero });
+    assert.equal(matched.services[0].calls[0].platform, '2');
+    assert.equal(matched.services[0].calls[0].length, 10);
+    assert.equal(matched.services[0].calls[1].length, 4);
+});
+
 test('ambiguous occurrences, wrong operators and unordered calling patterns are not overlaid', () => {
     for (const [net, input] of [
         [network([train('one'), train('two')]), observations()],

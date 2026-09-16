@@ -502,6 +502,10 @@ test('staff recovery verifies a requested public upstream failure and applies co
   assert.deepEqual(f.calls.staff[0].targets, [{ station: 'ORG', departure: at('12:05') }]);
   assert.equal(f.calls.staff[0].options.budget, f.calls.boards[0].options.budget);
   assert.equal(f.calls.staff[0].options.budget.limit, 64);
+  const ignored = await f.search({ realtime: 'ignore' });
+  assert.equal(ignored.journeys[0].departure, iso('12:05'));
+  assert.equal(ignored.journeys[0].legs[0].live.departure, iso('12:15'));
+  assert.ok(ignored.live.warnings.some(warning => warning.includes('scheduled times')));
 });
 
 test('staff cancellation recovery reroutes while an already verified public service always wins', async t => {

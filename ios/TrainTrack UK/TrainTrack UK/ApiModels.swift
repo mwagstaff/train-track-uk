@@ -45,6 +45,12 @@ struct DepartureV2: Codable, Identifiable, Hashable {
 
     var id: String { serviceID }
 
+    /// A provider observation keeps its age when a cached board is read again.
+    /// `timestamp` supports older payloads and observations reconstructed from history.
+    var evidenceObservedAt: Date? {
+        timestamp ?? SiriRailTime.parseISO(siri?.providerObservedAt)
+    }
+
     enum CodingKeys: String, CodingKey {
         case departureTime = "departure_time"
         case serviceType, platform, isCancelled, length
@@ -236,6 +242,41 @@ struct RecentDepartureV2: Codable, Identifiable, Hashable {
     let platform: String?
     let isCancelled: Bool
     let lastObservedAt: Date
+    let providerObservedAt: Date?
+
+    var evidenceObservedAt: Date { providerObservedAt ?? lastObservedAt }
+
+    init(
+        serviceID: String,
+        serviceType: String,
+        fromCRS: String,
+        toCRS: String,
+        scheduledDeparture: String,
+        estimatedDeparture: String?,
+        actualDeparture: String?,
+        scheduledDepartureAt: Date,
+        estimatedDepartureAt: Date?,
+        actualDepartureAt: Date?,
+        platform: String?,
+        isCancelled: Bool,
+        lastObservedAt: Date,
+        providerObservedAt: Date? = nil
+    ) {
+        self.serviceID = serviceID
+        self.serviceType = serviceType
+        self.fromCRS = fromCRS
+        self.toCRS = toCRS
+        self.scheduledDeparture = scheduledDeparture
+        self.estimatedDeparture = estimatedDeparture
+        self.actualDeparture = actualDeparture
+        self.scheduledDepartureAt = scheduledDepartureAt
+        self.estimatedDepartureAt = estimatedDepartureAt
+        self.actualDepartureAt = actualDepartureAt
+        self.platform = platform
+        self.isCancelled = isCancelled
+        self.lastObservedAt = lastObservedAt
+        self.providerObservedAt = providerObservedAt
+    }
 
     var id: String {
         "\(fromCRS.uppercased()):\(toCRS.uppercased()):\(serviceID):\(scheduledDepartureAt.timeIntervalSince1970)"

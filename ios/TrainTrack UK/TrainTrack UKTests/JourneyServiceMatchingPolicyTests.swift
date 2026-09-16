@@ -279,6 +279,77 @@ struct JourneyServiceMatchingPolicyTests {
         #expect(result.departure == nil)
     }
 
+    @Test func providerDatedPayloadKeepsTheFreshBoardWhenTheOriginCacheIsMergedLast() throws {
+        let fresh = try decodedDeparture("17:27", observedAt: date("17:33"))
+        let cached = try decodedDeparture("17:27", estimated: "17:40", observedAt: date("17:20"))
+        #expect(fresh.timestamp == nil)
+        for merged in [
+            JourneyServiceMatchingPolicy.mergedDepartures(originSnapshot: [fresh], currentDepartures: [cached]),
+            JourneyServiceMatchingPolicy.mergedDepartures(originSnapshot: [cached], currentDepartures: [fresh])
+        ] {
+            #expect(merged.first?.evidenceObservedAt == date("17:33"))
+            #expect(match(departures: merged).departure?.serviceID == "17:27")
+        }
+    }
+
+    @Test func providerDatedOnTimeBoardSupersedesAnOlderRecentDelay() throws {
+        let result = match(
+            departures: [try decodedDeparture("17:27", observedAt: date("17:33"))],
+            recent: [recent("17:27", estimated: "17:40", observedAt: date("17:35"))]
+        )
+        #expect(result.departure?.serviceID == "17:27")
+        #expect(result.departure?.departureTime.estimated == "17:27")
+    }
+
+    @Test func providerDatedFutureEstimateCannotBeRolledBackByARecentOnTimeRecord() throws {
+        let result = match(
+            departures: [try decodedDeparture("17:27", estimated: "17:40", observedAt: date("17:33"))],
+            recent: [recent("17:27", observedAt: date("17:35"))]
+        )
+        #expect(result.departure == nil)
+    }
+
+    @Test func recentProviderObservationCanSupersedeAnOlderBoardDespiteReceiptOrder() throws {
+        let result = match(
+            departures: [try decodedDeparture("17:27", estimated: "17:40", observedAt: date("17:30"))],
+            recent: [recent("17:27", observedAt: date("17:32"), providerObservedAt: date("17:31"))]
+        )
+        #expect(result.departure?.serviceID == "17:27")
+    }
+
+    @Test func oldRecentProviderObservationCannotOverrideAFreshBoardEvenWithALaterReceipt() throws {
+        let result = match(
+            departures: [try decodedDeparture("17:27", observedAt: date("17:33"))],
+            recent: [recent("17:27", estimated: "17:40", observedAt: date("17:35"),
+                providerObservedAt: date("17:20"))]
+        )
+        #expect(result.departure?.serviceID == "17:27")
+    }
+
+    @Test func providerObservationDatePreventsAnOldBoardBecomingTodaysTrain() throws {
+        let old = try decodedDeparture("17:27", observedAt: date("17:32", day: 8))
+        #expect(match(departures: [old]).departure == nil)
+    }
+
+    @Test func providerDatedCandidatesStillRequireUnambiguousBoarding() throws {
+        let result = match(departures: [
+            try decodedDeparture("17:27", observedAt: date("17:33")),
+            try decodedDeparture("17:32", observedAt: date("17:33"))
+        ])
+        #expect(result.departure == nil)
+    }
+
+    private func decodedDeparture(_ scheduled: String, estimated: String? = nil, observedAt: Date) throws -> DepartureV2 {
+        // The production board has provider provenance, but no legacy `timestamp`.
+        let data = try JSONSerialization.data(withJSONObject: [
+            "departure_time": ["scheduled": scheduled, "estimated": estimated ?? scheduled],
+            "serviceID": scheduled,
+            "destination": ["crs": "KTH", "locationName": "Kent House"],
+            "siri": ["providerObservedAt": ISO8601DateFormatter().string(from: observedAt)]
+        ])
+        return try JSONDecoder().decode(DepartureV2.self, from: data)
+    }
+
     private func match(
         departures: [DepartureV2] = [],
         recent: [RecentDepartureV2] = [],
@@ -324,7 +395,9 @@ struct JourneyServiceMatchingPolicyTests {
         actual: String? = nil,
         cancelled: Bool = false,
         day: Int = 9,
-        fromCRS: String = "VIC"
+        fromCRS: String = "VIC",
+        observedAt: Date? = nil,
+        providerObservedAt: Date? = nil
     ) -> RecentDepartureV2 {
         RecentDepartureV2(
             serviceID: id ?? scheduled,
@@ -339,7 +412,8 @@ struct JourneyServiceMatchingPolicyTests {
             actualDepartureAt: actual.map { date($0, day: day) },
             platform: nil,
             isCancelled: cancelled,
-            lastObservedAt: date("17:32", day: day)
+            lastObservedAt: observedAt ?? date("17:32", day: day),
+            providerObservedAt: providerObservedAt
         )
     }
 

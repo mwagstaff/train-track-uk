@@ -43,6 +43,72 @@ struct RecentServiceStoreTests {
         #expect(RecentServiceStore.observation(yesterday, fromCRS: "KTH", toCRS: "VIC", now: date("07:57")) == nil)
     }
 
+    @Test func productionPayloadUsesProviderObservationInsteadOfCacheReadTime() throws {
+        let payload = try decodedDeparture(estimated: "07:48", observedAt: date("07:35"))
+        #expect(payload.timestamp == nil)
+        let observed = try #require(RecentServiceStore.observation(
+            payload, fromCRS: "KTH", toCRS: "VIC", now: date("07:57")
+        ))
+        #expect(observed.lastObservedAt == date("07:35"))
+        #expect(observed.providerObservedAt == date("07:35"))
+        #expect(observed.estimatedDepartureAt == date("07:48"))
+    }
+
+    @Test func cachedProductionPayloadCannotRollBackANewerDelay() throws {
+        let fresh = try #require(RecentServiceStore.observation(
+            decodedDeparture(estimated: "07:52", observedAt: date("07:49")),
+            fromCRS: "KTH", toCRS: "VIC", now: date("07:50")
+        ))
+        let stale = try #require(RecentServiceStore.observation(
+            decodedDeparture(estimated: "07:48", observedAt: date("07:35")),
+            fromCRS: "KTH", toCRS: "VIC", now: date("07:57")
+        ))
+        let merged = RecentServiceStore.preferred(fresh, stale)
+        #expect(merged.lastObservedAt == date("07:49"))
+        #expect(merged.estimatedDepartureAt == date("07:52"))
+    }
+
+    @Test func anOldProviderDatedPayloadCannotBecomeTodaysService() throws {
+        let old = try decodedDeparture(estimated: "07:48", observedAt: date("07:35").addingTimeInterval(-24 * 60 * 60))
+        #expect(RecentServiceStore.observation(old, fromCRS: "KTH", toCRS: "VIC", now: date("07:57")) == nil)
+    }
+
+    @Test func aLegacyHistoryReceiptCannotOverrideAKnownProviderObservation() throws {
+        let known = try observation(estimated: "07:52", observedAt: "07:49")
+        let legacy = RecentDepartureV2(
+            serviceID: "caught", serviceType: "train", fromCRS: "KTH", toCRS: "VIC",
+            scheduledDeparture: "07:42", estimatedDeparture: "07:48", actualDeparture: nil,
+            scheduledDepartureAt: date("07:42"), estimatedDepartureAt: date("07:48"), actualDepartureAt: nil,
+            platform: nil, isCancelled: true, lastObservedAt: date("07:57")
+        )
+        for merged in [RecentServiceStore.preferred(known, legacy), RecentServiceStore.preferred(legacy, known)] {
+            #expect(merged.estimatedDepartureAt == date("07:52"))
+            #expect(!merged.isCancelled)
+            #expect(merged.providerObservedAt == date("07:49"))
+            #expect(merged.evidenceObservedAt == date("07:49"))
+        }
+    }
+
+    @Test func recentHistoryDecodesProviderTimeAndAcceptsLegacyRecords() throws {
+        let known = try observation(estimated: "07:52", observedAt: "07:49")
+        let encoded = try JSONEncoder().encode(known)
+        #expect(try JSONDecoder().decode(RecentDepartureV2.self, from: encoded).providerObservedAt == date("07:49"))
+        var legacy = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        legacy.removeValue(forKey: "providerObservedAt")
+        let legacyData = try JSONSerialization.data(withJSONObject: legacy)
+        #expect(try JSONDecoder().decode(RecentDepartureV2.self, from: legacyData).providerObservedAt == nil)
+    }
+
+    private func decodedDeparture(estimated: String, observedAt: Date) throws -> DepartureV2 {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "departure_time": ["scheduled": "07:42", "estimated": estimated],
+            "serviceID": "caught",
+            "destination": ["crs": "VIC", "locationName": "London Victoria"],
+            "siri": ["providerObservedAt": ISO8601DateFormatter().string(from: observedAt)]
+        ])
+        return try JSONDecoder().decode(DepartureV2.self, from: data)
+    }
+
     private func observation(
         estimated: String,
         actual: String? = nil,

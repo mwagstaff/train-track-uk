@@ -53,6 +53,21 @@ test('staff recovery is opt-in for exact missing service IDs', () => {
     assert.deepEqual(match(value).services, []);
 });
 
+test('staff departure rows retain valid train lengths while hidden platforms stay unavailable', () => {
+    for (const length of [8, 0, -1, '8']) {
+        const value = fixture();
+        value.item.length = length;
+        const result = match(value);
+        const effective = applyLiveSnapshot(value.network, result);
+        const leg = liveLeg(effective.services[0], 0, 1);
+        assert.equal(leg.live.length, length === 8 ? 8 : undefined);
+        assert.equal(leg.live.platform, undefined);
+        const nextLeg = liveLeg(effective.services[0], 1, 2);
+        assert.equal(nextLeg.live.platform, '3');
+        assert.equal(nextLeg.live.length, undefined);
+    }
+});
+
 test('wrong identity, origin date or operator never receives staff forecasts', () => {
     for (const fields of [{ uid: 'C93139' }, { sdd: '2026-09-17' }, { sdd: '2026-02-30' }, { operatorCode: 'SE' }, { rid: '' }]) {
         const value = fixture(); Object.assign(value.item, fields);
@@ -137,6 +152,19 @@ test('newer matching observations win independently of completion order', () => 
         newer.services[0].etd = '2026-09-16T17:09:00';
         value.records.push(newer); if (reverse) value.records.reverse();
         assert.equal(match(value).services[0].calls[0].departure, instant('17:09'));
+    }
+});
+
+test('equal-age conflicting observations keep cancellation and never invent a confirmed time', () => {
+    for (const reverse of [false, true]) {
+        const value = fixture(); const other = structuredClone(value.records[0]);
+        other.services[0].isCancelled = true;
+        other.services[0].subsequentLocations[1].eta = '2026-09-16T17:29:00';
+        value.records.push(other); if (reverse) value.records.reverse();
+        const calls = match(value).services[0].calls;
+        assert.equal(calls[0].cancelled, true);
+        assert.equal(calls[1].arrival, undefined);
+        assert.equal(calls[1].arrivalUnknown, true);
     }
 });
 

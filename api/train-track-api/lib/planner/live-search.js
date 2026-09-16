@@ -215,6 +215,7 @@ export class LivePlanner {
                     for (const match of candidates.slice(0, maximum)) {
                         if (!failed.has(`${match.station}:${match.serviceID}`)) continue;
                         for (const candidate of match.candidates) {
+                            check();
                             if (publicIds.has(candidate.scheduledServiceId) || !Number.isFinite(candidate.scheduledDeparture)) continue;
                             const key = staffQueryKey(match.station, candidate.scheduledDeparture);
                             const target = staffTargets.get(key) ?? { station: match.station,
@@ -244,8 +245,10 @@ export class LivePlanner {
                     }
                     const serviceIds = [...new Set([...staffTargets.values()].flatMap(target => [...target.serviceIds]))]
                         .filter(id => !publicIds.has(id));
-                    snapshot = mergeStaffSnapshot(snapshot, matchStaffObservations(network, staffBoards,
-                        { serviceIds, now: this.now(), check }));
+                    if (serviceIds.length && staffBoards.length) {
+                        snapshot = mergeStaffSnapshot(snapshot, matchStaffObservations(network, staffBoards,
+                            { serviceIds, now: this.now(), check }));
+                    }
                 }
                 if (snapshot.services.length && snapshot.id !== previousSnapshot) {
                     const changed = applyLiveSnapshot(network, snapshot, { mode: request.realtime, check });

@@ -466,6 +466,8 @@ private struct PlannerResultsView: View {
     let cancelSearch: () -> Void
     let changeLiveTimes: (Bool) -> Void
     @State private var loadingButtonTitle: String?
+    @State private var selectedJourneyID: String?
+    @ObservedObject private var config = ServerConfigStore.shared
 
     var body: some View {
         List {
@@ -513,13 +515,8 @@ private struct PlannerResultsView: View {
                         }
                     }
                 }
-                ForEach(response.journeys) { journey in
-                    NavigationLink {
-                        PlannerJourneyDetailView(id: journey.id, client: store.client)
-                    } label: {
-                        PlannerJourneySummary(journey: journey)
-                    }
-                    .accessibilityIdentifier("planner.journey.\(journey.id)")
+                if !response.journeys.isEmpty {
+                    departureCard(response.journeys)
                 }
                 if let disrupted = response.disruptedJourneys, !disrupted.isEmpty {
                     Section {
@@ -574,6 +571,48 @@ private struct PlannerResultsView: View {
         }
         .navigationTitle("Journeys")
         .navigationBarTitleDisplayMode(.inline)
+        .railwayBackgroundPOC(showsInfoButton: false)
+        .navigationDestination(item: $selectedJourneyID) { id in
+            PlannerJourneyDetailView(id: id, client: store.client)
+        }
+    }
+
+    private func departureCard(_ journeys: [PlannedJourney]) -> some View {
+        VStack(spacing: 0) {
+            ForEach(Array(journeys.enumerated()), id: \.element.id) { index, journey in
+                Button {
+                    selectedJourneyID = journey.id
+                } label: {
+                    PlannerJourneySummary(journey: journey, showsChevron: true)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .overlay(alignment: .leading) {
+                            Capsule()
+                                .fill(PlannerJourneyOperators.brandings(for: journey, in: config.operatorBranding).first?.color ?? Color.secondary.opacity(0.35))
+                                .frame(width: 4)
+                                .padding(.top, 2)
+                                .padding(.bottom, index == journeys.count - 1 ? 16 : 2)
+                                .accessibilityHidden(true)
+                                .allowsHitTesting(false)
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("planner.journey.\(journey.id)")
+                .accessibilityHint("Opens journey details and calling points.")
+                if index < journeys.count - 1 {
+                    Divider().padding(.horizontal, 16)
+                }
+            }
+        }
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+        }
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+        .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
     }
 
     private func stationName(_ crs: String) -> String {
@@ -603,68 +642,148 @@ private struct PlannerResultsView: View {
 
 private struct PlannerJourneySummary: View {
     let journey: PlannedJourney
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            let cancelled = journey.legs.contains { $0.live?.isCancelled == true }
-            Text(PlannerTime.displayRange(from: journey.departure, to: journey.arrival))
-                .font(.headline)
-                .foregroundStyle(cancelled ? Color.red : Color.primary)
-                .strikethrough(cancelled, color: .red)
-            let scheduledDeparture = journey.scheduledDeparture ?? journey.legs.first?.scheduledDeparture ?? journey.departure
-            let scheduledArrival = journey.scheduledArrival ?? journey.legs.last?.scheduledArrival ?? journey.arrival
-            if abs(journey.departure.timeIntervalSince(scheduledDeparture)) >= 30 || abs(journey.arrival.timeIntervalSince(scheduledArrival)) >= 30 {
-                Text("Scheduled \(PlannerTime.displayRange(from: scheduledDeparture, to: scheduledArrival))")
-                    .font(.caption).foregroundStyle(Color.plannerSecondaryText)
-            }
-            let annotations = journey.legs.compactMap(\.live)
-                .filter { PlannerLivePresentation.title(for: $0) != "On time" }
-            let statuses = annotations.enumerated().filter { index, live in
-                !annotations.prefix(index).contains { PlannerLivePresentation.title(for: $0) == PlannerLivePresentation.title(for: live) }
-            }
-            ForEach(statuses, id: \.offset) { _, live in PlannerLiveBadge(live: live) }
-            if let onTimeSummary = PlannerLivePresentation.onTimeSummary(for: journey) {
-                Text(onTimeSummary).font(.caption).foregroundStyle(Color.plannerSecondaryText)
-            }
-            Text("\(PlannerTime.minutes(journey.durationMinutes)) · \(journey.changes == 0 ? "Direct" : "\(journey.changes) change\(journey.changes == 1 ? "" : "s")")")
-                .font(.subheadline).foregroundStyle(Color.plannerSecondaryText)
-            PlannerOperatorPills(journey: journey)
-            let warnings = PlannerLivePresentation.warnings(for: journey)
-            ForEach(Array(warnings.prefix(2)), id: \.self) { Text($0).font(.caption).foregroundStyle(Color.primary) }
-            if warnings.count > 2 { Text("More travel notes in journey details.").font(.caption).foregroundStyle(Color.plannerSecondaryText) }
+    var showsChevron = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
+
+    private var cancelled: Bool { journey.legs.contains { $0.live?.isCancelled == true } }
+    private var departureLeg: PlannedJourney.Leg? { journey.legs.first }
+    private var includesDate: Bool {
+        !PlannerTime.calendar.isDate(journey.departure, inSameDayAs: journey.arrival)
+    }
+
+    private var status: (text: String, color: Color) {
+        let annotations = journey.legs.compactMap(\.live)
+        if cancelled { return ("Cancelled", .plannerDestructiveText) }
+        if annotations.contains(where: \.isDelayed) {
+            let delay = annotations.map { max($0.departureDelayMinutes ?? 0, $0.arrivalDelayMinutes ?? 0) }.max() ?? 0
+            return ("Delayed", delay >= 5 ? .plannerDestructiveText : .plannerWarningText)
         }
-        .padding(.vertical, 4)
+        if annotations.contains(where: { $0.partCancelled == true || $0.status == "partCancelled" }) {
+            return ("Part cancelled", .plannerWarningText)
+        }
+        if let summary = PlannerLivePresentation.onTimeSummary(for: journey) {
+            return summary == "Train on time" || summary == "All trains on time"
+                ? ("On time", .plannerOnTimeText) : ("Some live times", .plannerSecondaryText)
+        }
+        return annotations.isEmpty ? ("Scheduled", .plannerSecondaryText) : ("Unknown", .plannerSecondaryText)
+    }
+
+    var body: some View {
+        DepartureSummaryRow(timing: {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(PlannerTime.display(journey.departure, includeDate: includesDate))
+                    .font(.title3)
+                    .monospacedDigit()
+                    .foregroundStyle(cancelled ? Color.plannerSecondaryText : Color.primary)
+                    .strikethrough(cancelled)
+                if !cancelled, departureLeg?.mode == "rail" {
+                    TrainLengthIndicator(cars: departureLeg?.live?.length, warningThreshold: minShortTrainCars)
+                }
+            }
+        }, platform: {
+            if !cancelled, let leg = departureLeg, leg.kind == "vehicle" {
+                PlatformBadge(platform: leg.live?.platform ?? "TBC", isBus: leg.mode == "bus" || leg.mode == "replacementBus")
+            }
+        }, status: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(status.text)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(status.color)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !cancelled {
+                    TimelineView(.periodic(from: .now, by: 60)) { context in
+                        Text(JourneyCardPresentation.relativeDepartureLabel(departure: journey.departure, now: context.date))
+                            .font(.caption)
+                            .foregroundStyle(Color.plannerSecondaryText)
+                            .monospacedDigit()
+                    }
+                }
+            }
+        }, details: {
+            departureDetails
+        }, footer: {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 8) {
+                    durationAndChanges
+                    PlannerJourneyOperators(journey: journey)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            } else {
+                HStack(alignment: .bottom, spacing: 8) {
+                    durationAndChanges
+                    Spacer(minLength: 8)
+                    PlannerJourneyOperators(journey: journey)
+                }
+            }
+        }, showsChevron: showsChevron)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
     }
+
+    private var durationAndChanges: some View {
+        Text("\(PlannerTime.minutes(journey.durationMinutes)) · \(journey.changes == 0 ? "Direct" : "\(journey.changes) change\(journey.changes == 1 ? "" : "s")")")
+            .font(.caption)
+            .foregroundStyle(Color.plannerSecondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var departureDetails: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            let destination = journey.legs.last?.to.name
+            Text(destination.map {
+                JourneyCardPresentation.arrivalLabel(
+                    time: PlannerTime.display(journey.arrival, includeDate: includesDate), destinationName: $0
+                )
+            } ?? "Arr \(PlannerTime.display(journey.arrival, includeDate: includesDate))")
+                .strikethrough(cancelled)
+            let scheduledDeparture = journey.scheduledDeparture ?? departureLeg?.scheduledDeparture ?? journey.departure
+            let scheduledArrival = journey.scheduledArrival ?? journey.legs.last?.scheduledArrival ?? journey.arrival
+            if abs(journey.departure.timeIntervalSince(scheduledDeparture)) >= 30 || abs(journey.arrival.timeIntervalSince(scheduledArrival)) >= 30 {
+                Text("Scheduled \(PlannerTime.displayRange(from: scheduledDeparture, to: scheduledArrival))")
+            }
+            if let summary = PlannerLivePresentation.onTimeSummary(for: journey),
+               summary != "Train on time", summary != "All trains on time" {
+                Text(summary)
+            }
+            let warnings = PlannerLivePresentation.warnings(for: journey)
+            ForEach(Array(warnings.prefix(2)), id: \.self) { warning in
+                Text(warning).foregroundStyle(Color.primary)
+            }
+            if warnings.count > 2 { Text("More travel notes in journey details.") }
+        }
+        .font(.caption)
+        .foregroundStyle(Color.plannerSecondaryText)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.top, 1)
+    }
 }
 
-private struct PlannerOperatorPills: View {
+private struct PlannerJourneyOperators: View {
     let journey: PlannedJourney
     @ObservedObject private var config = ServerConfigStore.shared
 
-    var body: some View {
+    static func brandings(for journey: PlannedJourney, in branding: OperatorBrandingConfig?) -> [OperatorBranding] {
         let operators = journey.legs.filter { $0.kind == "vehicle" || $0.isTubeTransfer }.map { leg in
             leg.isTubeTransfer
                 ? OperatorBranding(name: "Tube", operatorCodes: [], aliases: [], colorHex: "#FFFFFF")
-                : OperatorBrandingResolver.resolve(name: leg.operator, code: leg.operator, in: config.operatorBranding)
+                : OperatorBrandingResolver.resolve(name: leg.operator, code: leg.operator, in: branding)
                 ?? OperatorBranding(name: leg.operator ?? "Train service", operatorCodes: [], aliases: [], colorHex: "666666")
         }
-        let uniqueOperators = operators.enumerated().filter { index, branding in
+        return operators.enumerated().filter { index, branding in
             !operators.prefix(index).contains { $0.id == branding.id }
         }.map(\.element)
-        let pills = HStack(spacing: 6) {
-            ForEach(uniqueOperators) { branding in
-                PlannerTransportPill(branding: branding, showsRoundel: branding.name == "Tube")
-            }
-        }
-        .fixedSize()
-        ViewThatFits(in: .horizontal) {
-            pills
-            ScrollView(.horizontal) { pills }
-                .scrollIndicators(.hidden)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(uniqueOperators.map(\.name).joined(separator: ", "))
+    }
+
+    var body: some View {
+        let names = Self.brandings(for: journey, in: config.operatorBranding).map(\.name)
+        Text(names.joined(separator: " · ").uppercased())
+            .font(.caption.weight(.medium))
+            .foregroundStyle(Color.primary.opacity(0.7))
+            .multilineTextAlignment(.trailing)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel(names.joined(separator: ", "))
     }
 }
 
@@ -821,7 +940,7 @@ private struct PlannerJourneyDetailView: View {
     }
 }
 
-private extension Color {
+extension Color {
     static var plannerActionText: Color {
         Color(uiColor: UIColor { traits in
             traits.userInterfaceStyle == .dark ? .systemCyan : UIColor(red: 0, green: 0.3, blue: 0.65, alpha: 1)
@@ -831,6 +950,18 @@ private extension Color {
     static var plannerDestructiveText: Color {
         Color(uiColor: UIColor { traits in
             traits.userInterfaceStyle == .dark ? .systemRed : UIColor(red: 0.75, green: 0.05, blue: 0.06, alpha: 1)
+        })
+    }
+
+    static var plannerOnTimeText: Color {
+        Color(uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark ? .systemGreen : UIColor(red: 0, green: 0.42, blue: 0.16, alpha: 1)
+        })
+    }
+
+    static var plannerWarningText: Color {
+        Color(uiColor: UIColor { traits in
+            traits.userInterfaceStyle == .dark ? .systemYellow : UIColor(red: 0.5, green: 0.32, blue: 0, alpha: 1)
         })
     }
 

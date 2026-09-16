@@ -192,8 +192,9 @@ function normalizeStaffBoard(raw, item, fetchedAt) {
     assertObject(service);
     for (const field of ['previousLocations', 'subsequentLocations']) {
       if (service[field] != null && (!Array.isArray(service[field]) || service[field].length > 512)) throw malformed();
+      for (const location of service[field] ?? []) assertObject(location);
     }
-    return structuredClone(service);
+    return { ...structuredClone(service), ...(raw.platformsAreHidden === true ? { platformIsHidden: true } : {}) };
   });
   return { station: item.station, generatedAt: timestamp(raw.generatedAt), fetchedAt, services,
     servicesAreUnavailable: raw.servicesAreUnavailable === true,
@@ -241,7 +242,7 @@ function normalizeDetails(raw, item, fetchedAt) {
 
 function normalizeService(raw) {
   return pick(raw, ['serviceID', 'crs', 'rsid', 'operatorCode', 'serviceType', 'sta', 'eta', 'ata', 'std', 'etd', 'atd',
-    'platform', 'isCancelled', 'cancelReason', 'delayReason', 'futureCancellation', 'futureDelay', 'filterLocationCancelled',
+    'platform', 'length', 'isCancelled', 'cancelReason', 'delayReason', 'futureCancellation', 'futureDelay', 'filterLocationCancelled',
     'isCircularRoute', 'origin', 'destination', 'currentOrigins', 'currentDestinations', 'uncertainty', 'diversion',
     'divertedVia', 'diversionReason', 'overdueMessage']);
 }

@@ -79,6 +79,8 @@ def search_result(request, profile=None):
         return live_result(request.get("realtime", "apply"))
     if profile == "coverage":
         return coverage_result()
+    if profile == "departures":
+        return departure_rows_result()
     offset = int(request.get("cursor", "window:0").split(":")[1])
     start = START + timedelta(hours=6 * offset)
     end = start + timedelta(hours=6)
@@ -99,6 +101,31 @@ def search_result(request, profile=None):
         "warnings": ["Fixture search note"], "pagination": {"earlier": f"window:{offset - 1}", "later": f"window:{offset + 1}",
             **({"more": f"window:{offset + 1}"} if profile == "results" else {})},
     }
+
+
+def departure_rows_result():
+    result = live_result("apply")
+    journeys = []
+    for index, status in enumerate(["onTime", "delayed", "unknown", "cancelled"]):
+        journey = copy.deepcopy(result["journeys"][0])
+        scheduled = PLANNER_LIVE_START + timedelta(minutes=index * 15)
+        departure = scheduled + timedelta(minutes=4 if status == "delayed" else 0)
+        arrival = departure + timedelta(minutes=35)
+        journey.update(id="departure-row-" + status, departure=iso(departure), arrival=iso(arrival),
+                       scheduledDeparture=iso(scheduled), scheduledArrival=iso(scheduled + timedelta(minutes=35)), warnings=[])
+        leg = journey["legs"][0]
+        leg.update(departure=journey["departure"], arrival=journey["arrival"],
+                   scheduledDeparture=journey["scheduledDeparture"], scheduledArrival=journey["scheduledArrival"],
+                   callingPoints=[], warnings=[])
+        leg["live"] = {"status": status, "platform": "2", "length": 10, "updatedAt": iso(datetime.now(timezone.utc)),
+                       "cancelled": status == "cancelled", "partCancelled": False,
+                       "departureDelayMinutes": 4 if status == "delayed" else 0,
+                       "arrivalDelayMinutes": 4 if status == "delayed" else 0}
+        if status != "unknown":
+            leg["live"].update(departure=journey["departure"], arrival=journey["arrival"])
+        journeys.append(journey)
+    result.update(journeys=journeys, disruptedJourneys=[], warnings=[], pagination={})
+    return result
 
 
 def live_result(mode):
@@ -197,7 +224,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urlparse(self.path)
-        if url.path.endswith("/journeys/coverage-journey"):
+        if "/journeys/departure-row-" in url.path:
+            journey_id = url.path.rsplit("/", 1)[-1]
+            result = departure_rows_result()
+            journey = next((value for value in result["journeys"] if value["id"] == journey_id), None)
+            self.respond(200, {"journey": journey, "dataset": DATASET, "live": result["live"]}) if journey else self.respond(404, {})
+        elif url.path.endswith("/journeys/coverage-journey"):
             result = coverage_result()
             self.respond(200, {"journey": result["journeys"][0], "dataset": DATASET, "live": result["live"]})
         elif "/journeys/live-" in url.path:

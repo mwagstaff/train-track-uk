@@ -54,8 +54,26 @@ enum LiveActivityDismissalPolicy {
 enum LiveActivityInProgressUpdatePolicy {
     static func reconcilingLocalUpdate(
         _ candidate: JourneyActivityAttributes.ContentState,
-        with current: JourneyActivityAttributes.ContentState
+        with current: JourneyActivityAttributes.ContentState,
+        serviceMatchConfirmed: Bool? = nil,
+        confirmedArrivalTime: String? = nil
     ) -> JourneyActivityAttributes.ContentState {
+        if serviceMatchConfirmed == false, candidate.journeyPhase.showsInProgressService {
+            // The previous board describes the next train, not the unidentified train
+            // being tracked. Its server revision must not restore those details.
+            var unconfirmed = candidate
+            unconfirmed.scheduledDeparture = nil
+            unconfirmed.arrivalLabel = nil
+            unconfirmed.length = nil
+            unconfirmed.platform = "TBC"
+            unconfirmed.estimated = candidate.journeyPhase == .arrived ? (confirmedArrivalTime ?? "—") : "—"
+            unconfirmed.statusText = candidate.journeyPhase == .arrived ? nil : "Train not yet confirmed"
+            unconfirmed.isCancelled = false
+            unconfirmed.delayMinutes = 0
+            unconfirmed.arrivalDelayMinutes = nil
+            unconfirmed.upcomingDepartures = []
+            return unconfirmed
+        }
         guard candidate.journeyPhase == .enRoute,
               current.journeyPhase == .enRoute,
               current.revision != nil,
@@ -122,6 +140,7 @@ final class LiveActivityManager: ObservableObject {
         var fallbackEndTimer: Timer?
     }
     private var trackedActivities: [String: TrackedActivity] = [:] // keyed by activity.id
+    private var journeyPhaseUpdateIDs: [String: UUID] = [:]
     private var preferredActivityID: String?
     private var activitiesBeingDiscarded: Set<String> = []
 
@@ -389,21 +408,34 @@ final class LiveActivityManager: ObservableObject {
         destinationStation: Station,
         checkpoint: ActiveJourneyHistoryCheckpoint? = nil
     ) async {
+        let statusObservedAt = Date()
         let startCRS = startStation.crs.uppercased()
         let destinationCRS = destinationStation.crs.uppercased()
+        let routeKey = "\(startCRS)_\(destinationCRS)"
+        let updateID = UUID()
+        journeyPhaseUpdateIDs[routeKey] = updateID
+        defer {
+            if journeyPhaseUpdateIDs[routeKey] == updateID {
+                journeyPhaseUpdateIDs.removeValue(forKey: routeKey)
+            }
+        }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_GB")
         formatter.dateFormat = "HH:mm"
         var backendStateSynchronized = false
 
         for activity in currentSystemActivities() {
+            guard journeyPhaseUpdateIDs[routeKey] == updateID else { return }
             let routeState = activity.content.state
             let deepLinkFrom = (routeState.deepLinkFromCRS ?? routeState.fromCRS).uppercased()
             let deepLinkTo = (routeState.deepLinkToCRS ?? routeState.toCRS).uppercased()
             guard deepLinkFrom == startCRS, deepLinkTo == destinationCRS else { continue }
 
             let currentLeg = checkpoint?.currentLeg
-            let matchedServiceID = phase.showsInProgressService ? currentLeg?.serviceID : nil
+            let matchedServiceID = (phase.showsInProgressService ? currentLeg?.serviceID : nil)
+                .flatMap { $0.isEmpty ? nil : $0 }
+            let serviceMatchConfirmed: Bool? = checkpoint != nil && phase.showsInProgressService
+                ? matchedServiceID != nil : nil
             let finalLeg = checkpoint?.legs.last
             let authoritativeArrival = finalLeg?.actualArrivalAt
                 ?? finalLeg?.detectedArrivalAt
@@ -412,10 +444,12 @@ final class LiveActivityManager: ObservableObject {
             let previousPreferredServiceID = trackedActivities[activity.id]?.preferredServiceID
             let backendStateNeedsSync = routeState.journeyPhase != phase
                 || (matchedServiceID != nil && previousPreferredServiceID != matchedServiceID)
+                || (serviceMatchConfirmed == false
+                    && (previousPreferredServiceID != nil || routeState.scheduledDeparture != nil))
                 || (phase == .arrived
                     && authoritativeArrivalText != nil
                     && routeState.estimated != authoritativeArrivalText)
-            if let matchedServiceID,
+            if (matchedServiceID != nil || serviceMatchConfirmed == false),
                var tracked = trackedActivities[activity.id] {
                 tracked.preferredServiceID = matchedServiceID
                 trackedActivities[activity.id] = tracked
@@ -441,13 +475,17 @@ final class LiveActivityManager: ObservableObject {
             // Service-detail lookup can overlap a foreground departure refresh.
             // Rebase on ActivityKit's latest content after that await so an older
             // 06:59 snapshot cannot overwrite a newer 07:42 local update.
+            guard journeyPhaseUpdateIDs[routeKey] == updateID else { return }
             var state = activity.content.state
             state.journeyPhase = phase
             state.journeyStartName = startStation.name
             state.journeyDestinationName = destinationStation.name
             state.arrivalDelayMinutes = nil
+            if phase == .arrived {
+                state.destinationTitle = destinationStation.name
+            }
 
-            if phase.showsInProgressService {
+            if phase.showsInProgressService && serviceMatchConfirmed != false {
                 let previouslyDisplayedDeparture = state.estimated
                 if let previousArrivalLabel = state.arrivalLabel,
                    previousArrivalLabel.hasPrefix("Arr ") {
@@ -457,7 +495,6 @@ final class LiveActivityManager: ObservableObject {
                 state.upcomingDepartures = []
 
                 if phase == .arrived {
-                    state.destinationTitle = destinationStation.name
                     state.statusText = nil
                     if let authoritativeArrivalText {
                         state.estimated = authoritativeArrivalText
@@ -477,6 +514,7 @@ final class LiveActivityManager: ObservableObject {
                         with: activity.content.state
                     )
                     await activity.update(ActivityContent(state: state, staleDate: nil))
+                    guard journeyPhaseUpdateIDs[routeKey] == updateID else { return }
                     JourneyActivityLifecycleStore.update(activityID: activity.id, state: state)
                     continue
                 }
@@ -525,9 +563,12 @@ final class LiveActivityManager: ObservableObject {
 
             state = LiveActivityInProgressUpdatePolicy.reconcilingLocalUpdate(
                 state,
-                with: activity.content.state
+                with: activity.content.state,
+                serviceMatchConfirmed: serviceMatchConfirmed,
+                confirmedArrivalTime: authoritativeArrivalText
             )
             await activity.update(ActivityContent(state: state, staleDate: nil))
+            guard journeyPhaseUpdateIDs[routeKey] == updateID else { return }
             JourneyActivityLifecycleStore.update(activityID: activity.id, state: state)
 
             // A locally updated journey activity can otherwise be replaced by the
@@ -539,6 +580,8 @@ final class LiveActivityManager: ObservableObject {
                     fromCRS: startCRS,
                     toCRS: destinationCRS,
                     preferredServiceID: matchedServiceID,
+                    serviceMatchConfirmed: serviceMatchConfirmed,
+                    statusObservedAt: statusObservedAt,
                     arrivalTime: authoritativeArrivalText,
                     arrivalDelayMinutes: phase == .arrived
                         ? JourneyHistoryDelayPolicy.confirmedDelayMinutes(
@@ -2579,6 +2622,8 @@ final class LiveActivityManager: ObservableObject {
         fromCRS: String,
         toCRS: String,
         preferredServiceID: String?,
+        serviceMatchConfirmed: Bool? = nil,
+        statusObservedAt: Date = Date(),
         arrivalTime: String? = nil,
         arrivalDelayMinutes: Int? = nil,
         completedAt: Date? = nil
@@ -2596,10 +2641,14 @@ final class LiveActivityManager: ObservableObject {
             "device_id": DeviceIdentity.deviceToken,
             "from": fromCRS,
             "to": toCRS,
-            "phase": phase.rawValue
+            "phase": phase.rawValue,
+            "status_observed_at_ms": statusObservedAt.timeIntervalSince1970 * 1000
         ]
         if let preferredServiceID, !preferredServiceID.isEmpty {
             payload["service_id"] = preferredServiceID
+        }
+        if let serviceMatchConfirmed, phase.showsInProgressService {
+            payload["service_match_confirmed"] = serviceMatchConfirmed
         }
         if let arrivalTime, !arrivalTime.isEmpty {
             payload["arrival_time"] = arrivalTime

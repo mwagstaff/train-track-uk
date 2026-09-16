@@ -234,6 +234,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
     private var completionCleanupTask: Task<Void, Never>?
     private var earlyExitEvidence = JourneyEarlyExitPolicy()
     private var unexpectedStationEvidence = JourneyEarlyExitPolicy()
+    private var serviceMatchingAttempts: Set<UUID> = []
 
     private init() {
         restoreCheckpoint()
@@ -504,7 +505,11 @@ final class JourneyTrackingCoordinator: ObservableObject {
     }
 
     func manuallyReplaceCurrentService(with departure: DepartureV2) async {
-        guard var active = activeJourney, let index = active.legs.indices.last else { return }
+        guard !isFinishingJourney, var active = activeJourney, active.phase == .inTransit,
+              let index = active.legs.indices.last else { return }
+        let journeyID = active.id
+        let legID = active.legs[index].id
+        active.serviceMatchRecovery = nil
         let previousBackendSessionID = active.backendSessionID
         active.backendSessionID = nil
         active.legs[index].serviceID = departure.serviceID
@@ -522,6 +527,10 @@ final class JourneyTrackingCoordinator: ObservableObject {
         active.serviceMatchConfidence = 1
         active.updatedAt = Date()
         activeJourney = active
+        persistCheckpoint()
+        if let previousBackendSessionID {
+            Task { await JourneyTrackingService.shared.stop(sessionID: previousBackendSessionID) }
+        }
 
         let context = ServiceDetailsLookupContext(
             fromCRS: active.legs[index].fromStation.crs,
@@ -536,12 +545,14 @@ final class JourneyTrackingCoordinator: ObservableObject {
             force: true,
             context: context
         )
-        if let details = DeparturesStore.shared.serviceDetailsById[departure.serviceID],
-           var updated = activeJourney {
+        guard !Task.isCancelled, !isFinishingJourney, var updated = activeJourney,
+              updated.matchesInTransitService(journeyID: journeyID, legID: legID, serviceID: departure.serviceID),
+              updated.serviceMatchRecovery == nil else { return }
+        if let details = DeparturesStore.shared.serviceDetailsById[departure.serviceID] {
             populate(&updated.legs[index], from: details, reference: updated.detectedDepartureAt)
-            activeJourney = updated
-            active = updated
         }
+        activeJourney = updated
+        active = updated
         persistCheckpoint()
 
         LiveActivityJourneyStatusSender.shared.send(
@@ -551,14 +562,16 @@ final class JourneyTrackingCoordinator: ObservableObject {
             serviceID: departure.serviceID
         )
 
-        if let previousBackendSessionID {
-            await JourneyTrackingService.shared.stop(sessionID: previousBackendSessionID)
-        }
         do {
-            if let sessionID = try await JourneyTrackingService.shared.register(checkpoint: active),
-               var updated = activeJourney {
-                updated.backendSessionID = sessionID
-                activeJourney = updated
+            if let sessionID = try await JourneyTrackingService.shared.register(checkpoint: active) {
+                guard !Task.isCancelled, !isFinishingJourney, var registered = activeJourney,
+                      registered.matchesInTransitService(journeyID: journeyID, legID: legID, serviceID: departure.serviceID),
+                      registered.serviceMatchRecovery == nil else {
+                    await JourneyTrackingService.shared.stop(sessionID: sessionID)
+                    return
+                }
+                registered.backendSessionID = sessionID
+                activeJourney = registered
                 persistCheckpoint()
             }
         } catch {
@@ -568,19 +581,24 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 "error": error.localizedDescription
             ])
         }
-        if let updated = activeJourney {
-            await LiveActivityManager.shared.updateJourneyPhase(
-                .enRoute,
-                startStation: updated.plannedOrigin,
-                destinationStation: updated.plannedDestination,
-                checkpoint: updated
-            )
-        }
+        guard !Task.isCancelled, !isFinishingJourney, let current = activeJourney,
+              current.matchesInTransitService(journeyID: journeyID, legID: legID, serviceID: departure.serviceID),
+              current.serviceMatchRecovery == nil else { return }
+        await LiveActivityManager.shared.updateJourneyPhase(
+            .enRoute,
+            startStation: current.plannedOrigin,
+            destinationStation: current.plannedDestination,
+            checkpoint: current
+        )
         await refreshMonitoringConditions()
     }
 
     func manuallyUseUnlistedService() async {
-        guard var active = activeJourney, let index = active.legs.indices.last else { return }
+        guard !isFinishingJourney, var active = activeJourney, active.phase == .inTransit,
+              let index = active.legs.indices.last else { return }
+        let journeyID = active.id
+        let legID = active.legs[index].id
+        active.serviceMatchRecovery = nil
         let previousBackendSessionID = active.backendSessionID
         active.backendSessionID = nil
         active.legs[index].serviceID = nil
@@ -602,11 +620,14 @@ final class JourneyTrackingCoordinator: ObservableObject {
         if let previousBackendSessionID {
             await JourneyTrackingService.shared.stop(sessionID: previousBackendSessionID)
         }
+        guard !Task.isCancelled, !isFinishingJourney, let current = activeJourney,
+              current.matchesInTransitService(journeyID: journeyID, legID: legID, serviceID: nil),
+              current.serviceMatchRecovery == nil else { return }
         await LiveActivityManager.shared.updateJourneyPhase(
             .enRoute,
-            startStation: active.plannedOrigin,
-            destinationStation: active.plannedDestination,
-            checkpoint: active
+            startStation: current.plannedOrigin,
+            destinationStation: current.plannedDestination,
+            checkpoint: current
         )
         await refreshMonitoringConditions()
     }
@@ -1196,7 +1217,12 @@ final class JourneyTrackingCoordinator: ObservableObject {
             serviceDepartedStationAt: nil,
             updatedAt: detectedAt,
             scheduleOccurrenceStart: candidate.activeFrom,
-            scheduleOccurrenceEnd: candidate.activeUntil
+            scheduleOccurrenceEnd: candidate.activeUntil,
+            serviceMatchRecovery: preferredDeparture == nil && !forceUnmatchedService
+                ? JourneyServiceMatchRecoveryContext(
+                    plannedLegIndex: 0, fromStation: origin, detectedAt: detectedAt,
+                    departures: candidate.candidateDepartures
+                ) : nil
         )
         armedCandidates.removeAll()
         persistCheckpoint()
@@ -1419,6 +1445,9 @@ final class JourneyTrackingCoordinator: ObservableObject {
         case .station:
             await handleExpectedStationArrival(station, detectedAt: detectedAt)
         }
+        if Date().timeIntervalSince(detectedAt) <= JourneyEarlyExitPolicy.maximumLocationAge {
+            scheduleActiveServiceRecovery()
+        }
         return true
     }
 
@@ -1511,6 +1540,9 @@ final class JourneyTrackingCoordinator: ObservableObject {
         active.lastProcessedLocationTimestamp = detectedAt
         activeJourney = active
         persistCheckpoint()
+        if locationAge <= JourneyEarlyExitPolicy.maximumLocationAge {
+            scheduleActiveServiceRecovery()
+        }
         if detectedAt.timeIntervalSince(active.detectedDepartureAt) > Self.maximumActiveJourneyDuration {
             log("journey_safety_expired", "Journey monitoring exceeded its 24-hour safety limit", metadata: [
                 "journey_id": active.id.uuidString,
@@ -1592,9 +1624,12 @@ final class JourneyTrackingCoordinator: ObservableObject {
             return
         }
 
-        // A recovered partial leg has no known train to leave or rebind. More
-        // station visits may extend its history, but cannot identify a service.
-        guard active.originDepartureWasMissed != true || active.currentLeg?.serviceID != nil else { return }
+        // Without a known calling pattern, a normal intermediate stop cannot
+        // establish that the passenger has left the route.
+        guard active.currentLeg?.hasKnownCallingPattern == true else {
+            unexpectedStationEvidence.reset()
+            return
+        }
 
         // A cached fix must not start or extend the separate off-route/rebind dwell either.
         guard locationAge >= 0, locationAge <= JourneyEarlyExitPolicy.maximumLocationAge else { return }
@@ -1775,7 +1810,103 @@ final class JourneyTrackingCoordinator: ObservableObject {
         ])
         if activeJourney != nil {
             await refreshMonitoringConditions()
+            await refreshActiveServiceRecovery()
         }
+    }
+
+    /// Recover an automatic match using its original departure observation, never
+    /// the time at which a foreground refresh or later station callback arrived.
+    func refreshActiveServiceRecovery() async {
+        guard !isFinishingJourney, !isResumingJourney,
+              let active = activeJourney,
+              let recovery = active.serviceMatchRecovery,
+              !serviceMatchingAttempts.contains(recovery.id) else { return }
+        if let fallback = recovery.interruptedFallback(in: active, at: Date()) {
+            activeJourney = fallback
+            persistCheckpoint()
+            log("interrupted_service_match_expired", "Resumed recording without a confirmed train after interrupted matching expired", metadata: [
+                "journey_id": active.id.uuidString, "original_detected_at": recovery.detectedAt
+            ])
+            if let previousSessionID = active.backendSessionID {
+                Task { await JourneyTrackingService.shared.stop(sessionID: previousSessionID) }
+            }
+            await LiveActivityManager.shared.updateJourneyPhase(
+                .enRoute, startStation: fallback.plannedOrigin,
+                destinationStation: fallback.plannedDestination, checkpoint: fallback
+            )
+            await refreshMonitoringConditions()
+            return
+        }
+        guard recovery.shouldRetry(in: active, at: Date()) else { return }
+        log("service_match_recovery_attempt", "Retrying unresolved automatic service information", metadata: [
+            "journey_id": active.id.uuidString,
+            "service_id": active.currentLeg?.serviceID,
+            "original_detected_at": recovery.detectedAt,
+            "cached_departure_count": recovery.departures.count,
+            "replacing_leg_id": recovery.legID?.uuidString
+        ])
+        if recovery.legID != nil, let serviceID = active.currentLeg?.serviceID {
+            await recoverMissingServiceDetails(recovery, journeyID: active.id, serviceID: serviceID)
+        } else {
+            await matchCurrentLeg(
+                cachedDepartures: recovery.departures,
+                detectedAt: recovery.detectedAt,
+                reboundFromServiceID: recovery.reboundFromServiceID,
+                fromOverride: recovery.fromStation
+            )
+        }
+        guard let updated = activeJourney, updated.id == active.id,
+              updated.phase == .inTransit else { return }
+        await LiveActivityManager.shared.updateJourneyPhase(
+            .enRoute, startStation: updated.plannedOrigin,
+            destinationStation: updated.plannedDestination, checkpoint: updated
+        )
+        await refreshMonitoringConditions()
+    }
+
+    private func scheduleActiveServiceRecovery() {
+        guard let active = activeJourney, let recovery = active.serviceMatchRecovery,
+              recovery.shouldRetry(in: active, at: Date()),
+              !serviceMatchingAttempts.contains(recovery.id) else { return }
+        Task { @MainActor [weak self] in await self?.refreshActiveServiceRecovery() }
+    }
+
+    private func recoverMissingServiceDetails(
+        _ recovery: JourneyServiceMatchRecoveryContext,
+        journeyID: UUID,
+        serviceID: String
+    ) async {
+        guard var active = activeJourney, active.id == journeyID,
+              recovery.canApply(to: active) else { return }
+        serviceMatchingAttempts.insert(recovery.id)
+        defer { serviceMatchingAttempts.remove(recovery.id) }
+        active.serviceMatchRecovery?.lastAttemptAt = Date()
+        activeJourney = active
+        persistCheckpoint()
+        _ = await DeparturesStore.shared.ensureServiceDetails(
+            for: [serviceID], force: true,
+            context: ServiceDetailsLookupContext(
+                fromCRS: recovery.fromStation.crs, toCRS: active.currentPlannedLegDestination.crs,
+                originCRS: nil, operator: nil, destinationCRSs: [], length: nil
+            )
+        )
+        guard !Task.isCancelled, !isFinishingJourney,
+              var updated = activeJourney, updated.id == journeyID,
+              recovery.canApply(to: updated), updated.currentLeg?.serviceID == serviceID,
+              let index = updated.legs.indices.last,
+              let details = DeparturesStore.shared.serviceDetailsById[serviceID] else { return }
+        populate(&updated.legs[index], from: details, reference: recovery.detectedAt)
+        if updated.legs[index].hasKnownCallingPattern { updated.serviceMatchRecovery = nil }
+        updated.nextExpectedCallingPointIndex = resolvedCurrentRouteStations(updated).firstIndex {
+            $0.crs.caseInsensitiveCompare(updated.lastConfirmedOnRouteStation.crs) == .orderedSame
+        }.map { $0 + 1 } ?? 1
+        updated.updatedAt = Date()
+        activeJourney = updated
+        persistCheckpoint()
+        log("service_details_recovered", "Recovered calling pattern for \(serviceID)", metadata: [
+            "journey_id": journeyID.uuidString, "service_id": serviceID,
+            "calling_point_count": updated.currentLeg?.callingPoints.count
+        ])
     }
 
     private func matchCurrentLeg(
@@ -1787,6 +1918,17 @@ final class JourneyTrackingCoordinator: ObservableObject {
         forceUnmatchedService: Bool = false
     ) async {
         guard var active = activeJourney else { return }
+        let recovery = active.serviceMatchRecovery
+        if let recovery {
+            guard recovery.canApply(to: active), !serviceMatchingAttempts.contains(recovery.id) else { return }
+            serviceMatchingAttempts.insert(recovery.id)
+            active.serviceMatchRecovery?.lastAttemptAt = Date()
+            activeJourney = active
+            persistCheckpoint()
+        }
+        defer {
+            if let recovery { serviceMatchingAttempts.remove(recovery.id) }
+        }
         let from = fromOverride ?? active.plannedStations[active.plannedLegIndex]
         let to = active.currentPlannedLegDestination
         let previousBackendSessionID = active.backendSessionID
@@ -1838,23 +1980,25 @@ final class JourneyTrackingCoordinator: ObservableObject {
             "candidate_count": departures.count,
             "candidates": departureDiagnosticSummary(departures)
         ])
-        guard !Task.isCancelled,
+        guard !Task.isCancelled, !isFinishingJourney,
               let latestBeforeMatching = activeJourney,
               latestBeforeMatching.id == active.id,
               latestBeforeMatching.plannedLegIndex == active.plannedLegIndex,
               latestBeforeMatching.phase == active.phase,
               latestBeforeMatching.legs.map(\.id) == active.legs.map(\.id),
-              latestBeforeMatching.currentLeg?.serviceID == active.currentLeg?.serviceID else { return }
+              latestBeforeMatching.currentLeg?.serviceID == active.currentLeg?.serviceID,
+              latestBeforeMatching.serviceMatchRecovery?.id == recovery?.id else { return }
         active = latestBeforeMatching
+        if recovery != nil {
+            active.serviceMatchRecovery?.departures = departures
+            activeJourney = active
+            persistCheckpoint()
+        }
         let recentDepartures = RecentServiceStore.shared.departures(
             fromCRS: from.crs, toCRS: to.crs, now: detectedAt
         )
         let preferredServiceID = LiveActivityManager.shared.preferredServiceID(fromCRS: from.crs, toCRS: to.crs)
-        let originArrivedAt = active.plannedLegIndex == 0 && fromOverride == nil
-            ? active.originArrivedAt
-            : active.stationEvents.last(where: {
-                $0.station.crs.caseInsensitiveCompare(from.crs) == .orderedSame && $0.kind == .arrival
-            })?.detectedAt
+        let originArrivedAt = active.originArrivalForServiceMatching(from: from)
         let match = forceUnmatchedService ? JourneyServiceMatchingPolicy.Match.unmatched : JourneyServiceMatchingPolicy.match(
             departures: departures,
             recentDepartures: recentDepartures,
@@ -1901,6 +2045,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
             }
         }
         var leg = JourneyHistoryLeg(
+            id: recovery?.legID ?? UUID(),
             plannedLegIndex: active.plannedLegIndex,
             fromStation: from,
             toStation: to,
@@ -1949,19 +2094,26 @@ final class JourneyTrackingCoordinator: ObservableObject {
 
         // Locations and service updates can arrive while details are loading.
         // Keep those observations, and never restore an ended or replaced leg.
-        guard !Task.isCancelled,
+        guard !Task.isCancelled, !isFinishingJourney,
               let latestBeforeCommit = activeJourney,
               latestBeforeCommit.id == active.id,
               latestBeforeCommit.plannedLegIndex == active.plannedLegIndex,
               latestBeforeCommit.phase == active.phase,
               latestBeforeCommit.legs.map(\.id) == active.legs.map(\.id),
-              latestBeforeCommit.currentLeg?.serviceID == active.currentLeg?.serviceID else { return }
+              latestBeforeCommit.currentLeg?.serviceID == active.currentLeg?.serviceID,
+              latestBeforeCommit.serviceMatchRecovery?.id == recovery?.id else { return }
         active = latestBeforeCommit
         active.backendSessionID = nil
-        if reboundFromServiceID != nil, let lastIndex = active.legs.indices.last {
-            active.legs[lastIndex].outcome = .rebound
+        if let recovery {
+            guard let updated = recovery.applying(leg, to: active) else { return }
+            active = updated
+            if leg.hasKnownCallingPattern { active.serviceMatchRecovery = nil }
+        } else {
+            if reboundFromServiceID != nil, let lastIndex = active.legs.indices.last {
+                active.legs[lastIndex].outcome = .rebound
+            }
+            active.legs.append(leg)
         }
-        active.legs.append(leg)
         active.phase = .inTransit
         let confirmedStationIndex = resolvedCurrentRouteStations(active).firstIndex {
             $0.crs.caseInsensitiveCompare(active.lastConfirmedOnRouteStation.crs) == .orderedSame
@@ -2002,6 +2154,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
         // while optional backend registration is in flight.
         let journeyID = active.id
         let legID = leg.id
+        let serviceID = leg.serviceID
         Task { @MainActor [weak self] in
             guard let self else { return }
             if let previousBackendSessionID {
@@ -2011,6 +2164,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
                   let checkpointToRegister = self.activeJourney,
                   checkpointToRegister.id == journeyID,
                   checkpointToRegister.currentLeg?.id == legID,
+                  checkpointToRegister.currentLeg?.serviceID == serviceID,
                   checkpointToRegister.phase == .inTransit else { return }
             do {
                 if let sessionID = try await JourneyTrackingService.shared.register(checkpoint: checkpointToRegister) {
@@ -2018,6 +2172,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
                           var updated = self.activeJourney,
                           updated.id == journeyID,
                           updated.currentLeg?.id == legID,
+                          updated.currentLeg?.serviceID == serviceID,
                           updated.phase == .inTransit else {
                         await JourneyTrackingService.shared.stop(sessionID: sessionID)
                         return
@@ -2150,6 +2305,12 @@ final class JourneyTrackingCoordinator: ObservableObject {
         active.phase = .matchingService
         active.updatedAt = detectedAt
         let previousServiceID = active.legs.last?.serviceID
+        active.serviceMatchRecovery = preferredDeparture == nil && !forceUnmatchedService
+            ? JourneyServiceMatchRecoveryContext(
+                plannedLegIndex: active.plannedLegIndex, fromStation: station,
+                detectedAt: detectedAt, departures: [], reboundFromServiceID: previousServiceID,
+                previousLegID: active.currentLeg?.id
+            ) : nil
         activeJourney = active
         persistCheckpoint()
         log("next_leg_started", "Detected departure from interchange \(station.crs); matching planned leg \(active.plannedLegIndex + 1)", metadata: [
@@ -2206,6 +2367,11 @@ final class JourneyTrackingCoordinator: ObservableObject {
             }
             active.lastConfirmedOnRouteStation = station
             active.stationEvents.append(JourneyHistoryStationEvent(station: station, kind: .arrival, detectedAt: detectedAt))
+            active.serviceMatchRecovery = JourneyServiceMatchRecoveryContext(
+                plannedLegIndex: active.plannedLegIndex, fromStation: station,
+                detectedAt: detectedAt, departures: departures, reboundFromServiceID: previousServiceID,
+                previousLegID: active.currentLeg?.id
+            )
             activeJourney = active
             persistCheckpoint()
             log("service_rebind_available", "Found \(departures.count) replacement service candidate(s) from \(station.crs) to \(destination.crs)", metadata: [
@@ -2705,7 +2871,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 "scheduled": departure.departureTime.scheduled,
                 "estimated": departure.departureTime.estimated,
                 "actual": departure.departureTime.actual ?? "unknown",
-                "observed_at": departure.timestamp.map { ISO8601DateFormatter().string(from: $0) } ?? "unknown",
+                "observed_at": departure.evidenceObservedAt.map { ISO8601DateFormatter().string(from: $0) } ?? "unknown",
                 "display_time": JourneyItineraryBuilder.departureDisplayTime(departure),
                 "cancelled": departure.isCancelled
             ]

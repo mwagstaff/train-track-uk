@@ -204,6 +204,41 @@ final class JourneyPlannerUITests: XCTestCase {
     }
 
     @MainActor
+    func testTimetableDepartureRowsUseSavedJourneyFormatting() async throws {
+        let app = try await launchQueuedFixture(profile: "departures", destination: "VIC")
+        app.buttons["planner.search"].tap()
+        XCTAssertTrue(app.navigationBars["Journeys"].waitForExistence(timeout: 10))
+        let onTime = app.buttons["planner.journey.departure-row-onTime"]
+        XCTAssertTrue(onTime.waitForExistence(timeout: 10))
+        XCTAssertTrue(onTime.label.contains("On time"))
+        XCTAssertTrue(onTime.label.contains("10 car train"))
+        XCTAssertTrue(onTime.label.contains("Platform 2"))
+        XCTAssertTrue(onTime.label.contains("Arr "))
+        XCTAssertTrue(onTime.label.contains("at London Victoria"))
+        XCTAssertTrue(onTime.label.contains("35 min · Direct"))
+        XCTAssertTrue(onTime.label.contains("Southeastern"))
+        let delayed = app.buttons["planner.journey.departure-row-delayed"]
+        scrollTo(delayed, in: app)
+        XCTAssertTrue(delayed.label.contains("Delayed"))
+        XCTAssertTrue(delayed.label.contains("Scheduled "))
+        let unknown = app.buttons["planner.journey.departure-row-unknown"]
+        scrollTo(unknown, in: app)
+        XCTAssertTrue(unknown.label.contains("Unknown"))
+        XCTAssertFalse(unknown.label.contains("On time"))
+        let cancelled = app.buttons["planner.journey.departure-row-cancelled"]
+        scrollTo(cancelled, in: app)
+        XCTAssertTrue(cancelled.label.contains("Cancelled"))
+        XCTAssertFalse(cancelled.label.contains("10 car train"))
+        attach("planner-departure-rows", app: app)
+        scrollTo(onTime, in: app, towardTop: true)
+        onTime.tap()
+        XCTAssertTrue(app.navigationBars["Journey details"].waitForExistence(timeout: 10))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.navigationBars["Journeys"].waitForExistence(timeout: 10))
+        try app.performAccessibilityAudit(for: [.contrast, .textClipped, .hitRegion])
+    }
+
+    @MainActor
     func testJourneyDetailsDescribeLegsAndRouteMapsHighlightSelectedSection() async throws {
         let app = try await launchQueuedFixture(profile: "details")
         app.buttons["planner.search"].tap()

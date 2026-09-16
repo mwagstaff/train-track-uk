@@ -142,6 +142,8 @@ export class LiveActivityManager {
             createdAt: existing?.createdAt || new Date().toISOString(),
             lastSnapshot: existing?.lastSnapshot || null,
             preferredDepartureSnapshot: existing?.preferredDepartureSnapshot || null,
+            serviceMatchConfirmed: existing?.serviceMatchConfirmed ?? null,
+            lastJourneyStatusObservedAtMs: existing?.lastJourneyStatusObservedAtMs ?? null,
             lastPushAt: existing?.lastPushAt || null,
             revision: existing?.revision || 0,
             tokenUpdatedAt: new Date().toISOString(),
@@ -361,7 +363,9 @@ export class LiveActivityManager {
                 this.log(`[live-activity] stale_date_refresh ${subscription.deviceId}/${subscription.activityId} (keeping activity fresh)`);
             }
 
-            if (snapshot.departures.length === 0) {
+            const hasUnconfirmedJourney = subscription.serviceMatchConfirmed === false
+                && (subscription.journeyPhase === 'en_route' || subscription.journeyPhase === 'arrived');
+            if (snapshot.departures.length === 0 && !hasUnconfirmedJourney) {
                 this.log(`[live-activity] no_departures ${subscription.deviceId}/${subscription.activityId}`);
                 return { sent: false, reason: 'no_departures', snapshot };
             }
@@ -878,8 +882,11 @@ export class LiveActivityManager {
     }
 
     buildContentState(subscription, snapshot, appIsActive = false) {
-        const primary = snapshot.departures[0] || {};
         const isInProgress = subscription.journeyPhase === 'en_route' || subscription.journeyPhase === 'arrived';
+        const isUnconfirmed = isInProgress && subscription.serviceMatchConfirmed === false;
+        const primary = isUnconfirmed ? {} : (isInProgress && subscription.preferredServiceId
+            ? snapshot.departures.find((departure) => departure.serviceID === subscription.preferredServiceId) || {}
+            : snapshot.departures[0] || {});
         const isArrived = subscription.journeyPhase === 'arrived';
         const estimated = isArrived
             ? this.ensureString(
@@ -928,7 +935,7 @@ export class LiveActivityManager {
             platform,
             estimated,
             isCancelled: Boolean(primary.isCancelled),
-            statusText: isArrived ? null : this.buildStatusText(primary),
+            statusText: isArrived ? null : (isUnconfirmed ? 'Train not yet confirmed' : this.buildStatusText(primary)),
             delayMinutes,
             arrivalDelayMinutes,
             upcomingDepartures,
@@ -1655,6 +1662,8 @@ export class LiveActivityManager {
         toStation = null,
         phase,
         preferredServiceId = null,
+        serviceMatchConfirmed = null,
+        statusObservedAtMs = null,
         arrivalTime = null,
         arrivalDelayMinutes = null,
         completedAt = null,
@@ -1681,15 +1690,28 @@ export class LiveActivityManager {
         });
 
         const results = await Promise.all(subscriptions.map(async (subscription) => {
+            // Independent status uploads may arrive out of order after recovery
+            // or a manual correction. Keep the most recently observed state.
+            if (Number.isFinite(statusObservedAtMs)) {
+                if (Number.isFinite(subscription.lastJourneyStatusObservedAtMs)
+                    && statusObservedAtMs < subscription.lastJourneyStatusObservedAtMs) {
+                    return { sent: false };
+                }
+                subscription.lastJourneyStatusObservedAtMs = statusObservedAtMs;
+            }
             subscription.journeyPhase = phase;
             subscription.autoEndOnDeparture = false;
             if (phase === 'en_route' || phase === 'arrived') {
                 const previousServiceId = subscription.preferredServiceId;
-                subscription.preferredServiceId = matchedServiceId
+                if (matchedServiceId) subscription.serviceMatchConfirmed = true;
+                else if (serviceMatchConfirmed === false) subscription.serviceMatchConfirmed = false;
+                subscription.preferredServiceId = subscription.serviceMatchConfirmed === false ? null : (matchedServiceId
                     || previousServiceId
                     || subscription.lastSnapshot?.departures?.[0]?.serviceID
-                    || null;
-                if (matchedServiceId && matchedServiceId !== previousServiceId) {
+                    || null);
+                if (subscription.serviceMatchConfirmed === false) {
+                    subscription.preferredDepartureSnapshot = null;
+                } else if (matchedServiceId && matchedServiceId !== previousServiceId) {
                     subscription.preferredDepartureSnapshot = subscription.lastSnapshot?.departures?.find(
                         (departure) => departure.serviceID === matchedServiceId
                     ) || null;
