@@ -216,4 +216,29 @@ test('optional RJTTF939 long-distance searches retain real overnight journeys an
         if (vehicles(overnight).some(leg => leg.serviceId === sleeperId)) assertSleeper(detail.journey);
     });
 
+    await t.test('East Croydon to Burnley arrive-by searches avoid repeated national preprocessing', async () => {
+        // These searches previously rebuilt 159 national reachability envelopes
+        // for 40 completion horizons, consuming most of the request deadline.
+        for (const date of ['2026-09-16', '2026-09-17']) {
+            const response = await service.search({ origin: 'ECR', destination: 'BYM',
+                time: `${date}T18:09:00+01:00`, timeType: 'arriveBy' });
+            assert.equal(response.search.maxChanges, 5);
+            assert.equal(response.search.windowMinutes, 360);
+            assertFeasible(response, stations, tsi);
+            assert.equal(response.journeys.length, 5);
+            const latest = response.journeys[0];
+            assert.equal(latest.departure, `${date}T12:45:00.000Z`);
+            assert.equal(latest.arrival, `${date}T17:02:00.000Z`);
+            assert.equal(latest.changes, 2);
+            assert.deepEqual(vehicles(latest).map(leg => [leg.from.crs, leg.to.crs]),
+                [['ECR', 'SVG'], ['SVG', 'LDS'], ['LDS', 'BYM']]);
+            const detail = await service.journey(latest.id);
+            assert.deepEqual(detail.journey, latest);
+            const next = decodeCursor(response.pagination.more);
+            assert.equal(next.version, VERSION);
+            assert.equal(next.request.time, `${date}T17:09:00.000Z`);
+            assert.equal(next.offset, 5);
+        }
+    });
+
 });

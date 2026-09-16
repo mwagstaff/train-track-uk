@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import Testing
 @testable import TrainTrack_UK
 
@@ -940,6 +941,124 @@ struct JourneyHistoryTests {
         let columns = JourneyHistoryExporter.csv(records: [record]).split(separator: "\n")[1]
             .split(separator: ",", omittingEmptySubsequences: false)
         #expect(columns[5].isEmpty)
+    }
+
+    @Test @MainActor func completedScheduledOccurrenceStaysHandledAfterItsCardIsDismissed() throws {
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        let window = DateInterval(start: start, duration: 2 * 60 * 60)
+        let record = completedScheduledRecord(window: window)
+        var replacement = armedCandidate(subscriptionID: "replacement-subscription", now: start,
+                                         activeUntil: window.end, from: "KTH", to: "VIC")
+        replacement.activeFrom = start
+        // At 08:47 the 08:13 arrival card has expired, while the 07:00–09:00
+        // schedule is still active. A new subscription ID must not re-arm it.
+        let afterCardDismissal = start.addingTimeInterval(107 * 60)
+        #expect(replacement.isCurrent(at: afterCardDismissal))
+        let saved = JourneyHistoryCheckpointEnvelope(armedCandidates: [replacement], activeJourney: nil)
+        let restored = try JSONDecoder().decode(JourneyHistoryCheckpointEnvelope.self, from: JSONEncoder().encode(saved))
+        #expect(restored.recentlyCompleted == nil)
+        #expect(restored.armedCandidates[0].wasCompleted(in: [record]))
+
+        var tomorrow = armedCandidate(subscriptionID: "replacement-subscription", now: start.addingTimeInterval(86400),
+                                      activeUntil: window.end.addingTimeInterval(86400), from: "KTH", to: "VIC")
+        tomorrow.activeFrom = start.addingTimeInterval(86400)
+        #expect(!tomorrow.wasCompleted(in: [record]))
+        #expect(!record.blocksScheduledOccurrence(stationCodes: ["KTH", "VIC"],
+            window: DateInterval(start: window.end.addingTimeInterval(3600), duration: 3600)))
+        #expect(!record.blocksScheduledOccurrence(stationCodes: ["VIC", "KTH"], window: window))
+        #expect(!record.blocksScheduledOccurrence(stationCodes: ["KTH", "BFR"], window: window))
+        #expect(!record.blocksScheduledOccurrence(stationCodes: ["KTH", "HNH", "VIC"], window: window))
+
+        let explicitJourney = ArmedJourneyHistoryCandidate(
+            subscriptionId: "manual", source: .adhoc, stations: replacement.stations,
+            createdAt: afterCardDismissal, activeUntil: window.end, originArrivedAt: nil,
+            candidateDepartures: [], activeFrom: start
+        )
+        #expect(!explicitJourney.wasCompleted(in: [record]))
+    }
+
+    @Test func unmatchedBoardingCopyDoesNotClaimASpecificTrain() {
+        #expect(JourneyHistoryNotificationText.boarding(
+            scheduledDeparture: nil, estimatedDeparture: "07:57", destinationName: "London Victoria"
+        ) == "Tracking your journey to London Victoria. Train not yet confirmed.")
+    }
+
+    @Test @MainActor func existingHistoryRepairsRearmedCandidatesWithoutOccurrenceMetadata() {
+        let window = DateInterval(start: Date(timeIntervalSince1970: 2_000_000_000), duration: 7200)
+        let record = completedScheduledRecord(window: window)
+        record.scheduleOccurrenceStart = nil
+        record.scheduleOccurrenceEnd = nil
+        record.plannedStationCodes = nil
+        #expect(record.blocksScheduledOccurrence(stationCodes: ["kth", "vic"], window: window))
+        #expect(!record.blocksScheduledOccurrence(stationCodes: ["KTH", "VIC"],
+            window: DateInterval(start: window.start.addingTimeInterval(86400), duration: 7200)))
+    }
+
+    @Test @MainActor func completedOccurrenceSurvivesClosingAndReopeningItsPersistentStore() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("traintrack-occurrence-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL = directory.appendingPathComponent("history.store")
+        let schema = Schema([JourneyHistoryRecord.self])
+        let configuration = ModelConfiguration(
+            "CompletionPersistenceRegression", schema: schema, url: storeURL, cloudKitDatabase: .none
+        )
+        let window = DateInterval(start: Date(timeIntervalSince1970: 2_000_000_000), duration: 7200)
+
+        try autoreleasepool {
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            container.mainContext.insert(completedScheduledRecord(window: window))
+            try container.mainContext.save()
+        }
+        #expect(FileManager.default.fileExists(atPath: storeURL.path))
+
+        // Reopen from disk without keeping the writer, its model instance, or any
+        // recently-completed UI checkpoint alive.
+        try autoreleasepool {
+            let reopened = try ModelContainer(for: schema, configurations: [configuration])
+            let records = try reopened.mainContext.fetch(FetchDescriptor<JourneyHistoryRecord>())
+            #expect(records.count == 1)
+            let record = try #require(records.first)
+            #expect(record.scheduleOccurrenceStart == window.start)
+            #expect(record.scheduleOccurrenceEnd == window.end)
+            #expect(record.plannedStationCodes == ["KTH", "VIC"])
+            #expect(record.blocksScheduledOccurrence(stationCodes: ["KTH", "VIC"], window: window))
+            #expect(!record.blocksScheduledOccurrence(stationCodes: ["KTH", "VIC"],
+                window: DateInterval(start: window.start.addingTimeInterval(86400), duration: 7200)))
+        }
+    }
+
+    @Test @MainActor func completedLateDepartureRetainsItsOriginalScheduledOccurrence() {
+        let window = DateInterval(start: Date(timeIntervalSince1970: 2_000_000_000), duration: 7200)
+        let record = completedScheduledRecord(window: window)
+        record.detectedDepartureAt = window.end.addingTimeInterval(4 * 60)
+        #expect(record.blocksScheduledOccurrence(stationCodes: ["KTH", "VIC"], window: window))
+        #expect(record.blocksScheduledOccurrence(stationCodes: ["KTH", "VIC"],
+            window: DateInterval(start: window.start.addingTimeInterval(60), end: window.end)))
+        #expect(!record.blocksScheduledOccurrence(stationCodes: ["KTH", "VIC"],
+            window: DateInterval(start: window.end, duration: 7200)))
+    }
+
+    @MainActor private func completedScheduledRecord(window: DateInterval) -> JourneyHistoryRecord {
+        let origin = station(crs: "KTH", name: "Kent House")
+        let destination = station(crs: "VIC", name: "London Victoria")
+        let departure = window.start.addingTimeInterval(57 * 60)
+        let arrival = window.start.addingTimeInterval(73 * 60)
+        let checkpoint = ActiveJourneyHistoryCheckpoint(
+            id: UUID(), subscriptionId: "original-subscription", source: .scheduled,
+            plannedStations: [origin, destination], createdAt: window.start,
+            phase: .arriving, plannedLegIndex: 0, originArrivedAt: window.start.addingTimeInterval(35 * 60),
+            detectedDepartureAt: departure, detectedArrivalAt: arrival,
+            lastConfirmedOnRouteStation: destination, nextExpectedCallingPointIndex: 2,
+            legs: [JourneyHistoryLeg(plannedLegIndex: 0, fromStation: origin, toStation: destination,
+                detectedDepartureAt: departure, detectedArrivalAt: arrival, outcome: .completed)],
+            stationEvents: [], approachNotificationSent: false, backendSessionID: nil,
+            serviceMatchConfidence: 1, unexpectedStation: nil, unexpectedStationObservedAt: nil,
+            serviceDepartedStationCRS: nil, serviceDepartedStationAt: nil, updatedAt: arrival,
+            scheduleOccurrenceStart: window.start, scheduleOccurrenceEnd: window.end
+        )
+        return JourneyHistoryRecord(checkpoint: checkpoint, outcome: .completed, completedAt: arrival)
     }
 
     private func armedCandidate(

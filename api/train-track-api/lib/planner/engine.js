@@ -21,7 +21,7 @@ function remember(map, key, value, maximum) {
 }
 
 export class PlannerEngine {
-    constructor(config, { openDataset, findJourneys, now = Date.now } = {}) {
+    constructor(config, { openDataset, findJourneys, now = Date.now, liveProvider, createLiveBudget } = {}) {
         this.config = config;
         this.openDataset = openDataset;
         this.findJourneys = findJourneys;
@@ -33,6 +33,8 @@ export class PlannerEngine {
         this.journeys = new Map();
         this.stats = { searches: 0, cacheHits: 0, datePreparations: 0 };
         this.stationPresentation = new Map();
+        this.liveProvider = liveProvider;
+        this.createLiveBudget = createLiveBudget;
     }
 
     async loadStationPresentation() {
@@ -93,15 +95,16 @@ export class PlannerEngine {
         return repo;
     }
 
-    publicMetadata(repo) {
+    publicMetadata(repo, live) {
         const metadata = repo.metadata;
         const sourceGenerationDate = metadata.source.generationDate;
         const ageDays = Math.max(0, Math.floor((this.now() - Date.parse(`${sourceGenerationDate}T00:00:00Z`)) / DAY));
+        const includesLive = live && ['live', 'partial'].includes(live.status);
         return {
             version: repo.version, sourceGenerationDate, importedAt: metadata.importedAt,
             coverage: { from: metadata.coverage.startDate, to: metadata.coverage.endDate, basis: metadata.coverage.basis },
-            ageDays, freshness: ageDays > this.config.warnAgeDays ? 'stale' : 'fresh', scheduledOnly: true,
-            warnings: [scheduledWarning, ...(metadata.limitations?.length ? coverageWarnings : []),
+            ageDays, freshness: ageDays > this.config.warnAgeDays ? 'stale' : 'fresh', scheduledOnly: !includesLive,
+            warnings: [...(includesLive ? [] : [scheduledWarning]), ...(metadata.limitations?.length ? coverageWarnings : []),
                 ...(ageDays > this.config.warnAgeDays ? ['The timetable is older than expected; recent changes may be missing.'] : [])],
             freshnessPolicy: { warnAgeDays: this.config.warnAgeDays, maxStaleDays: this.config.maxStaleDays }
         };
@@ -184,7 +187,11 @@ export class PlannerEngine {
             const dateKey = `${repo.version}:${date}`;
             let resolved = this.dates.get(dateKey);
             if (!resolved) {
-                resolved = await repo.resolveServices(date, { signal });
+                try { resolved = await repo.resolveServices(date, { signal }); }
+                catch (error) {
+                    if (error.code === 'SEARCH_CANCELLED') throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);
+                    throw error;
+                }
                 this.stats.datePreparations++;
                 remember(this.dates, dateKey, resolved, this.config.dateCacheSize);
             }
@@ -203,7 +210,7 @@ export class PlannerEngine {
         }, 1);
     }
 
-    async search({ request, version, offset = 0 }, signal, execution = {}) {
+    async search({ request, version, offset = 0, liveSnapshotId }, signal, execution = {}) {
         const started = performance.now();
         const timeoutMs = execution.timeoutMs ?? this.config.timeoutMs;
         const maxOperations = execution.maxOperations ?? this.config.maxOperations;
@@ -222,7 +229,7 @@ export class PlannerEngine {
         this.stats.searches++;
         const key = `${repo.version}:${POLICY_VERSION}:${JSON.stringify(request)}:${offset}`;
         const cached = this.searches.get(key);
-        if (cached && this.now() - cached.createdAt < 5 * 60000) {
+        if (!request.realtime && cached && this.now() - cached.createdAt < 5 * 60000) {
             this.stats.cacheHits++;
             for (const journey of cached.result.journeys) this.retainJourney(journey, repo.version);
             const dataset = this.publicMetadata(repo);
@@ -241,19 +248,42 @@ export class PlannerEngine {
                 resolutionWarnings.push('Some timetable records could not be resolved safely; results may be incomplete.');
             }
             execution.onProgress?.('searching');
-            result = await this.route(request, network, {
-                signal, maxDurationMinutes: 1440, maxOperations,
-                timeoutMs: Math.max(1, timeoutMs - (performance.now() - started)), offset
-            });
+            let remainingOperations = maxOperations;
+            const route = async (query, current, options = {}) => {
+                if (remainingOperations <= 0) throw new PlannerError('SEARCH_TIMEOUT', 'The search exceeded its work budget.', 504);
+                const routed = await this.route(query, current, {
+                    signal, maxDurationMinutes: 1440, maxOperations: remainingOperations,
+                    timeoutMs: Math.max(1, timeoutMs - (performance.now() - started)), offset, ...options
+                });
+                remainingOperations -= routed.metrics?.operations ?? 0;
+                return routed;
+            };
+            if (request.realtime) {
+                if (!this.livePlanner) {
+                    const { LivePlanner } = await import('./live-search.js');
+                    this.livePlanner = new LivePlanner({ now: this.now, provider: this.liveProvider, createBudget: this.createLiveBudget });
+                }
+                execution.onProgress?.('live');
+                try {
+                    result = await this.livePlanner.search({ request, network, version: repo.version, offset, liveSnapshotId,
+                        route, check, abortSignal: execution.abortSignal });
+                } catch (error) {
+                    check();
+                    if (error.code === 'SEARCH_CANCELLED') throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);
+                    throw error;
+                }
+            } else result = await route(request, network);
         }
         check();
-        const dataset = this.publicMetadata(repo);
-        const journeys = result.journeys.map(journey => {
+        const dataset = this.publicMetadata(repo, result.live);
+        const present = journey => {
             const publicJourney = this.publicJourney(journey);
-            publicJourney.id = journeyID(publicJourney, repo.version);
-            this.retainJourney(publicJourney, repo.version);
+            publicJourney.id = journeyID(publicJourney, repo.version, result.live
+                ? { snapshot: result.liveSnapshotId, ...result.live } : undefined);
+            this.retainJourney(publicJourney, repo.version, result.live);
             return publicJourney;
-        });
+        };
+        const journeys = result.journeys.map(present);
         const cursor = time => time && londonDate(time) >= dataset.coverage.from && londonDate(time) <= dataset.coverage.to
             ? encodeCursor({ ...request, time }, repo.version) : undefined;
         const pageLimitReached = result.pagination?.nextOffset > 1000;
@@ -262,15 +292,16 @@ export class PlannerEngine {
             || londonDate(Date.parse(window.to) - (window.toInclusive === false ? 1 : 0)) > dataset.coverage.to);
         const response = {
             journeys, dataset,
+            ...(result.live ? { live: result.live, disruptedJourneys: (result.disruptedJourneys ?? []).map(present) } : {}),
             search: { ...request, window, searchTruncated: Boolean(result.searchTruncated || pageLimitReached || coverageEdge) },
-            warnings: [...new Set([...dataset.warnings, ...resolutionWarnings, ...(result.warnings || []),
+            warnings: [...new Set([...dataset.warnings, ...resolutionWarnings, ...(result.warnings || []), ...(result.live?.warnings ?? []),
                 ...(coverageEdge ? ['Part of this search window falls outside the available timetable; results may be incomplete.'] : []),
                 ...(pageLimitReached ? ['The result limit was reached. Narrow the time window to see more journeys.'] : [])])],
             pagination: { earlier: cursor(result.pagination?.earlierTime), later: cursor(result.pagination?.laterTime),
                 more: Number.isInteger(result.pagination?.nextOffset) && result.pagination.nextOffset <= 1000
-                    ? encodeCursor(request, repo.version, result.pagination.nextOffset) : undefined }
+                    ? encodeCursor(request, repo.version, result.pagination.nextOffset, result.liveSnapshotId) : undefined }
         };
-        if (!response.search.searchTruncated) remember(this.searches, key, { result: response, createdAt: this.now() }, 64);
+        if (!request.realtime && !response.search.searchTruncated) remember(this.searches, key, { result: response, createdAt: this.now() }, 64);
         return response;
     }
 
@@ -279,15 +310,23 @@ export class PlannerEngine {
         return {
             departure: journey.departure, arrival: journey.arrival, durationMinutes: journey.durationMinutes,
             changes: journey.changes,
+            ...(journey.warnings?.length ? { warnings: journey.warnings } : {}),
             legs: journey.legs.map(leg => ({
                 kind: leg.kind, mode: leg.mode, from: station(leg.from), to: station(leg.to),
                 departure: leg.departure, arrival: leg.arrival,
+                ...(leg.scheduledDeparture ? { scheduledDeparture: leg.scheduledDeparture } : {}),
+                ...(leg.scheduledArrival ? { scheduledArrival: leg.scheduledArrival } : {}),
+                ...(leg.scheduledServiceId ? { scheduledServiceId: leg.scheduledServiceId } : {}),
+                ...(leg.live ? { live: leg.live } : {}),
                 ...(leg.operator ? { operator: leg.operator } : {}),
                 ...(leg.serviceId ? { serviceId: leg.serviceId } : {}),
                 ...(leg.originDate ? { originDate: leg.originDate } : {}),
                 ...(leg.platform ? { platform: leg.platform } : {}),
                 ...(leg.callingPoints ? { callingPoints: leg.callingPoints.map(call => ({
-                    station: station(call.station), arrival: call.arrival ?? null, departure: call.departure ?? null
+                    station: station(call.station), arrival: call.arrival ?? null, departure: call.departure ?? null,
+                    ...(call.scheduledArrival ? { scheduledArrival: call.scheduledArrival } : {}),
+                    ...(call.scheduledDeparture ? { scheduledDeparture: call.scheduledDeparture } : {}),
+                    ...(call.live ? { live: call.live } : {})
                 })) } : {}),
                 ...(leg.transfer || leg.breakdown ? { transfer: leg.transfer || leg.breakdown } : {}),
                 ...(leg.warnings?.length ? { warnings: leg.warnings } : {})
@@ -295,17 +334,36 @@ export class PlannerEngine {
         };
     }
 
-    retainJourney(journey, version) {
-        remember(this.journeys, journey.id, { journey, version, at: this.now() }, 500);
+    retainJourney(journey, version, live) {
+        remember(this.journeys, journey.id, { journey, version, at: this.now(), live }, 500);
     }
 
-    async journey(id) {
+    async journey(id, signal) {
         const cached = this.journeys.get(id);
         if (!cached || this.now() - cached.at > HOUR) {
             throw new PlannerError('JOURNEY_EXPIRED', 'This journey has expired. Please search again.', 410);
         }
         const repo = await this.dataset(cached.version);
-        return { journey: cached.journey, dataset: this.publicMetadata(repo) };
+        const stations = new Map((repo.allStations ?? repo.stations).map(station => [station.crs, station]));
+        const legs = [];
+        for (const leg of cached.journey.legs) {
+            if (signal?.aborted) throw new PlannerError('SEARCH_CANCELLED', 'Request cancelled.', 499);
+            if (leg.kind !== 'vehicle' || !leg.originDate || !leg.serviceId) { legs.push(leg); continue; }
+            const dateKey = `${repo.version}:${leg.originDate}`;
+            let resolved = this.dates.get(dateKey);
+            if (!resolved) {
+                resolved = await repo.resolveServices(leg.originDate, { signal });
+                remember(this.dates, dateKey, resolved, this.config.dateCacheSize);
+            }
+            const service = resolved.services.find(value => value.id === (leg.scheduledServiceId ?? leg.serviceId));
+            legs.push(service ? { ...leg, serviceCallingPoints: service.calls.map(call => ({
+                station: this.publicStation(stations.get(call.station) ?? call.station),
+                arrival: Number.isFinite(call.arrival) ? new Date(call.arrival).toISOString() : null,
+                departure: Number.isFinite(call.departure) ? new Date(call.departure).toISOString() : null
+            })) } : leg);
+        }
+        const dataset = this.publicMetadata(repo, cached.live);
+        return { journey: { ...cached.journey, legs }, dataset, ...(cached.live ? { live: cached.live } : {}) };
     }
 
     async route(request, network, options) {

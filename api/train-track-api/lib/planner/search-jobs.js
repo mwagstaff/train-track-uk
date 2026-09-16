@@ -19,6 +19,7 @@ export class PlannerSearchJobs {
         this.queue = [];
         this.active = null;
         this.closed = false;
+        this.retryTimer = null;
         this.sweep = setInterval(() => this.prune(), Math.min(10000, leaseMs));
         this.sweep.unref();
     }
@@ -52,6 +53,7 @@ export class PlannerSearchJobs {
         if (retryKey) { const value = previous(); if (value) return value; }
         const key = JSON.stringify(payload);
         let work = this.work.get(key);
+        if (work && !pending(work)) work = null;
         const outstanding = [...this.leases.values()].filter(lease => !lease.cancelled && pending(lease.work));
         if (outstanding.filter(lease => lease.client === client).length >= this.maxPerClient
             || outstanding.filter(lease => lease.network === network).length >= this.maxPerNetwork) {
@@ -70,6 +72,7 @@ export class PlannerSearchJobs {
         if (this.leases.size >= this.maxLeases) throw new PlannerError('SEARCH_BUSY', 'Journey planning is busy. Please try again shortly.', 429);
         // Eviction can remove the last lease of the work we were going to reuse.
         work = this.work.get(key);
+        if (work && !pending(work)) work = null;
         if (!work) {
             work = { key, payload, state: 'queued', createdAt: this.now(), leases: new Set(), controller: new AbortController() };
             this.work.set(key, work);
@@ -141,7 +144,7 @@ export class PlannerSearchJobs {
     }
 
     pump() {
-        if (this.closed || this.active) return;
+        if (this.closed || this.active || this.retryTimer) return;
         const work = this.queue.shift();
         if (!work) return;
         this.active = work;
@@ -151,24 +154,36 @@ export class PlannerSearchJobs {
             queueTimeoutMs: Math.max(1, this.config.jobQueueTimeoutMs - (this.now() - work.createdAt)),
             onStart: () => { if (pending(work)) work.state = 'running'; },
             onProgress: progress => { work.phase = progress.phase; } };
+        let retry = false;
         Promise.resolve().then(() => this.service.call('search', work.payload, options)).then(result => {
             if (!work.controller.signal.aborted) { work.result = result; work.state = 'completed'; }
         }, error => {
             if (!work.controller.signal.aborted) {
+                if (error.code === 'SEARCH_BUSY') {
+                    retry = true;
+                    work.state = 'queued';
+                    this.queue.unshift(work);
+                    return;
+                }
                 work.state = 'failed';
                 work.error = { code: error.code || 'DATASET_UNAVAILABLE', message: error instanceof PlannerError
                     ? error.message : 'Journey planning is temporarily unavailable. Please try again.' };
             }
         }).finally(() => {
-            work.finishedAt = this.now();
+            if (!retry) work.finishedAt = this.now();
             this.active = null;
-            this.pump();
+            if (retry) {
+                this.retryTimer = setTimeout(() => { this.retryTimer = null; this.prune(); }, 1000);
+                this.retryTimer.unref();
+            } else this.pump();
         });
     }
 
     close() {
         this.closed = true;
         clearInterval(this.sweep);
+        clearTimeout(this.retryTimer);
+        this.retryTimer = null;
         for (const work of this.work.values()) work.controller.abort();
         this.queue = [];
         this.leases.clear();

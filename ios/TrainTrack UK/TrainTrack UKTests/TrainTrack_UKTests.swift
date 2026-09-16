@@ -510,6 +510,7 @@ struct TrainTrack_UKTests {
         #expect(nearby.map(\.station.crs) == ["NBR", "MID", "FAR"])
         #expect(nearby.map(\.distance) == nearby.map(\.distance).sorted())
         #expect(StationSuggestionPolicy.defaultNearbyCount == 3)
+        #expect(StationSuggestionPolicy.expandedNearbyCount == 20)
     }
 
     @Test func recentStationSuggestionsPreserveJourneyRecencyAndRemoveDuplicates() {

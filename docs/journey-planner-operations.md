@@ -16,7 +16,7 @@ The API deployment now has a project-specific Node runtime and persistent timeta
 - Full data is private local input and excluded from Git. Snapshots contain licensed timetable content too.
 - Use an absolute `PLANNER_DATA_DIR` **outside deployed source**. The existing deployment uses deletion during synchronisation; source-tree snapshots would not be durable.
 - The supplied package needs about 676.5 MB of source files and a 1.07 GB SQLite snapshot, plus metadata. Budget space for source, staging, active and rollback snapshots, validation and future growth. Activation does not delete old snapshots.
-- One worker runs routing sequentially. Queue admission, elapsed time, operation count and V8 heap are bounded. SQLite native memory and total process RSS are not capped by the V8 heap setting; measure on the deployment host before release.
+- One worker runs routing sequentially; a separate small worker handles station lookups and timetable metadata while a search is running. Queue admission, elapsed time, operation count and V8 heap are bounded. SQLite native memory and total process RSS are not capped by the V8 heap setting; measure on the deployment host before release.
 
 ## Production deployment on `sky`
 
@@ -46,7 +46,7 @@ For future monthly feeds, stage the complete delivery on `sky`, then run from `/
 /home/mwagstaff/.local/share/train-track-api/runtime/node24/bin/node --max-old-space-size=512 scripts/planner.js activate --dataset /home/mwagstaff/.local/share/train-track-api/planner/snapshots/NEW_CANDIDATE --data-dir /home/mwagstaff/.local/share/train-track-api/planner
 ```
 
-Import and activation validate the data before publishing it. Validate both time modes and connecting journeys with dates inside the new coverage before activation. Allow 120–180 seconds for administrative validation on this shared host: a complete measured validation passed in 21.80 seconds at 358.5 MiB peak RSS, while an initial run exceeded a 60-second timeout. The public search timeout remains 30 seconds. Activation switches the pointer atomically and does not require a code deployment or service restart.
+Import and activation validate the data before publishing it. Validate both time modes and connecting journeys with dates inside the new coverage before activation. Allow 120–180 seconds for administrative validation on this shared host: a complete measured validation passed in 21.80 seconds at 358.5 MiB peak RSS, while an initial run exceeded a 60-second timeout. The legacy synchronous search timeout remains 30 seconds; queued searches have a separate processing allowance described below. Activation switches the pointer atomically and does not require a code deployment or service restart.
 
 Check planner readiness separately from the general API health check:
 
@@ -120,6 +120,9 @@ The full API automatically registers the v3 router. Set its `PLANNER_DATA_DIR` t
 | `GET /status` | Availability, API capabilities, public source age/version/coverage. Returns 200 with `available: false` for missing or stale data. |
 | `GET /stations?q=kent` | Validated selectable timetable stations, canonical CRS and aliases. Optional existing display names/coordinates. Empty `q` returns the whole selectable list; other queries return up to 30 matches. |
 | `POST /search` | Initial search JSON below, or `{ "cursor": "opaque-returned-value" }` alone. |
+| `POST /search-jobs` | Same search/cursor JSON; returns 202 with a job ID and its current state. |
+| `GET /search-jobs/:id` | Returns 200 with queued/running/completed/failed/cancelled state; completed jobs contain the unchanged search response in `result`. |
+| `DELETE /search-jobs/:id` | Cancels this caller's interest in the search; idempotent 204. |
 | `GET /journeys/:id` | Journey detail and pinned dataset metadata. IDs are distinct from live service IDs. |
 
 ```json
@@ -132,7 +135,8 @@ The full API automatically registers the v3 router. Set its `PLANNER_DATA_DIR` t
   "extraConnectionMinutes": 0,
   "allowedModes": ["rail", "replacementBus", "walk", "tubeTransfer"],
   "limit": 5,
-  "windowMinutes": 120
+  "windowMinutes": 120,
+  "realtime": "apply"
 }
 ```
 
@@ -141,6 +145,47 @@ The full API automatically registers the v3 router. Set its `PLANNER_DATA_DIR` t
 Responses contain `journeys`, `dataset`, normalised `search`, `warnings` and `pagination`. `more` continues the same time window without discarding useful alternatives; `earlier` and `later` move to adjacent windows. Cursors are opaque to callers, validate every embedded parameter, and pin the exact timestamp, modes, options, dataset and routing policy. They are not credentials. A bounded search reports truncation or a timeout rather than claiming complete results. Vehicle legs include scheduled calling points, operator code and source service identity. Transfer legs include the allowance and wait breakdown; they are not detailed Tube or street directions.
 
 Errors use `{ "error": { "code": "…", "message": "…" } }`: invalid input/station/cursor 400, oversized JSON 413, unsupported content type/encoding 415, unsupported date 422, busy 429 with Retry-After, missing/stale data 503, work timeout 504, expired cursor/detail 410. Planner JSON bodies are limited to 16 KiB. No raw records or filesystem paths are exposed.
+
+### Live departures, cancellations and the scheduled override
+
+`realtime` is additive and optional: **`apply`** uses matched live times and cancellations when routing; **`ignore`** routes by the timetable while retaining live annotations and warnings; omitted or **`off`** preserves the existing scheduled-only API behavior. The updated app defaults to `apply` and offers **Use live times** on the form/results. Switching it off reruns the displayed search window using `ignore`, including after Earlier/Later paging. Saved recent searches preserve the choice; old entries default to live updates.
+
+Live observations apply to journeys starting within the next **four hours**, including Depart now and eligible arrival-deadline searches. Later parts of a long journey may still use scheduled times. This applicability window is separate from the existing six-hour search profile. Future searches outside the live window make no upstream live calls and report `live.status: outsideWindow`.
+
+The service uses the existing public LDBWS board/detail subscriptions and API keys. It matches station-relative observations to a unique timetable occurrence using operator, station, dated scheduled times and ordered through calling points. Public LDBWS does not supply a timetable UID/origin date; numeric service-ID prefixes are not treated as those identifiers. Ambiguous, missing, stale or contradictory evidence cannot establish an on-time train or a cancellation. Previous calling-point forecasts are departures; subsequent forecasts are arrivals. An arrival forecast alone does not establish a later catchable departure.
+
+The planner applies observations to a separate view of the timetable before rerouting. This allows a delayed train originally scheduled before the request to become catchable, removes missed connections, respects arrival deadlines, and exposes alternatives to cancelled trains. It considers the scheduled search's full useful frontier and unfiltered origin boards, then checks newly exposed boarding stations after rerouting. Detail lookups prioritise near-term trains in useful itineraries and delayed origin trains whose expected departure is still in the future; other station traffic and expired clock estimates do not consume the detail budget. Newly useful alternatives at an already checked station receive another detail pass too. This bounded discovery is **partial network coverage**, not a complete national live timetable. The visible page reports which of its near-term rail legs have confirmed times; later trains and Tube/walking transfers do not count as failed live checks.
+
+- Two upstream calls at a time, at most 64 calls per search, eight boarding stations and three discovery rounds. Shared short-lived cache entries cost no additional upstream budget.
+- Three-second upstream deadlines, no internal retry storm, a 30-second cache capped at 256 entries, and cancellation of pending lookups when the search is cancelled. Existing search queue, worker CPU duty cycle, total routing-operation allowance, execution deadline and heap guard still apply.
+- Only provider timestamps within 90 seconds and no more than five seconds ahead are accepted. Snapshot expiry follows the oldest evidence used. More-results cursors pin the snapshot and mode; Earlier/Later requests fetch fresh observations. Outside-window searches also retain their scheduled result context for 90 seconds, so More cannot reorder results when the request enters the live window. An expired snapshot returns 410 for continuation; results that aged while computing show a warning and do not offer an immediately expired More cursor.
+- Known cancelled boarding/alighting stops are unusable; an intermediate skipped stop does not by itself prohibit through travel. A proven non-operating section cannot be crossed. Unknown downstream disruption is conservatively excluded from the affected onward portion while safe earlier sections remain usable. The override restores scheduled routing but keeps these warnings visible.
+- Changed services reuse unchanged timetable indexes, so applying updates does not create another complete national event index. The two-call limit is specific to the computing worker; legacy live requests retain their existing separate throttling.
+
+Responses optionally add `live` with `mode`, `status` (`live`, `partial`, `unavailable` or `outsideWindow`), observation/expiry timestamps, `windowHours` and `warnings`. Optional `live.coverage` counts unique `nearTermRailLegs`, `confirmedRailLegs` and `scheduledLaterRailLegs` on the visible page. `live` status means that page's near-term rail legs have confirmed endpoint forecasts or known cancellation; it does not promise exhaustive live network coverage. Genuine match/retrieval/lookup-budget gaps are explained on the affected rail leg. Unrequested unrelated board services cannot produce blanket warnings. `disruptedJourneys` contains up to five affected scheduled alternatives, clearly separated from usable results in the app. Existing journey times are effective routing times in `apply` mode. Optional `scheduledDeparture`, `scheduledArrival` and `scheduledServiceId` preserve timetable identity; leg/calling-point `live` annotations describe expected times, delay minutes, cancellation extent and warnings. Cancelled calls can have null effective times; their scheduled times remain available for a labelled struck-through display. Journey-level warnings include unconfirmed or missed connections and late expected arrivals.
+
+The app uses yellow for reported delays and red strikethrough for the selected cancelled service/stop. Cancellations elsewhere on the same train are identified without falsely marking an unaffected selected section cancelled. A card says “1 of N trains confirmed on time” when only some rail legs have complete forecasts; “All trains on time” requires every rail leg to be verified and no disruption. Generic Tube-transfer information is kept as a neutral explanation in leg details, not promoted to a journey warning. Live warnings remain visible in the scheduled override. Detail IDs pin the live context so another search cannot replace the observation/mode of a previously returned journey. Details are a snapshot of that search; start a new search to refresh them.
+
+Provider failures fall back to scheduled results with an unavailable warning. This feature does not provide complete disruption coverage, live Tube routing, or split/join through-service continuity. It requires an API deployment and app rebuild, but no timetable reimport, schema migration, extra npm package or new API key.
+
+Provider contracts: [National Rail public JSON specification](https://realtime.nationalrail.co.uk/LDBWS/static/ldbws.json), [OpenLDBWS field and request documentation](https://lite.realtime.nationalrail.co.uk/OpenLDBWS/documentation.aspx).
+
+### Queued searches and resource control
+
+Use the additive job endpoints for searches that may outlast an HTTP request. Submit with a persistent installation identifier in `X-Planner-Client` and a fresh `Idempotency-Key` per logical search. Both accept 8–128 letters, digits, underscores or hyphens; UUIDs are suitable. Repeat a lost submission with the same key and body to recover its job ID. Reusing a key for different parameters returns 409. Missing client identifiers fall back to the network address; these are fairness hints, not authentication.
+
+Poll the returned ID using `pollAfterMs` (currently 1000). Queued states include `queuePosition`; running states may include `phase: preparing`, `searching` or `live`. Completed states include `result`; failed states include the usual `error.code` and `error.message` inside the 200 status response. Treat a job ID as a private bearer capability: another holder can read or cancel that caller's job. Responses are `no-store`. A missing or expired ID returns `SEARCH_EXPIRED` (410).
+
+- At most **eight distinct searches** are admitted, including running work, with **one computing search at a time**. A client can hold two active jobs and a network address four. Additional submissions receive 429; the app retries briefly with backoff. The limits and bounded result store apply even when clients rotate their installation identifiers.
+- Identical pending requests, including the pinned timetable version, share computation. Each caller gets an independent job ID: cancelling one leaves the others running. Initial searches pin the active dataset at admission; pagination retains its original version.
+- Accepted work can wait up to **eight minutes**, then compute for up to **ten minutes** with a separate one-billion-operation ceiling. These finite bounds protect the server against pathological searches. They do not narrow the requested route/date/transfer scope.
+- Queued searches target **50% of one worker's CPU time** using cooperative pauses. This is not an OS-enforced CPU or memory limit: a native SQLite call or an individual decode finishes before its next checkpoint. Node 24 measures worker CPU time; older supported runtimes use elapsed time as a fallback. Legacy synchronous requests retain their existing limits and are not duty-cycle throttled.
+- Station lookups/readiness use a separate worker with a 256 MB V8 heap limit and five-second deadline. Recently returned journey details use a bounded parent cache and version checks in that worker, so routing does not hold them up.
+- Polling keeps an active caller's job alive. After **two minutes without polling**, its interest expires; work stops when no callers remain. Completed/cancelled results are retained for up to ten minutes, with at most 128 caller records. Jobs live in memory and do not survive an API restart.
+
+The updated app submits once, shows queue/search progress, polls until completion and offers cancellation for initial searches and pagination. It retries transient network/busy responses for up to 60 seconds at a time, with an overall 20-minute bound. A missing job prompts a fresh search. Keeping the app open avoids the abandoned-job expiry. Only an initial submission's 404 triggers compatibility fallback to the existing synchronous endpoint; an accepted job is never silently resubmitted as synchronous work.
+
+Rebuild the app to enable this flow. The existing `/search` endpoint, v1/v2 routes and response shapes remain compatible. Job endpoints need no extra deployment configuration, authentication or timetable import.
 
 ## Configuration and monitoring
 
@@ -151,15 +196,20 @@ Errors use `{ "error": { "code": "…", "message": "…" } }`: invalid input/sta
 | `PLANNER_DATASET_PATH` | Unset; use active pointer |
 | `PLANNER_WARN_AGE_DAYS` | 35 |
 | `PLANNER_MAX_STALE_DAYS` | 45 |
-| `PLANNER_TIMEOUT_MS` | 30000 including queue time |
-| `PLANNER_MAX_QUEUE` | 8 including active work |
+| `PLANNER_TIMEOUT_MS` | 30000 including queue time, synchronous requests |
+| `PLANNER_MAX_QUEUE` | 8 worker requests including active work |
 | `PLANNER_HEAP_MB` | 1024 |
 | `PLANNER_DATE_CACHE_SIZE` | 6 |
-| `PLANNER_MAX_OPERATIONS` | 10000000 |
+| `PLANNER_MAX_OPERATIONS` | 10000000, synchronous searches |
+| `PLANNER_MAX_SEARCH_JOBS` | 8 distinct queued/running searches |
+| `PLANNER_JOB_QUEUE_TIMEOUT_MS` | 480000 before processing starts |
+| `PLANNER_JOB_TIMEOUT_MS` | 600000 processing time |
+| `PLANNER_JOB_MAX_OPERATIONS` | 1000000000 |
+| `PLANNER_JOB_CPU_DUTY_CYCLE` | 0.5 |
 
 The source generation date determines freshness; reimporting old data does not make it fresh. The 35/45-day thresholds are explicit prototype assumptions for the proposed monthly feed and need an operational decision before production. Search/cache keys include the exact instant, options, policy and version. Public metadata is refreshed even for cached results.
 
-Existing Prometheus HTTP metrics identify v3 routes separately. `planner_requests_total` records operation/status and `planner_request_duration_ms` records durations without station/device labels. `/status` is the separate planner-readiness check. Imports produce progress and validation diagnostics privately; no admin endpoint exposes the source or activates data.
+Existing Prometheus HTTP metrics identify v3 routes separately. `planner_requests_total` records operation/status and `planner_request_duration_ms` records HTTP durations without station/device labels, including job-submit/status/cancel operations. A successful poll can contain a failed job; HTTP metrics alone do not measure job success or total time to completion. `/status` is the separate planner-readiness check. Imports produce progress and validation diagnostics privately; no admin endpoint exposes the source or activates data.
 
 ## Long-distance search correction — 15 September 2026
 
@@ -186,6 +236,36 @@ Verification: 179 selected backend tests passed, including 402 exhaustive routin
 After the standard quick deployment, the public 16:00 search returned four journeys in 11.514 seconds; 16:05 returned five in 6.247 seconds, plus two on the next page. A fresh Depart now request at 16:13:59 London returned four in 4.027 seconds; arrive-by returned five in 4.587 seconds. Details matched, no searches were truncated, and the first result was the 19:57 → 08:45 next-day sleeper connection. Health/config/station responses matched their pre-deploy bytes; v1/v2 live requests each returned 17 departures. Only TrainTrack's service PID changed. The API used about 874 MiB RSS afterward, with no swapped memory.
 
 Evidence and the previous planner library are retained under `/home/mwagstaff/.local/share/train-track-api/deployment-checks/departure-timeout-20260915T150400Z`. Restoring `previous-planner-lib` to the API's `lib/planner` and restarting only TrainTrack rolls back this correction, including its cursor policy, but restores the reported timeout. Update the source checkout as well before deliberately redeploying a rollback.
+
+## Burnley timeout and queued-search deployment — 16 September 2026
+
+East Croydon–Burnley Manchester Road, arrive by 18:09 on 16 and 17 September, exposed repeated rebuilding of national reachability bounds: 159 builds across 40 horizons exceeded an eight-entry cache. The router now keeps at most eight bounds and reuses a more permissive cached bound when full. Local routing fell from 23.06 to 2.69 seconds while preserving all 22 journey alternatives. This is a general cache correction, not a route-specific exception. Cursor policy remains `scheduled-v3` because the result frontier is unchanged.
+
+The queued-search endpoints above were deployed through the standard quick script. Public checks accepted jobs in 0.11–0.13 seconds and returned five journeys for each date. The first completed in 27.43 seconds; the second waited behind it and completed in 46.93 seconds total. Both first results were 13:45 → 18:02 London time via Stevenage and Leeds. Station lookups took 0.10–0.24 seconds through the public gateway; details took about 0.11 seconds while the other search ran. Idempotent submission, shared-work cancellation and cancellation before processing all passed.
+
+The isolated host run peaked at about 859 MiB RSS. The deployed API peaked at about 891 MiB and settled to about 588 MiB with no swapped memory after these checks. Local throttled searches used about 44% worker CPU over elapsed time. These are acceptance samples, not a production capacity guarantee. Health/config/station responses matched their prior bytes, v1/v2 live departure response shapes passed, and only TrainTrack restarted. The active snapshot and runtime configuration are unchanged.
+
+Evidence and the previous planner library/routes are retained under `/home/mwagstaff/.local/share/train-track-api/deployment-checks/queued-search-20260915T234000Z`. Roll back by restoring `previous-planner-lib` and `previous-planner-routes.js` and restarting only TrainTrack; the updated app falls back when submission returns 404. Update the local source as well before deliberately redeploying a rollback. Restarting either version expires in-memory search jobs.
+
+## Live-search deployment — 16 September 2026
+
+The live planner changes were deployed to `sky` by synchronising only the planner library from the local checkout and restarting `com.train-track-api.api.service`. The runtime, deployment configuration, API routes, active timetable and unrelated source files were unchanged. Future full code releases can continue using the standard deployment script. Rebuild and deploy the app for the **Use live times** toggle and disruption presentation; older app/API calls continue to use scheduled results.
+
+**262 selected backend tests passed**, including the supplied full timetable regressions and live matching/routing/provider/context tests. The same two unrelated baseline tests described in the progress report remain excluded. All **34 planner app unit tests**, the live override UI flow, and dark-mode largest-text clipping/touch-target checks passed. The checks use deterministic disruptions; a separate real-provider check verifies production matching.
+
+Public KTH–VIC searches returned five untruncated journeys: live search completed in **20.63 seconds**, scheduled override in **6.45 seconds**, and a future search outside the live window in **9.00 seconds**. Five returned legs had safely matched live observations. Station lookups stayed below **0.27 seconds** while routing ran, and details took **0.17 seconds**. Previously returned details preserved their original live context after the override search. The legacy scheduled-only job returned five journeys in **1.41 seconds**, without new live response fields.
+
+Health, v2 config and station responses matched their pre-release bytes. V1 and v2 departure routes retained their shapes and each returned 16 departures. Only TrainTrack's PID changed. The API peaked at about **1032 MiB RSS**, with no swapped memory; this small acceptance sample is not a production load-capacity guarantee. Live coverage is partial and upstream lookup limits/failures were correctly disclosed in the response.
+
+Public evidence is `/tmp/traintrack-live-public/summary.json`, also retained privately on `sky` under `/home/mwagstaff/.local/share/train-track-api/deployment-checks/live-planner-20260916T135630Z/public-http`. That directory's parent contains the previous planner library, source hashes, service PID comparisons and memory measurements. Roll back by restoring `previous-planner-lib` to the API's `lib/planner` and restarting only TrainTrack. The older server ignores the new optional request field and returns scheduled results; in-memory jobs and live pagination expire across the restart. Update the local checkout before deliberately keeping a rollback through subsequent deployments.
+
+### Coverage warning correction later on 16 September
+
+A fresh KTH–INV diagnostic identified wasted requests for old, unrelated departures, not a general identity-matching failure: all 11 successful detail responses matched, while 13 old references returned HTTP 500. The old search treated unrequested details as unsafe matches and the first-pass detail cap as a global lookup failure. The corrected selection and visible-page coverage rules above remove those false warnings while retaining genuine rail-leg gaps.
+
+The fixed captured-data replay kept all five journeys and removed all 24 detail lookups. After a scoped planner deployment, public KTH–INV returned five scheduled later journeys in 35.37 seconds, without the misleading warnings; KTH–VIC returned five journeys in 5.48 seconds with all five near-term rail legs confirmed and no coverage warning. Station lookups remained below 0.27 seconds. The 281 selected backend tests and 36 planner app unit tests passed, together with focused UI coverage checks. Rebuild the app to remove the generic Tube note from cards and show how many rail legs are confirmed on time.
+
+Evidence and the immediately preceding planner library are under `/home/mwagstaff/.local/share/train-track-api/deployment-checks/live-coverage-20260916T144200Z`. Restore that library and restart only TrainTrack to roll back this correction. No timetable or deployment configuration changed. The four-hour check window remains an eligibility rule; a provider may expose a shorter forecast horizon. Increasing request limits cannot supply forecasts that have not been published.
 
 ## Interpretation limits
 

@@ -1,5 +1,5 @@
 {
-  "version": "2026-09-06",
+  "version": "2026-09-16",
   "source_url": "https://www.nationalrail.co.uk/travel-information/find-a-train-company/",
   "operators": [
     {
@@ -106,7 +106,7 @@
     },
     {
       "name": "Lumo",
-      "operator_codes": ["LD"],
+      "operator_codes": ["LD", "LF"],
       "aliases": ["East Coast Trains"],
       "color_hex": "#2D2A8C"
     },

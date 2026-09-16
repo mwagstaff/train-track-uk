@@ -56,6 +56,7 @@ export class PlannerService {
     }
 
     status(options) {
+        if (this.closed) return this.call('status', {}, options);
         return this.standardWorker && !this.metadataOnly
             ? this.metadata().call('status', {}, options) : this.call('status', {}, options);
     }
@@ -63,6 +64,7 @@ export class PlannerService {
         if (typeof query !== 'string' || query.length > 100) {
             return Promise.reject(new PlannerError('INVALID_REQUEST', 'Station search must be at most 100 characters.'));
         }
+        if (this.closed) return this.call('stations', { query }, options);
         return this.standardWorker && !this.metadataOnly
             ? this.metadata().call('stations', { query }, options) : this.call('stations', { query }, options);
     }
@@ -74,6 +76,7 @@ export class PlannerService {
         } catch (error) { return Promise.reject(error); }
     }
     async journey(id, options) {
+        if (this.closed) throw new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is unavailable.', 503);
         if (typeof id !== 'string' || !/^[a-f0-9]{64}\.[a-f0-9]{32}$/.test(id)) {
             return Promise.reject(new PlannerError('JOURNEY_EXPIRED', 'This journey has expired. Please search again.', 410));
         }
@@ -83,8 +86,10 @@ export class PlannerService {
             this.journeys.delete(id);
             throw new PlannerError('JOURNEY_EXPIRED', 'This journey has expired. Please search again.', 410);
         }
-        const dataset = await this.metadata().call('metadata', { version: cached.version }, options);
-        return { journey: cached.journey, dataset };
+        const live = cached.live && { ...cached.live, warnings: [...cached.live.warnings,
+            ...(Date.parse(cached.live.expiresAt) < Date.now() ? ['These live times are from an earlier search. Search again to refresh them.'] : [])] };
+        const dataset = await this.metadata().call('metadata', { version: cached.version, live }, options);
+        return { journey: cached.journey, dataset, ...(live ? { live } : {}) };
     }
 
     call(method, payload, { signal, execution, onStart, onProgress, queueTimeoutMs } = {}) {
@@ -112,9 +117,9 @@ export class PlannerService {
         clearTimeout(job.timer);
         job.signal?.removeEventListener('abort', job.abort);
         if (!error && job.method === 'search' && result?.dataset) {
-            for (const journey of result.journeys ?? []) {
+            for (const journey of [...(result.journeys ?? []), ...(result.disruptedJourneys ?? [])]) {
                 this.journeys.delete(journey.id);
-                this.journeys.set(journey.id, { journey, version: result.dataset.version, at: Date.now() });
+                this.journeys.set(journey.id, { journey, version: result.dataset.version, at: Date.now(), live: result.live });
             }
             while (this.journeys.size > 500) this.journeys.delete(this.journeys.keys().next().value);
         }
@@ -123,7 +128,9 @@ export class PlannerService {
 
     cancel(job, error) {
         if (job.settled) return;
-        Atomics.store(new Int32Array(job.cancelBuffer), 0, 1);
+        const cancelled = new Int32Array(job.cancelBuffer);
+        Atomics.store(cancelled, 0, 1);
+        Atomics.notify(cancelled, 0);
         this.settle(job, error);
         this.queue = this.queue.filter(item => item !== job);
         if (this.active === job) {

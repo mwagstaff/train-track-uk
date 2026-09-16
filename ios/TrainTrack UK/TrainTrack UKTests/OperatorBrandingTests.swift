@@ -3,6 +3,22 @@ import Testing
 @testable import TrainTrack_UK
 
 struct OperatorBrandingTests {
+    @Test func westCoastLumoResolvesWithMissingAndOlderCachedBranding() {
+        let lumo = OperatorBranding(name: "Lumo", operatorCodes: ["LD"], aliases: [], colorHex: "#2D2A8C")
+        let oldConfig = OperatorBrandingConfig(version: "old", operators: [lumo])
+        #expect(OperatorBrandingResolver.resolve(name: "LF", code: "LF", in: oldConfig) == lumo)
+        #expect(OperatorBrandingResolver.resolve(name: nil, code: "lf", in: nil)?.name == "Lumo")
+    }
+
+    @Test func pillTextChoosesTheHigherContrastBlackOrWhite() {
+        for hex in ["#FFFFFF", "#FFFF00", "#009FE3"] {
+            #expect(OperatorBranding(name: "Test", operatorCodes: [], aliases: [], colorHex: hex).usesBlackText)
+        }
+        for hex in ["#000000", "#1B2254", "#666666", "invalid"] {
+            #expect(!OperatorBranding(name: "Test", operatorCodes: [], aliases: [], colorHex: hex).usesBlackText)
+        }
+    }
+
     private let config = OperatorBrandingConfig(
         version: "test",
         operators: [

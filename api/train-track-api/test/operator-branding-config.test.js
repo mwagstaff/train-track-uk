@@ -44,3 +44,8 @@ test('operator branding config covers every current National Rail train company'
         assert.match(operator.color_hex, /^#[0-9A-F]{6}$/);
     }
 });
+
+test('Lumo branding covers its East Coast and West Coast operator codes', () => {
+    const lumo = loadOperatorBrandingConfig().operators.find((operator) => operator.name === 'Lumo');
+    assert.deepEqual(lumo.operator_codes, ['LD', 'LF']);
+});

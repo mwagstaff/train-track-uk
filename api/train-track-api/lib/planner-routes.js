@@ -1,9 +1,13 @@
 import express from 'express';
 import { PlannerService } from './planner/service.js';
 import { API_VERSION, CAPABILITIES, PlannerError } from './planner/contract.js';
+import { PlannerSearchJobs } from './planner/search-jobs.js';
+import { isIP } from 'node:net';
 
 export function registerPlannerRoutes(app, { service = new PlannerService(), recordRequest = () => {}, requestMiddleware } = {}) {
     const router = express.Router();
+    const jobs = new PlannerSearchJobs(service);
+    service.searchJobs = jobs;
     const observeRequest = operation => (req, res, next) => {
         const started = performance.now();
         let recorded = false;
@@ -69,6 +73,32 @@ export function registerPlannerRoutes(app, { service = new PlannerService(), rec
     router.get('/stations', ...beforeRequest('stations'), handle('stations'));
     router.post('/search', ...beforeRequest('search'), requireJSON, express.json({ limit: '16kb' }), parseError, handle('search'));
     router.get('/journeys/:id', ...beforeRequest('journey'), handle('journey'));
+    const jobHandler = method => async (req, res) => {
+        try {
+            let result;
+            if (method === 'submit') {
+                const remote = req.socket.remoteAddress || 'unknown';
+                // Only our local reverse proxy may supply the external client IP.
+                const forwarded = req.get('CF-Connecting-IP');
+                const network = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote) && isIP(forwarded || '') ? forwarded : remote;
+                const installation = req.get('X-Planner-Client');
+                const client = /^[A-Za-z0-9_-]{8,128}$/.test(installation || '') ? installation : network;
+                result = await jobs.submit(req.body, { client, network, idempotencyKey: req.get('Idempotency-Key') });
+                res.status(202);
+            } else if (method === 'get') result = jobs.get(req.params.id);
+            else { jobs.cancel(req.params.id); res.status(204).end(); return; }
+            res.set('Retry-After', '1').json(result);
+        } catch (error) {
+            const known = error instanceof PlannerError;
+            const status = known ? error.status : 503;
+            if (status === 429) res.set('Retry-After', '5');
+            res.status(status).json({ error: { code: known ? error.code : 'DATASET_UNAVAILABLE',
+                message: known ? error.message : 'Journey planning is temporarily unavailable.' } });
+        }
+    };
+    router.post('/search-jobs', ...beforeRequest('job-submit'), requireJSON, express.json({ limit: '16kb' }), parseError, jobHandler('submit'));
+    router.get('/search-jobs/:id', ...beforeRequest('job-status'), jobHandler('get'));
+    router.delete('/search-jobs/:id', ...beforeRequest('job-cancel'), jobHandler('cancel'));
     // No aliases or middleware on any existing API namespace.
     app.use('/api/v3/journey-planner', router);
     return service;

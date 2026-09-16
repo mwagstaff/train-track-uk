@@ -12,6 +12,7 @@ struct AddJourneyView: View {
     @State private var isSaving = false
     @State private var isStartingOneOff = false
     @State private var stationCatalogue = StationsService.shared.stations
+    @State private var nearbyStationSuggestions: [StationSuggestionPolicy.NearbyStation] = []
     @State private var recentStationSuggestions: [Station] = []
     @StateObject private var location = LocationManagerPhone()
 
@@ -144,6 +145,7 @@ struct AddJourneyView: View {
             .scrollContentBackground(.hidden)
             .onAppear {
                 loadStations()
+                refreshNearbyStations()
                 refreshRecentStations()
                 location.request()
                 if router.addJourneyPrefillFavourite {
@@ -154,6 +156,9 @@ struct AddJourneyView: View {
             }
             .onChange(of: historyStore.records.map(\.id)) {
                 refreshRecentStations()
+            }
+            .onChange(of: location.coordinateTimestamp) {
+                refreshNearbyStations()
             }
             .onChange(of: scrollTarget) { _, target in
                 guard let target else { return }
@@ -213,6 +218,7 @@ struct AddJourneyView: View {
         Task {
             try? await StationsService.shared.loadStations()
             stationCatalogue = StationsService.shared.stations
+            refreshNearbyStations()
             refreshRecentStations()
         }
     }
@@ -450,7 +456,8 @@ struct AddJourneyView: View {
                 StationSuggestions(
                     query: input.wrappedValue.query,
                     stations: stationCatalogue,
-                    currentLocation: location.lastKnownCoordinate,
+                    nearbyStations: nearbyStationSuggestions,
+                    hasCurrentLocation: location.lastKnownCoordinate != nil,
                     recentStations: recentStationSuggestions,
                     isActive: focusedField == focus
                 ) { station in
@@ -476,22 +483,21 @@ struct AddJourneyView: View {
     }
 
     private func refreshRecentStations() {
-        let catalogueByCRS = Dictionary(
-            stationCatalogue.map { ($0.crs.uppercased(), $0) },
-            uniquingKeysWith: { first, _ in first }
+        recentStationSuggestions = StationSuggestionPolicy.recentStations(
+            from: historyStore.records,
+            catalogue: stationCatalogue
         )
-        let stationSequences = historyStore.records
-            .sorted { $0.completedAt > $1.completedAt }
-            .map { record -> [Station] in
-                let legs = record.legs.sorted { $0.plannedLegIndex < $1.plannedLegIndex }
-                if let firstLeg = legs.first {
-                    return [firstLeg.fromStation] + legs.map(\.toStation)
-                }
-                return [record.plannedOriginCRS, record.plannedDestinationCRS].compactMap {
-                    catalogueByCRS[$0.uppercased()]
-                }
-            }
-        recentStationSuggestions = StationSuggestionPolicy.recentStations(from: stationSequences)
+    }
+
+    private func refreshNearbyStations() {
+        guard let coordinate = location.lastKnownCoordinate else {
+            nearbyStationSuggestions = []
+            return
+        }
+        nearbyStationSuggestions = StationSuggestionPolicy.nearbyStations(
+            in: stationCatalogue,
+            from: coordinate
+        )
     }
 
     private func stationFieldAccessibilityIdentifier(for field: Field) -> String {
@@ -559,6 +565,7 @@ private struct StationInput: Identifiable {
 
 struct StationSuggestionPolicy {
     static let defaultNearbyCount = 3
+    static let expandedNearbyCount = 20
     static let defaultRecentCount = 10
 
     struct NearbyStation: Identifiable {
@@ -593,17 +600,41 @@ struct StationSuggestionPolicy {
             seen.insert($0.crs.uppercased()).inserted
         }
     }
+
+    @MainActor
+    static func recentStations(
+        from records: [JourneyHistoryRecord],
+        catalogue: [Station]
+    ) -> [Station] {
+        let catalogueByCRS = Dictionary(
+            catalogue.map { ($0.crs.uppercased(), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let stationSequences = records
+            .sorted { $0.completedAt > $1.completedAt }
+            .map { record -> [Station] in
+                let legs = record.legs.sorted { $0.plannedLegIndex < $1.plannedLegIndex }
+                if let firstLeg = legs.first {
+                    return [firstLeg.fromStation] + legs.map(\.toStation)
+                }
+                return [record.plannedOriginCRS, record.plannedDestinationCRS].compactMap {
+                    catalogueByCRS[$0.uppercased()]
+                }
+            }
+        return recentStations(from: stationSequences)
+    }
 }
 
 private struct StationSuggestions: View {
     let query: String
     let stations: [Station]
-    let currentLocation: CLLocationCoordinate2D?
+    let nearbyStations: [StationSuggestionPolicy.NearbyStation]
+    let hasCurrentLocation: Bool
     let recentStations: [Station]
     let isActive: Bool
     var onSelect: (Station) -> Void
 
-    @State private var showsAllNearby = false
+    @State private var showsMoreNearby = false
     @State private var showsAllRecent = false
 
     var matches: [Station] {
@@ -615,14 +646,11 @@ private struct StationSuggestions: View {
         }
     }
 
-    private var nearbyStations: [StationSuggestionPolicy.NearbyStation] {
-        guard let currentLocation else { return [] }
-        return StationSuggestionPolicy.nearbyStations(in: stations, from: currentLocation)
-    }
-
     private var visibleNearbyStations: [StationSuggestionPolicy.NearbyStation] {
         Array(nearbyStations.prefix(
-            showsAllNearby ? nearbyStations.count : StationSuggestionPolicy.defaultNearbyCount
+            showsMoreNearby
+                ? StationSuggestionPolicy.expandedNearbyCount
+                : StationSuggestionPolicy.defaultNearbyCount
         ))
     }
 
@@ -654,7 +682,7 @@ private struct StationSuggestions: View {
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.secondary)
 
-        if currentLocation == nil {
+        if !hasCurrentLocation {
             Text("Allow location access to see the closest stations.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -668,11 +696,11 @@ private struct StationSuggestions: View {
             }
             if nearbyStations.count > StationSuggestionPolicy.defaultNearbyCount {
                 expansionButton(
-                    isExpanded: showsAllNearby,
-                    showTitle: "Show all nearby stations",
+                    isExpanded: showsMoreNearby,
+                    showTitle: "Show more nearby stations",
                     hideTitle: "Show fewer nearby stations"
                 ) {
-                    showsAllNearby.toggle()
+                    showsMoreNearby.toggle()
                 }
             }
         }

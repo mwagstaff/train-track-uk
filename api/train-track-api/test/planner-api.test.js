@@ -91,6 +91,28 @@ test('public metadata, stations and journeys never expose source paths or raw re
     assert.equal(details.dataset.sourceGenerationDate, '2026-08-25');
 });
 
+test('journey details include the full dated service without changing the travelled stops', async () => {
+    const repo = repository();
+    repo.resolveServices = date => ({ services: [{ id: 'full-service', calls: [
+        { station: 'ABW', departure: Date.parse('2026-09-08T05:30:00Z') },
+        { station: 'KTH', departure: Date.parse('2026-09-08T06:00:00Z') },
+        { station: 'VIC', arrival: Date.parse('2026-09-08T06:21:00Z') }
+    ] }], diagnostics: {} });
+    const instance = engine({ openDataset: async () => repo });
+    const journey = instance.publicJourney(result(normalizeRequest(request)).journeys[0]);
+    journey.id = 'detail-test';
+    journey.legs[0].serviceId = 'full-service';
+    journey.legs[0].originDate = '2026-09-08';
+    instance.retainJourney(journey, version);
+    const details = await instance.journey(journey.id);
+    assert.deepEqual(details.journey.legs[0].callingPoints, journey.legs[0].callingPoints);
+    assert.deepEqual(details.journey.legs[0].serviceCallingPoints.map(call => call.station.crs), ['ABW', 'KTH', 'VIC']);
+    assert.equal(details.journey.legs[0].serviceCallingPoints[2].arrival, '2026-09-08T06:21:00.000Z');
+    assert.equal(journey.legs[0].serviceCallingPoints, undefined);
+    assert.equal(JSON.stringify(details).includes('/private'), false);
+    await assert.rejects(instance.journey(journey.id, { aborted: true }), { code: 'SEARCH_CANCELLED' });
+});
+
 test('cache keys distinguish exact times and page offsets; repeated result retains detail', async () => {
     let calls = 0;
     const instance = engine({ findJourneys(req, network, options) { calls++; return result(req); } });

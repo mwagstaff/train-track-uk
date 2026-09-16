@@ -243,6 +243,14 @@ struct ArmedJourneyHistoryCandidate: Codable, Hashable, Identifiable {
         return observedAt < activeUntil.addingTimeInterval(Self.recoveryRetentionSeconds)
     }
 
+    func wasCompleted(in records: [JourneyHistoryRecord]) -> Bool {
+        guard source == .scheduled, let activeFrom, let activeUntil, activeFrom < activeUntil else { return false }
+        let window = DateInterval(start: activeFrom, end: activeUntil)
+        return records.contains {
+            $0.blocksScheduledOccurrence(stationCodes: stations.map(\.crs), window: window)
+        }
+    }
+
     mutating func inheritBoardingEvidence(from other: ArmedJourneyHistoryCandidate, now: Date = Date()) {
         guard isCurrent(at: now), other.isCurrent(at: now), source == other.source,
               stations.map({ $0.crs.uppercased() }) == other.stations.map({ $0.crs.uppercased() }),
@@ -283,6 +291,7 @@ struct ActiveJourneyHistoryCheckpoint: Codable, Hashable, Identifiable {
     var lastProcessedLocationTimestamp: Date? = nil
     var originDepartureWasMissed: Bool? = nil
     var scheduleOccurrenceStart: Date? = nil
+    var scheduleOccurrenceEnd: Date? = nil
 
     var plannedOrigin: Station { plannedStations.first! }
     var plannedDestination: Station { plannedStations.last! }
@@ -364,6 +373,9 @@ final class JourneyHistoryRecord {
     var stationEventsData: Data
     var resumeCheckpointData: Data?
     var originDepartureWasMissed: Bool?
+    var scheduleOccurrenceStart: Date?
+    var scheduleOccurrenceEnd: Date?
+    var plannedStationCodes: [String]?
 
     init(
         checkpoint: ActiveJourneyHistoryCheckpoint,
@@ -385,6 +397,9 @@ final class JourneyHistoryRecord {
         recordedDestinationName = recordedDestination.name
         detectedDepartureAt = checkpoint.detectedDepartureAt
         originDepartureWasMissed = checkpoint.originDepartureWasMissed
+        scheduleOccurrenceStart = checkpoint.scheduleOccurrenceStart
+        scheduleOccurrenceEnd = checkpoint.scheduleOccurrenceEnd
+        plannedStationCodes = checkpoint.plannedStations.map { $0.crs.uppercased() }
         detectedArrivalAt = checkpoint.detectedArrivalAt
         deviceBasedArrivalAt = checkpoint.deviceBasedArrivalAt
         scheduledArrivalAt = finalLeg?.scheduledArrivalAt
@@ -405,6 +420,35 @@ final class JourneyHistoryRecord {
 }
 
 extension JourneyHistoryRecord {
+    /// A completed scheduled occurrence remains handled after its arrival card is
+    /// dismissed, including when its notification subscription is replaced.
+    func blocksScheduledOccurrence(stationCodes: [String], window: DateInterval) -> Bool {
+        guard source == .scheduled, stationCodes.count >= 2,
+              plannedOriginCRS.caseInsensitiveCompare(stationCodes[0]) == .orderedSame,
+              plannedDestinationCRS.caseInsensitiveCompare(stationCodes[stationCodes.count - 1]) == .orderedSame else { return false }
+        var recordedRoute = plannedStationCodes ?? [plannedOriginCRS.uppercased()]
+        if plannedStationCodes == nil {
+            for index in Set(legs.map(\.plannedLegIndex)).sorted() {
+                if let leg = legs.last(where: { $0.plannedLegIndex == index }) {
+                    recordedRoute.append(leg.toStation.crs.uppercased())
+                }
+            }
+            if recordedRoute.last != plannedDestinationCRS.uppercased() {
+                recordedRoute.append(plannedDestinationCRS.uppercased())
+            }
+        }
+        guard recordedRoute == stationCodes.map({ $0.uppercased() }) else { return false }
+        if let start = scheduleOccurrenceStart, let end = scheduleOccurrenceEnd {
+            return start < window.end && window.start < end
+        }
+        // Older history has no occurrence metadata. Its recorded journey start
+        // still identifies the dated window without depending on today's clock.
+        let latestStart = window.end.addingTimeInterval(
+            originDepartureWasMissed == true ? StationDetectionPolicy.recoveryLifetime : 0
+        )
+        return window.start <= detectedDepartureAt && detectedDepartureAt < latestStart
+    }
+
     var resumableJourney: RecentlyCompletedJourneyCheckpoint? {
         guard outcome == .endedEarly, let resumeCheckpointData,
               let checkpoint = try? JSONDecoder().decode(ActiveJourneyHistoryCheckpoint.self, from: resumeCheckpointData),
@@ -816,11 +860,14 @@ enum JourneyHistoryOfficialArrivalPolicy {
 
 enum JourneyHistoryNotificationText {
     static func boarding(
-        scheduledDeparture: String,
+        scheduledDeparture: String?,
         estimatedDeparture: String?,
         destinationName: String
     ) -> String {
-        let scheduled = scheduledDeparture.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let scheduled = scheduledDeparture?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !scheduled.isEmpty else {
+            return "Tracking your journey to \(destinationName). Train not yet confirmed."
+        }
         let estimated = estimatedDeparture?.trimmingCharacters(in: .whitespacesAndNewlines)
         let base = "\(scheduled) to \(destinationName)"
 

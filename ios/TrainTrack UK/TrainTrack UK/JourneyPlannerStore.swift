@@ -67,6 +67,7 @@ final class JourneyPlannerStore {
     var destination: PlannerStation?
     var timeMode: PlannerTimeMode = .now
     var explicitTime = Date()
+    var useLiveTimes = true
     private(set) var status: PlannerStatus?
     private(set) var statusError: String?
     private(set) var isLoadingStatus = false
@@ -78,6 +79,7 @@ final class JourneyPlannerStore {
     @ObservationIgnored let client: any JourneyPlannerServing
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var lastRequest: PlannerSearchRequest?
+    @ObservationIgnored private var lastIntent: PlannerSearchIntent?
 
     init(client: (any JourneyPlannerServing)? = nil, recents: PlannerRecentSearchStore? = nil) {
         self.client = client ?? JourneyPlannerClient()
@@ -87,7 +89,7 @@ final class JourneyPlannerStore {
     var intent: PlannerSearchIntent? {
         guard let origin, let destination else { return nil }
         return PlannerSearchIntent(origin: origin, destination: destination, timeMode: timeMode,
-                                   explicitTime: timeMode == .now ? nil : explicitTime)
+                                   explicitTime: timeMode == .now ? nil : explicitTime, realtime: useLiveTimes ? "apply" : "ignore")
     }
 
     func validationMessage(now: Date = Date()) -> String? {
@@ -126,27 +128,40 @@ final class JourneyPlannerStore {
         origin = recent.intent.origin
         destination = recent.intent.destination
         timeMode = recent.intent.timeMode
+        useLiveTimes = recent.intent.realtime != "ignore"
         if let date = recent.intent.explicitTime { explicitTime = date }
         response = nil
         searchError = nil
     }
 
     func cancelSearch() {
+        if isSearching { restoreDisplayedLiveMode() }
         generation = UUID()
         isSearching = false
     }
 
-    func search(cursor: String? = nil, now: Date = Date()) async {
+    func search(cursor: String? = nil, repeatingLastSearch: Bool = false, now: Date = Date()) async {
         let appendResults = cursor != nil && cursor == response?.pagination.more
         let token = UUID()
         generation = token
         isSearching = false
         searchError = nil
-        if cursor == nil { response = nil }
+        if cursor == nil && !repeatingLastSearch { response = nil }
         let request: PlannerSearchRequest
-        let submittedIntent = intent
+        var submittedIntent = repeatingLastSearch ? lastIntent : intent
+        submittedIntent?.realtime = useLiveTimes ? "apply" : "ignore"
         do {
-            if let cursor, var page = lastRequest {
+            if repeatingLastSearch, var original = lastRequest {
+                if original.cursor != nil, let displayed = response?.search {
+                    original = PlannerSearchRequest(origin: displayed.origin, destination: displayed.destination,
+                        time: PlannerTime.iso8601(displayed.time), timeType: displayed.timeType,
+                        maxChanges: original.maxChanges, extraConnectionMinutes: original.extraConnectionMinutes,
+                        allowedModes: original.allowedModes, limit: original.limit)
+                }
+                original.cursor = nil
+                original.realtime = useLiveTimes ? "apply" : "ignore"
+                request = original
+            } else if let cursor, var page = lastRequest {
                 page.cursor = cursor
                 request = page
             } else {
@@ -178,21 +193,35 @@ final class JourneyPlannerStore {
                 }
                 var ids = Set(previous.journeys.map(\.id))
                 let added = result.journeys.filter { ids.insert($0.id).inserted }
+                let previousDisrupted = previous.disruptedJourneys ?? []
+                var disruptedIDs = Set(previousDisrupted.map(\.id))
+                let addedDisrupted = (result.disruptedJourneys ?? []).filter { disruptedIDs.insert($0.id).inserted }
                 response = PlannerSearchResponse(journeys: previous.journeys + added, dataset: result.dataset,
-                    search: result.search, warnings: result.warnings, pagination: result.pagination)
+                    search: result.search, warnings: result.warnings, pagination: result.pagination,
+                    live: result.live, disruptedJourneys: previousDisrupted + addedDisrupted)
             } else {
                 response = result
             }
             lastRequest = request
-            if cursor == nil, let submittedIntent { recents.record(submittedIntent, at: now) }
+            if cursor == nil, let submittedIntent {
+                lastIntent = submittedIntent
+                recents.record(submittedIntent, at: now)
+            }
         } catch {
             guard generation == token, !Task.isCancelled, !(error is CancellationError) else { return }
             let failure = (error as? PlannerError) ?? PlannerError(code: "NETWORK", message: error.localizedDescription)
             searchError = failure
+            if repeatingLastSearch { restoreDisplayedLiveMode() }
             if failure.code == "INVALID_STATION" {
                 await revalidateStations(token: token)
             }
         }
+    }
+
+    private func restoreDisplayedLiveMode() {
+        guard let response,
+              let mode = response.live?.mode ?? response.search.realtime ?? lastRequest?.realtime else { return }
+        useLiveTimes = mode != "ignore"
     }
 
     private func revalidateStations(token: UUID) async {

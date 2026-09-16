@@ -52,6 +52,9 @@ struct PlannedJourney: Codable, Identifiable, Equatable {
     let durationMinutes: Double
     let changes: Int
     let legs: [Leg]
+    var scheduledDeparture: Date? = nil
+    var scheduledArrival: Date? = nil
+    var warnings: [String]? = nil
 
     struct Leg: Codable, Equatable {
         let kind: String
@@ -64,8 +67,38 @@ struct PlannedJourney: Codable, Identifiable, Equatable {
         let serviceId: String?
         let originDate: String?
         let callingPoints: [CallingPoint]?
+        var serviceCallingPoints: [CallingPoint]? = nil
         let transfer: Transfer?
         let warnings: [String]?
+        var scheduledDeparture: Date? = nil
+        var scheduledArrival: Date? = nil
+        var scheduledServiceId: String? = nil
+        var live: PlannerLiveAnnotation? = nil
+
+        var isTubeTransfer: Bool { mode == "tubeTransfer" || mode == "tube" }
+        var isTrainChange: Bool { kind == "transfer" && mode == "interchange" }
+
+        var heading: String {
+            if isTrainChange { return "Change trains at \(from.name)" }
+            let transport: String
+            if isTubeTransfer { transport = "Tube" }
+            else if mode == "walk" { transport = "Walk" }
+            else if mode == "replacementBus" { transport = "Replacement bus" }
+            else if mode == "bus" { transport = "Bus" }
+            else if kind == "vehicle" { transport = "Train" }
+            else { transport = "Transfer" }
+            return "\(transport) from \(from.name) to \(to.name)"
+        }
+
+        var mapCallingPoints: [CallingPoint] {
+            let points = callingPoints ?? []
+            let start = points.firstIndex { $0.station.crs == from.crs }
+            let end = points.lastIndex { $0.station.crs == to.crs }
+            if let start, let end, start <= end { return Array(points[start...end]) }
+            return [CallingPoint(station: from, arrival: nil, departure: departure)]
+                + points.filter { $0.station.crs != from.crs && $0.station.crs != to.crs }
+                + [CallingPoint(station: to, arrival: arrival, departure: nil)]
+        }
     }
 
     struct Place: Codable, Equatable {
@@ -77,6 +110,9 @@ struct PlannedJourney: Codable, Identifiable, Equatable {
         let station: Place
         let arrival: Date?
         let departure: Date?
+        var scheduledArrival: Date? = nil
+        var scheduledDeparture: Date? = nil
+        var live: PlannerLiveAnnotation? = nil
     }
 
     struct Transfer: Codable, Equatable {
@@ -95,6 +131,8 @@ struct PlannerSearchResponse: Decodable {
     let search: Search
     let warnings: [String]
     let pagination: Pagination
+    var live: PlannerLiveContext? = nil
+    var disruptedJourneys: [PlannedJourney]? = nil
 
     struct Search: Decodable {
         let origin: String
@@ -104,6 +142,7 @@ struct PlannerSearchResponse: Decodable {
         let window: Window
         let searchTruncated: Bool
         var maxChanges: Int? = nil
+        var realtime: String? = nil
     }
 
     struct Window: Decodable {
@@ -115,6 +154,33 @@ struct PlannerSearchResponse: Decodable {
         let earlier: String?
         let later: String?
         let more: String?
+    }
+}
+
+struct PlannerLiveContext: Codable, Equatable {
+    let mode: String
+    let status: String
+    var updatedAt: Date? = nil
+    var expiresAt: Date? = nil
+    var windowHours: Int? = nil
+    var warnings: [String]? = nil
+}
+
+struct PlannerLiveAnnotation: Codable, Equatable {
+    let status: String
+    var updatedAt: Date? = nil
+    var departure: Date? = nil
+    var arrival: Date? = nil
+    var departureDelayMinutes: Double? = nil
+    var arrivalDelayMinutes: Double? = nil
+    var cancelled: Bool? = nil
+    var partCancelled: Bool? = nil
+    var warnings: [String]? = nil
+
+    // Cancellation elsewhere on a splitting train must not cancel the selected section.
+    var isCancelled: Bool { cancelled ?? (status == "cancelled") }
+    var isDelayed: Bool {
+        status == "delayed" || (departureDelayMinutes ?? 0) > 0 || (arrivalDelayMinutes ?? 0) > 0
     }
 }
 
@@ -143,6 +209,7 @@ struct PlannerSearchJob: Decodable {
 struct PlannerJourneyResponse: Decodable {
     let journey: PlannedJourney
     let dataset: PlannerDataset
+    var live: PlannerLiveContext? = nil
 }
 
 struct PlannerSearchRequest: Encodable, Equatable {
@@ -155,6 +222,7 @@ struct PlannerSearchRequest: Encodable, Equatable {
     var allowedModes = ["rail", "replacementBus", "walk", "tubeTransfer"]
     var limit = 5
     var cursor: String?
+    var realtime: String? = nil
 }
 
 enum PlannerTimeMode: String, Codable, CaseIterable, Identifiable {
@@ -175,6 +243,7 @@ struct PlannerSearchIntent: Codable, Equatable {
     let destination: PlannerStation
     let timeMode: PlannerTimeMode
     let explicitTime: Date?
+    var realtime: String? = nil
 
     func request(now: Date) throws -> PlannerSearchRequest {
         let time: Date
@@ -188,7 +257,7 @@ struct PlannerSearchIntent: Codable, Equatable {
         }
         return PlannerSearchRequest(
             origin: origin.crs, destination: destination.crs,
-            time: PlannerTime.iso8601(time), timeType: timeMode.apiValue
+            time: PlannerTime.iso8601(time), timeType: timeMode.apiValue, realtime: realtime ?? "apply"
         )
     }
 
@@ -241,6 +310,11 @@ enum PlannerTime {
     static func minutes(_ value: Double) -> String {
         let total = Int(value.rounded(.up))
         return total >= 60 ? "\(total / 60)h \(total % 60)m" : "\(total) min"
+    }
+
+    static func displayRange(from departure: Date, to arrival: Date, separator: String = " → ") -> String {
+        let includeDate = !calendar.isDate(departure, inSameDayAs: arrival)
+        return display(departure, includeDate: includeDate) + separator + display(arrival, includeDate: includeDate)
     }
 
     static func decoder() -> JSONDecoder {

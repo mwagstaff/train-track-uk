@@ -37,35 +37,37 @@ final class RecentServiceStore: ObservableObject {
     }
 
     func observe(_ departures: [DepartureV2], fromCRS: String, toCRS: String, now: Date = Date()) {
-        let observations = departures.compactMap { departure -> RecentDepartureV2? in
-            guard let scheduled = JourneyHistoryTime.date(
-                for: departure.departureTime.scheduled,
-                near: now
-            ) else { return nil }
-            let lower = now.addingTimeInterval(-Self.lookback)
-            let upper = now.addingTimeInterval(Self.upcomingAllowance)
-            guard (lower...upper).contains(scheduled) else { return nil }
-            let estimated = JourneyHistoryTime.date(
-                for: departure.departureTime.estimated,
-                near: scheduled
-            )
-            return RecentDepartureV2(
-                serviceID: departure.serviceID,
-                serviceType: departure.serviceType,
-                fromCRS: fromCRS.uppercased(),
-                toCRS: toCRS.uppercased(),
-                scheduledDeparture: departure.departureTime.scheduled,
-                estimatedDeparture: departure.departureTime.estimated,
-                actualDeparture: nil,
-                scheduledDepartureAt: scheduled,
-                estimatedDepartureAt: estimated,
-                actualDepartureAt: nil,
-                platform: departure.platform,
-                isCancelled: departure.isCancelled,
-                lastObservedAt: now
-            )
+        let observations = departures.compactMap { departure in
+            Self.observation(departure, fromCRS: fromCRS, toCRS: toCRS, now: now)
         }
         merge(observations)
+    }
+
+    static func observation(_ departure: DepartureV2, fromCRS: String, toCRS: String, now: Date) -> RecentDepartureV2? {
+        // Reading a cached board again does not make its estimates new observations.
+        let observedAt = departure.timestamp ?? now
+        guard let scheduled = JourneyHistoryTime.date(
+            for: departure.departureTime.scheduled,
+            near: observedAt
+        ) else { return nil }
+        let lower = now.addingTimeInterval(-lookback)
+        let upper = now.addingTimeInterval(upcomingAllowance)
+        guard (lower...upper).contains(scheduled) else { return nil }
+        return RecentDepartureV2(
+            serviceID: departure.serviceID,
+            serviceType: departure.serviceType,
+            fromCRS: fromCRS.uppercased(),
+            toCRS: toCRS.uppercased(),
+            scheduledDeparture: departure.departureTime.scheduled,
+            estimatedDeparture: departure.departureTime.estimated,
+            actualDeparture: departure.departureTime.actual,
+            scheduledDepartureAt: scheduled,
+            estimatedDepartureAt: JourneyHistoryTime.date(for: departure.departureTime.estimated, near: scheduled),
+            actualDepartureAt: JourneyHistoryTime.date(for: departure.departureTime.actual, near: scheduled),
+            platform: departure.platform,
+            isCancelled: departure.isCancelled,
+            lastObservedAt: observedAt
+        )
     }
 
     func departures(fromCRS: String, toCRS: String, now: Date = Date()) -> [RecentDepartureV2] {
@@ -88,7 +90,7 @@ final class RecentServiceStore: ObservableObject {
             let key = pairKey(from: departure.fromCRS, to: departure.toCRS)
             var current = departuresByPair[key] ?? []
             if let index = current.firstIndex(where: { $0.id == departure.id }) {
-                current[index] = preferred(current[index], departure)
+                current[index] = Self.preferred(current[index], departure)
             } else {
                 current.append(departure)
             }
@@ -98,21 +100,26 @@ final class RecentServiceStore: ObservableObject {
         persist()
     }
 
-    private func preferred(_ existing: RecentDepartureV2, _ incoming: RecentDepartureV2) -> RecentDepartureV2 {
-        RecentDepartureV2(
-            serviceID: incoming.serviceID,
-            serviceType: incoming.serviceType,
-            fromCRS: incoming.fromCRS,
-            toCRS: incoming.toCRS,
-            scheduledDeparture: incoming.scheduledDeparture,
-            estimatedDeparture: incoming.estimatedDeparture ?? existing.estimatedDeparture,
-            actualDeparture: incoming.actualDeparture ?? existing.actualDeparture,
-            scheduledDepartureAt: incoming.scheduledDepartureAt,
-            estimatedDepartureAt: incoming.estimatedDepartureAt ?? existing.estimatedDepartureAt,
-            actualDepartureAt: incoming.actualDepartureAt ?? existing.actualDepartureAt,
-            platform: normalized(incoming.platform) ?? existing.platform,
-            isCancelled: incoming.isCancelled,
-            lastObservedAt: max(existing.lastObservedAt, incoming.lastObservedAt)
+    static func preferred(_ existing: RecentDepartureV2, _ incoming: RecentDepartureV2) -> RecentDepartureV2 {
+        let newer = incoming.lastObservedAt >= existing.lastObservedAt ? incoming : existing
+        let older = incoming.lastObservedAt >= existing.lastObservedAt ? existing : incoming
+        let estimate = newer.estimatedDeparture != nil ? newer : older
+        // An actual departure remains evidence even if a later board only supplies a forecast.
+        let actual = newer.actualDepartureAt != nil ? newer : older
+        return RecentDepartureV2(
+            serviceID: newer.serviceID,
+            serviceType: newer.serviceType,
+            fromCRS: newer.fromCRS,
+            toCRS: newer.toCRS,
+            scheduledDeparture: newer.scheduledDeparture,
+            estimatedDeparture: estimate.estimatedDeparture,
+            actualDeparture: actual.actualDeparture,
+            scheduledDepartureAt: newer.scheduledDepartureAt,
+            estimatedDepartureAt: estimate.estimatedDepartureAt,
+            actualDepartureAt: actual.actualDepartureAt,
+            platform: normalized(newer.platform) ?? older.platform,
+            isCancelled: newer.isCancelled,
+            lastObservedAt: newer.lastObservedAt
         )
     }
 
@@ -146,7 +153,7 @@ final class RecentServiceStore: ObservableObject {
         "\(from.uppercased())_\(to.uppercased())"
     }
 
-    private func normalized(_ value: String?) -> String? {
+    private static func normalized(_ value: String?) -> String? {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
               !value.isEmpty,
               value.caseInsensitiveCompare("TBC") != .orderedSame else {

@@ -143,7 +143,7 @@ final class JourneyPlannerClient: JourneyPlannerServing {
                     progress(.running)
                 }
                 let interval = min(5, max(0.5, (job.pollAfterMs ?? 1000) / 1000))
-                try await timing.sleep(min(interval, deadline - timing.now()))
+                try await timing.sleep(max(0, min(interval, deadline - timing.now())))
                 job = try await jobRequest(base: base, path: ["search-jobs", job.id], deadline: deadline)
             }
         } catch {
@@ -211,7 +211,7 @@ final class JourneyPlannerClient: JourneyPlannerServing {
         request.setValue(clientID, forHTTPHeaderField: "X-Planner-Client")
         // A cancelled search task must not also cancel the request releasing its server lease.
         let session = session
-        Task.detached(priority: .utility) { _ = try? await session.data(for: request) }
+        Task.detached(priority: .utility) { [session, request] in _ = try? await session.data(for: request) }
     }
 
     func journey(id: String) async throws -> PlannerJourneyResponse {

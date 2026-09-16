@@ -1,6 +1,22 @@
 import SwiftUI
 import MapKit
 
+struct RailwayEstimatedTrainMarker: View {
+    let label: String
+
+    var body: some View {
+        Image(systemName: "train.side.front.car")
+            .font(.system(size: 17, weight: .bold))
+            .foregroundStyle(.white)
+            .frame(width: 34, height: 34)
+            .background(Color.accentColor, in: Circle())
+            .overlay(Circle().stroke(.white, lineWidth: 2))
+            .shadow(color: .black.opacity(0.25), radius: 3, y: 2)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(label)
+    }
+}
+
 enum RailwayRouteSegmentStatus: Equatable {
     case onTime
     case minorDelay
@@ -394,7 +410,7 @@ enum RailwayStationLabelCollisionDetector {
     }
 }
 
-private enum RailwayMapAnnotationIdentifier {
+enum RailwayMapAnnotationIdentifier {
     static let estimatedTrain = "railway-estimated-train"
 
     static func station(_ identifier: String) -> String {
@@ -538,7 +554,7 @@ enum RailwayMapAnnotationPriority {
     static let station = MKAnnotationViewZPriority.max
 }
 
-private struct RailwayMapAnnotationZOrderConfigurator: UIViewRepresentable {
+struct RailwayMapAnnotationZOrderConfigurator: UIViewRepresentable {
     let onMapViewResolved: (MKMapView) -> Void
 
     func makeUIView(context: Context) -> RailwayMapAnnotationZOrderView {
@@ -551,7 +567,7 @@ private struct RailwayMapAnnotationZOrderConfigurator: UIViewRepresentable {
     }
 }
 
-private final class RailwayMapAnnotationZOrderView: UIView {
+final class RailwayMapAnnotationZOrderView: UIView {
     private weak var mapView: MKMapView?
     var onMapViewResolved: (MKMapView) -> Void
 
@@ -685,7 +701,7 @@ private struct RailwayMapShareItem: Identifiable {
 }
 
 @MainActor
-private final class RailwayMapViewReference {
+final class RailwayMapViewReference {
     weak var value: MKMapView?
 }
 
@@ -1125,15 +1141,7 @@ struct ServiceRailwayMapView: View {
     }
 
     private var estimatedTrainMarker: some View {
-        Image(systemName: "train.side.front.car")
-            .font(.system(size: 17, weight: .bold))
-            .foregroundStyle(.white)
-            .frame(width: 34, height: 34)
-            .background(Color.accentColor, in: Circle())
-            .overlay(Circle().stroke(.white, lineWidth: 2))
-            .shadow(color: .black.opacity(0.25), radius: 3, y: 2)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(estimatedLocationText)
+        RailwayEstimatedTrainMarker(label: estimatedLocationText)
     }
 
     private func stationAnnotation(for item: RailwayMapStationItem) -> some View {

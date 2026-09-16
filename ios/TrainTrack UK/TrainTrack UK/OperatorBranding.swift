@@ -30,6 +30,20 @@ struct OperatorBranding: Codable, Equatable, Identifiable {
             blue: Double(value & 0xFF) / 255
         )
     }
+
+    var usesBlackText: Bool {
+        guard let value = UInt64(colorHex.trimmingCharacters(in: CharacterSet(charactersIn: "#")), radix: 16) else {
+            return false
+        }
+        func linear(_ component: UInt64) -> Double {
+            let channel = Double(component) / 255
+            return channel <= 0.04045 ? channel / 12.92 : pow((channel + 0.055) / 1.055, 2.4)
+        }
+        let luminance = 0.2126 * linear((value >> 16) & 0xFF)
+            + 0.7152 * linear((value >> 8) & 0xFF)
+            + 0.0722 * linear(value & 0xFF)
+        return (luminance + 0.05) / 0.05 >= 1.05 / (luminance + 0.05)
+    }
 }
 
 enum OperatorBrandingResolver {
@@ -38,6 +52,11 @@ enum OperatorBrandingResolver {
         code: String?,
         in config: OperatorBrandingConfig?
     ) -> OperatorBranding? {
+        // Support LF before the updated server configuration replaces an older cache.
+        if normalize(code) == "lf" || normalize(name) == "lf" {
+            return resolve(name: "Lumo", code: "LD", in: config)
+                ?? OperatorBranding(name: "Lumo", operatorCodes: ["LD", "LF"], aliases: [], colorHex: "#2D2A8C")
+        }
         guard let config else { return nil }
         let normalizedName = normalize(name)
         if !normalizedName.isEmpty,

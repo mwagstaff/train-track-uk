@@ -1,3 +1,4 @@
+import CoreLocation
 import SwiftUI
 
 struct AddJourneyEntryView: View {
@@ -165,6 +166,9 @@ struct JourneyPlannerView: View {
             PlannerResultsView(store: store, loadPage: { startSearch(cursor: $0) }, cancelSearch: {
                 searchTask?.cancel()
                 store.cancelSearch()
+            }, changeLiveTimes: { enabled in
+                store.useLiveTimes = enabled
+                startSearch(repeatingLastSearch: true)
             })
         }
         .onChange(of: resultsPresented) { _, presented in
@@ -173,7 +177,9 @@ struct JourneyPlannerView: View {
                 store.cancelSearch()
             }
         }
-        .onChange(of: store.intent) { _, _ in
+        .onChange(of: store.intent) { previous, current in
+            // The live-times toggle owns its rerun; route/date edits cancel the old query.
+            if let previous, let current, previous.matches(current) { return }
             if store.isSearching {
                 searchTask?.cancel()
                 store.cancelSearch()
@@ -201,8 +207,12 @@ struct JourneyPlannerView: View {
 
     @ViewBuilder private var timetableSection: some View {
         Section {
-            Label("Scheduled times only", systemImage: "calendar")
-            Text("Live delays, cancellations and platform changes are not included.")
+            Toggle("Use live times", isOn: Binding(get: { store.useLiveTimes }, set: { enabled in
+                store.useLiveTimes = enabled
+                if store.isSearching { startSearch() }
+            }))
+            .accessibilityIdentifier("planner.live-times")
+            Text("Live times cover journeys in the next 4 hours. Turn off to use scheduled times; live disruption warnings will still be shown.")
                 .font(.caption).foregroundStyle(Color.plannerSecondaryText)
             if store.isLoadingStatus {
                 ProgressView("Checking timetable…")
@@ -220,10 +230,10 @@ struct JourneyPlannerView: View {
         }
     }
 
-    private func startSearch(cursor: String? = nil) {
+    private func startSearch(cursor: String? = nil, repeatingLastSearch: Bool = false) {
         searchTask?.cancel()
         searchTask = Task {
-            await store.search(cursor: cursor)
+            await store.search(cursor: cursor, repeatingLastSearch: repeatingLastSearch)
             guard !Task.isCancelled else { return }
             if cursor == nil && store.response != nil { resultsPresented = true }
         }
@@ -241,34 +251,43 @@ private struct PlannerStationPicker: View {
     let client: any JourneyPlannerServing
     let select: (PlannerStation) -> Void
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var historyStore: JourneyHistoryStore
     @State private var query = ""
     @State private var stations: [PlannerStation] = []
+    @State private var stationCatalogue = StationsService.shared.stations
+    @State private var nearbyStations: [StationSuggestionPolicy.NearbyStation] = []
+    @State private var recentStations: [Station] = []
     @State private var isLoading = false
     @State private var error: String?
     @State private var retry = UUID()
+    @State private var showsMoreNearby = false
+    @State private var showsAllRecent = false
+    @StateObject private var location = LocationManagerPhone()
+
+    private var normalizedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
         List {
-            if isLoading { ProgressView("Finding stations…") }
-            if let error {
-                Text(error).foregroundStyle(Color.primary)
-                Button("Retry") { retry = UUID() }
-            } else if query.trimmingCharacters(in: .whitespacesAndNewlines).count < 2 {
-                Text("Enter a station name or three-letter code.").foregroundStyle(Color.plannerSecondaryText)
-            } else if !isLoading && stations.isEmpty {
-                Text("No matching stations in the available timetable.").foregroundStyle(Color.plannerSecondaryText)
-            }
-            ForEach(stations) { station in
-                Button {
-                    select(station)
-                    dismiss()
-                } label: {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(station.name).foregroundStyle(Color.primary)
-                        Text(station.crs).font(.caption).foregroundStyle(Color.plannerSecondaryText)
-                    }
+            if normalizedQuery.isEmpty {
+                nearbySection
+                recentSection
+            } else {
+                if isLoading { ProgressView("Finding stations…") }
+                if let error {
+                    Text(error).foregroundStyle(Color.primary)
+                    Button("Retry") { retry = UUID() }
+                } else if normalizedQuery.count < 2 {
+                    Text("Enter at least two letters or a three-letter station code.")
+                        .foregroundStyle(Color.plannerSecondaryText)
+                } else if !isLoading && stations.isEmpty {
+                    Text("No matching stations in the available timetable.")
+                        .foregroundStyle(Color.plannerSecondaryText)
                 }
-                .accessibilityIdentifier("planner.station.\(station.crs)")
+                ForEach(stations) { station in
+                    stationButton(station)
+                }
             }
         }
         .navigationTitle(title)
@@ -276,8 +295,21 @@ private struct PlannerStationPicker: View {
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        .task {
+            location.request()
+            try? await StationsService.shared.loadStations()
+            stationCatalogue = StationsService.shared.stations
+            refreshNearbyStations()
+            refreshRecentStations()
+        }
+        .onChange(of: location.coordinateTimestamp) {
+            refreshNearbyStations()
+        }
+        .onChange(of: historyStore.records.map(\.id)) {
+            refreshRecentStations()
+        }
         .task(id: "\(query)|\(retry)") {
-            let requestedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            let requestedQuery = normalizedQuery
             stations = []
             error = nil
             isLoading = requestedQuery.count >= 2
@@ -294,6 +326,117 @@ private struct PlannerStationPicker: View {
                 isLoading = false
             }
         }
+    }
+
+    private var nearbySection: some View {
+        Section("Nearby stations") {
+            if location.lastKnownCoordinate == nil {
+                Text("Allow location access to see the closest stations.")
+                    .foregroundStyle(Color.plannerSecondaryText)
+            } else if nearbyStations.isEmpty {
+                Text("No nearby stations available.")
+                    .foregroundStyle(Color.plannerSecondaryText)
+            } else {
+                ForEach(nearbyStations.prefix(
+                    showsMoreNearby
+                        ? StationSuggestionPolicy.expandedNearbyCount
+                        : StationSuggestionPolicy.defaultNearbyCount
+                )) { nearby in
+                    stationButton(plannerStation(from: nearby.station), detail: distanceText(nearby.distance))
+                }
+                if nearbyStations.count > StationSuggestionPolicy.defaultNearbyCount {
+                    Button {
+                        showsMoreNearby.toggle()
+                    } label: {
+                        Label(
+                            showsMoreNearby ? "Show fewer nearby stations" : "Show more nearby stations",
+                            systemImage: showsMoreNearby ? "chevron.up" : "chevron.down"
+                        )
+                    }
+                    .accessibilityIdentifier("planner.nearby.toggle")
+                }
+            }
+        }
+    }
+
+    private var recentSection: some View {
+        Section("Recently used") {
+            if recentStations.isEmpty {
+                Text("Stations from completed journeys will appear here.")
+                    .foregroundStyle(Color.plannerSecondaryText)
+            } else {
+                ForEach(recentStations.prefix(
+                    showsAllRecent ? recentStations.count : StationSuggestionPolicy.defaultRecentCount
+                )) { station in
+                    stationButton(plannerStation(from: station))
+                }
+                if recentStations.count > StationSuggestionPolicy.defaultRecentCount {
+                    Button {
+                        showsAllRecent.toggle()
+                    } label: {
+                        Label(
+                            showsAllRecent ? "Show fewer recently used stations" : "Show all recently used stations",
+                            systemImage: showsAllRecent ? "chevron.up" : "chevron.down"
+                        )
+                    }
+                    .accessibilityIdentifier("planner.recent.toggle")
+                }
+            }
+        }
+    }
+
+    private func stationButton(_ station: PlannerStation, detail: String? = nil) -> some View {
+        Button {
+            select(station)
+            dismiss()
+        } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(station.name).foregroundStyle(Color.primary)
+                    Text(station.crs).font(.caption).foregroundStyle(Color.plannerSecondaryText)
+                }
+                Spacer()
+                if let detail {
+                    Text(detail).font(.caption).foregroundStyle(Color.plannerSecondaryText)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .accessibilityIdentifier("planner.station.\(station.crs)")
+    }
+
+    private func refreshNearbyStations() {
+        guard let coordinate = location.lastKnownCoordinate else {
+            nearbyStations = []
+            return
+        }
+        nearbyStations = StationSuggestionPolicy.nearbyStations(
+            in: stationCatalogue,
+            from: coordinate
+        )
+    }
+
+    private func refreshRecentStations() {
+        recentStations = StationSuggestionPolicy.recentStations(
+            from: historyStore.records,
+            catalogue: stationCatalogue
+        )
+    }
+
+    private func plannerStation(from station: Station) -> PlannerStation {
+        let coordinate = station.hasUsableCoordinate ? station.coordinate : nil
+        return PlannerStation(
+            crs: station.crs,
+            name: station.name,
+            latitude: coordinate?.latitude,
+            longitude: coordinate?.longitude
+        )
+    }
+
+    private func distanceText(_ distance: Double) -> String {
+        let miles = distance / 1_609.344
+        if miles < 0.1 { return "<0.1 mi" }
+        return miles.formatted(.number.precision(.fractionLength(1))) + " mi"
     }
 }
 
@@ -321,6 +464,8 @@ private struct PlannerResultsView: View {
     let store: JourneyPlannerStore
     let loadPage: (String) -> Void
     let cancelSearch: () -> Void
+    let changeLiveTimes: (Bool) -> Void
+    @State private var loadingButtonTitle: String?
 
     var body: some View {
         List {
@@ -328,17 +473,13 @@ private struct PlannerResultsView: View {
                 Section {
                     Text("\(stationName(response.search.origin)) → \(stationName(response.search.destination))")
                         .font(.headline)
-                    Label("Scheduled times only", systemImage: "calendar")
-                    Text("\(PlannerTime.display(response.search.window.from)) – \(PlannerTime.display(response.search.window.to))")
+                    Toggle("Use live times", isOn: Binding(get: { store.useLiveTimes }, set: changeLiveTimes))
+                        .accessibilityIdentifier("planner.live-times")
+                    PlannerLiveContextView(live: response.live)
+                    Text(PlannerTime.displayRange(from: response.search.window.from, to: response.search.window.to, separator: " – "))
                         .font(.caption)
-                    PlannerDatasetView(dataset: response.dataset)
-                    if !response.warnings.isEmpty {
-                        DisclosureGroup("Search notes") {
-                            ForEach(response.warnings, id: \.self) { Text($0).font(.caption).foregroundStyle(Color.primary) }
-                        }
-                    }
                     if response.search.searchTruncated {
-                        Text("Some journeys may be missing. See search notes for details.").foregroundStyle(Color.primary)
+                        Text("Some journeys may be missing.").foregroundStyle(Color.primary)
                     }
                 }
                 if let error = store.searchError { Text(error.message).foregroundStyle(Color.primary) }
@@ -352,7 +493,7 @@ private struct PlannerResultsView: View {
                         Label("No journeys in this window", systemImage: "tram")
                             .font(.headline)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text("\(response.search.timeType == "arriveBy" ? "Arrivals" : "Departures") searched: \(PlannerTime.display(response.search.window.from)) – \(PlannerTime.display(response.search.window.to))")
+                        Text("\(response.search.timeType == "arriveBy" ? "Arrivals" : "Departures") searched: \(PlannerTime.displayRange(from: response.search.window.from, to: response.search.window.to, separator: " – "))")
                             .foregroundStyle(Color.plannerSecondaryText)
                             .accessibilityIdentifier("planner.empty.interval")
                         if let maxChanges = response.search.maxChanges {
@@ -363,13 +504,11 @@ private struct PlannerResultsView: View {
                         Text("Try another time window, or go back to change your search.")
                             .foregroundStyle(Color.plannerSecondaryText)
                         if let later = response.pagination.later {
-                            Button("Search later times") { loadPage(later) }
-                                .disabled(store.isSearching)
+                            pageButton("Search later times", cursor: later)
                                 .accessibilityIdentifier("planner.empty.later")
                         }
                         if let earlier = response.pagination.earlier {
-                            Button("Search earlier times") { loadPage(earlier) }
-                                .disabled(store.isSearching)
+                            pageButton("Search earlier times", cursor: earlier)
                                 .accessibilityIdentifier("planner.empty.earlier")
                         }
                     }
@@ -382,20 +521,55 @@ private struct PlannerResultsView: View {
                     }
                     .accessibilityIdentifier("planner.journey.\(journey.id)")
                 }
+                if let disrupted = response.disruptedJourneys, !disrupted.isEmpty {
+                    Section {
+                        DisclosureGroup("Unavailable options (\(disrupted.count))") {
+                            Text("These scheduled options are affected by cancellations or connections that can no longer be made.")
+                                .font(.caption)
+                            ForEach(disrupted) { journey in
+                                NavigationLink {
+                                    PlannerJourneyDetailView(id: journey.id, client: store.client)
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 6) {
+                                        Label("Unavailable", systemImage: "exclamationmark.triangle.fill")
+                                            .foregroundStyle(.red)
+                                        PlannerJourneySummary(journey: journey)
+                                    }
+                                }
+                                .accessibilityIdentifier("planner.disrupted.\(journey.id)")
+                            }
+                        }
+                        .accessibilityIdentifier("planner.disrupted-options")
+                    }
+                }
                 Section {
                     if let more = response.pagination.more {
-                        Button { loadPage(more) } label: { Label("More journeys", systemImage: "plus") }
+                        pageButton("More journeys", cursor: more, systemImage: "plus")
+                            .accessibilityIdentifier("planner.more")
                     }
                     if !response.journeys.isEmpty {
                         if let earlier = response.pagination.earlier {
-                            Button { loadPage(earlier) } label: { Label("Earlier journeys", systemImage: "arrow.up") }
+                            pageButton("Earlier journeys", cursor: earlier, systemImage: "arrow.up")
+                                .accessibilityIdentifier("planner.earlier")
                         }
                         if let later = response.pagination.later {
-                            Button { loadPage(later) } label: { Label("Later journeys", systemImage: "arrow.down") }
+                            pageButton("Later journeys", cursor: later, systemImage: "arrow.down")
+                                .accessibilityIdentifier("planner.later")
                         }
                     }
                 }
                 .disabled(store.isSearching)
+                let searchNotes = PlannerLivePresentation.unique(response.warnings)
+                    .filter { !(response.live?.warnings ?? []).contains($0) }
+                if !searchNotes.isEmpty {
+                    Section {
+                        DisclosureGroup("Search notes") {
+                            ForEach(searchNotes, id: \.self) { note in
+                                Text(note).font(.caption)
+                            }
+                        }
+                    }
+                }
             }
         }
         .navigationTitle("Journeys")
@@ -407,37 +581,129 @@ private struct PlannerResultsView: View {
         if store.destination?.crs == crs { return store.destination?.name ?? crs }
         return crs
     }
+
+    private func pageButton(_ title: String, cursor: String, systemImage: String? = nil) -> some View {
+        Button {
+            loadingButtonTitle = title
+            loadPage(cursor)
+        } label: {
+            HStack {
+                if store.isSearching && loadingButtonTitle == title {
+                    ProgressView()
+                        .accessibilityIdentifier("planner.pagination.spinner")
+                } else if let systemImage {
+                    Image(systemName: systemImage).accessibilityHidden(true)
+                }
+                Text(title).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .disabled(store.isSearching)
+    }
 }
 
 private struct PlannerJourneySummary: View {
     let journey: PlannedJourney
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("\(PlannerTime.display(journey.departure)) → \(PlannerTime.display(journey.arrival))")
+            let cancelled = journey.legs.contains { $0.live?.isCancelled == true }
+            Text(PlannerTime.displayRange(from: journey.departure, to: journey.arrival))
                 .font(.headline)
+                .foregroundStyle(cancelled ? Color.red : Color.primary)
+                .strikethrough(cancelled, color: .red)
+            let scheduledDeparture = journey.scheduledDeparture ?? journey.legs.first?.scheduledDeparture ?? journey.departure
+            let scheduledArrival = journey.scheduledArrival ?? journey.legs.last?.scheduledArrival ?? journey.arrival
+            if abs(journey.departure.timeIntervalSince(scheduledDeparture)) >= 30 || abs(journey.arrival.timeIntervalSince(scheduledArrival)) >= 30 {
+                Text("Scheduled \(PlannerTime.displayRange(from: scheduledDeparture, to: scheduledArrival))")
+                    .font(.caption).foregroundStyle(Color.plannerSecondaryText)
+            }
+            let annotations = journey.legs.compactMap(\.live)
+                .filter { PlannerLivePresentation.title(for: $0) != "On time" }
+            let statuses = annotations.enumerated().filter { index, live in
+                !annotations.prefix(index).contains { PlannerLivePresentation.title(for: $0) == PlannerLivePresentation.title(for: live) }
+            }
+            ForEach(statuses, id: \.offset) { _, live in PlannerLiveBadge(live: live) }
+            if let onTimeSummary = PlannerLivePresentation.onTimeSummary(for: journey) {
+                Text(onTimeSummary).font(.caption).foregroundStyle(Color.plannerSecondaryText)
+            }
             Text("\(PlannerTime.minutes(journey.durationMinutes)) · \(journey.changes == 0 ? "Direct" : "\(journey.changes) change\(journey.changes == 1 ? "" : "s")")")
                 .font(.subheadline).foregroundStyle(Color.plannerSecondaryText)
-            ForEach(Array(journey.legs.enumerated()), id: \.offset) { _, leg in
-                if leg.kind == "vehicle" { PlannerOperatorLabel(leg: leg) }
-            }
+            PlannerOperatorPills(journey: journey)
+            let warnings = PlannerLivePresentation.warnings(for: journey)
+            ForEach(Array(warnings.prefix(2)), id: \.self) { Text($0).font(.caption).foregroundStyle(Color.primary) }
+            if warnings.count > 2 { Text("More travel notes in journey details.").font(.caption).foregroundStyle(Color.plannerSecondaryText) }
         }
         .padding(.vertical, 4)
+        .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
     }
 }
 
-private struct PlannerOperatorLabel: View {
+private struct PlannerOperatorPills: View {
+    let journey: PlannedJourney
+    @ObservedObject private var config = ServerConfigStore.shared
+
+    var body: some View {
+        let operators = journey.legs.filter { $0.kind == "vehicle" || $0.isTubeTransfer }.map { leg in
+            leg.isTubeTransfer
+                ? OperatorBranding(name: "Tube", operatorCodes: [], aliases: [], colorHex: "#FFFFFF")
+                : OperatorBrandingResolver.resolve(name: leg.operator, code: leg.operator, in: config.operatorBranding)
+                ?? OperatorBranding(name: leg.operator ?? "Train service", operatorCodes: [], aliases: [], colorHex: "666666")
+        }
+        let uniqueOperators = operators.enumerated().filter { index, branding in
+            !operators.prefix(index).contains { $0.id == branding.id }
+        }.map(\.element)
+        let pills = HStack(spacing: 6) {
+            ForEach(uniqueOperators) { branding in
+                PlannerTransportPill(branding: branding, showsRoundel: branding.name == "Tube")
+            }
+        }
+        .fixedSize()
+        ViewThatFits(in: .horizontal) {
+            pills
+            ScrollView(.horizontal) { pills }
+                .scrollIndicators(.hidden)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(uniqueOperators.map(\.name).joined(separator: ", "))
+    }
+}
+
+private struct PlannerTransportPill: View {
+    let branding: OperatorBranding
+    var showsRoundel = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if showsRoundel {
+                ZStack {
+                    Circle().stroke(Color.red, lineWidth: 4).frame(width: 16, height: 16)
+                    Rectangle().fill(Color(red: 0, green: 0.1, blue: 0.4)).frame(width: 24, height: 5)
+                }
+                .frame(width: 24, height: 20)
+                .accessibilityHidden(true)
+            }
+            Text(branding.name)
+                .foregroundStyle(branding.usesBlackText ? Color.black : Color.white)
+        }
+        .font(.caption)
+        .frame(minHeight: 20)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(branding.color, in: Capsule())
+        .overlay(Capsule().stroke(Color.primary.opacity(0.15), lineWidth: 1))
+        .fixedSize()
+    }
+}
+
+private struct PlannerLegPill: View {
     let leg: PlannedJourney.Leg
     @ObservedObject private var config = ServerConfigStore.shared
     var body: some View {
-        let branding = OperatorBrandingResolver.resolve(name: leg.operator, code: leg.operator, in: config.operatorBranding)
-        Label {
-            Text(branding?.name ?? leg.operator ?? "Train service").foregroundStyle(Color.primary)
-        } icon: {
-            Image(systemName: leg.mode == "replacementBus" ? "bus" : "tram")
-                .foregroundStyle(branding?.color ?? .secondary)
-        }
-        .font(.caption)
+        let branding = leg.isTubeTransfer
+            ? OperatorBranding(name: "Tube", operatorCodes: [], aliases: [], colorHex: "#FFFFFF")
+            : OperatorBrandingResolver.resolve(name: leg.operator, code: leg.operator, in: config.operatorBranding)
+                ?? OperatorBranding(name: leg.operator ?? "Train service", operatorCodes: [], aliases: [], colorHex: "#666666")
+        PlannerTransportPill(branding: branding, showsRoundel: leg.isTubeTransfer)
     }
 }
 
@@ -452,43 +718,82 @@ private struct PlannerJourneyDetailView: View {
         List {
             if let response {
                 Section {
-                    Label("Scheduled times only", systemImage: "calendar")
-                    Text("Live delays and cancellations are not included. All times are UK time.").font(.caption)
+                    Text("Summary").font(.headline)
+                    PlannerLiveContextView(live: response.live)
                     PlannerJourneySummary(journey: response.journey)
-                    PlannerDatasetView(dataset: response.dataset)
+                        .accessibilityIdentifier("planner.detail.summary")
+                    ForEach(Array(PlannerLivePresentation.warnings(for: response.journey).dropFirst(2)), id: \.self) { warning in
+                        Text(warning).font(.caption)
+                    }
                 }
                 ForEach(Array(response.journey.legs.enumerated()), id: \.offset) { index, leg in
-                    Section("\(index + 1). \(leg.kind == "transfer" ? transferTitle(leg.mode) : "Travel")") {
-                        if leg.kind == "vehicle" { PlannerOperatorLabel(leg: leg) }
-                        Text("\(leg.from.name) → \(leg.to.name)").font(.headline)
-                        LabeledContent("Depart", value: PlannerTime.display(leg.departure))
-                        LabeledContent("Arrive", value: PlannerTime.display(leg.arrival))
-                        if let transfer = leg.transfer {
-                            if let interchange = transfer.interchangeMinutes {
-                                Text("Allow at least \(PlannerTime.minutes(interchange)) to change trains.")
+                    Section {
+                        if leg.isTrainChange {
+                            Text("Allow at least \(PlannerTime.minutes(leg.transfer?.interchangeMinutes ?? leg.arrival.timeIntervalSince(leg.departure) / 60)) to change trains.")
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            if leg.kind == "vehicle" || leg.isTubeTransfer { PlannerLegPill(leg: leg) }
+                            let includeDate = !PlannerTime.calendar.isDate(leg.departure, inSameDayAs: leg.arrival)
+                            if let live = leg.live { PlannerLiveBadge(live: live) }
+                            LabeledContent("Depart from \(leg.from.name)") {
+                                PlannerEventTimeView(time: leg.departure, scheduled: leg.scheduledDeparture,
+                                    expected: leg.live?.departure, cancelled: leg.live?.isCancelled == true, includeDate: includeDate)
                             }
-                            if let exit = transfer.exitMinutes, let travel = transfer.travelMinutes, let entry = transfer.entryMinutes {
-                                Text("Allow \(PlannerTime.minutes(exit)) to leave, \(PlannerTime.minutes(travel)) for the transfer and \(PlannerTime.minutes(entry)) before boarding.")
+                            LabeledContent("Arrive at \(leg.to.name)") {
+                                PlannerEventTimeView(time: leg.arrival, scheduled: leg.scheduledArrival,
+                                    expected: leg.live?.arrival, cancelled: leg.live?.isCancelled == true, includeDate: includeDate)
                             }
-                            if let extra = transfer.extraMinutes, extra > 0 { Text("Extra connection time: \(PlannerTime.minutes(extra)).") }
-                            if let waiting = transfer.waitingMinutes, waiting > 0 { Text("Waiting time: \(PlannerTime.minutes(waiting)).") }
-                            if leg.mode != "walk" && leg.mode != "interchange" {
-                                Text("A supplied connecting transfer. Specific departures and intermediate stops are not provided.")
-                                    .font(.caption).foregroundStyle(Color.plannerSecondaryText)
-                            }
-                        }
-                        if let points = leg.callingPoints, !points.isEmpty {
-                            DisclosureGroup("Calling points") {
-                                ForEach(Array(points.enumerated()), id: \.offset) { _, point in
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(point.station.name)
-                                        if let arrival = point.arrival { Text("Arrive \(PlannerTime.display(arrival))").font(.caption).foregroundStyle(Color.plannerSecondaryText) }
-                                        if let departure = point.departure { Text("Depart \(PlannerTime.display(departure))").font(.caption).foregroundStyle(Color.plannerSecondaryText) }
+                            if let points = leg.callingPoints, !points.isEmpty {
+                                DisclosureGroup("Calling points") {
+                                    ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                                        VStack(alignment: .leading, spacing: 5) {
+                                            Text(point.station.name)
+                                                .foregroundStyle(point.live?.isCancelled == true ? Color.red : Color.primary)
+                                                .strikethrough(point.live?.isCancelled == true, color: .red)
+                                            if let live = point.live { PlannerLiveBadge(live: live) }
+                                            if let arrival = point.arrival ?? point.scheduledArrival {
+                                                LabeledContent(point.arrival == nil ? "Scheduled arrival" : "Arrive") {
+                                                    PlannerEventTimeView(time: arrival, scheduled: point.scheduledArrival,
+                                                        expected: point.live?.arrival, cancelled: point.live?.isCancelled == true, includeDate: includeDate)
+                                                }
+                                            }
+                                            if let departure = point.departure ?? point.scheduledDeparture {
+                                                LabeledContent(point.departure == nil ? "Scheduled departure" : "Depart") {
+                                                    PlannerEventTimeView(time: departure, scheduled: point.scheduledDeparture,
+                                                        expected: point.live?.departure, cancelled: point.live?.isCancelled == true, includeDate: includeDate)
+                                                }
+                                            }
+                                            ForEach(PlannerLivePresentation.unique(point.live?.warnings ?? []), id: \.self) { Text($0).font(.caption) }
+                                        }
+                                        .accessibilityElement(children: .combine)
+                                        .accessibilityIdentifier("planner.calling-point.\(point.station.crs)")
                                     }
                                 }
+                                .accessibilityIdentifier("planner.calling-points.\(index)")
                             }
+                            if let transfer = leg.transfer {
+                                if let exit = transfer.exitMinutes, let travel = transfer.travelMinutes, let entry = transfer.entryMinutes {
+                                    Text("Allow \(PlannerTime.minutes(exit)) to leave, \(PlannerTime.minutes(travel)) for the transfer and \(PlannerTime.minutes(entry)) before boarding.")
+                                }
+                                if let extra = transfer.extraMinutes, extra > 0 { Text("Extra connection time: \(PlannerTime.minutes(extra)).") }
+                                if let waiting = transfer.waitingMinutes, waiting > 0 { Text("Waiting time: \(PlannerTime.minutes(waiting)).") }
+                                if leg.mode != "walk" && leg.mode != "interchange" {
+                                    Text("A supplied connecting transfer. Specific departures and intermediate stops are not provided.")
+                                        .font(.caption).foregroundStyle(Color.plannerSecondaryText)
+                                }
+                            }
+                            NavigationLink {
+                                PlannerJourneyRouteMapView(journey: response.journey, selectedLegIndex: index)
+                            } label: {
+                                Label("Route map", systemImage: "map")
+                            }
+                            .accessibilityIdentifier("planner.route-map.\(index)")
+                            ForEach(PlannerLivePresentation.visibleWarnings((leg.warnings ?? []) + (leg.live?.warnings ?? [])), id: \.self) { Text($0).font(.caption).foregroundStyle(Color.primary) }
                         }
-                        ForEach(leg.warnings ?? [], id: \.self) { Text($0).font(.caption).foregroundStyle(Color.primary) }
+                    } header: {
+                        Text("\(index + 1). \(leg.heading)")
+                            .textCase(nil)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             } else if let error {
@@ -512,16 +817,6 @@ private struct PlannerJourneyDetailView: View {
                 guard !Task.isCancelled else { return }
                 self.error = error.localizedDescription
             }
-        }
-    }
-
-    private func transferTitle(_ mode: String) -> String {
-        switch mode {
-        case "interchange": "Change trains"
-        case "walk": "Walk between stations"
-        case "tubeTransfer", "tube": "Tube transfer"
-        case "bus", "replacementBus": "Bus transfer"
-        default: "Connecting transfer"
         }
     }
 }

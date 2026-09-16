@@ -1,5 +1,6 @@
 import { createConnectionIndex, resolveConnection, validateFixedLink, CONNECTION_POLICY } from './connections.js';
 import { MAX_CHANGES, DEFAULT_WINDOW_MINUTES } from './contract.js';
+import { liveCall, liveLeg } from './live-network.js';
 
 const MINUTE = 60_000;
 const indexes = new WeakMap();
@@ -16,6 +17,46 @@ function add(map, key, item) {
  */
 export function prepareNetwork(network, check = () => {}) {
     if (indexes.has(network)) return indexes.get(network);
+    if (network.baseNetwork && network.changedServiceIds instanceof Set) {
+        const base = prepareNetwork(network.baseNetwork, check);
+        const changed = network.changedServiceIds;
+        const services = new Map(base.services);
+        const affected = new Set();
+        for (const id of changed) {
+            check();
+            for (const call of services.get(id)?.calls || []) if (call.station) affected.add(call.station);
+            services.delete(id);
+        }
+        const addedDepartures = new Map();
+        const addedArrivals = new Map();
+        for (const service of network.services) {
+            check();
+            if (!changed.has(service.id) && !changed.has(service.scheduledServiceId)) continue;
+            services.set(service.id, service);
+            service.calls.forEach((call, index) => {
+                if (index % 128 === 0) check();
+                if (!call.station) return;
+                affected.add(call.station);
+                if (call.canBoard && Number.isFinite(call.departure)) add(addedDepartures, call.station, { service, index, time: call.departure });
+                if (call.canAlight && Number.isFinite(call.arrival)) add(addedArrivals, call.station, { service, index, time: call.arrival });
+            });
+        }
+        const copyEvents = (original, additions) => {
+            const copied = new Map(original);
+            for (const station of affected) {
+                check();
+                const values = (original.get(station) || []).filter(event => !changed.has(event.service.id));
+                values.push(...(additions.get(station) || []));
+                values.sort((a, b) => a.time - b.time || String(a.service.id).localeCompare(String(b.service.id)) || a.index - b.index);
+                copied.set(station, values);
+            }
+            return copied;
+        };
+        const prepared = { connections: base.connections, services, potentials: new Map(),
+            departures: copyEvents(base.departures, addedDepartures), arrivals: copyEvents(base.arrivals, addedArrivals) };
+        indexes.set(network, prepared);
+        return prepared;
+    }
     const connections = createConnectionIndex(network);
     const departures = new Map();
     const arrivals = new Map();
@@ -77,13 +118,15 @@ function vehicleLeg(index, raw) {
         platform: from.platform ?? null,
         boardIndex: raw.boardIndex, alightIndex: raw.alightIndex,
         sourceRef: service.sourceRef,
+        ...liveLeg(service, raw.boardIndex, raw.alightIndex),
         callingPoints: service.calls.slice(raw.boardIndex, raw.alightIndex + 1)
-            .filter(call => call.station && (call.canBoard || call.canAlight))
+            .filter(call => call.station && (call.canBoard || call.canAlight || call.plannerLive))
             .map(call => ({
                 station: station(index, call.station), sequence: call.sequence,
                 arrival: Number.isFinite(call.arrival) ? new Date(call.arrival).toISOString() : null,
                 departure: Number.isFinite(call.departure) ? new Date(call.departure).toISOString() : null,
-                canBoard: call.canBoard, canAlight: call.canAlight, platform: call.platform ?? null
+                canBoard: call.canBoard, canAlight: call.canAlight, platform: call.platform ?? null,
+                ...liveCall(service, call)
             }))
     };
 }

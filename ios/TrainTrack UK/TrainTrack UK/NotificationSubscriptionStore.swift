@@ -364,6 +364,7 @@ final class NotificationSubscriptionStore: ObservableObject {
         )
         hasLoadedRemoteState = true
         let enabledLegs = subscription.legs.filter(\.enabled)
+        JourneyTrackingCoordinator.shared.pruneCompletedScheduledCandidates()
         let alreadyArmedFromSchedule = historySource == .scheduled
             && JourneyTrackingCoordinator.shared.armedCandidates.contains { candidate in
                 guard candidate.source == .scheduled else { return false }
@@ -554,6 +555,7 @@ final class NotificationSubscriptionStore: ObservableObject {
             + resolvedActivation.legs.map { $0.to.uppercased() }
 
         let coordinator = JourneyTrackingCoordinator.shared
+        coordinator.pruneCompletedScheduledCandidates()
         guard !ScheduledLiveActivityAutoStartManager.shared.shouldSkipForAdHocJourney(
             leg: resolvedActivation.legs[0], now: now
         ) else { return false }

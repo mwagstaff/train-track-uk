@@ -73,6 +73,8 @@ final class JourneyTrackingService {
             "use_sandbox": Self.usesSandbox
         ])
         var request = URLRequest(url: url)
+        // Registration is optional enrichment during a short location wake.
+        request.timeoutInterval = 8
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(DeviceIdentity.deviceToken, forHTTPHeaderField: "X-Device-Token")
@@ -138,6 +140,7 @@ final class JourneyTrackingService {
             return
         }
         var request = URLRequest(url: url)
+        request.timeoutInterval = 8
         request.httpMethod = "DELETE"
         request.setValue(DeviceIdentity.deviceToken, forHTTPHeaderField: "X-Device-Token")
         do {
