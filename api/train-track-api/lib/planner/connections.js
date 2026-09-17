@@ -8,14 +8,36 @@
 export const CONNECTION_POLICY = 'alf-pairs-full-traversal-inclusive-boundaries-v2';
 const MINUTE = 60_000;
 const DAY = 86_400_000;
-const clock = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
-});
+// Europe/London since 1996: BST runs from 01:00 UTC on the last Sunday of March
+// to 01:00 UTC on the last Sunday of October. Routing resolves this clock for
+// every fixed-link check, so integer arithmetic replaces Intl formatting here.
+const summerTime = new Map();
+const dayNames = new Map();
+
+function summerTimeBounds(year) {
+    let bounds = summerTime.get(year);
+    if (!bounds) {
+        const lastSunday = month => {
+            const last = new Date(Date.UTC(year, month + 1, 0));
+            return Date.UTC(year, month, last.getUTCDate() - last.getUTCDay(), 1);
+        };
+        bounds = [lastSunday(2), lastSunday(9)];
+        summerTime.set(year, bounds);
+    }
+    return bounds;
+}
 
 function localParts(time) {
-    const parts = Object.fromEntries(clock.formatToParts(time).map(p => [p.type, p.value]));
-    return { date: `${parts.year}-${parts.month}-${parts.day}`, minute: Number(parts.hour) * 60 + Number(parts.minute), second: Number(parts.second) };
+    const [start, end] = summerTimeBounds(new Date(time).getUTCFullYear());
+    const local = time + (time >= start && time < end ? 3_600_000 : 0);
+    const day = Math.floor(local / DAY);
+    let date = dayNames.get(day);
+    if (!date) {
+        date = new Date(day * DAY).toISOString().slice(0, 10);
+        dayNames.set(day, date);
+    }
+    const ofDay = local - day * DAY;
+    return { date, minute: Math.floor(ofDay / MINUTE), second: Math.floor((ofDay % MINUTE) / 1000) };
 }
 
 function dateShift(date, days) {

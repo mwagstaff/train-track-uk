@@ -471,7 +471,21 @@ export function findJourneys(request, network, options = {}) {
     const remainingBoardings = boardingBounds(index, target, reverse, allowedModes, maxBoardings, check);
     const needsProfileBounds = (remainingBoardings.get(reverse ? request.destination : request.origin) ?? Infinity) > 2;
     const globalHorizon = reverse ? from - maxDuration : to + maxDuration;
-    const timeBoundCache = new Map();
+    // Temporal bounds depend only on the index, target, direction, modes and
+    // boarding budget, so repeated searches (live re-routing, paging, nearby
+    // times) share them across calls instead of rescanning the national index.
+    index.temporal ??= new Map();
+    const temporalKey = `${target}|${reverse}|${[...allowedModes].sort()}|${maxBoardings}`;
+    const timeBoundCache = index.temporal.get(temporalKey) ?? new Map();
+    index.temporal.delete(temporalKey);
+    index.temporal.set(temporalKey, timeBoundCache);
+    if (index.temporal.size > 8) index.temporal.delete(index.temporal.keys().next().value);
+    if (!timeBoundCache.has(globalHorizon)) {
+        // The shared cache may already hold other searches' horizons; this
+        // search's global envelope must exist before any fallback below.
+        if (timeBoundCache.size >= 8) timeBoundCache.delete(timeBoundCache.keys().next().value);
+        timeBoundCache.set(globalHorizon, temporalBounds(index, target, reverse, allowedModes, maxBoardings, globalHorizon, check));
+    }
     const reachableTimes = horizon => {
         // Frequent local arrivals already give tight cheap finish bounds. Rebuilding
         // a national timetable envelope for each one costs more than it can prune.

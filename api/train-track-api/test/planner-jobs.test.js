@@ -41,7 +41,7 @@ test('queued jobs return immediately, pin versions and give processing its own e
     assert.equal(calls.length, 1);
     assert.equal(calls[0].payload.version, version);
     assert.deepEqual(calls[0].payload.request, normalizeRequest(request));
-    assert.deepEqual(calls[0].options.execution, { timeoutMs: 600000, maxOperations: 1000000000, cpuDutyCycle: 0.5 });
+    assert.deepEqual(calls[0].options.execution, { timeoutMs: 600000, maxOperations: 1000000000, cpuDutyCycle: 1 });
     calls[0].options.onProgress({ phase: 'preparing' });
     assert.equal(jobs.get(first.id).phase, 'preparing');
     const result = { journeys: [{ id: 'journey' }] };

@@ -27,8 +27,13 @@ export function plannerConfig(env = process.env) {
         jobTimeoutMs: number('PLANNER_JOB_TIMEOUT_MS', 600000, 1000, 900000),
         jobQueueTimeoutMs: number('PLANNER_JOB_QUEUE_TIMEOUT_MS', 480000, 1000, 900000),
         jobMaxOperations: number('PLANNER_JOB_MAX_OPERATIONS', 1000000000, 1000, 2000000000),
-        jobCpuDutyCycle: number('PLANNER_JOB_CPU_DUTY_CYCLE', 0.5, 0.1, 1),
-        maxSearchJobs: number('PLANNER_MAX_SEARCH_JOBS', 8, 1, 32)
+        // The routing worker is its own thread; Express is not blocked by it.
+        // Throttle only when the host must reserve CPU for other services.
+        jobCpuDutyCycle: number('PLANNER_JOB_CPU_DUTY_CYCLE', 1, 0.1, 1),
+        maxSearchJobs: number('PLANNER_MAX_SEARCH_JOBS', 8, 1, 32),
+        // Resolve the current dates and build the national index before the
+        // first search of the day asks for them.
+        prewarm: env.PLANNER_PREWARM !== 'false'
     };
 }
 
@@ -50,7 +55,7 @@ export class PlannerService {
 
     metadata() {
         if (!this.metadataService) this.metadataService = new PlannerService({ ...this.config,
-            timeoutMs: 5000, maxQueue: 16, maxOldGenerationSizeMb: 256
+            timeoutMs: 5000, maxQueue: 16, maxOldGenerationSizeMb: 256, prewarm: false
         }, { metadataOnly: true });
         return this.metadataService;
     }

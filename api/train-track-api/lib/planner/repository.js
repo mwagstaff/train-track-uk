@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { prepareSource, inspectPreparedSource } from './source.js';
 import { readLines, parseStation, parseInterchange, parseFixedLink, parseTimetable, PARSER_VERSION } from './parser.js';
-import { makeDiagnostics, recordDiagnostic, resolveServices, selectVariant, runsOn } from './calendar.js';
+import { makeDiagnostics, recordDiagnostic, resolveServices, selectVariant, runsOn, weekdayIndex } from './calendar.js';
 import { addDays } from './time.js';
 
 export { inspectSource } from './source.js';
@@ -254,14 +254,28 @@ export async function openDataset(datasetPath) {
   const stationByTiploc = new Map(db.prepare('SELECT data FROM timing_locations').all().map(row => { const value = JSON.parse(row.data); return [value.tiploc, value]; }));
   const rules = { tsi: [], links: [] };
   for (const row of db.prepare('SELECT kind,data FROM rules').all()) rules[row.kind === 'TSI' ? 'tsi' : 'links'].push(JSON.parse(row.data));
+  // The weekday filter lets SQLite drop non-running variants before any JS work;
+  // runsOn still applies the complete calendar rule to every returned row.
   const candidates = db.prepare(`SELECT variant_id variantId, source, uid, start_date startDate, end_date endDate,
-    days,stp,operator,mode,excluded_reason excludedReason,line FROM variants WHERE start_date<=? AND end_date>=?`);
+    days,stp,operator,mode,excluded_reason excludedReason,line FROM variants WHERE start_date<=? AND end_date>=? AND substr(days,?,1)='1'`);
+  const dateCandidates = date => candidates.all(date, date, weekdayIndex(date) + 1);
   const variant = db.prepare('SELECT calls,data FROM variants WHERE variant_id=?');
+  const VARIANT_BATCH = 500;
+  const variantBatch = db.prepare(`SELECT variant_id variantId, calls FROM variants WHERE variant_id IN (${Array(VARIANT_BATCH).fill('?').join(',')})`);
+  const readVariantCalls = ids => {
+    const calls = new Map();
+    for (let offset = 0; offset < ids.length; offset += VARIANT_BATCH) {
+      const chunk = ids.slice(offset, offset + VARIANT_BATCH);
+      while (chunk.length < VARIANT_BATCH) chunk.push(null);
+      for (const row of variantBatch.all(...chunk)) calls.set(row.variantId, row.calls);
+    }
+    return calls;
+  };
   const repository = { version: metadata.version, path, metadata, stations: allStations.filter(station => station.selectable), allStations, stationByTiploc, rules,
-    dateCandidates: date => candidates.all(date, date), readVariant: id => variant.get(id),
+    dateCandidates, readVariant: id => variant.get(id), readVariantCalls,
     resolveServices: (date, options) => resolveServices(repository, date, options),
     resolveServiceExplanation: (uid, date, source = 'MCA') => {
-      const rows = candidates.all(date, date).filter(row => row.uid === uid && row.source === source);
+      const rows = dateCandidates(date).filter(row => row.uid === uid && row.source === source);
       const decision = selectVariant(rows, date);
       return { version: metadata.version, source, uid, originDate: date, reason: decision.reason,
         selectedVariantId: decision.selected?.variantId ?? null,

@@ -183,7 +183,7 @@ Poll the returned ID using `pollAfterMs` (currently 1000). Queued states include
 - At most **eight distinct searches** are admitted, including running work, with **one computing search at a time**. A client can hold two active jobs and a network address four. Additional submissions receive 429; the app retries briefly with backoff. The limits and bounded result store apply even when clients rotate their installation identifiers.
 - Identical pending requests, including the pinned timetable version, share computation. Each caller gets an independent job ID: cancelling one leaves the others running. Initial searches pin the active dataset at admission; pagination retains its original version.
 - Accepted work can wait up to **eight minutes**, then compute for up to **ten minutes** with a separate one-billion-operation ceiling. These finite bounds protect the server against pathological searches. They do not narrow the requested route/date/transfer scope.
-- Queued searches target **50% of one worker's CPU time** using cooperative pauses. This is not an OS-enforced CPU or memory limit: a native SQLite call or an individual decode finishes before its next checkpoint. Node 24 measures worker CPU time; older supported runtimes use elapsed time as a fallback. Legacy synchronous requests retain their existing limits and are not duty-cycle throttled.
+- Queued searches run at full worker speed by default. Set `PLANNER_JOB_CPU_DUTY_CYCLE` below 1 (for example `0.5`) to throttle the routing worker with cooperative pauses on a host that must reserve CPU for other services. This is not an OS-enforced CPU or memory limit: a native SQLite call or an individual decode finishes before its next checkpoint. Node 24 measures worker CPU time; older supported runtimes use elapsed time as a fallback. Legacy synchronous requests retain their existing limits and are not duty-cycle throttled.
 - Station lookups/readiness use a separate worker with a 256 MB V8 heap limit and five-second deadline. Recently returned journey details use a bounded parent cache and version checks in that worker, so routing does not hold them up.
 - Polling keeps an active caller's job alive. After **two minutes without polling**, its interest expires; work stops when no callers remain. Completed/cancelled results are retained for up to ten minutes, with at most 128 caller records. Jobs live in memory and do not survive an API restart.
 
@@ -209,7 +209,8 @@ Rebuild the app to enable this flow. The existing `/search` endpoint, v1/v2 rout
 | `PLANNER_JOB_QUEUE_TIMEOUT_MS` | 480000 before processing starts |
 | `PLANNER_JOB_TIMEOUT_MS` | 600000 processing time |
 | `PLANNER_JOB_MAX_OPERATIONS` | 1000000000 |
-| `PLANNER_JOB_CPU_DUTY_CYCLE` | 0.5 |
+| `PLANNER_JOB_CPU_DUTY_CYCLE` | 1 (no throttling) |
+| `PLANNER_PREWARM` | `true`: the routing worker resolves today's dates and builds the national index shortly after start and after each London date or timetable change |
 
 The source generation date determines freshness; reimporting old data does not make it fresh. The 35/45-day thresholds are explicit prototype assumptions for the proposed monthly feed and need an operational decision before production. Search/cache keys include the exact instant, options, policy and version. Public metadata is refreshed even for cached results.
 

@@ -260,6 +260,19 @@ Verification:
 - The largest Dynamic Type size in dark mode passed the focused queue screen scenario and text-clipping/touch-target audits: `/tmp/traintrack-route-progress-large-ui.xcresult`. Normal and large-text screenshots were visually inspected. The temporary fixture and dedicated simulator were stopped after verification.
 - Read-only production inspection found the API active with no service restarts since its current start and no matching planner-worker failures in the preceding hour's journal. No production code, configuration or process was changed during this investigation.
 
+## Search speed-up, tier 1 — 17 September 2026
+
+Profiling the routing worker against the RJTTF939 snapshot showed that most search time was spent outside the search itself: `Intl.DateTimeFormat` clock resolution during fixed-link checks (38% of routing CPU on long-distance searches), national reachability bounds rebuilt on every routing call (a further 18–28%, repeated for each live re-route), and per-date timetable resolution that filtered weekday calendars in JavaScript and read each selected schedule with its own SQLite lookup. The queued search path used by the app also ran at a 50% CPU duty cycle.
+
+- The Europe/London clock used by fixed-link windows is now a table of BST boundaries with integer arithmetic. It was checked against `Intl` on 4.3 million instants between 2000 and 2099, including second-by-second sweeps of every clock change, with no differences.
+- Temporal reachability bounds are cached on the prepared national index, keyed by target, direction, modes and boarding budget, so repeated routing (paging, nearby times, live re-routing) reuses them. The search's own global envelope is always present before the existing bounded-cache fallback.
+- Date resolution filters running weekdays in SQLite, caches the weekday per date, and reads the selected schedules' calls in batches of 500.
+- The queued-search CPU duty cycle defaults to 1; `PLANNER_JOB_CPU_DUTY_CYCLE` still accepts a lower value.
+- Dates adjacent to a newly prepared range are retained, so alternating today/tomorrow searches no longer re-resolve a date each time.
+- The routing worker pre-warms today's dates and national index shortly after start and again when the London date or active timetable changes (`PLANNER_PREWARM=false` disables it). It skips warming when fewer than 300 MB of heap headroom remain or while a request is active.
+
+Eight local unthrottled cases (M5 Pro, cold worker, no pre-warm) fell from 17.6 to 10.7 seconds in total; for example KTH–VIC 2.69 → 1.58 s, BHM–EDB arrive-by 2.50 → 1.20 s, VIC–BTN late-evening 3.31 → 1.68 s, KTH–INV 16:00 1.40 → 0.89 s. Full journey payloads, pagination and warnings for these and the twelve repository benchmark cases are byte-identical at both the five-journey page and the complete frontier. With pre-warming, the first Depart-now KTH–VIC search after worker start took 0.35 seconds instead of 1.76. All 235 planner tests pass, including the full-dataset regressions. No routing policy or cursor version changed.
+
 ## Baseline and remaining external inputs
 
 Two pre-existing tests time out: `device-data-deletion.test.js` (“a notification save already in flight…”) and `live-session-origin.test.js` (“station exit retires every live session…”). Both were reproduced without planner changes using `git archive HEAD` in an isolated temporary checkout. The first fixture waits for a callback after saving an unregistered fake subscription; the second reaches existing Mongo-dependent live-session cleanup. They remain unchanged. Baseline and final logs are `/tmp/traintrack-original-baseline.log` and `/tmp/traintrack-final-backend-tests.log`.

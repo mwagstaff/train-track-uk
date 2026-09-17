@@ -1,8 +1,21 @@
 import { dateOnly, resolveCallTimes } from './time.js';
 
+const weekdays = new Map();
+
+/** Monday is 0. Every candidate row of a date consults this, so cache it. */
+export function weekdayIndex(date) {
+  let weekday = weekdays.get(date);
+  if (weekday === undefined) {
+    dateOnly(date);
+    weekday = (new Date(`${date}T12:00:00Z`).getUTCDay() + 6) % 7;
+    if (weekdays.size >= 64) weekdays.clear();
+    weekdays.set(date, weekday);
+  }
+  return weekday;
+}
+
 export function runsOn(variant, date) {
-  dateOnly(date);
-  const weekday = (new Date(`${date}T12:00:00Z`).getUTCDay() + 6) % 7;
+  const weekday = weekdayIndex(date);
   return variant.startDate <= date && variant.endDate >= date && variant.days[weekday] === '1';
 }
 
@@ -41,8 +54,16 @@ export function decodeCalls(rows, stationByTiploc) {
     tiploc: row[0], suffix: row[1], sequence, station: stationByTiploc.get(row[0])?.crs ?? null,
     arrivalSeconds: row[2], departureSeconds: row[3], workArrival: row[4], workDeparture: row[5], workPass: row[6],
     publicArrival: row[7], publicDeparture: row[8], activity: row[9], platform: row[10] || undefined,
-    canAlight: row[2] !== null, canBoard: row[3] !== null, sourceLine: row[11], requestStop: row[9].match(/.{2}/g)?.some(code => code.trim() === 'R') ?? false,
+    canAlight: row[2] !== null, canBoard: row[3] !== null, sourceLine: row[11], requestStop: hasRequestStop(row[9]),
   }));
+}
+
+// Activity codes are two-character fields; a lone R marks a request stop.
+function hasRequestStop(activity) {
+  for (let index = 0; index + 1 < activity.length; index += 2) {
+    if (activity.slice(index, index + 2).trim() === 'R') return true;
+  }
+  return false;
 }
 
 export function resolveServices(repository, originDate, { summaryOnly = false, signal } = {}) {
@@ -64,6 +85,7 @@ export function resolveServices(repository, originDate, { summaryOnly = false, s
   }
   const services = [], diagnostics = makeDiagnostics();
   const summary = { serviceCount: 0, operatorCounts: {}, stationCount: 0 }, stations = new Set();
+  const selected = [];
   for (const group of groups.values()) {
     // Outside the per-service catch: cancellation/deadline errors must not be
     // misreported as an unsupported timetable record or cached as partial data.
@@ -78,9 +100,17 @@ export function resolveServices(repository, originDate, { summaryOnly = false, s
       recordDiagnostic(diagnostics, variant.excludedReason, { uid: variant.uid, variantId: variant.variantId });
       continue;
     }
+    selected.push({ variant, decision });
+  }
+  check();
+  // One batched read per date instead of a point lookup per selected service.
+  const storedCalls = repository.readVariantCalls
+    ? repository.readVariantCalls(selected.map(({ variant }) => variant.variantId))
+    : new Map(selected.map(({ variant }) => [variant.variantId, repository.readVariant(variant.variantId).calls]));
+  for (const { variant, decision } of selected) {
+    check();
     try {
-      const stored = repository.readVariant(variant.variantId);
-      const calls = resolveCallTimes(decodeCalls(JSON.parse(stored.calls), repository.stationByTiploc), originDate)
+      const calls = resolveCallTimes(decodeCalls(JSON.parse(storedCalls.get(variant.variantId)), repository.stationByTiploc), originDate)
         .filter(call => call.station && (call.canBoard || call.canAlight));
       if (calls.length < 2) { recordDiagnostic(diagnostics, 'INSUFFICIENT_PASSENGER_CALLS', { uid: variant.uid }); continue; }
       if (summaryOnly) {

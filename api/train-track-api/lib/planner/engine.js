@@ -176,9 +176,13 @@ export class PlannerEngine {
         // One hot national index. Release the previous index before preparing another
         // date range, otherwise alternating dates can temporarily retain three indexes.
         this.networks.clear();
+        // Keep dates adjacent to the new range: today/tomorrow searches alternate
+        // between ranges that differ by one date and would otherwise re-resolve it.
+        const keepFrom = addDays(firstDate, -1);
+        const keepTo = addDays(lastDate, 1);
         for (const dateKey of this.dates.keys()) {
             const date = dateKey.slice(-10);
-            if (!dateKey.startsWith(`${repo.version}:`) || date < firstDate || date > lastDate) this.dates.delete(dateKey);
+            if (!dateKey.startsWith(`${repo.version}:`) || date < keepFrom || date > keepTo) this.dates.delete(dateKey);
         }
         const services = [];
         const diagnostics = { counts: {}, examples: [] };

@@ -1,9 +1,16 @@
 import { parentPort, workerData } from 'node:worker_threads';
+import { getHeapStatistics } from 'node:v8';
 import { PlannerEngine } from './engine.js';
-import { PlannerError } from './contract.js';
+import { PlannerError, normalizeRequest } from './contract.js';
 import { createCooperativeSignal } from './execution.js';
+import { londonDate } from './time.js';
+
+const PREWARM_DELAY_MS = 2000;
+const PREWARM_CHECK_MS = 60000;
+const PREWARM_MIN_HEAP_HEADROOM = 300 * 1024 * 1024;
 
 const engine = new PlannerEngine(workerData);
+let busy = false;
 parentPort.on('message', async ({ id, method, payload, cancelBuffer, execution }) => {
     // Network requests must also stop while the worker is awaiting live data.
     // Graph work continues to use the existing synchronous cooperative signal.
@@ -13,6 +20,7 @@ parentPort.on('message', async ({ id, method, payload, cancelBuffer, execution }
         if (Atomics.load(cancellation, 0)) networkController.abort();
     }, 50);
     cancellationTimer.unref();
+    busy = true;
     try {
         const signal = createCooperativeSignal(cancelBuffer, {
             timeoutMs: execution?.timeoutMs ?? workerData.timeoutMs,
@@ -45,5 +53,38 @@ parentPort.on('message', async ({ id, method, payload, cancelBuffer, execution }
             message: known ? error.message : 'Journey planning is temporarily unavailable.',
             status: known ? error.status : 503
         } });
-    } finally { clearInterval(cancellationTimer); }
+    } finally { busy = false; clearInterval(cancellationTimer); }
 });
+
+// The first search of a day otherwise pays for resolving its dates and building
+// the national index. Warm today's default range once the worker is idle, and
+// again when the London date or the active timetable changes.
+let warmed = null;
+async function prewarm() {
+    if (busy) return;
+    const today = londonDate(engine.now());
+    let repo;
+    try { repo = await engine.dataset(); } catch { return; }
+    if (warmed?.date === today && warmed.version === repo.version) return;
+    const stats = getHeapStatistics();
+    if (stats.heap_size_limit - stats.used_heap_size < PREWARM_MIN_HEAP_HEADROOM) return;
+    const [origin, destination] = repo.stations;
+    if (!origin || !destination) return;
+    try {
+        const query = time => engine.checkQuery(repo, normalizeRequest({ origin: origin.crs, destination: destination.crs,
+            time: new Date(time).toISOString(), timeType: 'departAfter' }));
+        // A late-evening query spans the widest range (yesterday to the day after
+        // tomorrow): resolving it caches every date today's and tomorrow's
+        // searches can need. Then build the index for a daytime search.
+        await engine.network(repo, query(Date.parse(`${today}T22:00:00Z`)));
+        const network = await engine.network(repo, query(Date.parse(`${today}T12:00:00Z`)));
+        (await import('./router.js')).prepareNetwork(network);
+        warmed = { date: today, version: repo.version };
+    } catch (error) {
+        if (!(error instanceof PlannerError)) console.error('[planner] pre-warm failed', error.message);
+    }
+}
+if (workerData.prewarm) {
+    setTimeout(prewarm, PREWARM_DELAY_MS).unref();
+    setInterval(prewarm, PREWARM_CHECK_MS).unref();
+}
