@@ -70,6 +70,7 @@ DATASET = {
 
 
 JOBS = {}
+ROUTE_REQUESTS = {}
 KEYS = {}
 LOCK = threading.Lock()
 
@@ -270,6 +271,8 @@ class Handler(BaseHTTPRequestHandler):
                 {"name": name, "operator_codes": [code], "aliases": [], "color_hex": color}
                 for name, code, color in [("Southeastern", "SE", "#1B2254"), ("LNER", "GR", "#E5007D"), ("ScotRail", "SR", "#FFFFFF")]
             ]}})
+        elif url.path.startswith(("/saved/", "/saved-legacy/")) and "/departures/from/" in url.path:
+            self.respond(200, {})
         elif url.path.endswith("/status"):
             self.respond(200, {"available": True, "apiVersion": 3, "capabilities": {"timeTypes": ["departAfter", "arriveBy"], "maxChanges": 5}, "dataset": DATASET})
         elif url.path.endswith("/api/v2/stations"):
@@ -282,6 +285,30 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path.endswith("/route-boards"):
+            request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            if path.startswith("/saved-legacy/"):
+                self.respond(404, {})
+                return
+            boards = []
+            with LOCK:
+                for route in request.get("routes", []):
+                    key = (self.headers.get("X-Planner-Client"), route["id"])
+                    ROUTE_REQUESTS[key] = ROUTE_REQUESTS.get(key, 0) + 1
+                    board = {"id": route["id"], "status": "queued", "pollAfterMs": 1000}
+                    if ROUTE_REQUESTS[key] > 1:
+                        result = search_result({}, "details")
+                        result["search"].update(origin=route["origin"], destination=route["destination"], realtime=route.get("realtime"))
+                        journey = result["journeys"][0]
+                        journey["id"] = "saved-" + route["realtime"] + "-" + route["origin"]
+                        if route["origin"] == "INV":
+                            journey["legs"] = [dict(leg, **{"from": leg["to"], "to": leg["from"]}) for leg in reversed(journey["legs"])]
+                        result["live"] = {"mode": route["realtime"], "status": "outsideWindow", "windowHours": 4, "warnings": []}
+                        result["warnings"] = ["Saved route fixture note"]
+                        board.update(status="ready", result=result, pollAfterMs=20000, computedAt=iso(datetime.now(timezone.utc)))
+                    boards.append(board)
+            self.respond(200, {"apiVersion": 3, "boards": boards})
+            return
         if not path.endswith(("/search", "/search-jobs")):
             self.respond(404, {})
             return

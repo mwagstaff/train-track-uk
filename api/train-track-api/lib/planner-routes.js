@@ -2,12 +2,15 @@ import express from 'express';
 import { PlannerService } from './planner/service.js';
 import { API_VERSION, CAPABILITIES, PlannerError } from './planner/contract.js';
 import { PlannerSearchJobs } from './planner/search-jobs.js';
+import { PlannerRouteBoards } from './planner/route-boards.js';
 import { isIP } from 'node:net';
 
-export function registerPlannerRoutes(app, { service = new PlannerService(), recordRequest = () => {}, requestMiddleware } = {}) {
+export function registerPlannerRoutes(app, { service = new PlannerService(), recordRequest = () => {}, requestMiddleware,
+    routeBoards = new PlannerRouteBoards(service) } = {}) {
     const router = express.Router();
     const jobs = new PlannerSearchJobs(service);
     service.searchJobs = jobs;
+    service.routeBoards = routeBoards;
     const observeRequest = operation => (req, res, next) => {
         const started = performance.now();
         let recorded = false;
@@ -73,17 +76,30 @@ export function registerPlannerRoutes(app, { service = new PlannerService(), rec
     router.get('/stations', ...beforeRequest('stations'), handle('stations'));
     router.post('/search', ...beforeRequest('search'), requireJSON, express.json({ limit: '16kb' }), parseError, handle('search'));
     router.get('/journeys/:id', ...beforeRequest('journey'), handle('journey'));
+    const caller = req => {
+        const remote = req.socket.remoteAddress || 'unknown';
+        const forwarded = req.get('CF-Connecting-IP');
+        const network = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote) && isIP(forwarded || '') ? forwarded : remote;
+        const installation = req.get('X-Planner-Client');
+        const client = /^[A-Za-z0-9_-]{8,128}$/.test(installation || '') ? installation : network;
+        return { client, network };
+    };
+    router.post('/route-boards', ...beforeRequest('route-boards'), requireJSON, express.json({ limit: '16kb' }), parseError,
+        async (req, res) => {
+            try { res.json(await routeBoards.get(req.body, caller(req))); }
+            catch (error) {
+                const known = error instanceof PlannerError;
+                const status = known ? error.status : 503;
+                if (status === 429) res.set('Retry-After', '5');
+                res.status(status).json({ error: { code: known ? error.code : 'DATASET_UNAVAILABLE',
+                    message: known ? error.message : 'Saved journey planning is temporarily unavailable.' } });
+            }
+        });
     const jobHandler = method => async (req, res) => {
         try {
             let result;
             if (method === 'submit') {
-                const remote = req.socket.remoteAddress || 'unknown';
-                // Only our local reverse proxy may supply the external client IP.
-                const forwarded = req.get('CF-Connecting-IP');
-                const network = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote) && isIP(forwarded || '') ? forwarded : remote;
-                const installation = req.get('X-Planner-Client');
-                const client = /^[A-Za-z0-9_-]{8,128}$/.test(installation || '') ? installation : network;
-                result = await jobs.submit(req.body, { client, network, idempotencyKey: req.get('Idempotency-Key') });
+                result = await jobs.submit(req.body, { ...caller(req), idempotencyKey: req.get('Idempotency-Key') });
                 res.status(202);
             } else if (method === 'get') result = jobs.get(req.params.id);
             else { jobs.cancel(req.params.id); res.status(204).end(); return; }

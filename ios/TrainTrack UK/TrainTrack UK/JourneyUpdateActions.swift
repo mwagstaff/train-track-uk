@@ -20,9 +20,12 @@ enum JourneyUpdateActions {
         liveActivityDurationMinutes: Int,
         notificationStore: NotificationSubscriptionStore,
         activityManager: LiveActivityManager,
-        departuresStore: DeparturesStore
+        departuresStore: DeparturesStore,
+        preferredServiceID: String? = nil,
+        validatePreferredService: (() -> Bool)? = nil
     ) async -> Bool {
         let allowed = await NotificationAuthorizationManager.ensureAuthorized()
+        guard !Task.isCancelled else { return false }
         guard allowed else {
             let message = "Notifications are disabled in Settings"
             activityManager.lastMessage = message
@@ -36,7 +39,12 @@ enum JourneyUpdateActions {
             ToastStore.shared.show(message, icon: "exclamationmark.triangle.fill")
             return false
         }
+        guard !Task.isCancelled else { return false }
 
+        guard validatePreferredService?() != false else {
+            activityManager.lastMessage = PlannerTrainTracking.unavailable.message
+            return false
+        }
         NotificationGeofenceManager.shared.requestAlwaysAuthorizationIfNeeded()
 
         if liveSession == nil,
@@ -59,11 +67,17 @@ enum JourneyUpdateActions {
             }
         }
 
+        guard validatePreferredService?() != false else {
+            activityManager.lastMessage = PlannerTrainTracking.unavailable.message
+            return false
+        }
         let legsForActivity = Array(group.legs.prefix(3))
         guard await startLiveActivities(
             for: legsForActivity,
             activityManager: activityManager,
-            departuresStore: departuresStore
+            departuresStore: departuresStore,
+            preferredServiceID: preferredServiceID,
+            validatePreferredService: validatePreferredService
         ) else {
             ToastStore.shared.show("Unable to start journey updates", icon: "exclamationmark.triangle.fill")
             return false
@@ -78,11 +92,13 @@ enum JourneyUpdateActions {
                 liveActivityDurationMinutes: liveActivityDurationMinutes
             )
             _ = try await notificationStore.upsertLiveSession(request)
-            await activityManager.setJourneyUpdatesEnabled(
-                for: legsForActivity,
-                enabled: true,
-                depStore: departuresStore
-            )
+            if validatePreferredService == nil {
+                await activityManager.setJourneyUpdatesEnabled(
+                    for: legsForActivity,
+                    enabled: true,
+                    depStore: departuresStore
+                )
+            }
             clearMute(for: group)
             ToastStore.shared.show("Live updates are active for your journey", icon: "dot.radiowaves.left.and.right")
             return true
@@ -106,7 +122,9 @@ enum JourneyUpdateActions {
     private static func startLiveActivities(
         for journeys: [Journey],
         activityManager: LiveActivityManager,
-        departuresStore: DeparturesStore
+        departuresStore: DeparturesStore,
+        preferredServiceID: String?,
+        validatePreferredService: (() -> Bool)?
     ) async -> Bool {
         guard let primaryLeg = journeys.first else { return false }
 
@@ -114,16 +132,23 @@ enum JourneyUpdateActions {
         await stopLiveActivities(for: staleLegs, activityManager: activityManager)
 
         let wasAlreadyActive = activityManager.isActive(for: primaryLeg)
-        if !wasAlreadyActive {
+        if !wasAlreadyActive || preferredServiceID != nil {
             await activityManager.start(
                 for: primaryLeg,
                 depStore: departuresStore,
+                preferredServiceID: preferredServiceID,
                 triggeredByUser: true,
-                bypassSuppression: true
+                bypassSuppression: true,
+                validatePreferredService: validatePreferredService
             )
         }
 
-        let isActive = activityManager.isActive(for: primaryLeg)
+        if Task.isCancelled || validatePreferredService?() == false {
+            if !wasAlreadyActive { await stopLiveActivities(for: [primaryLeg], activityManager: activityManager) }
+            if !Task.isCancelled { activityManager.lastMessage = PlannerTrainTracking.unavailable.message }
+            return false
+        }
+        let isActive = activityManager.isActive(for: primaryLeg, preferredServiceID: preferredServiceID)
         if !isActive && !wasAlreadyActive {
             await stopLiveActivities(for: [primaryLeg], activityManager: activityManager)
         }

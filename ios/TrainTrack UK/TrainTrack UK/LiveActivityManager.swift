@@ -711,8 +711,15 @@ final class LiveActivityManager: ObservableObject {
         journeyUpdatesEnabled: Bool = true,
         scheduleKey: String? = nil,
         windowStart: String? = nil,
-        windowEnd: String? = nil
+        windowEnd: String? = nil,
+        validatePreferredService: (() -> Bool)? = nil
     ) async {
+        func preferredSelectionIsValid() -> Bool {
+            guard let validatePreferredService else { return true }
+            guard let preferredServiceID, validatePreferredService() else { return false }
+            return Self.startingDeparture(preferredServiceID: preferredServiceID,
+                departures: relevantDepartures(from: depStore.departures(for: journey)), requirePreferredService: true) != nil
+        }
         guard triggeredByUser || allowAutomaticStart else {
             debugLog("🚫 [LiveActivity] Start ignored (not user-triggered; auto-starts disabled)")
             return
@@ -722,6 +729,10 @@ final class LiveActivityManager: ObservableObject {
             return
         }
 
+        guard preferredSelectionIsValid() else {
+            lastMessage = PlannerTrainTracking.unavailable.message
+            return
+        }
         await enforceSingleActivity()
         if shouldSkipScheduledStart(scheduleKey: scheduleKey) {
             debugLog("🚫 [LiveActivity] Scheduled start skipped while an ad hoc journey is in progress")
@@ -762,6 +773,38 @@ final class LiveActivityManager: ObservableObject {
                 "No push-to-start Live Activity found for \(journey.fromStation.crs.uppercased())→\(journey.toStation.crs.uppercased()); attempting local Activity request fallback",
                 category: "Scheduled"
             )
+        }
+
+        guard preferredSelectionIsValid() else {
+            lastMessage = PlannerTrainTracking.unavailable.message
+            return
+        }
+
+        // An explicitly verified planner train must never fall back to a different departure.
+        if validatePreferredService != nil, let preferredServiceID,
+           let existingID = activityID(for: journey), var tracked = trackedActivities[existingID] {
+            var state = await contentState(for: journey, depStore: depStore,
+                preferredServiceID: preferredServiceID, journeyUpdatesEnabled: true, requirePreferredService: true)
+            guard !Task.isCancelled, preferredSelectionIsValid() else {
+                lastMessage = PlannerTrainTracking.unavailable.message
+                return
+            }
+            state.journeyPhase = tracked.activity.content.state.journeyPhase
+            tracked.preferredServiceID = preferredServiceID
+            tracked.journeyUpdatesEnabled = true
+            trackedActivities[existingID] = tracked
+            await tracked.activity.update(ActivityContent(state: state, staleDate: nil))
+            JourneyActivityLifecycleStore.update(activityID: existingID, state: state)
+            if let token = tracked.activity.pushToken {
+                let route = routePresentation(for: journey)
+                _ = await sendLiveActivityRegistration(activityID: existingID, tokenString: encodePushToken(token),
+                    fromCRS: journey.fromStation.crs, toCRS: journey.toStation.crs, routeTitle: route.title,
+                    deepLinkFromCRS: route.deepLinkFromCRS, deepLinkToCRS: route.deepLinkToCRS,
+                    preferredServiceID: preferredServiceID, journeyUpdatesEnabled: true,
+                    scheduleKey: tracked.scheduleKey, windowStart: tracked.windowStart, windowEnd: tracked.windowEnd)
+            }
+            lastMessage = nil
+            return
         }
 
         // Check if already tracking this journey. If a preferred service was provided,
@@ -826,13 +869,18 @@ final class LiveActivityManager: ObservableObject {
             journeyUpdatesEnabled: journeyUpdatesEnabled,
             scheduleKey: scheduleKey,
             windowStart: windowStart,
-            windowEnd: windowEnd
+            windowEnd: windowEnd,
+            requirePreferredService: validatePreferredService != nil
         )
         debugLog("🚂 [LiveActivity] Initial state: platform=\(initial.platform), est=\(initial.estimated), dest=\(initial.destinationTitle)")
 
         // Content preparation suspends. Recheck ActivityKit and our local state
         // immediately before requesting so overlapping starts cannot both win.
         guard !Task.isCancelled, canRequestActivity else { return }
+        guard preferredSelectionIsValid() else {
+            lastMessage = PlannerTrainTracking.unavailable.message
+            return
+        }
         if shouldSkipScheduledStart(scheduleKey: scheduleKey) {
             return
         }
@@ -1598,12 +1646,13 @@ final class LiveActivityManager: ObservableObject {
         journeyUpdatesEnabled: Bool = true,
         scheduleKey: String? = nil,
         windowStart: String? = nil,
-        windowEnd: String? = nil
+        windowEnd: String? = nil,
+        requirePreferredService: Bool = false
     ) async -> JourneyActivityAttributes.ContentState {
         let route = routePresentation(for: journey)
         let allDeps = depStore.departures(for: journey)
         let deps = relevantDepartures(from: allDeps)
-        let next = selectPrimaryDeparture(preferredServiceID: preferredServiceID, allDepartures: allDeps, filteredDepartures: deps)
+        let next = Self.startingDeparture(preferredServiceID: preferredServiceID, departures: deps, requirePreferredService: requirePreferredService)
         let title: String = {
             if let first = next?.destination.first {
                 if let via = first.via, !via.isEmpty { return "\(first.locationName) \(via)" }
@@ -1838,11 +1887,15 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func selectPrimaryDeparture(preferredServiceID: String?, allDepartures: [DepartureV2], filteredDepartures: [DepartureV2]) -> DepartureV2? {
+        Self.startingDeparture(preferredServiceID: preferredServiceID, departures: filteredDepartures)
+    }
+
+    static func startingDeparture(preferredServiceID: String?, departures: [DepartureV2], requirePreferredService: Bool = false) -> DepartureV2? {
         if let preferredServiceID,
-           let preferred = filteredDepartures.first(where: { $0.serviceID == preferredServiceID }) {
-            return preferred
+           let preferred = departures.first(where: { $0.serviceID == preferredServiceID }) {
+            return requirePreferredService && preferred.isCancelled ? nil : preferred
         }
-        return filteredDepartures.first
+        return requirePreferredService ? nil : departures.first
     }
 
     private func relevantDepartures(from departures: [DepartureV2]) -> [DepartureV2] {

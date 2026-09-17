@@ -277,6 +277,91 @@ The public detail product returned repeatable HTTP 500 errors for eight upcoming
 
 The release changed only three planner modules and added the existing staff key to the planner environment through its Bitwarden Apps mapping. The prior library, candidate capture and public evidence are under `/home/mwagstaff/.local/share/train-track-api/deployment-checks/staff-recovery-20260916T163500Z`. Restore `previous-planner-lib` and restart only TrainTrack to roll back the code; the unused optional key may remain, or its original environment can be restored from the private `staff-env-20260916T170922Z` backup after checking for subsequent configuration changes. Preserve the loading service's key mapping. Update the local source before deliberately retaining a rollback through another deployment.
 
+## Saved journey boards — additive API and deployment
+
+`POST /api/v3/journey-planner/route-boards` serves My Journeys and Favourites.
+No existing v1/v2 departure resource or v3 search/job contract is replaced.
+Send `Content-Type: application/json` and the existing optional
+`X-Planner-Client` installation header. Example:
+
+```json
+{"routes":[{"id":"home-work","origin":"KTH","destination":"VIC","via":[],"realtime":"apply"}]}
+```
+
+Batches contain 1–8 routes. IDs are client correlation values; they do not enter
+the shared cache. `via` contains up to four distinct, ordered required stations.
+A train calling at a required station can continue without a forced change.
+`realtime` is `apply` or `ignore`; ignoring live changes still displays warnings.
+The routing options `maxChanges`, `extraConnectionMinutes` and `allowedModes`
+use the existing planner bounds. All boards search from the current instant.
+
+The response is `{apiVersion:3, boards:[...]}`. Each board has its supplied `id`,
+`status` (`queued`, `refreshing`, `ready`, or `unavailable`), and `pollAfterMs`.
+When available, `result` has the existing planner search response shape with
+complete inline itineraries. Scheduled calculation and expiry timestamps are
+separate from the result's live observation timestamps. Repeat the same POST
+to poll; an HTTP 200 can contain an individual queued or unavailable board.
+Only a ready board with no journeys establishes an empty result. The new app
+falls back to legacy saved-pair departures only if this endpoint returns 404.
+
+### Cache and work limits
+
+- Scheduled departure profiles are shared across clients for up to two hours.
+  Keys include timetable/routing versions, origin, destination, ordered required
+  stops, options, and a two-hour absolute time bucket. The internal eight-hour
+  window includes two hours before the bucket for delayed earlier trains and
+  retains at least four future hours until the next bucket. It is not a cache
+  of the first five results or a reusable weekday template.
+- The dedicated profile retains alternatives at different departure instants.
+  Profiles are bounded at 512 candidates and 4 MiB including their envelope;
+  incomplete profiles are marked. Candidates are retained across departure times
+  before filling remaining space with alternatives. Smaller departure windows
+  are calculated sequentially under one cumulative work/time budget to control
+  memory use. Live-validated boards return up to five choices.
+  Connecting options incur a ten-minute arrival-ranking penalty against direct
+  trains, so a connection arriving at least ten minutes earlier can rank first.
+- The new `planner_route_profiles_v1` Mongo collection creates its own expiry
+  index lazily. Records contain only scheduled route data, never caller
+  identities or live forecasts. Persistent records are limited to 64 and 4 MiB
+  each; the memory front cache is limited to 32 MiB. Database unavailability
+  falls back to memory. Expiry is checked on reads independently of Mongo cleanup.
+- Live results are reused for 30 seconds and never served as current after their
+  observation expires. Each refresh prioritizes upcoming trains, with at most
+  20 service-detail targets, eight stations and eight staff fallback targets,
+  all under the existing shared 64-request/two-concurrent-request provider bound.
+  Rail legs outside the four-hour window remain scheduled; Tube/walking transfers
+  do not receive missing-rail-live-data warnings.
+- Relevant delays, cancellations and newly catchable trains trigger a shared
+  early replan. New structural alternatives remain in an ephemeral refresh
+  profile and are retimed/revalidated each time; live forecasts are never written
+  into the two-hour scheduled cache.
+- At most eight saved-board tasks are pending, with two per requesting client
+  and four per network. Identical work shares a single admission. Calculations use the existing
+  single worker, heap and cooperative CPU budget. Interactive work takes priority
+  over queued warming; waiting refreshes age into service. Foreground admission
+  does not interrupt a calculation already running.
+- Refreshing is demand-driven. Polling renews interest; two minutes without any
+  interested client cancels pending work. Closing one client does not cancel
+  work still requested by another. Both app tabs share their requests and poll
+  only while active. Regular 20-second refreshes do not rebuild scheduled profiles.
+
+### Rollout and data updates
+
+Deploy the API first using the existing project deployment process, then release
+the rebuilt app. No new upstream keys, timetable import or manual database
+migration is required for this feature. Existing clients keep their existing
+departure APIs. Route-wide updates continue to use their existing saved-pair
+subscriptions; the new per-train action verifies the actual service before
+starting a separate one-leg tracking flow. It does not automatically switch an
+active train or provide end-to-end multi-leg notifications.
+
+Engineering diversions depend on dated services present in the active snapshot.
+The current importer explicitly rejects incremental deliveries; automatic S3
+delivery and amendment ingestion still need the feed agreement. New full
+snapshots can be imported and activated ad hoc using the existing commands.
+Activation immediately changes new cache keys; no two-hour wait is required.
+Live cancellations cannot supply a missing replacement timetable.
+
 ## Interpretation limits
 
 Scheduled-only results include supported rail and timetabled replacement buses, dated cancellations/overlays in this full snapshot, ordered operator-pair interchange rules, and validated walking/Tube links. Source-backed ALF links are interpreted as station pairs and indexed in both directions. Their source identity, calendar, priority and duration remain unchanged; both endpoint allowances apply in the actual travel direction. Other directed links and ordered TSI rules are not reversed. Public times and passenger boarding/alighting rules govern feasibility. A separate validation pass checks each returned itinerary.

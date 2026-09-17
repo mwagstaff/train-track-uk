@@ -8,6 +8,8 @@ struct MyJourneysView: View {
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
     @EnvironmentObject var router: TabRouter
     @Environment(\.scenePhase) private var scenePhase
+    @State private var routePlanner = SavedRoutePlannerStore.shared
+    @AppStorage(ApiHostPreference.storageKey, store: ApiHostPreference.store) private var plannerHost = ApiHost.prod.rawValue
     @State private var journeyPendingDelete: JourneyGroup? = nil
     @State private var showDeleteDialog = false
     @State private var journeyPendingFav: JourneyGroup? = nil
@@ -153,6 +155,10 @@ struct MyJourneysView: View {
                 cardDestinationView(destination)
             }
             .task { await notificationStore.refresh() }
+            .task(id: plannerRefreshKey) {
+                guard plannerIsActive else { return }
+                await routePlanner.watch(groups: plannerGroups)
+            }
     }
 
     private var lifecycleView: some View {
@@ -505,6 +511,7 @@ private extension MyJourneysView {
         refreshManualOrder()
         location.request(forceFresh: true)
         depStore.refreshNow(journeyStore: store)
+        await routePlanner.refresh(groups: plannerGroups, force: true)
     }
 
     var searchBar: some View {
@@ -590,6 +597,18 @@ private extension MyJourneysView {
         }
     }
 
+    private var plannerIsActive: Bool { scenePhase == .active && router.selected == .myJourneys }
+
+    private var plannerGroups: [JourneyGroup] {
+        filteredJourneys.map { group in
+            reversedJourneyIDs.contains(group.id) ? (store.reverseGroup(for: group) ?? group) : group
+        }
+    }
+
+    private var plannerRefreshKey: String {
+        "\(plannerHost)-\(plannerIsActive)-" + plannerGroups.map { routePlanner.query(for: $0).id }.sorted().joined(separator: "|")
+    }
+
     private func rowContent(for group: JourneyGroup) -> some View {
         let reverseGroup = store.reverseGroup(for: group)
         let isReversed = reversedJourneyIDs.contains(group.id) && reverseGroup != nil
@@ -654,7 +673,10 @@ private extension MyJourneysView {
                 onRemoveJourney: {
                     journeyPendingDelete = displayedGroup
                     showDeleteDialog = true
-                }
+                },
+                plannedBoard: routePlanner.state(for: displayedGroup),
+                usesLiveTimes: Binding(get: { routePlanner.usesLiveTimes(for: displayedGroup) },
+                    set: { routePlanner.setLiveTimes($0, for: displayedGroup) })
             )
         }
         .contentShape(Rectangle())

@@ -134,6 +134,8 @@ struct JourneyCard: View {
     let onRemoveJourney: () -> Void
     var showsHeader: Bool = true
     var allowsExpansion: Bool = true
+    var plannedBoard: SavedRouteBoardState? = nil
+    var usesLiveTimes: Binding<Bool>? = nil
 
     @EnvironmentObject private var depStore: DeparturesStore
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -190,6 +192,14 @@ struct JourneyCard: View {
                     .padding(.horizontal, 16)
             }
 
+            if let plannedBoard, !plannedBoard.usesLegacyDepartures {
+                SavedRouteBoardView(state: plannedBoard, routeKey: group.stationSequence.map(\.crs).joined(separator: "-"), departureCount: defaultDepartureCount,
+                    isInteractive: isInteractive, isExpanded: isExpanded, onToggleExpanded: onToggleExpanded,
+                    usesLiveTimes: usesLiveTimes)
+            } else {
+            if let message = plannedBoard?.message {
+                Text(message).font(.caption).foregroundStyle(.secondary).padding(16)
+            }
             if dataAvailability.status != .live {
                 dataAvailabilityNotice
                 Divider().padding(.horizontal, 16)
@@ -253,6 +263,7 @@ struct JourneyCard: View {
                     .accessibilityLabel(isExpanded ? "Show fewer departures" : "View all departures")
                 }
             }
+            }
         }
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -261,6 +272,7 @@ struct JourneyCard: View {
                 .stroke(Color.primary.opacity(0.05), lineWidth: 1)
         }
         .task(id: prefetchTaskID) {
+            guard plannedBoard == nil || plannedBoard?.usesLegacyDepartures == true else { return }
             await prefetchVisibleServiceDetails()
         }
     }
@@ -298,7 +310,21 @@ struct JourneyCard: View {
         }
     }
 
-    private var header: some View {
+    @ViewBuilder private var header: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 10) {
+                    favouriteControl
+                    routeTitle.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                HStack(spacing: 16) {
+                    journeyUpdatesControl
+                    Spacer(minLength: 0)
+                    reverseJourneyControl
+                    journeyMenu
+                }
+            }
+        } else {
         HStack(alignment: .center, spacing: 10) {
             favouriteControl
 
@@ -313,6 +339,7 @@ struct JourneyCard: View {
                 journeyMenu
             }
         }
+        }
     }
 
     @ViewBuilder
@@ -320,14 +347,14 @@ struct JourneyCard: View {
         if isInteractive {
             Button(action: onToggleFavourite) {
                 favouriteImage
-                    .frame(width: 30, height: 30)
+                    .frame(minWidth: 30, minHeight: 30)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(isFavourite ? "Remove from favourites" : "Add to favourites")
             .accessibilityHint("Shows a confirmation before changing this journey.")
         } else {
-            favouriteImage.frame(width: 30, height: 30)
+            favouriteImage.frame(minWidth: 30, minHeight: 30)
         }
     }
 
@@ -341,34 +368,44 @@ struct JourneyCard: View {
     private var journeyUpdatesControl: some View {
         if isInteractive {
             Button(action: onToggleJourneyUpdates) {
-                Group {
-                    if isBusy {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        journeyUpdatesImage
+                if dynamicTypeSize.isAccessibilitySize {
+                    HStack(spacing: 10) {
+                        journeyUpdatesIndicator
+                        Text("Route updates").font(.caption2).fixedSize(horizontal: false, vertical: true)
+                    }
+                } else {
+                    VStack(spacing: 3) {
+                        journeyUpdatesIndicator
+                        Text("Route updates").font(.caption2).fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .frame(width: 30, height: 30)
-                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(isBusy)
-            .accessibilityLabel(isLiveActive ? "Stop journey updates" : "Start journey updates")
+            .accessibilityLabel(isLiveActive ? "Stop route updates" : "Start route updates")
             .accessibilityValue(isLiveActive ? "Active" : "Inactive")
             .accessibilityHint(isLiveActive
                 ? "Stops live updates for this journey."
-                : "Starts live updates for this journey.")
+                : "Starts updates for the saved route. Choose a train in journey details to track that train separately.")
         } else {
             journeyUpdatesImage
         }
+    }
+
+    private var journeyUpdatesIndicator: some View {
+        Group {
+            if isBusy { ProgressView().controlSize(.small) }
+            else { journeyUpdatesImage }
+        }
+        .frame(minWidth: 30, minHeight: 30)
+        .contentShape(Rectangle())
     }
 
     private var journeyUpdatesImage: some View {
         Image(systemName: isLiveActive ? "stop.fill" : "play.fill")
             .font(.body.weight(.semibold))
             .foregroundStyle(isLiveActive ? Color.white : Color.accentColor)
-            .frame(width: 30, height: 30)
+            .frame(minWidth: 30, minHeight: 30)
             .background {
                 Circle()
                     .fill(isLiveActive ? Color.accentColor : Color.clear)
@@ -405,7 +442,7 @@ struct JourneyCard: View {
         Image(systemName: "arrow.left.arrow.right")
             .font(.body.weight(.semibold))
             .foregroundStyle(isJourneyReversed ? Color.white : Color.secondary)
-            .frame(width: 30, height: 30)
+            .frame(minWidth: 30, minHeight: 30)
             .background {
                 Circle()
                     .fill(isJourneyReversed ? Color.accentColor : Color.clear)
@@ -464,7 +501,7 @@ struct JourneyCard: View {
                 Image(systemName: "ellipsis")
                     .font(.body.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 30, height: 30)
+                    .frame(minWidth: 30, minHeight: 30)
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("Journey actions")

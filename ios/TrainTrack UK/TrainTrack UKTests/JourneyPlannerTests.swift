@@ -10,6 +10,31 @@ struct JourneyPlannerTests {
     private let destination = PlannerStation(crs: "VIC", name: "London Victoria")
     private let now = Date(timeIntervalSince1970: 1_799_999_000)
 
+    @Test func savedRouteBoardsUseAdditiveEndpointAndOnly404EnablesFallback() async throws {
+        let session = stubSession()
+        let client = JourneyPlannerClient(session: session, selectedBaseURL: { "https://example.com/api/v2" }, clientID: "installation")
+        let station = Station(crs: "KTH", name: "Kent House", longitude: "0", latitude: "51")
+        let destination = Station(crs: "VIC", name: "Victoria", longitude: "0", latitude: "51")
+        let leg = Journey(fromStation: station, toStation: destination)
+        let query = SavedRouteQuery(group: JourneyGroup(id: leg.groupId, legs: [leg]))
+        PlannerStubProtocol.handler = { request in
+            #expect(request.url?.path == "/api/v3/journey-planner/route-boards")
+            #expect(request.httpMethod == "POST")
+            #expect(request.value(forHTTPHeaderField: "X-Planner-Client") == "installation")
+            let body = try #require(JSONSerialization.jsonObject(with: PlannerStubProtocol.body(request)) as? [String: Any])
+            let routes = try #require(body["routes"] as? [[String: Any]])
+            #expect(routes[0]["via"] as? [String] == [])
+            return (404, Data("Not found".utf8))
+        }
+        await #expect(throws: SavedRouteBoardError.self) { try await client.routeBoards([query]) }
+        PlannerStubProtocol.handler = { _ in (503, Data(#"{"error":{"code":"SEARCH_BUSY","message":"Please wait"}}"#.utf8)) }
+        do {
+            _ = try await client.routeBoards([query])
+            Issue.record("Expected the structured server failure")
+        } catch let error as PlannerError { #expect(error.code == "SEARCH_BUSY") }
+        session.invalidateAndCancel()
+    }
+
     @Test func plannerUsesV3WithoutChangingExistingHostPaths() throws {
         #expect(try JourneyPlannerClient.plannerBaseURL(from: ApiHost.prod.baseURL).absoluteString == "https://api.skynolimit.dev/train-track/api/v3/journey-planner")
         #expect(try JourneyPlannerClient.plannerBaseURL(from: ApiHost.dev.baseURL).absoluteString == "http://Mikes-MacBook-Air.local:3000/api/v3/journey-planner")

@@ -101,6 +101,17 @@ final class DeparturesStore: ObservableObject {
         }
     }
 
+    /// Keep the service verified by an explicit planner selection available to the
+    /// existing Live Activity flow; it must not select another departure initially.
+    func recordVerifiedService(_ departure: DepartureV2, details: ServiceDetails, fromCRS: String, toCRS: String) {
+        let key = pairKey(from: fromCRS, to: toCRS)
+        departuresByPair[key] = JourneyServiceMatchingPolicy.mergedDepartures(
+            originSnapshot: departuresByPair[key] ?? [], currentDepartures: [departure])
+        serviceDetailsById[departure.serviceID] = details
+        serviceDetailsFetchedAt[departure.serviceID] = Date()
+        RecentServiceStore.shared.observe([departure], fromCRS: fromCRS, toCRS: toCRS)
+    }
+
     private func pairKey(from: String, to: String) -> String { "\(from)_\(to)" }
 
     #if DEBUG

@@ -23,7 +23,7 @@ extension JourneyPlannerServing {
 }
 
 @MainActor
-final class JourneyPlannerClient: JourneyPlannerServing {
+final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing {
     private struct ErrorResponse: Decodable { let error: PlannerError }
     private struct HTTPFailure: Error {
         let status: Int
@@ -86,6 +86,20 @@ final class JourneyPlannerClient: JourneyPlannerServing {
 
     func status() async throws -> PlannerStatus {
         try await send(path: ["status"])
+    }
+
+    var routeBoardsServerIdentity: String { selectedBaseURL() }
+
+    func routeBoards(_ routes: [SavedRouteQuery]) async throws -> SavedRouteBoardsResponse {
+        struct Request: Encodable { let routes: [SavedRouteQuery] }
+        let base = try Self.plannerBaseURL(from: selectedBaseURL())
+        do {
+            return try await send(path: ["route-boards"], body: JSONEncoder().encode(Request(routes: routes)),
+                                  base: base, headers: ["X-Planner-Client": clientID], timeout: 15, preserveHTTPStatus: true)
+        } catch let failure as HTTPFailure {
+            if failure.status == 404 { throw SavedRouteBoardError.unsupported }
+            throw failure.error
+        }
     }
 
     func stations(query: String) async throws -> [PlannerStation] {

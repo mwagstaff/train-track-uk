@@ -640,9 +640,10 @@ private struct PlannerResultsView: View {
     }
 }
 
-private struct PlannerJourneySummary: View {
+struct PlannerJourneySummary: View {
     let journey: PlannedJourney
     var showsChevron = false
+    var liveIsStale = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
 
@@ -662,6 +663,7 @@ private struct PlannerJourneySummary: View {
         if annotations.contains(where: { $0.partCancelled == true || $0.status == "partCancelled" }) {
             return ("Part cancelled", .plannerWarningText)
         }
+        if liveIsStale { return ("Live times out of date", .plannerSecondaryText) }
         if let summary = PlannerLivePresentation.onTimeSummary(for: journey) {
             return summary == "Train on time" || summary == "All trains on time"
                 ? ("On time", .plannerOnTimeText) : ("Some live times", .plannerSecondaryText)
@@ -743,7 +745,7 @@ private struct PlannerJourneySummary: View {
             if abs(journey.departure.timeIntervalSince(scheduledDeparture)) >= 30 || abs(journey.arrival.timeIntervalSince(scheduledArrival)) >= 30 {
                 Text("Scheduled \(PlannerTime.displayRange(from: scheduledDeparture, to: scheduledArrival))")
             }
-            if let summary = PlannerLivePresentation.onTimeSummary(for: journey),
+            if !liveIsStale, let summary = PlannerLivePresentation.onTimeSummary(for: journey),
                summary != "Train on time", summary != "All trains on time" {
                 Text(summary)
             }
@@ -826,12 +828,21 @@ private struct PlannerLegPill: View {
     }
 }
 
-private struct PlannerJourneyDetailView: View {
+struct PlannerJourneyDetailView: View {
     let id: String
     let client: any JourneyPlannerServing
+    var initialResponse: PlannerJourneyResponse? = nil
+    var allowsTrainTracking = false
     @State private var response: PlannerJourneyResponse?
     @State private var error: String?
     @State private var retry = UUID()
+    @State private var displayDate = Date()
+
+    private var liveIsStale: Bool {
+        guard let live = response?.live else { return false }
+        if let expires = live.expiresAt { return expires <= displayDate }
+        return live.updatedAt.map { displayDate.timeIntervalSince($0) >= 90 } ?? false
+    }
 
     var body: some View {
         List {
@@ -839,7 +850,7 @@ private struct PlannerJourneyDetailView: View {
                 Section {
                     Text("Summary").font(.headline)
                     PlannerLiveContextView(live: response.live)
-                    PlannerJourneySummary(journey: response.journey)
+                    PlannerJourneySummary(journey: response.journey, liveIsStale: liveIsStale)
                         .accessibilityIdentifier("planner.detail.summary")
                     ForEach(Array(PlannerLivePresentation.warnings(for: response.journey).dropFirst(2)), id: \.self) { warning in
                         Text(warning).font(.caption)
@@ -853,7 +864,7 @@ private struct PlannerJourneyDetailView: View {
                         } else {
                             if leg.kind == "vehicle" || leg.isTubeTransfer { PlannerLegPill(leg: leg) }
                             let includeDate = !PlannerTime.calendar.isDate(leg.departure, inSameDayAs: leg.arrival)
-                            if let live = leg.live { PlannerLiveBadge(live: live) }
+                            if let live = leg.live, !liveIsStale { PlannerLiveBadge(live: live) }
                             LabeledContent("Depart from \(leg.from.name)") {
                                 PlannerEventTimeView(time: leg.departure, scheduled: leg.scheduledDeparture,
                                     expected: leg.live?.departure, cancelled: leg.live?.isCancelled == true, includeDate: includeDate)
@@ -869,7 +880,7 @@ private struct PlannerJourneyDetailView: View {
                                             Text(point.station.name)
                                                 .foregroundStyle(point.live?.isCancelled == true ? Color.red : Color.primary)
                                                 .strikethrough(point.live?.isCancelled == true, color: .red)
-                                            if let live = point.live { PlannerLiveBadge(live: live) }
+                                            if let live = point.live, !liveIsStale { PlannerLiveBadge(live: live) }
                                             if let arrival = point.arrival ?? point.scheduledArrival {
                                                 LabeledContent(point.arrival == nil ? "Scheduled arrival" : "Arrive") {
                                                     PlannerEventTimeView(time: arrival, scheduled: point.scheduledArrival,
@@ -907,6 +918,9 @@ private struct PlannerJourneyDetailView: View {
                                 Label("Route map", systemImage: "map")
                             }
                             .accessibilityIdentifier("planner.route-map.\(index)")
+                            if allowsTrainTracking && leg.kind == "vehicle" && leg.mode == "rail" {
+                                PlannerTrainTrackingButton(leg: leg)
+                            }
                             ForEach(PlannerLivePresentation.visibleWarnings((leg.warnings ?? []) + (leg.live?.warnings ?? [])), id: \.self) { Text($0).font(.caption).foregroundStyle(Color.primary) }
                         }
                     } header: {
@@ -925,9 +939,16 @@ private struct PlannerJourneyDetailView: View {
         }
         .navigationTitle("Journey details")
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            while !Task.isCancelled {
+                displayDate = Date()
+                do { try await Task.sleep(for: .seconds(20)) } catch { return }
+            }
+        }
         .task(id: retry) {
-            response = nil
+            response = initialResponse
             error = nil
+            if initialResponse != nil { return }
             do {
                 let value = try await client.journey(id: id)
                 try Task.checkCancellation()

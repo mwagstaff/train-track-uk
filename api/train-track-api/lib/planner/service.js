@@ -92,7 +92,7 @@ export class PlannerService {
         return { journey: cached.journey, dataset, ...(live ? { live } : {}) };
     }
 
-    call(method, payload, { signal, execution, onStart, onProgress, queueTimeoutMs } = {}) {
+    call(method, payload, { signal, execution, onStart, onProgress, queueTimeoutMs, priority = 'interactive' } = {}) {
         if (this.closed) return Promise.reject(new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is unavailable.', 503));
         if (signal?.aborted) return Promise.reject(new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499));
         if (this.queue.length + Number(Boolean(this.active)) >= this.config.maxQueue) {
@@ -100,7 +100,8 @@ export class PlannerService {
         }
         return new Promise((resolve, reject) => {
             const job = { id: ++this.sequence, method, payload, resolve, reject, signal,
-                cancelBuffer: new SharedArrayBuffer(4), settled: false, execution, onStart, onProgress };
+                cancelBuffer: new SharedArrayBuffer(4), settled: false, execution, onStart, onProgress,
+                priority, enqueuedAt: Date.now() };
             job.abort = () => this.cancel(job, new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499));
             job.timer = setTimeout(() => this.cancel(job,
                 new PlannerError('SEARCH_TIMEOUT', 'The search took too long. Please try again.', 504)),
@@ -116,7 +117,7 @@ export class PlannerService {
         job.settled = true;
         clearTimeout(job.timer);
         job.signal?.removeEventListener('abort', job.abort);
-        if (!error && job.method === 'search' && result?.dataset) {
+        if (!error && ['search', 'routeBoardRefresh', 'routeBoardReplan'].includes(job.method) && result?.dataset) {
             for (const journey of [...(result.journeys ?? []), ...(result.disruptedJourneys ?? [])]) {
                 this.journeys.delete(journey.id);
                 this.journeys.set(journey.id, { journey, version: result.dataset.version, at: Date.now(), live: result.live });
@@ -168,7 +169,13 @@ export class PlannerService {
 
     pump() {
         if (this.active || this.closed) return;
-        const job = this.queue.shift();
+        // Saved-route warming shares this worker and its resource limits. Give
+        // interactive searches the next slot, but eventually serve old refreshes.
+        const waitingRefresh = this.queue.findIndex(job => job.priority === 'background'
+            && Date.now() - job.enqueuedAt >= 120000);
+        const interactive = this.queue.findIndex(job => job.priority !== 'background');
+        const index = waitingRefresh >= 0 ? waitingRefresh : Math.max(0, interactive);
+        const [job] = this.queue.splice(index, 1);
         if (!job) { this.worker?.unref(); return; }
         try {
             if (!this.worker) this.startWorker();
@@ -204,6 +211,7 @@ export class PlannerService {
     close() {
         this.closed = true;
         this.searchJobs?.close();
+        this.routeBoards?.close();
         this.metadataService?.close();
         this.journeys.clear();
         this.resetWorker(new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is closed.', 503));

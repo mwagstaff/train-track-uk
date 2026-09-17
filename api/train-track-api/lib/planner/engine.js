@@ -376,6 +376,18 @@ export class PlannerEngine {
         }
     }
 
+    async routeBoardProfile(payload, signal, execution) {
+        return (await import('./route-board-engine.js')).routeBoardProfile(this, payload, signal, execution);
+    }
+
+    async routeBoardRefresh(payload, signal, execution) {
+        return (await import('./route-board-engine.js')).routeBoardRefresh(this, payload, signal, execution);
+    }
+
+    async routeBoardReplan(payload, signal, execution) {
+        return (await import('./route-board-engine.js')).routeBoardReplan(this, payload, signal, execution);
+    }
+
     async explain(request, signal) {
         const repo = await this.dataset();
         request = this.checkQuery(repo, normalizeRequest(request));

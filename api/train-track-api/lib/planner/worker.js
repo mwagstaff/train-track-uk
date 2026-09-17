@@ -27,6 +27,10 @@ parentPort.on('message', async ({ id, method, payload, cancelBuffer, execution }
             abortSignal: networkController.signal,
             ...(execution ? { onProgress: phase => parentPort.postMessage({ id, progress: { phase } }) } : {})
         });
+        else if (['routeBoardProfile', 'routeBoardRefresh', 'routeBoardReplan'].includes(method)) result = await engine[method](payload, signal, {
+            ...execution, abortSignal: networkController.signal,
+            ...(execution ? { onProgress: phase => parentPort.postMessage({ id, progress: { phase } }) } : {})
+        });
         else if (method === 'journey') result = await engine.journey(payload.id, signal);
         else if (method === 'explain') result = await engine.explain(payload.request, signal);
         else if (method === 'runtime') result = engine.runtime();

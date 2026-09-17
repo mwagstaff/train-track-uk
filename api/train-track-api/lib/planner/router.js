@@ -156,6 +156,13 @@ export function validateJourney(journey, network, request) {
     let boardings = 0;
     const used = new Set();
     const modes = new Set(request.allowedModes ?? DEFAULT_MODES);
+    const via = request.via ?? [];
+    let viaProgress = 0, previousStation;
+    const visit = station => {
+        if (station !== previousStation && station === via[viaProgress]) viaProgress++;
+        previousStation = station;
+    };
+    visit(request.origin);
     for (let i = 0; i < journey.legs.length; i++) {
         const leg = journey.legs[i];
         const start = Date.parse(leg.departure);
@@ -170,6 +177,9 @@ export function validateJourney(journey, network, request) {
             if (leg.mode !== service.mode || leg.operator !== service.operator) return false;
             if (!board?.canBoard || !alight?.canAlight || board.station !== leg.from.crs || alight.station !== leg.to.crs) return false;
             if (board.departure !== start || alight.arrival !== end) return false;
+            if (via.length) for (const call of service.calls.slice(leg.boardIndex, leg.alightIndex + 1)) {
+                if (call.canBoard || call.canAlight) visit(call.station);
+            }
             if (previousVehicle && !pendingTransfer) return false;
             if (pendingTransfer?.mode === 'interchange') {
                 const connection = resolveConnection(index.connections, {
@@ -195,11 +205,12 @@ export function validateJourney(journey, network, request) {
                 boardings += leg.mode === 'walk' ? 0 : 1;
             } else if (!previousVehicle || i === journey.legs.length - 1 || leg.minutes !== (end - start) / MINUTE) return false;
             pendingTransfer = leg;
+            visit(leg.to.crs);
         } else return false;
         previousEnd = end;
         at = leg.to.crs;
     }
-    if (at !== request.destination || !journey.legs.length) return false;
+    if (at !== request.destination || !journey.legs.length || viaProgress !== via.length) return false;
     const start = Date.parse(journey.departure);
     const end = Date.parse(journey.arrival);
     if (start !== Date.parse(journey.legs[0].departure) || end !== previousEnd) return false;
@@ -213,6 +224,61 @@ function signature(path) {
     return path.map(leg => leg.kind === 'vehicle'
         ? `${leg.serviceId}:${leg.boardIndex}:${leg.alightIndex}`
         : `${leg.ruleId}:${leg.start}:${leg.end}`).join('|');
+}
+
+// Input is already ranked. A bounded saved board must not fill its entire
+// allowance with alternatives for early departures and lose later trains.
+export function departureProfileOrder(candidates) {
+    const groups = new Map();
+    for (const candidate of candidates) {
+        const values = groups.get(candidate.departure) ?? [];
+        values.push(candidate);
+        groups.set(candidate.departure, values);
+    }
+    const ordered = [...groups].sort(([a], [b]) => (typeof a === 'number' ? a : Date.parse(a))
+        - (typeof b === 'number' ? b : Date.parse(b))).map(([, values]) => values);
+    const result = [];
+    for (let round = 0, more = true; more; round++) {
+        more = false;
+        for (const values of ordered) if (values[round]) { result.push(values[round]); more = true; }
+    }
+    return result;
+}
+
+// A live replan can discover a path absent from the scheduled frontier. Retain
+// its source references for the next refresh, never its expiring predictions.
+// Its scheduled connections may be infeasible: callers must retime and validate
+// this structural candidate before presenting it as an available journey.
+export function scheduledCandidate(journey, network) {
+    const index = prepareNetwork(network);
+    const legs = journey.legs.map(leg => {
+        if (leg.kind !== 'vehicle') return { ...leg };
+        const serviceId = leg.scheduledServiceId ?? leg.serviceId;
+        const service = index.services.get(serviceId);
+        if (!service) return null;
+        const first = leg.callingPoints?.[0]?.sequence, last = leg.callingPoints?.at(-1)?.sequence;
+        const boardIndex = first === undefined ? leg.boardIndex : service.calls.findIndex(call => call.sequence === first);
+        const alightIndex = last === undefined ? leg.alightIndex : service.calls.findIndex(call => call.sequence === last);
+        if (boardIndex < 0 || alightIndex <= boardIndex) return null;
+        return vehicleLeg(index, { serviceId, boardIndex, alightIndex });
+    });
+    if (legs.some(leg => !leg)) return null;
+    for (let position = 0; position < legs.length; position++) {
+        const leg = legs[position];
+        if (leg.kind !== 'transfer') continue;
+        if (legs.length === 1) continue;
+        const duration = leg.minutes * MINUTE;
+        const start = legs[position - 1] ? Date.parse(legs[position - 1].arrival)
+            : Date.parse(legs[position + 1]?.departure) - duration;
+        if (!Number.isFinite(start) || !Number.isFinite(duration)) return null;
+        leg.departure = new Date(start).toISOString();
+        leg.arrival = new Date(start + duration).toISOString();
+        delete leg.movementDeparture;
+        delete leg.movementArrival;
+    }
+    return { departure: legs[0].departure, arrival: legs.at(-1).arrival,
+        durationMinutes: (Date.parse(legs.at(-1).arrival) - Date.parse(legs[0].departure)) / MINUTE,
+        changes: journey.changes, status: 'scheduledOnly', legs };
 }
 
 // Optimistic boarding lower bounds ignore times and interchange allowances. They
@@ -369,6 +435,9 @@ function reachableEvents(index, bounds, station, remainingBoardings, reverse, qu
 export function findJourneys(request, network, options = {}) {
     const begun = Date.now();
     const reverse = request.timeType === 'arriveBy';
+    const departureProfile = options.departureProfile === true;
+    const via = reverse ? [...(request.via ?? [])].reverse() : request.via ?? [];
+    const visit = (progress, station) => station === via[progress] ? progress + 1 : progress;
     const query = Date.parse(request.time);
     const window = (request.windowMinutes ?? DEFAULT_WINDOW_MINUTES) * MINUTE;
     const maxDuration = (options.maxDurationMinutes ?? 1440) * MINUTE;
@@ -389,7 +458,8 @@ export function findJourneys(request, network, options = {}) {
     if (!Number.isFinite(query) || !Number.isFinite(window) || window <= 0 || !Number.isInteger(maxChanges) || maxChanges < 0 || maxChanges > MAX_CHANGES) throw failure('INVALID_REQUEST', 'Invalid journey search bounds.');
     const index = prepareNetwork(network, check);
     check();
-    if (!index.connections.stations.has(request.origin) || !index.connections.stations.has(request.destination)) throw failure('INVALID_STATION', 'Unknown planner station.');
+    if (!index.connections.stations.has(request.origin) || !index.connections.stations.has(request.destination)
+        || via.some(station => !index.connections.stations.has(station))) throw failure('INVALID_STATION', 'Unknown planner station.');
     const metadata = {
         searchTruncated: false, warnings: [], searchWindow: { from: new Date(from).toISOString(), to: new Date(to).toISOString(), fromInclusive: !reverse, toInclusive: reverse },
         pagination: { earlierTime: new Date(reverse ? from : from - window).toISOString(), laterTime: new Date(reverse ? to + window : to).toISOString() },
@@ -430,6 +500,7 @@ export function findJourneys(request, network, options = {}) {
         let bound = reverse ? -Infinity : Infinity;
         for (const known of completed) {
             if (known.boardings > minimumBoardings) continue;
+            if (departureProfile && known.boundary !== boundary) continue;
             if (reverse ? known.boundary <= boundary : known.boundary >= boundary) {
                 bound = reverse ? Math.max(bound, known.time) : Math.min(bound, known.time);
             }
@@ -447,7 +518,7 @@ export function findJourneys(request, network, options = {}) {
         if (label.station !== target && label.boundary != null) {
             if (reverse ? label.time <= bound : label.time >= bound) return;
         }
-        const bucket = `${label.station}|${label.operator ?? ''}`;
+        const bucket = `${label.station}|${label.operator ?? ''}|${label.viaProgress}${departureProfile ? `|${label.boundary}` : ''}`;
         const labels = rounds[label.boardings].get(bucket) ?? [];
         const dominates = (a, b) => reverse
             ? a.time >= b.time && a.boundary <= b.boundary
@@ -464,10 +535,11 @@ export function findJourneys(request, network, options = {}) {
             const later = rounds[laterRound].get(bucket);
             if (later) rounds[laterRound].set(bucket, later.filter(existing => !dominates(label, existing)));
         }
-        if (label.station === target) completed.push(label);
+        if (label.station === target && label.viaProgress === via.length) completed.push(label);
         if (++labelCount > (options.maxLabels ?? 200_000)) throw failure('SEARCH_TIMEOUT', 'Journey search exceeded its label budget.');
     };
-    retain({ station: reverse ? request.destination : request.origin, time: query, boundary: null, operator: null, boardings: 0, path: [] });
+    retain({ station: reverse ? request.destination : request.origin, time: query, boundary: null, operator: null, boardings: 0,
+        viaProgress: visit(0, reverse ? request.destination : request.origin), path: [] });
     const connectionFor = (label, stop, mode, event, initial) => {
         const common = {
             from: reverse ? stop : label.station, to: reverse ? label.station : stop,
@@ -490,7 +562,7 @@ export function findJourneys(request, network, options = {}) {
     for (let round = 0; round <= maxBoardings; round++) {
         for (const labels of rounds[round].values()) for (const label of [...labels].sort((a, b) => reverse ? a.boundary - b.boundary : b.boundary - a.boundary)) {
             check();
-            if (label.station === target && label.path.length) { results.push(label); continue; }
+            if (label.station === target && label.path.length && label.viaProgress === via.length) { results.push(label); continue; }
             const completionBound = finishBound(label.boundary, label.boardings, label.station);
             if (label.boundary != null && (reverse ? label.time <= completionBound : label.time >= completionBound)) continue;
             const timeBounds = reachableTimes(completionBound);
@@ -507,7 +579,9 @@ export function findJourneys(request, network, options = {}) {
                     const boundary = label.boundary ?? (reverse ? transfer.end : transfer.start);
                     if (Math.abs(time - boundary) > maxDuration || boundary < from || boundary > to || (reverse ? boundary === from : boundary === to)) continue;
                     const leg = { kind: 'transfer', ...transfer };
-                    const complete = { ...label, station: target, time, boundary, boardings: round + transfer.boardings, path: reverse ? [leg, ...label.path] : [...label.path, leg] };
+                    const viaProgress = visit(label.viaProgress, target);
+                    if (viaProgress !== via.length) continue;
+                    const complete = { ...label, station: target, time, boundary, viaProgress, boardings: round + transfer.boardings, path: reverse ? [leg, ...label.path] : [...label.path, leg] };
                     results.push(complete);
                     completed.push(complete);
                 }
@@ -553,13 +627,25 @@ export function findJourneys(request, network, options = {}) {
                         // Once aboard the same occurrence, the incoming operator
                         // no longer matters. A better profile boarding no later
                         // on this train can already reach every onward call.
+                        const viaProgress = cross ? visit(label.viaProgress, stop) : label.viaProgress;
                         const boarding = { index: event.index, time: event.time, boundary, boardings };
                         const dominatesBoarding = (a, b) => a.boardings <= b.boardings && (reverse
                             ? a.index >= b.index && a.time >= b.time && a.boundary <= b.boundary
                             : a.index <= b.index && a.time <= b.time && a.boundary >= b.boundary);
-                        const previous = boarded.get(service.id) ?? [];
+                        const boardingKey = `${service.id}|${viaProgress}${departureProfile ? `|${boundary}` : ''}`;
+                        const previous = boarded.get(boardingKey) ?? [];
                         if (previous.some(existing => dominatesBoarding(existing, boarding))) continue;
-                        boarded.set(service.id, [...previous.filter(existing => !dominatesBoarding(boarding, existing)), boarding]);
+                        boarded.set(boardingKey, [...previous.filter(existing => !dominatesBoarding(boarding, existing)), boarding]);
+                        const progressAtCall = via.length ? new Map() : null;
+                        if (via.length) {
+                            let progress = viaProgress;
+                            for (let position = event.index + (reverse ? -1 : 1); position >= 0 && position < service.calls.length; position += reverse ? -1 : 1) {
+                                check();
+                                const call = service.calls[position];
+                                if (call.canBoard || call.canAlight) progress = visit(progress, call.station);
+                                progressAtCall.set(position, progress);
+                            }
+                        }
                         for (const callIndex of reachableCalls(timeBounds, service, maxBoardings - boardings, reverse, check)) {
                             if (reverse ? callIndex >= event.index : callIndex <= event.index) continue;
                             check();
@@ -570,7 +656,8 @@ export function findJourneys(request, network, options = {}) {
                             const ride = { kind: 'vehicle', serviceId: service.id, boardIndex: reverse ? callIndex : event.index, alightIndex: reverse ? event.index : callIndex };
                             const legs = transfer ? [{ kind: 'transfer', ...transfer }] : [];
                             const path = reverse ? [ride, ...legs, ...label.path] : [...label.path, ...legs, ride];
-                            retain({ station: call.station, time, boundary, operator: service.operator, boardings, path });
+                            retain({ station: call.station, time, boundary, operator: service.operator, boardings,
+                                viaProgress: progressAtCall?.get(callIndex) ?? viaProgress, path });
                         }
                     }
                 }
@@ -589,6 +676,7 @@ export function findJourneys(request, network, options = {}) {
     const candidates = [...unique.values()];
     const useful = candidates.filter(candidate => !candidates.some(other => {
         check();
+        if (departureProfile && (reverse ? other.arrival !== candidate.arrival : other.departure !== candidate.departure)) return false;
         return other !== candidate && other.departure >= candidate.departure && other.arrival <= candidate.arrival && other.changes <= candidate.changes
             && (other.departure > candidate.departure || other.arrival < candidate.arrival || other.changes < candidate.changes);
     }));
@@ -598,7 +686,8 @@ export function findJourneys(request, network, options = {}) {
     const offset = options.offset ?? 0;
     if (!Number.isInteger(offset) || offset < 0) throw failure('INVALID_REQUEST', 'Invalid journey page offset.');
     const journeys = [];
-    for (const candidate of useful.slice(offset, offset + limit)) {
+    const ranked = departureProfile && options.balanceDepartures ? departureProfileOrder(useful) : useful;
+    for (const candidate of ranked.slice(offset, offset + limit)) {
         check();
         const journey = {
             departure: new Date(candidate.departure).toISOString(), arrival: new Date(candidate.arrival).toISOString(),
@@ -614,6 +703,7 @@ export function findJourneys(request, network, options = {}) {
     metadata.pagination.nextOffset = offset + limit < useful.length ? offset + limit : null;
     metadata.pagination.previousOffset = offset > 0 ? Math.max(0, offset - limit) : null;
     metadata.pagination.total = useful.length;
+    if (departureProfile) metadata.pagination.departureTimes = new Set(useful.map(candidate => candidate.departure)).size;
     if (journeys.some(journey => journey.legs.some(leg => leg.kind === 'transfer' && leg.mode !== 'interchange'))) {
         metadata.warnings.push('Fixed links use supplied generic durations and require the entire transfer to fit the active window.');
     }

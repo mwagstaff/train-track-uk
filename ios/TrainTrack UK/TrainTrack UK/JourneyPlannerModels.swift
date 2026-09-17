@@ -66,6 +66,7 @@ struct PlannedJourney: Codable, Identifiable, Equatable {
         let `operator`: String?
         let serviceId: String?
         let originDate: String?
+        var uid: String? = nil
         let callingPoints: [CallingPoint]?
         var serviceCallingPoints: [CallingPoint]? = nil
         let transfer: Transfer?
@@ -74,6 +75,7 @@ struct PlannedJourney: Codable, Identifiable, Equatable {
         var scheduledArrival: Date? = nil
         var scheduledServiceId: String? = nil
         var live: PlannerLiveAnnotation? = nil
+        var tracking: PlannerTrackingReference? = nil
 
         var isTubeTransfer: Bool { mode == "tubeTransfer" || mode == "tube" }
         var isTrainChange: Bool { kind == "transfer" && mode == "interchange" }
@@ -123,6 +125,14 @@ struct PlannedJourney: Codable, Identifiable, Equatable {
         let interchangeMinutes: Double?
         let waitingMinutes: Double?
     }
+}
+
+struct PlannerTrackingReference: Codable, Equatable {
+    let providerServiceId: String
+    let station: String
+    let uid: String
+    let originDate: String
+    let verifiedAt: Date
 }
 
 struct PlannerSearchResponse: Decodable {
