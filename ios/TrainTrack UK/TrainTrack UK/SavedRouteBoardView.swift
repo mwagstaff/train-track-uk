@@ -5,11 +5,13 @@ extension SavedRouteBoardState {
         (result?.journeys ?? []).filter { $0.departure >= now }
     }
     func liveIsStale(at now: Date) -> Bool {
-        guard let result, let live = result.live, live.status != "outsideWindow" else { return false }
-        guard live.updatedAt != nil || live.expiresAt != nil else { return false }
-        if let expires = result.live?.expiresAt { return expires <= now }
-        return live.updatedAt.map { now.timeIntervalSince($0) >= 90 } ?? true
+        guard let result else { return false }
+        return result.journeys.contains { liveIsStale(for: $0, at: now) }
     }
+    func liveIsStale(for journey: PlannedJourney, at now: Date) -> Bool {
+        PlannerLivePresentation.hasExpiredEvidence(for: journey, context: result?.live, at: now)
+    }
+
 }
 
 struct SavedRouteBoardView: View {
@@ -23,7 +25,7 @@ struct SavedRouteBoardView: View {
     @State private var selectedJourney: PlannerJourneyResponse?
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 20)) { context in
+        TimelineView(.periodic(from: .now, by: state.isPending ? 1 : 20)) { context in
             VStack(alignment: .leading, spacing: 0) {
                 if let usesLiveTimes {
                     DisclosureGroup("Journey options") {
@@ -35,14 +37,20 @@ struct SavedRouteBoardView: View {
                         .accessibilityIdentifier("saved-route.options.\(routeKey)")
                         .disabled(!isInteractive)
                 }
+                if let progress = state.progressPresentation(at: context.date) {
+                    HStack(alignment: .top, spacing: 10) {
+                        ProgressView().controlSize(.small).accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(progress.title).font(.subheadline)
+                            ForEach(progress.details, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+                        }.fixedSize(horizontal: false, vertical: true)
+                    }.padding(16)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("saved-route.progress.\(routeKey)")
+                }
                 if let message = state.message {
                     Label(message, systemImage: "exclamationmark.triangle")
                         .font(.caption).padding(16)
-                } else if state.isPending {
-                    HStack {
-                        ProgressView().controlSize(.small)
-                        Text(state.result == nil ? "Finding journey options…" : "Updating journey options…")
-                    }.font(.caption).padding(16)
                 }
                 if let result = state.result {
                     if state.isStale || state.liveIsStale(at: context.date) {
@@ -109,7 +117,7 @@ struct SavedRouteBoardView: View {
 
     private func summary(_ journey: PlannedJourney, at date: Date) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            PlannerJourneySummary(journey: journey, showsChevron: isInteractive, liveIsStale: state.liveIsStale(at: date))
+            PlannerJourneySummary(journey: journey, showsChevron: isInteractive, liveIsStale: state.liveIsStale(for: journey, at: date))
             let interchanges = journey.legs.filter { $0.kind == "transfer" }.map(\.heading)
             if !interchanges.isEmpty {
                 Text(interchanges.joined(separator: " · "))

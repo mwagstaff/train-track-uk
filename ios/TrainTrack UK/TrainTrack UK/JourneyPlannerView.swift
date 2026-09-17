@@ -663,12 +663,15 @@ struct PlannerJourneySummary: View {
         if annotations.contains(where: { $0.partCancelled == true || $0.status == "partCancelled" }) {
             return ("Part cancelled", .plannerWarningText)
         }
-        if liveIsStale { return ("Live times out of date", .plannerSecondaryText) }
+        if liveIsStale, !PlannerLivePresentation.timingEvidence(for: journey).isEmpty {
+            return ("Live times out of date", .plannerSecondaryText)
+        }
         if let summary = PlannerLivePresentation.onTimeSummary(for: journey) {
             return summary == "Train on time" || summary == "All trains on time"
                 ? ("On time", .plannerOnTimeText) : ("Some live times", .plannerSecondaryText)
         }
-        return annotations.isEmpty ? ("Scheduled", .plannerSecondaryText) : ("Unknown", .plannerSecondaryText)
+        return PlannerLivePresentation.timingEvidence(for: journey).isEmpty
+            ? ("Scheduled", .plannerSecondaryText) : ("Unknown", .plannerSecondaryText)
     }
 
     var body: some View {
@@ -839,9 +842,8 @@ struct PlannerJourneyDetailView: View {
     @State private var displayDate = Date()
 
     private var liveIsStale: Bool {
-        guard let live = response?.live else { return false }
-        if let expires = live.expiresAt { return expires <= displayDate }
-        return live.updatedAt.map { displayDate.timeIntervalSince($0) >= 90 } ?? false
+        guard let response else { return false }
+        return PlannerLivePresentation.hasExpiredEvidence(for: response.journey, context: response.live, at: displayDate)
     }
 
     var body: some View {
@@ -849,7 +851,7 @@ struct PlannerJourneyDetailView: View {
             if let response {
                 Section {
                     Text("Summary").font(.headline)
-                    PlannerLiveContextView(live: response.live)
+                    PlannerLiveContextView(live: PlannerLivePresentation.context(for: response.journey, from: response.live, at: displayDate))
                     PlannerJourneySummary(journey: response.journey, liveIsStale: liveIsStale)
                         .accessibilityIdentifier("planner.detail.summary")
                     ForEach(Array(PlannerLivePresentation.warnings(for: response.journey).dropFirst(2)), id: \.self) { warning in

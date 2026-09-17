@@ -194,6 +194,22 @@ test('hourly profile partitions preserve the monolithic frontier at exact bounda
     assert.ok(profile.candidates.every(journey => journey.departure !== iso(480)));
 });
 
+test('saved route progress reports completed departure windows and stops on cancellation', async t => {
+    const engine = fixture(t, [train('T1', [['AAA', null, 5], ['DDD', 20, null]])]);
+    const updates = [];
+    await engine.routeBoardProfile({ request: request() }, undefined, { onProgress: value => updates.push(value) });
+    assert.equal(updates[0], 'preparing');
+    assert.deepEqual(updates.filter(value => typeof value === 'object'),
+        Array.from({ length: 9 }, (_, completedWindows) => ({ phase: 'searching', completedWindows, totalWindows: 8 })));
+
+    const cancelled = { aborted: false }, interrupted = [];
+    await assert.rejects(engine.routeBoardProfile({ request: request() }, cancelled, { onProgress: value => {
+        interrupted.push(value);
+        if (value.completedWindows === 1) cancelled.aborted = true;
+    } }), { code: 'SEARCH_CANCELLED' });
+    assert.equal(interrupted.at(-1).completedWindows, 1);
+});
+
 test('ephemeral structural candidates restore source times without retaining expiring predictions', () => {
     const net = network([train('T1', [['AAA', null, 10], ['BBB', 20, 21], ['DDD', 30, null]])]);
     const original = findJourneys(request(), net).journeys[0];

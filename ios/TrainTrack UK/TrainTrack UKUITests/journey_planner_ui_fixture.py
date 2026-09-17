@@ -71,6 +71,7 @@ DATASET = {
 
 JOBS = {}
 ROUTE_REQUESTS = {}
+ROUTE_STARTED = {}
 KEYS = {}
 LOCK = threading.Lock()
 
@@ -293,10 +294,22 @@ class Handler(BaseHTTPRequestHandler):
             boards = []
             with LOCK:
                 for route in request.get("routes", []):
-                    key = (self.headers.get("X-Planner-Client"), route["id"])
+                    key = (self.headers.get("X-Planner-Client"), path, route["id"])
                     ROUTE_REQUESTS[key] = ROUTE_REQUESTS.get(key, 0) + 1
                     board = {"id": route["id"], "status": "queued", "pollAfterMs": 1000}
-                    if ROUTE_REQUESTS[key] > 1:
+                    progress_profile = path.startswith("/saved-progress")
+                    hold_queue = path.startswith("/saved-progress-large/")
+                    if progress_profile:
+                        ROUTE_STARTED.setdefault(key, datetime.now(timezone.utc) - timedelta(seconds=30))
+                        count = 1 if hold_queue else ROUTE_REQUESTS[key]
+                        board["progress"] = {"phase": "queued" if count <= 4 else "searching",
+                            "queuedAt": iso(ROUTE_STARTED[key])}
+                        if count <= 4:
+                            board["progress"]["queuePosition"] = 2
+                            board["error"] = {"code": "SEARCH_BUSY", "message": "Saved journeys are waiting to be planned."}
+                        else:
+                            board["progress"].update(startedAt=iso(ROUTE_STARTED[key] + timedelta(seconds=30)), completedWindows=3, totalWindows=8)
+                    if not hold_queue and ROUTE_REQUESTS[key] > (9 if progress_profile else 1):
                         result = search_result({}, "details")
                         result["search"].update(origin=route["origin"], destination=route["destination"], realtime=route.get("realtime"))
                         journey = result["journeys"][0]
@@ -305,6 +318,15 @@ class Handler(BaseHTTPRequestHandler):
                             journey["legs"] = [dict(leg, **{"from": leg["to"], "to": leg["from"]}) for leg in reversed(journey["legs"])]
                         result["live"] = {"mode": route["realtime"], "status": "outsideWindow", "windowHours": 4, "warnings": []}
                         result["warnings"] = ["Saved route fixture note"]
+                        if progress_profile:
+                            old = datetime.now(timezone.utc) - timedelta(minutes=5)
+                            for leg in journey["legs"]:
+                                if leg.get("mode") == "rail":
+                                    leg["live"] = {"status": "unknown", "updatedAt": iso(old), "warnings": []}
+                            result["live"] = {"mode": route["realtime"], "status": "partial", "windowHours": 4,
+                                "updatedAt": iso(old), "expiresAt": iso(old + timedelta(seconds=90)), "warnings": []}
+                            board.pop("error", None)
+                            board.pop("progress", None)
                         board.update(status="ready", result=result, pollAfterMs=20000, computedAt=iso(datetime.now(timezone.utc)))
                     boards.append(board)
             self.respond(200, {"apiVersion": 3, "boards": boards})

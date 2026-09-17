@@ -242,6 +242,24 @@ Validation:
 
 See the [operations runbook](journey-planner-operations.md#saved-journey-boards--additive-api-and-deployment) for the request contract, limits and rollout. Deploy the API first, then release the rebuilt app. This feature requires no new key, timetable reimport or manual database migration. Engineering works still require an updated dated timetable; live cancellations cannot invent replacement services absent from the active snapshot.
 
+## Saved-route queue fairness and visible progress — 17 September 2026
+
+Fixed locally after the deployed app showed My Journeys indefinitely waiting to be planned. This follow-up has **not been deployed**.
+
+The manager recorded routes rejected by the two-task client limit, but did not automatically admit them when a slot became free. Fixed-order polling could let the first two cards repeatedly refresh before later cards received a turn. A deterministic three-route reproduction left the third route unstarted after nine simulated minutes. With the fix, all three receive results and continue rotating; the third receives its first result at 270 simulated seconds with deliberately slow 45-second worker stages. These are regression-test timings, not a production ETA.
+
+- Waiting routes now retain their age, advance automatically and cannot be overtaken indefinitely by repeated refreshes. The eight-task global, two-task client and four-task network admission limits remain unchanged, as do worker CPU and memory limits. Under memory pressure, unused queued profiles can be released and reloaded from the shared scheduled cache without losing the route's place. Active profiles remain protected.
+- Pending boards expose optional progress fields: queue position, queued/start timestamps, current phase and actual completed hourly timetable windows. Capacity waiting is a progress state, not an error. Genuine failures retain their error and retry automatically while the client remains interested. Abandoned routes and obsolete time buckets release their work.
+- My Journeys and Favourites show a spinner, queue position, elapsed waiting and the current planning/live-check phase. Completed-window counters show actual work without promising a finish time. Old responses remain supported. Trains with no published live forecast remain labelled Scheduled; only actual expired live evidence produces a Live times out of date label, including in itinerary details.
+- This is an additive change to the existing v3 saved-route resource. Existing v1/v2 APIs and v3 search/job contracts are unchanged. No timetable reimport, cache clearing, new credential or schema migration is required. Redeploy the API and rebuild the app to receive both the queue fix and progress display.
+
+Verification:
+
+- **364 selected backend tests passed**, with the same two documented unrelated baseline exclusions below. New regressions cover automatic draining, repeated polling fairness, memory-pressure admission and cache reload, queue progress, worker start, failed retries, cancellation, live-mode changes and obsolete time buckets. Log: `/tmp/traintrack-route-queue-backend-final.log`; local runtime Node 25.8.1.
+- **53 focused app unit tests passed**, covering old/new progress responses, capacity waiting and retries, stale live evidence, future scheduled services and existing planner behavior. Bundle: `/tmp/traintrack-route-progress-verification.xcresult`. The final queued → searching → ready UI scenario passed separately with missing/unknown forecasts correctly labelled Scheduled and no false stale warning in details: `/tmp/traintrack-route-progress-final-ui.xcresult`.
+- The largest Dynamic Type size in dark mode passed the focused queue screen scenario and text-clipping/touch-target audits: `/tmp/traintrack-route-progress-large-ui.xcresult`. Normal and large-text screenshots were visually inspected. The temporary fixture and dedicated simulator were stopped after verification.
+- Read-only production inspection found the API active with no service restarts since its current start and no matching planner-worker failures in the preceding hour's journal. No production code, configuration or process was changed during this investigation.
+
 ## Baseline and remaining external inputs
 
 Two pre-existing tests time out: `device-data-deletion.test.js` (“a notification save already in flight…”) and `live-session-origin.test.js` (“station exit retires every live session…”). Both were reproduced without planner changes using `git archive HEAD` in an isolated temporary checkout. The first fixture waits for a callback after saving an unregistered fake subscription; the second reaches existing Mongo-dependent live-session cleanup. They remain unchanged. Baseline and final logs are `/tmp/traintrack-original-baseline.log` and `/tmp/traintrack-final-backend-tests.log`.

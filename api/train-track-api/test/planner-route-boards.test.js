@@ -157,13 +157,228 @@ test('bounded admission does not multiply jobs and abandoning one shared caller 
     f.advance(60000);
     await f.manager.get(body, { client: 'two' });
     const busy = await f.manager.get({ routes: [{ id: 'other', origin: 'ECR', destination: 'VIC' }] });
-    assert.equal(busy.boards[0].error.code, 'SEARCH_BUSY');
+    assert.equal(busy.boards[0].error, undefined);
+    assert.equal(busy.boards[0].status, 'queued');
+    assert.equal(busy.boards[0].progress.phase, 'queued');
     f.advance(61000); f.manager.prune();
     assert.equal(f.calls[0].options.signal.aborted, false);
     f.advance(60000); f.manager.prune();
     assert.equal(f.calls[0].options.signal.aborted, true);
     resolve({ profile: { version, searchTruncated: false } });
     await idle(f.manager);
+});
+
+test('all eight routes from one client progress automatically beyond its two admitted slots', async t => {
+    const f = fixture(t);
+    const batch = { routes: Array.from({ length: 8 }, (_, index) => ({ id: `route-${index}`, origin: `A0${index}`, destination: 'DST' })) };
+    const response = await f.manager.get(batch, { client: 'one-device', network: 'home' });
+    assert.ok(response.boards.every(board => board.status === 'queued' && board.error === undefined));
+    assert.ok(response.boards.every(board => board.progress.queuedAt === new Date(start).toISOString()));
+    assert.equal(f.manager.queue.length + Number(Boolean(f.manager.active)), 2);
+    await idle(f.manager);
+    assert.equal(f.calls.filter(call => call.method === 'routeBoardProfile').length, 8);
+    assert.equal(f.calls.filter(call => call.method === 'routeBoardRefresh').length, 8);
+    assert.ok([...f.manager.entries.values()].every(entry => entry.results.has('apply')));
+    assert.equal([...f.manager.entries.values()].filter(entry => entry.waiting).length, 0);
+});
+
+test('slow recurring refreshes cannot starve a third route polled in the same fixed order', async t => {
+    const deferred = [];
+    const f = fixture(t, { call: (method, payload, options) => new Promise(resolve => {
+        options.onStart();
+        deferred.push({ method, payload, resolve });
+    }) });
+    const batch = { routes: ['AAA', 'BBB', 'CCC'].map(origin => ({ id: origin, origin, destination: 'DST' })) };
+    const poll = () => f.manager.get(batch, { client: 'one-device', network: 'home' });
+    const settle = async () => { for (let i = 0; i < 8; i++) await tick(); };
+    await poll(); await settle();
+    for (let step = 0; step < 12; step++) {
+        const work = deferred.shift();
+        assert.ok(work, `Expected automatic work at step ${step}`);
+        f.advance(45000);
+        await poll();
+        work.resolve(work.method === 'routeBoardProfile'
+            ? { profile: { version, request: work.payload.request } }
+            : { journeys: [], dataset: { version }, live: { mode: 'apply', status: 'unavailable', warnings: [] }, warnings: [] });
+        await settle();
+        const state = await poll();
+        assert.ok(state.boards.every(board => !board.error));
+        assert.ok(f.manager.queue.length + Number(Boolean(f.manager.active)) <= 2);
+    }
+    assert.deepEqual(f.calls.filter(call => call.method === 'routeBoardProfile').map(call => call.payload.request.origin), ['AAA', 'BBB', 'CCC']);
+    assert.deepEqual(f.calls.filter(call => call.method === 'routeBoardRefresh').slice(0, 9)
+        .map(call => call.payload.profile.request.origin), ['AAA', 'BBB', 'CCC', 'AAA', 'BBB', 'CCC', 'AAA', 'BBB', 'CCC']);
+    f.manager.close();
+    for (const work of deferred) work.resolve({ journeys: [] });
+    await settle();
+});
+
+test('older refreshes keep their place when new cold routes keep arriving', async t => {
+    const f = fixture(t);
+    await f.manager.get(body); await idle(f.manager);
+    f.advance(31000);
+    let release;
+    const original = f.service.call;
+    f.service.call = (method, payload, options) => new Promise(resolve => { release = () => original(method, payload, options).then(resolve); });
+    await f.manager.get({ routes: [{ id: 'blocker', origin: 'BLK', destination: 'DST' }] }, { client: 'blocking-client' });
+    for (let i = 0; i < 8; i++) await tick();
+    await f.manager.get(body, { client: 'refresh-client' });
+    const old = f.manager.outstanding().find(work => work.entry.request.origin === 'KTH');
+    f.advance(1000);
+    await f.manager.get({ routes: ['AAA', 'BBB', 'CCC'].map(origin => ({ id: origin, origin, destination: 'DST' })) }, { client: 'new-client' });
+    const outstanding = f.manager.outstanding();
+    assert.ok(outstanding.indexOf(old) < outstanding.findIndex(work => work.entry.request.origin === 'AAA'));
+    f.service.call = original;
+    release();
+    await idle(f.manager);
+    assert.ok(f.calls.findIndex(call => call.method === 'routeBoardRefresh' && call.payload.profile.request.origin === 'KTH')
+        < f.calls.findIndex(call => call.method === 'routeBoardProfile' && call.payload.request.origin === 'AAA'));
+});
+
+test('progress reflects worker execution rather than queue time and carries real window counts', async t => {
+    const deferred = [];
+    const f = fixture(t, { call: (method, payload, options) => new Promise(resolve => deferred.push({ method, payload, options, resolve })) });
+    await f.manager.get(body);
+    for (let i = 0; i < 8; i++) await tick();
+    f.advance(7000);
+    const queued = (await f.manager.get(body)).boards[0].progress;
+    assert.equal(queued.phase, 'queued');
+    assert.equal(queued.startedAt, undefined);
+    assert.equal(queued.queuePosition, 1);
+    assert.equal(queued.queuedAt, new Date(start).toISOString());
+    const work = deferred.shift();
+    work.options.onStart();
+    work.options.onProgress({ phase: 'searching', completedWindows: 2, totalWindows: 8 });
+    const running = (await f.manager.get(body)).boards[0].progress;
+    assert.deepEqual(running, { phase: 'searching', queuedAt: new Date(start).toISOString(),
+        startedAt: new Date(start + 7000).toISOString(), completedWindows: 2, totalWindows: 8 });
+    work.resolve({ profile: { version, request: work.payload.request } });
+    for (let i = 0; i < 8; i++) await tick();
+    const refresh = deferred.shift();
+    refresh.options.onStart();
+    refresh.options.onProgress('live');
+    assert.equal((await f.manager.get(body)).boards[0].progress.phase, 'live');
+    refresh.resolve({ journeys: [], dataset: { version }, warnings: [] });
+    await idle(f.manager);
+    assert.equal((await f.manager.get(body)).boards[0].progress, undefined);
+});
+
+test('genuine failure exposes retry state and automatically retries after the cooldown', async t => {
+    let attempts = 0;
+    const f = fixture(t, { call: async (method, payload) => {
+        if (method === 'routeBoardProfile') {
+            if (++attempts === 1) throw new PlannerError('SEARCH_TIMEOUT', 'Try again.', 504);
+            return { profile: { version, request: payload.request } };
+        }
+        return { journeys: [], dataset: { version }, warnings: [] };
+    } });
+    await f.manager.get(body); await idle(f.manager);
+    const failed = (await f.manager.get(body)).boards[0];
+    assert.equal(failed.status, 'unavailable');
+    assert.equal(failed.error.code, 'SEARCH_TIMEOUT');
+    assert.equal(failed.progress.phase, 'retrying');
+    f.advance(21000);
+    // This is the sweep/completion path, with no new client submission.
+    f.manager.prune(); f.manager.admitWaiting(); f.manager.pump();
+    await idle(f.manager);
+    assert.equal(attempts, 2);
+    const ready = (await f.manager.get(body)).boards[0];
+    assert.equal(ready.status, 'ready');
+    assert.equal(ready.error, undefined);
+});
+
+test('a mode change during preparation refreshes the requested mode without an obsolete live replan', async t => {
+    let resolveProfile;
+    const f = fixture(t, { call: async (method, payload) => {
+        if (method === 'routeBoardProfile') return new Promise(resolve => { resolveProfile = () => resolve({ profile: { version, request: payload.request } }); });
+        return { journeys: [], dataset: { version }, live: { mode: payload.realtime, status: 'unavailable', warnings: [] }, warnings: [], needsReplan: false };
+    } });
+    await f.manager.get(body);
+    for (let i = 0; i < 8; i++) await tick();
+    const ignored = { routes: [{ ...body.routes[0], realtime: 'ignore' }] };
+    await f.manager.get(ignored);
+    resolveProfile();
+    await idle(f.manager);
+    assert.deepEqual(f.calls.filter(call => call.method === 'routeBoardRefresh').map(call => call.payload.realtime), ['ignore']);
+    assert.equal((await f.manager.get(ignored)).boards[0].result.live.mode, 'ignore');
+});
+
+test('a failed active live replan retries as a cheap refresh after switching to scheduled times', async t => {
+    let rejectReplan;
+    const f = fixture(t, { call: async (method, payload) => {
+        if (method === 'routeBoardProfile') return { profile: { version, request: payload.request } };
+        if (method === 'routeBoardReplan') return new Promise((resolve, reject) => { rejectReplan = reject; });
+        return { journeys: [], dataset: { version }, live: { mode: payload.realtime, status: 'unavailable', warnings: [] }, warnings: [],
+            needsReplan: payload.realtime === 'apply', disruptionFingerprint: 'delay' };
+    } });
+    await f.manager.get(body);
+    for (let i = 0; i < 8; i++) await tick();
+    assert.equal(typeof rejectReplan, 'function');
+    const ignored = { routes: [{ ...body.routes[0], realtime: 'ignore' }] };
+    await f.manager.get(ignored);
+    rejectReplan(new PlannerError('SEARCH_TIMEOUT', 'Try again.', 504));
+    await idle(f.manager);
+    f.advance(21000);
+    f.manager.prune(); f.manager.admitWaiting(); f.manager.pump();
+    await idle(f.manager);
+    assert.deepEqual(f.calls.filter(call => call.method === 'routeBoardReplan').map(call => call.payload.realtime), ['apply']);
+    assert.equal(f.calls.at(-1).method, 'routeBoardRefresh');
+    assert.equal(f.calls.at(-1).payload.realtime, 'ignore');
+    assert.equal((await f.manager.get(ignored)).boards[0].result.live.mode, 'ignore');
+});
+
+test('obsolete time buckets release active and deferred interest immediately', async t => {
+    const f = fixture(t, { call: (method, payload, options) => new Promise((resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(new PlannerError('SEARCH_CANCELLED', 'Cancelled.', 499)), { once: true });
+    }) });
+    const batch = { routes: ['AAA', 'BBB', 'CCC'].map(origin => ({ id: origin, origin, destination: 'DST' })) };
+    await f.manager.get(batch, { client: 'one-device' });
+    for (let i = 0; i < 8; i++) await tick();
+    const old = f.calls[0];
+    const bucket = [...f.manager.entries.values()][0].bucket;
+    f.advance(2 * 3600000);
+    f.manager.prune();
+    assert.equal(old.options.signal.aborted, true);
+    assert.equal(f.manager.entries.size, 0);
+    assert.equal(f.manager.queue.length, 0);
+    await f.manager.get(batch, { client: 'one-device' });
+    for (let i = 0; i < 8; i++) await tick();
+    assert.ok(f.calls.length > 1, 'New bucket starts without the old two-minute lease');
+    assert.ok([...f.manager.entries.values()].every(entry => entry.bucket !== bucket));
+    assert.ok(f.manager.queue.length + Number(Boolean(f.manager.active)) <= 2);
+    f.manager.close(); await tick();
+});
+
+test('memory pressure releases idle queued profiles without losing their age or starving a cold route', async t => {
+    const f = fixture(t);
+    const request = origin => ({ routes: [{ id: origin, origin, destination: 'DST' }] });
+    for (const origin of ['AAA', 'BBB']) { await f.manager.get(request(origin)); await idle(f.manager); }
+    f.manager.maxProfileBytes = [...f.manager.entries.values()].reduce((sum, entry) => sum + entry.profileBytes, 0);
+    const original = f.service.call;
+    let releaseCold;
+    f.service.call = (method, payload, options) => method === 'routeBoardProfile' && payload.request.origin === 'CCC'
+        ? new Promise(resolve => { releaseCold = () => original(method, payload, options).then(resolve); })
+        : original(method, payload, options);
+    await f.manager.get(request('CCC'));
+    for (let i = 0; i < 8; i++) await tick();
+    f.advance(31000);
+    await f.manager.get({ routes: [...request('AAA').routes, ...request('BBB').routes] });
+    const queued = f.manager.outstanding().filter(work => work.entry.request.origin !== 'CCC');
+    assert.equal(queued.length, 2);
+    const originalOrder = queued.map(work => [work.entry.key, work.queuedAt, work.order]);
+    releaseCold();
+    await idle(f.manager);
+    assert.equal(f.manager.metrics.failures, 0, 'The cold profile must not fail because all eviction candidates are queued');
+    assert.equal(f.calls.filter(call => call.method === 'routeBoardProfile').length, 3, 'Evicted scheduled profiles reload from cache, not another national search');
+    assert.ok([...f.manager.entries.values()].every(entry => entry.results.has('apply')));
+    assert.ok([...f.manager.entries.values()].reduce((sum, entry) => sum + (entry.profileBytes ?? 0)
+        + (entry.refreshProfileBytes ?? 0), 0) <= f.manager.maxProfileBytes);
+    for (const [key, queuedAt, order] of originalOrder) {
+        const work = queued.find(value => value.entry.key === key);
+        assert.equal(work.queuedAt, queuedAt);
+        assert.equal(work.order, order);
+        assert.ok(f.manager.entries.has(key), 'Queued interest must survive profile eviction');
+    }
 });
 
 test('cache falls back to bounded memory when Mongo is unavailable and rejects oversized records', async () => {
@@ -262,7 +477,8 @@ test('a burst refreshing 64 existing boards obeys global, client and network lim
     assert.ok([...new Set(pending.map(work => work.network))].every(network => pending.filter(work => work.network === network).length <= 4));
     assert.ok(responses.every(value => value.boards[0].result?.journeys.length === 1), 'Cache hits remain available when queue capacity is full');
     assert.equal(responses[63].boards[0].pollAfterMs, 5000);
-    assert.equal(responses[63].boards[0].error.code, 'SEARCH_BUSY');
+    assert.equal(responses[63].boards[0].error, undefined);
+    assert.equal(responses[63].boards[0].progress.phase, 'queued');
     f.advance(5000);
     await f.manager.get(bodies[63], { client: 'last-client', network: 'last-network' });
     assert.equal(f.manager.queue.length + Number(Boolean(f.manager.active)), 8);
@@ -344,6 +560,8 @@ test('Mongo initialization and reads stay shared after caller deadlines', async 
     assert.equal(await cache.get('first'), null);
     await Promise.all(Array.from({ length: 25 }, (_, index) => cache.get(`during-connect-${index}`)));
     assert.equal(connectionCount, 1);
+    // Node timers can fire slightly before their nominal fractional deadline.
+    await new Promise(resolve => setTimeout(resolve, 5));
     resolveConnection(collection);
     await tick();
     assert.equal(readCount, 0, 'An expired lookup must not start a late query after connection recovery');

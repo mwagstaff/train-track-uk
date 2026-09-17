@@ -1,6 +1,33 @@
 import SwiftUI
 
 enum PlannerLivePresentation {
+    static func hasTimingEvidence(_ live: PlannerLiveAnnotation) -> Bool {
+        live.departure != nil || live.arrival != nil || live.isCancelled || live.isDelayed
+            || live.partCancelled == true || live.status == "partCancelled" || live.status == "onTime"
+    }
+
+    static func timingEvidence(for journey: PlannedJourney) -> [PlannerLiveAnnotation] {
+        journey.legs.flatMap { leg in
+            ([leg.live] + (leg.callingPoints ?? []).map(\.live)).compactMap { $0 }
+        }.filter(hasTimingEvidence)
+    }
+
+    static func hasExpiredEvidence(for journey: PlannedJourney, context: PlannerLiveContext?, at now: Date) -> Bool {
+        timingEvidence(for: journey).contains { annotation in
+            if let updated = annotation.updatedAt { return now.timeIntervalSince(updated) >= 90 }
+            if let expires = context?.expiresAt { return expires <= now }
+            return context?.updatedAt.map { now.timeIntervalSince($0) >= 90 } ?? false
+        }
+    }
+
+    static func context(for journey: PlannedJourney, from context: PlannerLiveContext?, at now: Date) -> PlannerLiveContext? {
+        guard let context, timingEvidence(for: journey).isEmpty,
+              journey.legs.contains(where: { $0.kind == "vehicle" && $0.mode == "rail" }) else { return context }
+        let outsideWindow = journey.departure > now.addingTimeInterval(Double(context.windowHours ?? 4) * 3600)
+        return PlannerLiveContext(mode: context.mode, status: outsideWindow ? "outsideWindow" : "unavailable",
+            windowHours: context.windowHours, warnings: context.warnings)
+    }
+
     static func title(for live: PlannerLiveAnnotation) -> String {
         if live.isCancelled { return "Cancelled" }
         if live.isDelayed { return "Delayed" }

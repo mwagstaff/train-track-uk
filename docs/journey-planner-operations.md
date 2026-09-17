@@ -304,6 +304,15 @@ to poll; an HTTP 200 can contain an individual queued or unavailable board.
 Only a ready board with no journeys establishes an empty result. The new app
 falls back to legacy saved-pair departures only if this endpoint returns 404.
 
+Pending boards also include optional `progress`: `phase` (`queued`, `preparing`,
+`searching`, `live`, or `retrying`), `queuedAt`, and, after execution starts,
+`startedAt`. `queuePosition` describes the saved-route queue; interactive searches
+can also be ahead in the shared worker. During scheduled calculation,
+`completedWindows` and `totalWindows` report actual completed departure windows.
+These are work counters, not a completion percentage or predicted finish time.
+Older apps can ignore the extra fields. Ordinary capacity waiting has no error;
+a failed calculation retains its real error while waiting to retry.
+
 ### Cache and work limits
 
 - Scheduled departure profiles are shared across clients for up to two hours.
@@ -335,11 +344,21 @@ falls back to legacy saved-pair departures only if this endpoint returns 404.
   early replan. New structural alternatives remain in an ephemeral refresh
   profile and are retimed/revalidated each time; live forecasts are never written
   into the two-hour scheduled cache.
-- At most eight saved-board tasks are pending, with two per requesting client
+- At most eight saved-board tasks are admitted, with two per requesting client
   and four per network. Identical work shares a single admission. Calculations use the existing
   single worker, heap and cooperative CPU budget. Interactive work takes priority
   over queued warming; waiting refreshes age into service. Foreground admission
   does not interrupt a calculation already running.
+- Waiting routes retain their place across polling and advance automatically as
+  slots become available. Oldest outstanding work is admitted first; repeated
+  refreshes cannot keep reclaiming the slots ahead of other saved routes.
+  Deferred intents remain bounded by the existing in-memory route limit.
+  Completed stages retain their place until a first result is available;
+  subsequent refresh/replan requests and failed retries take a new place.
+  Under profile memory pressure, an idle queued route releases its in-memory
+  profile and reloads the scheduled cache at its turn, preserving its queue age.
+  A profile currently in use is protected; memory and concurrency limits do not
+  increase to admit more routes.
 - Refreshing is demand-driven. Polling renews interest; two minutes without any
   interested client cancels pending work. Closing one client does not cancel
   work still requested by another. Both app tabs share their requests and poll

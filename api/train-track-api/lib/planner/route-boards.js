@@ -53,9 +53,10 @@ export class PlannerRouteBoards {
         this.entries = new Map();
         this.queue = [];
         this.active = null;
+        this.sequence = 0;
         this.closed = false;
         this.metrics = { cacheHits: 0, profiles: 0, liveRefreshes: 0, replans: 0, coalesced: 0, failures: 0 };
-        this.sweep = setInterval(() => this.prune(), 10000);
+        this.sweep = setInterval(() => { this.prune(); this.admitWaiting(); this.pump(); }, 10000);
         this.sweep.unref();
     }
 
@@ -68,17 +69,18 @@ export class PlannerRouteBoards {
     }
 
     async get(body, { client = 'anonymous', network = client } = {}) {
-        const now = this.now();
+        let now = this.now();
         const routes = normalizeRouteBoards(body, now);
         if (this.closed) throw new PlannerError('DATASET_UNAVAILABLE', 'Saved journey planning is unavailable.', 503);
         this.prune();
         const metadata = await this.status();
+        now = this.now();
         if (!metadata.available || !metadata.dataset?.version) {
             return { apiVersion: API_VERSION, boards: routes.map(route => ({ id: route.id, status: 'unavailable', pollAfterMs: 20000,
                 error: { code: 'DATASET_UNAVAILABLE', message: metadata.reason || 'Saved journey planning is unavailable.' } })) };
         }
         for (const entry of this.entries.values()) {
-            if (entry.version !== metadata.dataset.version) {
+            if (entry.version !== metadata.dataset.version || entry.bucket !== Math.floor(now / (2 * HOUR)) * 2 * HOUR) {
                 entry.pending?.controller.abort();
                 this.queue = this.queue.filter(work => work.entry !== entry);
                 this.entries.delete(entry.key);
@@ -98,10 +100,13 @@ export class PlannerRouteBoards {
             if (!entry.callers.has(client) && entry.callers.size >= 128) entry.callers.delete(entry.callers.keys().next().value);
             entry.callers.set(client, { network, at: now });
             entry.requestedMode = route.realtime;
-            if (!entry.pending && now >= entry.retryAt) {
-                if (entry.waitingKind) this.enqueue(entry, entry.waitingKind === 'replan' && route.realtime === 'ignore'
-                    ? 'refresh' : entry.waitingKind, route.realtime, { client, network });
-                else if (created) this.enqueue(entry, 'load', route.realtime, { client, network });
+            const queued = entry.waiting ?? (entry.pending !== this.active ? entry.pending : null);
+            if (queued) {
+                queued.mode = route.realtime;
+                if (queued.kind === 'replan' && route.realtime === 'ignore') queued.kind = 'refresh';
+            }
+            if (!entry.pending && !entry.waiting && now >= entry.retryAt) {
+                if (created) this.enqueue(entry, 'load', route.realtime, { client, network });
                 else if (!entry.profile || entry.expiresAt <= now) this.enqueue(entry, 'profile', route.realtime, { client, network });
                 else if (!entry.results.has(route.realtime) || now - entry.results.get(route.realtime).at >= LIVE_MS
                     || entry.results.get(route.realtime).result.journeys.some(journey => Date.parse(journey.departure) < now)) {
@@ -110,6 +115,7 @@ export class PlannerRouteBoards {
             }
             return this.present(entry, route, now);
         });
+        this.admitWaiting();
         this.pump();
         return { apiVersion: API_VERSION, boards };
     }
@@ -122,30 +128,64 @@ export class PlannerRouteBoards {
         const result = usable ? { ...cached.result,
             journeys: cached.result.journeys.filter(journey => Date.parse(journey.departure) >= now),
             ...(cached.result.disruptedJourneys ? { disruptedJourneys: cached.result.disruptedJourneys.filter(journey => Date.parse(journey.departure) >= now) } : {}) } : null;
+        const work = entry.pending ?? entry.waiting;
+        const waiting = this.outstanding().filter(value => value !== this.active || value.phase === 'queued');
+        const position = work ? waiting.indexOf(work) + 1 : 0;
+        const progress = work && { phase: entry.waiting && entry.retryAt > now ? 'retrying' : work.phase,
+            queuedAt: new Date(work.queuedAt).toISOString(),
+            ...(work.startedAt != null ? { startedAt: new Date(work.startedAt).toISOString() } : {}),
+            ...(position > 0 ? { queuePosition: position } : {}),
+            ...(work.completedWindows != null ? { completedWindows: work.completedWindows, totalWindows: work.totalWindows } : {}) };
         return { id: route.id, status: result ? (entry.pending || entry.waiting || entry.error ? 'refreshing' : 'ready')
-            : entry.error && !entry.pending && !entry.waiting ? 'unavailable' : 'queued',
+            : entry.error && !entry.pending ? 'unavailable' : 'queued',
         pollAfterMs: entry.waiting ? 5000 : entry.pending ? 1000 : entry.error ? 5000 : 20000,
+        ...(progress ? { progress } : {}),
         ...(result ? { result } : {}),
         ...(entry.computedAt ? { computedAt: new Date(entry.computedAt).toISOString(), expiresAt: new Date(entry.expiresAt).toISOString() } : {}),
         ...(entry.error ? { error: entry.error } : {}) };
     }
 
     enqueue(entry, kind, mode, owner) {
-        if (entry.pending || this.closed) return false;
-        const pending = [...this.queue, ...(this.active ? [this.active] : [])];
-        if (pending.length >= this.maxPending || pending.filter(work => work.client === owner.client).length >= this.maxPerClient
-            || pending.filter(work => work.network === owner.network).length >= this.maxPerNetwork) {
-            entry.waiting = true;
-            entry.waitingKind = kind;
-            entry.error = { code: 'SEARCH_BUSY', message: 'Saved journeys are waiting to be planned.' };
-            entry.retryAt = this.now() + 5000;
-            return false;
-        }
-        entry.waiting = false;
-        entry.waitingKind = null;
-        entry.pending = { entry, kind, mode, client: owner.client, network: owner.network, controller: new AbortController() };
-        this.queue.push(entry.pending);
+        if (entry.pending || entry.waiting || this.closed) return false;
+        if (kind === 'replan' && mode === 'ignore') kind = 'refresh';
+        entry.waiting = { entry, kind, mode, client: owner.client, network: owner.network,
+            queuedAt: owner.queuedAt ?? this.now(), order: owner.order ?? ++this.sequence,
+            phase: 'queued', controller: new AbortController() };
         return true;
+    }
+
+    outstanding() {
+        const waiting = [...this.entries.values()].map(entry => entry.waiting).filter(Boolean);
+        return [...(this.active ? [this.active] : []), ...this.queue, ...waiting].sort((a, b) => {
+            if (a === this.active) return -1;
+            if (b === this.active) return 1;
+            // Preserve age across polls, with initial boards winning a same-poll
+            // tie. New cold routes cannot continually overtake an older refresh.
+            return a.queuedAt - b.queuedAt || Number(a.entry.results.has(a.mode)) - Number(b.entry.results.has(b.mode))
+                || a.order - b.order;
+        });
+    }
+
+    admitWaiting() {
+        if (this.closed) return;
+        // Reconsider waiting worker slots together with deferred intents. This
+        // prevents an early card's repeated polls from overtaking a cold card.
+        for (const work of this.queue.splice(0)) {
+            work.entry.pending = null;
+            work.entry.waiting = work;
+        }
+        const admitted = this.active ? [this.active] : [];
+        for (const work of this.outstanding()) {
+            if (work === this.active || work.entry.retryAt > this.now()) continue;
+            if (admitted.length >= this.maxPending) break;
+            if (admitted.filter(value => value.client === work.client).length >= this.maxPerClient
+                || admitted.filter(value => value.network === work.network).length >= this.maxPerNetwork) continue;
+            work.entry.waiting = null;
+            work.entry.pending = work;
+            work.entry.error = null;
+            this.queue.push(work);
+            admitted.push(work);
+        }
     }
 
     profileSize(profile) {
@@ -160,9 +200,22 @@ export class PlannerRouteBoards {
             + (value.refreshProfileBytes ?? 0), 0) - (entry[field] ?? 0) + bytes;
         for (const other of [...this.entries.values()].sort((a, b) => a.lastRequested - b.lastRequested)) {
             if (total <= this.maxProfileBytes) break;
-            if (other === entry || other.pending) continue;
-            total -= (other.profileBytes ?? 0) + (other.refreshProfileBytes ?? 0);
-            this.entries.delete(other.key);
+            if (other === entry || this.active?.entry === other) continue;
+            const retainedBytes = (other.profileBytes ?? 0) + (other.refreshProfileBytes ?? 0);
+            if (!retainedBytes) continue;
+            total -= retainedBytes;
+            const work = other.pending ?? other.waiting;
+            if (work) {
+                // Queued work does not yet use its profile. Release those bytes
+                // while preserving its place and reload the scheduled cache at
+                // its turn, instead of making a cold route wait for idle cards.
+                work.kind = 'load';
+                other.profile = null;
+                other.profileBytes = 0;
+                if (other.refreshProfile) other.replannedFingerprint = null;
+                other.refreshProfile = null;
+                other.refreshProfileBytes = 0;
+            } else this.entries.delete(other.key);
         }
         if (total > this.maxProfileBytes) throw new PlannerError('SEARCH_BUSY', 'Saved journey planning is busy. Please try again shortly.', 429);
     }
@@ -177,10 +230,22 @@ export class PlannerRouteBoards {
         const config = this.service.config ?? {};
         const execution = { timeoutMs: config.jobTimeoutMs ?? 600000, maxOperations: config.jobMaxOperations ?? 1000000000,
             cpuDutyCycle: config.jobCpuDutyCycle ?? 0.5 };
+        const onStart = () => { work.startedAt = this.now(); work.phase = kind === 'refresh' ? 'live' : 'preparing'; };
+        const onProgress = progress => {
+            const value = typeof progress === 'string' ? { phase: progress } : progress;
+            if (!['preparing', 'searching', 'live'].includes(value?.phase)) return;
+            work.phase = value.phase;
+            if (Number.isInteger(value.completedWindows) && Number.isInteger(value.totalWindows)
+                && value.completedWindows >= 0 && value.completedWindows <= value.totalWindows && value.totalWindows <= 8) {
+                work.completedWindows = value.completedWindows;
+                work.totalWindows = value.totalWindows;
+            }
+        };
         const call = (method, payload) => this.service.call(method, payload, { signal: controller.signal, execution,
-            priority: 'background', queueTimeoutMs: config.jobQueueTimeoutMs ?? 480000 });
+            priority: 'background', queueTimeoutMs: config.jobQueueTimeoutMs ?? 480000, onStart, onProgress });
         Promise.resolve().then(async () => {
             if (kind === 'load') {
+                onStart();
                 const stored = await this.cache.get(entry.key);
                 if (stored?.profile?.version === entry.version && stored.expiresAt > this.now()) {
                     const bytes = this.profileSize(stored.profile);
@@ -238,12 +303,20 @@ export class PlannerRouteBoards {
                 this.metrics.failures++;
                 entry.error = failure(error);
                 entry.retryAt = this.now() + (error.code === 'SEARCH_BUSY' ? 5000 : 20000);
+                next = kind;
             }
         }).finally(() => {
             entry.pending = null;
             this.active = null;
-            if (!controller.signal.aborted && next && this.now() - entry.lastRequested < LEASE_MS) this.enqueue(entry, next, mode, work);
+            if (!entry.error && entry.requestedMode !== mode && next !== 'profile') next = 'refresh';
+            if (!controller.signal.aborted && next && this.now() - entry.lastRequested < LEASE_MS) {
+                // A successful first result releases its place before a replan;
+                // automatic retries also go behind older outstanding routes.
+                const owner = next === 'replan' || entry.error ? { client: work.client, network: work.network } : work;
+                this.enqueue(entry, next, entry.requestedMode ?? mode, owner);
+            }
             this.prune();
+            this.admitWaiting();
             this.pump();
         });
     }
@@ -251,6 +324,12 @@ export class PlannerRouteBoards {
     prune() {
         const now = this.now();
         for (const entry of this.entries.values()) {
+            if (entry.bucket !== Math.floor(now / (2 * HOUR)) * 2 * HOUR) {
+                entry.pending?.controller.abort();
+                this.queue = this.queue.filter(work => work.entry !== entry);
+                this.entries.delete(entry.key);
+                continue;
+            }
             for (const [client, caller] of entry.callers) if (now - caller.at > LEASE_MS) entry.callers.delete(client);
             if (entry.pending && now - entry.lastRequested > LEASE_MS) {
                 entry.pending.controller.abort();

@@ -92,7 +92,7 @@ struct SavedRoutePlannerTests {
     }
 
     @Test func cachedLiveEvidenceExpiresEvenWhenRowsStayVisible() throws {
-        var response = try result()
+        var response = try result(journeys: [try journey(live: PlannerLiveAnnotation(status: "onTime"))])
         response.live = PlannerLiveContext(mode: "apply", status: "live", updatedAt: now, expiresAt: now.addingTimeInterval(90))
         let board = SavedRouteBoard(id: "r", status: "refreshing", pollAfterMs: 1000, result: response,
             computedAt: now, expiresAt: now.addingTimeInterval(20), error: nil)
@@ -104,6 +104,92 @@ struct SavedRoutePlannerTests {
         let recentlyComputed = SavedRouteBoardState(board: SavedRouteBoard(id: "r", status: "ready", pollAfterMs: nil,
             result: response, computedAt: now, expiresAt: nil, error: nil))
         #expect(recentlyComputed.liveIsStale(at: now))
+    }
+
+    @Test func queuedProgressIsDecodedAndBusyWarningsDoNotHideItsSpinner() async throws {
+        let data = Data("""
+        {"id":"r","status":"queued","progress":{"phase":"queued","queuePosition":2,"queuedAt":"2027-01-15T08:00:00Z"}}
+        """.utf8)
+        let decoded = try PlannerTime.decoder().decode(SavedRouteBoard.self, from: data)
+        #expect(decoded.progress?.queuePosition == 2)
+        let client = RouteBoardStub()
+        client.status = "queued"
+        client.boardError = PlannerError(code: "SEARCH_BUSY", message: "Saved journeys are waiting to be planned.")
+        client.progress = SavedRouteBoardProgress(phase: "queued", queuePosition: 2, queuedAt: now.addingTimeInterval(-65))
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "INV"])
+        await store.refresh(groups: [route])
+        let state = store.state(for: route)
+        #expect(state.isPending)
+        #expect(state.message == nil)
+        #expect(state.progressPresentation(at: now)?.title == "Waiting to plan journeys…")
+        #expect(state.progressPresentation(at: now)?.details == ["Queue position: 2", "Waiting: 1 min 5 sec"])
+        client.boardError = nil
+        client.progress = SavedRouteBoardProgress(phase: "searching", queuedAt: now.addingTimeInterval(-70),
+            startedAt: now.addingTimeInterval(-20), completedWindows: 3, totalWindows: 8)
+        await store.refresh(groups: [route], force: true)
+        #expect(store.state(for: route).progressPresentation(at: now)?.title == "Finding journey options…")
+        #expect(store.state(for: route).progressPresentation(at: now)?.details == ["Checked 3 of 8 timetable windows", "Elapsed: 1 min 10 sec"])
+        client.status = "ready"
+        client.result = try result()
+        client.progress = nil
+        await store.refresh(groups: [route], force: true)
+        #expect(!store.state(for: route).isPending)
+        #expect(store.state(for: route).progressPresentation(at: now) == nil)
+    }
+
+    @Test func olderBusyHTTPResponsesKeepCachedRowsAndRetryWithoutInventingAnETA() async throws {
+        let client = RouteBoardStub()
+        client.result = try result()
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "VIC"])
+        await store.refresh(groups: [route])
+        client.failure = PlannerError(code: "SEARCH_BUSY", message: "Busy")
+        await store.refresh(groups: [route], force: true)
+        let state = store.state(for: route)
+        #expect(state.result != nil)
+        #expect(state.message == nil)
+        #expect(state.progressPresentation(at: now)?.title == "Waiting to update journeys…")
+        #expect(state.nextRefresh == now.addingTimeInterval(5))
+    }
+
+    @Test func staleLiveEvidenceOnlyAppliesToTheJourneyThatHadAForecast() throws {
+        let scheduled = try journey(live: nil, departure: now.addingTimeInterval(5 * 3600))
+        let unknown = try journey(live: PlannerLiveAnnotation(status: "unknown", updatedAt: now.addingTimeInterval(-120)))
+        let stale = try journey(live: PlannerLiveAnnotation(status: "onTime", updatedAt: now.addingTimeInterval(-120)))
+        let fresh = try journey(live: PlannerLiveAnnotation(status: "onTime", updatedAt: now.addingTimeInterval(-10)))
+        let expiredContext = PlannerLiveContext(mode: "apply", status: "partial", updatedAt: now.addingTimeInterval(-120), expiresAt: now.addingTimeInterval(-30), windowHours: 4)
+        #expect(!PlannerLivePresentation.hasExpiredEvidence(for: scheduled, context: expiredContext, at: now))
+        #expect(!PlannerLivePresentation.hasExpiredEvidence(for: unknown, context: expiredContext, at: now))
+        #expect(PlannerLivePresentation.hasExpiredEvidence(for: stale, context: expiredContext, at: now))
+        #expect(!PlannerLivePresentation.hasExpiredEvidence(for: fresh, context: expiredContext, at: now))
+        let context = PlannerLivePresentation.context(for: scheduled, from: expiredContext, at: now)
+        #expect(context?.status == "outsideWindow")
+        #expect(context?.expiresAt == nil)
+        #expect(context?.updatedAt == nil)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(PlannerTime.iso8601(date))
+        }
+        var raw = try #require(JSONSerialization.jsonObject(with: encoder.encode(scheduled)) as? [String: Any])
+        var legs = try #require(raw["legs"] as? [[String: Any]])
+        legs[0]["kind"] = "transfer"
+        legs[0]["mode"] = "tubeTransfer"
+        raw["legs"] = legs
+        let transfer = try PlannerTime.decoder().decode(PlannedJourney.self, from: JSONSerialization.data(withJSONObject: raw))
+        #expect(PlannerLivePresentation.context(for: transfer, from: expiredContext, at: now) == expiredContext)
+    }
+
+    @Test func failedCalculationShowsItsErrorAlongsideAutomaticRetryProgress() {
+        let error = PlannerError(code: "SEARCH_TIMEOUT", message: "The search took too long.")
+        let board = SavedRouteBoard(id: "r", status: "unavailable", pollAfterMs: 5000, result: nil,
+            computedAt: nil, expiresAt: nil, error: error,
+            progress: SavedRouteBoardProgress(phase: "retrying", queuedAt: now.addingTimeInterval(-20)))
+        let state = SavedRouteBoardState(board: board, message: error.message)
+        #expect(state.isPending)
+        #expect(state.message == error.message)
+        #expect(state.progressPresentation(at: now)?.title == "Waiting to retry…")
     }
 
     @Test func modeOverrideUsesSeparateCacheWithoutChangingSavedStops() async {
@@ -200,8 +286,33 @@ struct SavedRoutePlannerTests {
         #expect(!PlannerTrainTracking.matchesBoard(departure, leg: tomorrow, now: observed))
     }
 
-    private func result() throws -> PlannerSearchResponse {
-        try PlannerTime.decoder().decode(PlannerSearchResponse.self, from: Data(JourneyPlannerTests.emptyResult.utf8))
+    private func journey(live: PlannerLiveAnnotation?, departure: Date? = nil) throws -> PlannedJourney {
+        let start = departure ?? now.addingTimeInterval(600)
+        var leg: [String: Any] = ["kind": "vehicle", "mode": "rail", "from": ["crs": "KTH", "name": "Kent House"],
+            "to": ["crs": "VIC", "name": "London Victoria"], "departure": PlannerTime.iso8601(start),
+            "arrival": PlannerTime.iso8601(start.addingTimeInterval(1200))]
+        if let live {
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .custom { date, encoder in
+                var container = encoder.singleValueContainer()
+                try container.encode(PlannerTime.iso8601(date))
+            }
+            leg["live"] = try JSONSerialization.jsonObject(with: encoder.encode(live))
+        }
+        let raw: [String: Any] = ["id": UUID().uuidString, "departure": PlannerTime.iso8601(start),
+            "arrival": PlannerTime.iso8601(start.addingTimeInterval(1200)), "durationMinutes": 20, "changes": 0, "legs": [leg]]
+        return try PlannerTime.decoder().decode(PlannedJourney.self, from: JSONSerialization.data(withJSONObject: raw))
+    }
+
+    private func result(journeys: [PlannedJourney] = []) throws -> PlannerSearchResponse {
+        var raw = try #require(JSONSerialization.jsonObject(with: Data(JourneyPlannerTests.emptyResult.utf8)) as? [String: Any])
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .custom { date, encoder in
+            var container = encoder.singleValueContainer()
+            try container.encode(PlannerTime.iso8601(date))
+        }
+        raw["journeys"] = try JSONSerialization.jsonObject(with: encoder.encode(journeys))
+        return try PlannerTime.decoder().decode(PlannerSearchResponse.self, from: JSONSerialization.data(withJSONObject: raw))
     }
 
     private func group(_ codes: [String]) -> JourneyGroup {
@@ -219,6 +330,8 @@ struct SavedRoutePlannerTests {
     var status = "ready"
     var result: PlannerSearchResponse?
     var failure: Error?
+    var boardError: PlannerError?
+    var progress: SavedRouteBoardProgress?
     var hold = false
     var continuation: CheckedContinuation<Void, Never>?
     func routeBoards(_ routes: [SavedRouteQuery]) async throws -> SavedRouteBoardsResponse {
@@ -226,7 +339,7 @@ struct SavedRoutePlannerTests {
         if hold { await withCheckedContinuation { continuation = $0 } }
         if let failure { throw failure }
         return SavedRouteBoardsResponse(apiVersion: 3, boards: routes.map {
-            SavedRouteBoard(id: $0.id, status: status, pollAfterMs: 20000, result: result, computedAt: nil, expiresAt: nil, error: nil)
+            SavedRouteBoard(id: $0.id, status: status, pollAfterMs: 20000, result: result, computedAt: nil, expiresAt: nil, error: boardError, progress: progress)
         })
     }
 }

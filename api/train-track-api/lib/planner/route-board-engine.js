@@ -82,6 +82,9 @@ async function context(engine, payload, signal, execution) {
         const begin = Date.parse(query.time), end = begin + query.windowMinutes * 60000;
         const results = [], warnings = new Set();
         let first, total = 0, departureTimes = 0, truncated = false, operations = 0, labels = 0;
+        const totalWindows = Math.ceil(query.windowMinutes / 60);
+        let completedWindows = 0;
+        execution.onProgress?.({ phase: 'searching', completedWindows, totalWindows });
         // A saved board keeps the frontier independently for each departure.
         // Disjoint departure windows therefore combine exactly, while releasing
         // each national search's intermediate labels before the next window.
@@ -104,6 +107,7 @@ async function context(engine, payload, signal, execution) {
             results.push(...part.journeys);
             const balanced = departureProfileOrder(results.sort(compare)).slice(0, ROUTE_PROFILE_LIMIT + 1);
             results.splice(0, results.length, ...balanced);
+            execution.onProgress?.({ phase: 'searching', completedWindows: ++completedWindows, totalWindows });
         }
         check();
         return { ...first, journeys: results, warnings: [...warnings], searchTruncated: truncated,

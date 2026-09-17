@@ -4,6 +4,43 @@ final class JourneyPlannerUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testSavedRouteQueueProgressAtLargestText() throws {
+        let app = launch(plannerEnabled: false, largeText: true, apiBase: "http://127.0.0.1:3014/saved-progress-large/api/v2")
+        saveFixtureRoute(in: app)
+        let progress = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@ AND label CONTAINS %@",
+            "saved-route.progress.", "Queue position: 2")).firstMatch
+        XCTAssertTrue(progress.waitForExistence(timeout: 10))
+        scrollTo(progress, in: app)
+        attach("saved-route-queue-largest-text", app: app)
+        try app.performAccessibilityAudit(for: [.textClipped, .hitRegion])
+    }
+
+    @MainActor
+    func testSavedRouteQueueProgressBecomesScheduledJourneys() throws {
+        let app = launch(plannerEnabled: false, apiBase: "http://127.0.0.1:3014/saved-progress/api/v2")
+        saveFixtureRoute(in: app)
+        let queued = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@",
+            "saved-route.progress.KTH-INV", "Queue position: 2")).firstMatch
+        XCTAssertTrue(queued.waitForExistence(timeout: 10))
+        XCTAssertTrue(queued.label.contains("Waiting to plan journeys"))
+        XCTAssertTrue(queued.label.contains("Waiting:"))
+        XCTAssertFalse(app.staticTexts["Saved journeys are waiting to be planned."].exists)
+        attach("saved-route-queue-progress", app: app)
+        let searching = app.descendants(matching: .any).matching(NSPredicate(format: "identifier == %@ AND label CONTAINS %@",
+            "saved-route.progress.KTH-INV", "Checked 3 of 8 timetable windows")).firstMatch
+        XCTAssertTrue(searching.waitForExistence(timeout: 10))
+        attach("saved-route-search-progress", app: app)
+        let journey = app.buttons["saved-route.journey.saved-apply-KTH"].firstMatch
+        XCTAssertTrue(journey.waitForExistence(timeout: 15))
+        XCTAssertTrue(journey.label.contains("Scheduled"))
+        XCTAssertFalse(app.staticTexts["Live times out of date"].exists)
+        attach("saved-route-scheduled-ready", app: app)
+        journey.tap()
+        XCTAssertTrue(app.navigationBars["Journey details"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Live information may be out of date")).firstMatch.exists)
+    }
+
+    @MainActor
     func testSavedRouteShowsWholeItineraryAndIndependentTrainActions() throws {
         let app = launch(plannerEnabled: false, apiBase: "http://127.0.0.1:3014/saved/api/v2")
         saveFixtureRoute(in: app)
