@@ -83,6 +83,15 @@ export function prepareNetwork(network, check = () => {}) {
     return prepared;
 }
 
+/** Drop the derived per-index caches (boarding potentials, temporal bounds)
+ * under memory pressure. The index itself and its results are unaffected. */
+export function releaseIndexCaches(network) {
+    const index = indexes.get(network);
+    if (!index) return;
+    index.potentials.clear();
+    index.temporal?.clear();
+}
+
 function lowerBound(items, time) {
     let low = 0;
     let high = items.length;
@@ -479,18 +488,25 @@ export function findJourneys(request, network, options = {}) {
     const timeBoundCache = index.temporal.get(temporalKey) ?? new Map();
     index.temporal.delete(temporalKey);
     index.temporal.set(temporalKey, timeBoundCache);
-    if (index.temporal.size > 8) index.temporal.delete(index.temporal.keys().next().value);
+    if (index.temporal.size > 4) index.temporal.delete(index.temporal.keys().next().value);
     if (!timeBoundCache.has(globalHorizon)) {
         // The shared cache may already hold other searches' horizons; this
         // search's global envelope must exist before any fallback below.
         if (timeBoundCache.size >= 8) timeBoundCache.delete(timeBoundCache.keys().next().value);
         timeBoundCache.set(globalHorizon, temporalBounds(index, target, reverse, allowedModes, maxBoardings, globalHorizon, check));
     }
+    // Only the bounds themselves are shared. The eligible-event and call
+    // caches hang off a per-search view so they are released with the search.
+    const views = new Map();
+    const view = bounds => {
+        if (!views.has(bounds)) views.set(bounds, [...bounds]);
+        return views.get(bounds);
+    };
     const reachableTimes = horizon => {
         // Frequent local arrivals already give tight cheap finish bounds. Rebuilding
         // a national timetable envelope for each one costs more than it can prune.
         const boundary = needsProfileBounds && Number.isFinite(horizon) ? horizon : globalHorizon;
-        if (timeBoundCache.has(boundary)) return timeBoundCache.get(boundary);
+        if (timeBoundCache.has(boundary)) return view(timeBoundCache.get(boundary));
         if (timeBoundCache.size >= 8) {
             // Keep the initial global envelope and reuse an optimistic cached
             // horizon instead of repeatedly evicting and rebuilding national
@@ -500,10 +516,10 @@ export function findJourneys(request, network, options = {}) {
             for (const cached of timeBoundCache.keys()) {
                 if (reverse ? cached <= boundary && cached > closest : cached >= boundary && cached < closest) closest = cached;
             }
-            return timeBoundCache.get(closest);
+            return view(timeBoundCache.get(closest));
         }
         timeBoundCache.set(boundary, temporalBounds(index, target, reverse, allowedModes, maxBoardings, boundary, check));
-        return timeBoundCache.get(boundary);
+        return view(timeBoundCache.get(boundary));
     };
     const results = [];
     const completed = [];

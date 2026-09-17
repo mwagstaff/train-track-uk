@@ -351,7 +351,9 @@ test('more pages pin a live snapshot, fresh searches and later windows stay inde
   assert.ok(cursor.liveSnapshotId);
   const count = f.calls.boards.length;
   f.state.updates.A00015 = { ORG: { isCancelled: true }, DST: { isCancelled: true } };
-  const second = await f.engine.search(cursor);
+  const telemetry = [];
+  const second = await f.engine.search(cursor, undefined, { onTelemetry: value => telemetry.push(value) });
+  assert.equal(telemetry.at(-1).cacheStatus, 'hit');
   assert.deepEqual(ids(second.journeys[0]), [trains[1].id]);
   assert.equal(second.journeys[0].legs[0].live.cancelled, false);
   assert.equal(f.calls.boards.length, count);

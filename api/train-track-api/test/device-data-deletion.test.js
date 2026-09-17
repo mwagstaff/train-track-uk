@@ -11,7 +11,7 @@ import {
     referencesDeletedDevice
 } from '../lib/device-data-deletion-state.js';
 
-test('delete-all removes device data while retaining shared recent departures', async () => {
+test('delete-all removes device data while retaining shared departures and anonymous planner logs', async () => {
     const deviceId = 'installation-1';
     const notificationToken = 'notification-token-1234567890';
     const liveActivityToken = 'live-activity-token-1234567890';
@@ -61,6 +61,9 @@ test('delete-all removes device data while retaining shared recent departures', 
         ],
         [COLLECTIONS.recentDepartures]: [
             { _id: 'KTH:VIC:service-1', serviceID: 'service-1', fromCRS: 'KTH', toCRS: 'VIC' }
+        ],
+        [COLLECTIONS.plannerSearches]: [
+            { _id: 'random-search-id', origin: 'KTH', destination: 'VIC', status: 'success' }
         ]
     });
     const calls = [];
@@ -116,6 +119,7 @@ test('delete-all removes device data while retaining shared recent departures', 
     assert.equal(database.documents(COLLECTIONS.notificationSubscriptions).length, 1);
     assert.equal(database.documents(COLLECTIONS.pushAuditEvents).length, 1);
     assert.equal(database.documents(COLLECTIONS.recentDepartures).length, 1);
+    assert.equal(database.documents(COLLECTIONS.plannerSearches).length, 1);
 });
 
 test('delete-all rejects an empty device identifier before touching storage', async () => {
@@ -152,7 +156,7 @@ test('concurrent delete-all requests for one installation share a single sweep',
     assert.equal(finishes, 1);
     assert.equal(
         calls.filter((call) => call.startsWith('delete:')).length,
-        Object.keys(COLLECTIONS).length - 1
+        Object.values(COLLECTIONS).filter(name => ![COLLECTIONS.recentDepartures, COLLECTIONS.plannerSearches].includes(name)).length
     );
 });
 

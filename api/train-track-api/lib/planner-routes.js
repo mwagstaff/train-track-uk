@@ -1,18 +1,20 @@
 import express from 'express';
 import { PlannerService } from './planner/service.js';
-import { API_VERSION, CAPABILITIES, PlannerError } from './planner/contract.js';
+import { API_VERSION, CAPABILITIES, decodeCursor, PlannerError } from './planner/contract.js';
 import { PlannerSearchJobs } from './planner/search-jobs.js';
 import { PlannerRouteBoards } from './planner/route-boards.js';
 import { isIP } from 'node:net';
+import { plannerSearchLog } from './planner-search-log.js';
 
 export function registerPlannerRoutes(app, { service = new PlannerService(), recordRequest = () => {}, requestMiddleware,
-    routeBoards = new PlannerRouteBoards(service) } = {}) {
+    searchLog = plannerSearchLog, routeBoards = new PlannerRouteBoards(service, { searchLog }) } = {}) {
     const router = express.Router();
-    const jobs = new PlannerSearchJobs(service);
+    const jobs = new PlannerSearchJobs(service, { searchLog });
     service.searchJobs = jobs;
     service.routeBoards = routeBoards;
     const observeRequest = operation => (req, res, next) => {
         const started = performance.now();
+        req.plannerStartedAt = new Date();
         let recorded = false;
         const record = () => {
             if (recorded) return;
@@ -25,8 +27,13 @@ export function registerPlannerRoutes(app, { service = new PlannerService(), rec
         next();
     };
     const beforeRequest = operation => [...(requestMiddleware ? [requestMiddleware] : []), observeRequest(operation)];
+    const rejectedSearch = (req, errorCode) => {
+        const source = req.path === '/search' ? 'search' : req.path === '/search-jobs' ? 'search-job' : 'saved-route';
+        searchLog.start({ source, request: req.body, startedAt: req.plannerStartedAt }).finish({ status: 'fail', outcome: 'rejected', errorCode });
+    };
     const requireJSON = (req, res, next) => {
         if (!req.is('application/json')) {
+            rejectedSearch(req, 'INVALID_REQUEST');
             res.status(415).json({ error: { code: 'INVALID_REQUEST', message: 'Send the journey search as application/json.' } });
             return;
         }
@@ -34,30 +41,52 @@ export function registerPlannerRoutes(app, { service = new PlannerService(), rec
     };
     const parseError = (error, req, res, next) => {
         if (error.type === 'entity.too.large') {
+            rejectedSearch(req, 'REQUEST_TOO_LARGE');
             res.status(413).json({ error: { code: 'REQUEST_TOO_LARGE', message: 'The journey search must be no larger than 16 KB.' } });
         } else if (error.type === 'entity.parse.failed') {
+            rejectedSearch(req, 'INVALID_REQUEST');
             res.status(400).json({ error: { code: 'INVALID_REQUEST', message: 'Supply valid JSON for the journey search.' } });
         } else if (error.status === 415) {
+            rejectedSearch(req, 'INVALID_REQUEST');
             res.status(415).json({ error: { code: 'INVALID_REQUEST', message: 'The journey search encoding is not supported.' } });
         } else next(error);
     };
     const handle = method => async (req, res) => {
         const controller = new AbortController();
-        const disconnected = () => { if (!res.writableEnded) controller.abort(); };
+        let request = req.body;
+        if (method === 'search' && request?.cursor !== undefined) {
+            try { request = decodeCursor(request.cursor).request; } catch { /* Validation remains owned by the service. */ }
+        }
+        const observation = method === 'search' ? searchLog.start({ source: 'search', request,
+            startedAt: req.plannerStartedAt }) : null;
+        const disconnected = () => {
+            if (!res.writableEnded) {
+                controller.abort();
+                observation?.finish({ status: 'other', outcome: 'cancelled', errorCode: 'SEARCH_CANCELLED' });
+            }
+        };
         res.once('close', disconnected);
         res.set('Cache-Control', 'no-store');
         try {
-            const options = { signal: controller.signal };
+            const options = { signal: controller.signal,
+                ...(observation ? { onStart: () => observation.update({ phase: 'running' }),
+                    onTelemetry: telemetry => observation.update(telemetry) } : {}) };
             let result;
             if (method === 'status') result = await service.status(options);
             if (method === 'stations') result = await service.stations(req.query.q ?? '', options);
             if (method === 'search') result = await service.search(req.body, options);
             if (method === 'journey') result = await service.journey(req.params.id, options);
-            if (!controller.signal.aborted) res.json(result);
+            if (!controller.signal.aborted) {
+                res.json(result);
+                observation?.finish({ status: 'success', outcome: result.journeys?.length ? 'completed' : 'empty',
+                    resultCount: result.journeys?.length ?? 0, datasetVersion: result.dataset?.version });
+            }
         } catch (error) {
             if (controller.signal.aborted) return;
             const known = error instanceof PlannerError;
             const status = known ? error.status : 503;
+            observation?.finish({ status: error.code === 'SEARCH_CANCELLED' ? 'other' : 'fail',
+                outcome: error.code === 'SEARCH_CANCELLED' ? 'cancelled' : 'failed', errorCode: known ? error.code : 'DATASET_UNAVAILABLE' });
             if (method === 'status' && status === 503) {
                 res.json({ available: false, apiVersion: API_VERSION, capabilities: CAPABILITIES,
                     reason: 'Journey planning is temporarily unavailable.' });

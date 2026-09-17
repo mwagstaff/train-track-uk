@@ -9,6 +9,7 @@ import { PlannerSearchJobs } from '../lib/planner/search-jobs.js';
 import { PlannerError, normalizeRequest } from '../lib/planner/contract.js';
 import { PlannerService, plannerConfig } from '../lib/planner/service.js';
 import { registerPlannerRoutes } from '../lib/planner-routes.js';
+import { noOpPlannerSearchLog } from '../lib/planner-search-log.js';
 
 const version = 'a'.repeat(64);
 const request = { origin: 'ECR', destination: 'BYM', time: '2026-09-16T18:09:00+01:00', timeType: 'arriveBy' };
@@ -118,7 +119,7 @@ test('failed jobs can be retried with a new key; completed leases expire and sto
 test('HTTP job lifecycle is additive, uncached, parser-bounded and survives a closed submit connection', async t => {
     const { service, calls } = fixture(t);
     const app = express();
-    registerPlannerRoutes(app, { service });
+    registerPlannerRoutes(app, { service, searchLog: noOpPlannerSearchLog });
     t.after(() => service.searchJobs.close());
     const server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
@@ -150,6 +151,7 @@ test('worker progress does not settle a request and queue waiting does not consu
     await fs.writeFile(filename, `import { parentPort } from 'node:worker_threads';
         parentPort.on('message', message => {
             parentPort.postMessage({ id: message.id, progress: { phase: 'searching' } });
+            parentPort.postMessage({ id: message.id, telemetry: { cacheStatus: 'hit' } });
             setTimeout(() => parentPort.postMessage({ id: message.id, result: { done: true } }), message.payload.delay);
         });`);
     const service = new PlannerService({ ...plannerConfig({}), timeoutMs: 2000 }, { workerURL: pathToFileURL(filename) });
@@ -157,16 +159,19 @@ test('worker progress does not settle a request and queue waiting does not consu
     const first = service.call('search', { delay: 300 });
     let started = false;
     let progress = false;
+    let telemetry;
     const second = service.call('search', { delay: 30 }, { queueTimeoutMs: 2000,
         execution: { timeoutMs: 150, maxOperations: 1000, cpuDutyCycle: 1 },
-        onStart: () => { started = true; }, onProgress: () => { progress = true; } });
+        onStart: () => { started = true; }, onProgress: () => { progress = true; }, onTelemetry: value => { telemetry = value; } });
     await new Promise(resolve => setTimeout(resolve, 200));
     assert.equal(started, false);
     assert.equal(progress, false);
+    assert.equal(telemetry, undefined);
     assert.deepEqual(await first, { done: true });
     assert.deepEqual(await second, { done: true });
     assert.equal(started, true);
     assert.equal(progress, true);
+    assert.deepEqual(telemetry, { cacheStatus: 'hit' });
 });
 
 test('a full legacy worker queue leaves an accepted job waiting rather than failing it', async t => {

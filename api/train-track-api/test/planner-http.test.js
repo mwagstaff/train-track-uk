@@ -7,6 +7,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { registerPlannerRoutes } from '../lib/planner-routes.js';
 import { PlannerService, plannerConfig } from '../lib/planner/service.js';
+import { noOpPlannerSearchLog } from '../lib/planner-search-log.js';
 
 async function server(t) {
     const app = express();
@@ -16,6 +17,7 @@ async function server(t) {
     // Match index.js: the planner owns its strict parser, and the existing
     // namespaces continue to use their larger JSON and form parsers afterwards.
     registerPlannerRoutes(app, {
+        searchLog: noOpPlannerSearchLog,
         service: { search: async body => { plannerCalls++; return { body }; } },
         requestMiddleware: (req, res, next) => { metricCalls++; next(); },
         recordRequest: (operation, status) => operations.push({ operation, status })

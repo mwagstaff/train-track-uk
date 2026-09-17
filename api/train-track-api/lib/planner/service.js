@@ -97,7 +97,7 @@ export class PlannerService {
         return { journey: cached.journey, dataset, ...(live ? { live } : {}) };
     }
 
-    call(method, payload, { signal, execution, onStart, onProgress, queueTimeoutMs, priority = 'interactive' } = {}) {
+    call(method, payload, { signal, execution, onStart, onProgress, onTelemetry, queueTimeoutMs, priority = 'interactive' } = {}) {
         if (this.closed) return Promise.reject(new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is unavailable.', 503));
         if (signal?.aborted) return Promise.reject(new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499));
         if (this.queue.length + Number(Boolean(this.active)) >= this.config.maxQueue) {
@@ -105,7 +105,7 @@ export class PlannerService {
         }
         return new Promise((resolve, reject) => {
             const job = { id: ++this.sequence, method, payload, resolve, reject, signal,
-                cancelBuffer: new SharedArrayBuffer(4), settled: false, execution, onStart, onProgress,
+                cancelBuffer: new SharedArrayBuffer(4), settled: false, execution, onStart, onProgress, onTelemetry,
                 priority, enqueuedAt: Date.now() };
             job.abort = () => this.cancel(job, new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499));
             job.timer = setTimeout(() => this.cancel(job,
@@ -157,6 +157,7 @@ export class PlannerService {
             if (worker !== this.worker || message.id !== this.active?.id) return;
             const job = this.active;
             if (message.progress) { job.onProgress?.(message.progress); return; }
+            if (message.telemetry) { job.onTelemetry?.(message.telemetry); return; }
             clearTimeout(job.killTimer);
             this.active = null;
             this.settle(job, message.error

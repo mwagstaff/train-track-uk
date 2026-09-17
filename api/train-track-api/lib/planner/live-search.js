@@ -131,7 +131,7 @@ export class LivePlanner {
         return this.provider;
     }
 
-    async search({ request, network, version, offset = 0, liveSnapshotId, route, check, abortSignal }) {
+    async search({ request, network, version, offset = 0, liveSnapshotId, route, check, abortSignal, onTelemetry }) {
         const startedAt = this.now();
         const key = rawKey(request, version);
         for (const [id, value] of this.snapshots) if (value.expiresAt <= startedAt) this.snapshots.delete(id);
@@ -150,6 +150,7 @@ export class LivePlanner {
         let snapshot = retained?.snapshot;
         let all;
         if (retained) {
+            onTelemetry?.({ cacheStatus: 'hit', datasetVersion: version });
             scheduled = retained.scheduled;
             all = retained.result;
         } else {

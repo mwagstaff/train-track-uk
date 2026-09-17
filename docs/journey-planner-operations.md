@@ -2,7 +2,7 @@
 
 ## Compatibility and release boundary
 
-The planner is an additive, public API under **`/api/v3/journey-planner`**. Existing v1/v2 endpoints, response shapes, live service identifiers and `/api/v2/config` are unchanged. Planner administration has no HTTP routes. No authentication or subscription requirement has been added to planner searches.
+The planner is an additive, public API under **`/api/v3/journey-planner`**. Existing v1/v2 endpoints, response shapes, live service identifiers and `/api/v2/config` are unchanged. Timetable import and activation have no HTTP routes. Search history is available in the existing admin portal at `/admin/journey-planner`. No authentication or subscription requirement has been added to planner searches.
 
 The iOS Debug build opens the planner from Add Journey. Release builds retain the current Add Journey screen until the local `journeyPlannerEnabled` feature flag is enabled. Debug can also use the `JOURNEY_PLANNER_ENABLED` launch environment variable. The planner always offers **Add a saved route**, which opens the existing manual route, favourites and tracking screen. A selected dated itinerary cannot yet be saved or tracked. The ten most recent successful searches are stored on the device, can be reused or removed, and preserve Depart now as an intent rather than an old timestamp.
 
@@ -215,6 +215,72 @@ Rebuild the app to enable this flow. The existing `/search` endpoint, v1/v2 rout
 The source generation date determines freshness; reimporting old data does not make it fresh. The 35/45-day thresholds are explicit prototype assumptions for the proposed monthly feed and need an operational decision before production. Search/cache keys include the exact instant, options, policy and version. Public metadata is refreshed even for cached results.
 
 Existing Prometheus HTTP metrics identify v3 routes separately. `planner_requests_total` records operation/status and `planner_request_duration_ms` records HTTP durations without station/device labels, including job-submit/status/cancel operations. A successful poll can contain a failed job; HTTP metrics alone do not measure job success or total time to completion. `/status` is the separate planner-readiness check. Imports produce progress and validation diagnostics privately; no admin endpoint exposes the source or activates data.
+
+### Search history in Mongo and the admin portal
+
+Open **Journey Planner** in the admin portal, or `/admin/journey-planner` directly.
+When using the production proxy, the public path is
+`/train-track/admin/journey-planner`. Admin links, forms, redirects and the
+dashboard's API action use request-relative URLs to retain the proxy prefix;
+direct local access and trailing-slash URLs also work. No proxy configuration
+change is required. Redeploy the API and reload any already-open admin page to
+receive the corrected links; no app rebuild is needed.
+The table defaults to newest searches first. All headings sort the complete
+selected dataset, with server-side pagination. Period filters cover the last
+hour, 24 hours (default), or seven days; source filters distinguish manual
+searches, queued searches, saved-route planning, live refreshes and replans.
+Station names are displayed alongside codes; station columns sort by code.
+
+The `planner_searches` collection stores one record per synchronous search or
+asynchronous caller submission. An accepted idempotent retry reuses that record;
+status polling does not add records. Concurrent callers sharing a calculation
+have independent records and cancellation outcomes, marked **Shared work**.
+Rejected submissions are recorded as failures. A saved route's first
+cache-load/profile/live-check cycle is one record; later actual refreshes and
+replans have separate records. Polls that simply read an existing board do not
+count as new searches.
+
+- `startedAt` is admission/submission time and `finishedAt` is when a result or
+  terminal outcome becomes available at the server, not when a phone receives
+  its next poll. Duration includes queue waiting. Zero journeys is a successful
+  result; validation/provider/worker failures remain failures. Cancellation,
+  expiry, superseded work and shutdown are other outcomes. Unfinished records
+  have no completion timestamp or duration; an abrupt process exit can leave
+  such a record unfinished until expiry.
+- Cache **Hit** means the interactive result/frontier was reused, or a saved
+  route reused a scheduled profile. **Miss** means calculation was required.
+  **Unknown** means no cache decision was reached. Sharing pending work and
+  cached upstream departure responses do not by themselves count as result
+  cache hits. Use the source filter when comparing these different workloads.
+- Summary cards cover all matching records, independently of pagination. Success
+  and failure percentages divide by successful plus failed searches. Average,
+  maximum and p99 durations include those completed searches only. P99 uses
+  the observed nearest rank, not a sampled percentile. Cache-hit percentage
+  divides hits by hits plus misses, excluding unknowns. Summary snapshots are
+  shared for up to 15 seconds; their timestamp appears on the page.
+- Retention is fixed at **seven days from `startedAt`**, using a BSON Date TTL
+  index with `expireAfterSeconds: 604800`. Completion does not extend retention.
+  Queries also restrict the time range because Mongo's TTL cleanup is
+  asynchronous. See [MongoDB TTL behaviour](https://www.mongodb.com/docs/manual/core/index-ttl/).
+- Logged fields are limited to public station codes, ordered intermediate
+  stops, requested date/time/mode, source, outcome, timing, cache evidence,
+  result count and dataset version. Device IDs, IP addresses, request headers,
+  raw cursors, results and provider credentials are not stored.
+
+Persistence runs separately from the planner, with one Mongo write batch at a
+time, up to 50 records per batch and 2,000 queued record updates. Lifecycle
+updates coalesce; revision guards prevent a delayed write from reverting a
+completed record. Writes have a two-second driver deadline and at most three
+attempts. Buffer exhaustion or a sustained Mongo outage can lose log records;
+rate-limited `[planner-search-log]` diagnostics report those failures without
+failing passenger searches. Admin reads are bounded separately, and return an
+explicit unavailable page on database errors instead of empty success stats.
+
+Deploy the API through the standard process. Startup creates the collection's
+TTL and query indexes automatically. No app rebuild, new credential, timetable
+import, manual migration or API version change is needed for search history.
+The page uses the existing `/admin` access boundary; the public planner API
+does not expose the log.
 
 ## Long-distance search correction — 15 September 2026
 

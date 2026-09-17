@@ -11,6 +11,7 @@ import { registerPlannerRoutes } from '../lib/planner-routes.js';
 import { PlannerError } from '../lib/planner/contract.js';
 import { PlannerService, plannerConfig } from '../lib/planner/service.js';
 import { PlannerEngine } from '../lib/planner/engine.js';
+import { noOpPlannerSearchLog } from '../lib/planner-search-log.js';
 
 const start = Date.parse('2026-09-17T12:10:00Z');
 const version = 'a'.repeat(64);
@@ -398,7 +399,7 @@ test('new HTTP resource leaves legacy APIs and existing planner search contract 
     const app = express();
     const f = fixture(t);
     f.service.search = async value => ({ oldSearch: value });
-    registerPlannerRoutes(app, { service: f.service, routeBoards: f.manager });
+    registerPlannerRoutes(app, { service: f.service, routeBoards: f.manager, searchLog: noOpPlannerSearchLog });
     const legacy = { departures: [{ serviceID: 'unchanged' }] };
     app.get('/api/v1/departures/from/KTH/to/VIC', (req, res) => res.json(legacy));
     app.get('/api/v2/departures/from/KTH/to/VIC', (req, res) => res.json([{ KTH_VIC: legacy.departures }]));

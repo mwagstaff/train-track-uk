@@ -14,6 +14,9 @@ import { LiveActivityPushClient } from './live-activity-push-client.js';
 import { getDeviceLastSeen } from './metrics.js';
 import { pushToStartTokenStore, pushToStartTokenTtlPolicy } from './push-to-start-token-store.js';
 import { testServiceHarness } from './test-service-harness.js';
+import { registerPlannerSearchAdminRoutes } from './planner-search-admin.js';
+import { listPlannerSearchLogs } from './planner-search-log.js';
+import { createAdminUrl } from './admin-url.js';
 
 const DEFAULT_LIMIT = 500;
 const DEFAULT_NOTIFICATION_LIMIT = 20;
@@ -21,6 +24,8 @@ const DEFAULT_DEVICE_PAGE_SIZE = 50;
 const DEFAULT_REPLAY_DEVICE_ID = 'BF4D495F-E69A-4E7D-B47D-09930684A323';
 
 export function registerAdminRoutes(app) {
+    registerPlannerSearchAdminRoutes(app, { listSearches: listPlannerSearchLogs, renderShell: renderAdminShell });
+
     app.get('/admin', async (req, res) => {
         try {
             const query = typeof req.query?.q === 'string' ? req.query.q.trim() : '';
@@ -32,6 +37,7 @@ export function registerAdminRoutes(app) {
             ]);
             const liveActivitySessions = liveActivityManager.listSubscriptions();
             res.type('html').send(renderAdminPage({
+                requestPath: req.path,
                 query,
                 limit,
                 subscriptions,
@@ -71,6 +77,7 @@ export function registerAdminRoutes(app) {
             const start = (safePage - 1) * pageSize;
             const devices = summaries.slice(start, start + pageSize);
             res.type('html').send(renderDeviceListPage({
+                requestPath: req.path,
                 query,
                 devices,
                 page: safePage,
@@ -105,7 +112,7 @@ export function registerAdminRoutes(app) {
             if (!detail.hasData) {
                 return res.status(404).type('html').send(renderErrorPage(`Device not found: ${deviceId}`));
             }
-            res.type('html').send(renderDeviceDetailPage(detail));
+            res.type('html').send(renderDeviceDetailPage(detail, req.path));
         } catch (error) {
             console.error('[admin] Failed to load device detail:', error?.message || error);
             res.status(500).type('html').send(renderErrorPage('Failed to load admin device detail.'));
@@ -132,6 +139,7 @@ export function registerAdminRoutes(app) {
             });
             const pagination = paginateItems(rows, page, pageSize);
             res.type('html').send(renderLiveActivityAdminPage({
+                requestPath: req.path,
                 query,
                 rows: pagination.items,
                 pagination,
@@ -146,6 +154,7 @@ export function registerAdminRoutes(app) {
     app.get('/admin/test-harness', async (req, res) => {
         try {
             res.type('html').send(renderTestHarnessPage({
+                requestPath: req.path,
                 state: testServiceHarness.getState(),
                 message: typeof req.query?.message === 'string' ? req.query.message : null
             }));
@@ -162,7 +171,7 @@ export function registerAdminRoutes(app) {
                 defaultPlatform: req.body?.default_platform,
                 defaultLength: req.body?.default_length
             });
-            res.redirect('/admin/test-harness?message=started');
+            res.redirect(createAdminUrl(req.path)('/admin/test-harness?message=started'));
         } catch (error) {
             console.error('[admin] Failed to start test harness:', error?.message || error);
             res.status(400).type('html').send(renderErrorPage(`Failed to start test harness: ${error?.message || error}`));
@@ -171,12 +180,12 @@ export function registerAdminRoutes(app) {
 
     app.all('/admin/test-harness/stop', async (req, res) => {
         testServiceHarness.stop();
-        res.redirect('/admin/test-harness?message=stopped');
+        res.redirect(createAdminUrl(req.path)('/admin/test-harness?message=stopped'));
     });
 
     app.all('/admin/test-harness/reset', async (req, res) => {
         testServiceHarness.reset();
-        res.redirect('/admin/test-harness?message=reset');
+        res.redirect(createAdminUrl(req.path)('/admin/test-harness?message=reset'));
     });
 
     app.all('/admin/test-harness/departures/:serviceId', async (req, res) => {
@@ -187,7 +196,7 @@ export function registerAdminRoutes(app) {
                 platform: req.body?.platform,
                 length: req.body?.length
             });
-            res.redirect('/admin/test-harness?message=updated');
+            res.redirect(createAdminUrl(req.path)('/admin/test-harness?message=updated'));
         } catch (error) {
             console.error('[admin] Failed to update test departure:', error?.message || error);
             res.status(400).type('html').send(renderErrorPage(`Failed to update test departure: ${error?.message || error}`));
@@ -196,7 +205,7 @@ export function registerAdminRoutes(app) {
 
     app.all('/admin/test-harness/departures/:serviceId/clear', async (req, res) => {
         testServiceHarness.clearDeparture(req.params.serviceId);
-        res.redirect('/admin/test-harness?message=cleared');
+        res.redirect(createAdminUrl(req.path)('/admin/test-harness?message=cleared'));
     });
 
     app.get('/admin/subscriptions/:id', async (req, res) => {
@@ -208,7 +217,7 @@ export function registerAdminRoutes(app) {
             }
             res.type('html').send(renderJsonDetailPage({
                 title: `Subscription ${subscription.id}`,
-                backHref: '../../admin',
+                backHref: createAdminUrl(req.path)('/admin'),
                 payload: subscription
             }));
         } catch (error) {
@@ -226,7 +235,7 @@ export function registerAdminRoutes(app) {
             }
             res.type('html').send(renderJsonDetailPage({
                 title: `Notification Event ${event.id}`,
-                backHref: '../../admin',
+                backHref: createAdminUrl(req.path)('/admin'),
                 payload: event
             }));
         } catch (error) {
@@ -250,6 +259,7 @@ export function registerAdminRoutes(app) {
             const recentDevices = buildRecentLiveActivityDevices(devicePayloads, pushToStartTokens);
             const devicePagination = paginateItems(recentDevices, devicePage, devicePageSize);
             res.type('html').send(renderLiveActivityPayloadListPage({
+                requestPath: req.path,
                 query,
                 limit,
                 payloads,
@@ -272,7 +282,7 @@ export function registerAdminRoutes(app) {
                 return res.status(404).type('html').send(renderErrorPage(`Live Activity payload not found: ${id}`));
             }
             const targetDeviceId = normalizeDeviceId(req.query?.target_device_id) || DEFAULT_REPLAY_DEVICE_ID;
-            res.type('html').send(renderLiveActivityPayloadDetailPage({ payload, targetDeviceId, replayResult: null }));
+            res.type('html').send(renderLiveActivityPayloadDetailPage({ requestPath: req.path, payload, targetDeviceId, replayResult: null }));
         } catch (error) {
             console.error('[admin] Failed to load live activity payload detail:', error?.message || error);
             res.status(500).type('html').send(renderErrorPage('Failed to load live activity payload detail.'));
@@ -307,6 +317,7 @@ export function registerAdminRoutes(app) {
                 });
             }
             res.status(statusCode).type('html').send(renderLiveActivityPayloadDetailPage({
+                requestPath: req.path,
                 payload: payloadRecord,
                 targetDeviceId,
                 targetActivityId,
@@ -319,7 +330,8 @@ export function registerAdminRoutes(app) {
     });
 }
 
-function renderAdminPage({ query, limit, subscriptions, notifications, geofenceEvents = [], liveActivitySessions = [] }) {
+function renderAdminPage({ query, limit, subscriptions, notifications, geofenceEvents = [], liveActivitySessions = [], requestPath = '/admin' }) {
+    const url = createAdminUrl(requestPath);
     const now = new Date();
     const scheduledSubscriptions = subscriptions.filter((subscription) => subscription?.source !== 'live_session');
 
@@ -381,7 +393,7 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
                 <td>${escapeHtml(days)}</td>
                 <td>${lastSeenCell}</td>
                 <td>
-                    <a href="admin/subscriptions/${encodeURIComponent(subscription.id || '')}">View JSON</a>
+                    <a href="${escapeHtml(url(`/admin/subscriptions/${encodeURIComponent(subscription.id || '')}`))}">View JSON</a>
                     &nbsp;
                     <button onclick="deleteSubscription('${subId}')" style="cursor:pointer;background:#e74c3c;color:#fff;border:none;border-radius:4px;padding:2px 8px;font-size:0.8em">Delete</button>
                 </td>
@@ -415,7 +427,7 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
             <td>${escapeHtml(formatStatus(event.status))}</td>
             <td>${escapeHtml(event.error || '')}</td>
             <td>${escapeHtml(event.apns_environment || '')}</td>
-            <td><a href="admin/notifications/${encodeURIComponent(event.id || '')}">JSON</a></td>
+            <td><a href="${escapeHtml(url(`/admin/notifications/${encodeURIComponent(event.id || '')}`))}">JSON</a></td>
         </tr>`;
     }).join('');
 
@@ -532,10 +544,11 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
             <input type="hidden" name="limit" value="${limit}" />
             <button type="submit">Search</button>
             <a href="${clearHref}">Clear</a>
-            <a href="admin/devices">Device Admin</a>
-            <a href="admin/live-activities">Live Activities</a>
-            <a href="admin/live-activity-payloads">Payload Replay</a>
-            <a href="admin/test-harness">Test Harness</a>
+            <a href="${escapeHtml(url('/admin/devices'))}">Device Admin</a>
+            <a href="${escapeHtml(url('/admin/live-activities'))}">Live Activities</a>
+            <a href="${escapeHtml(url('/admin/live-activity-payloads'))}">Payload Replay</a>
+            <a href="${escapeHtml(url('/admin/test-harness'))}">Test Harness</a>
+            <a href="${escapeHtml(url('/admin/journey-planner'))}">Journey Planner</a>
         </form>
 
         <section class="panel">
@@ -637,7 +650,7 @@ function renderAdminPage({ query, limit, subscriptions, notifications, geofenceE
 async function deleteSubscription(id) {
     if (!confirm('Delete subscription ' + id + '?\\n\\nThis will permanently remove it from Mongo.')) return;
     try {
-        const res = await fetch('/api/v2/notifications/debug/subscriptions', {
+        const res = await fetch(${JSON.stringify(url('/api/v2/notifications/debug/subscriptions'))}, {
             method: 'DELETE',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ subscription_id: id })
@@ -657,7 +670,8 @@ async function deleteSubscription(id) {
 </html>`;
 }
 
-function renderTestHarnessPage({ state, message = null }) {
+function renderTestHarnessPage({ state, message = null, requestPath = '/admin/test-harness' }) {
+    const url = createAdminUrl(requestPath);
     const route = state.route || {};
     const from = route.from || {};
     const to = route.to || {};
@@ -682,7 +696,7 @@ function renderTestHarnessPage({ state, message = null }) {
             <td>${statusLabel}</td>
             <td class="token">${serviceID}</td>
             <td>
-                <form class="row-form" method="POST" action="/admin/test-harness/departures/${encodeURIComponent(departure.serviceID || '')}">
+                <form class="row-form" method="POST" action="${escapeHtml(url(`/admin/test-harness/departures/${encodeURIComponent(departure.serviceID || '')}`))}">
                     <label>Delay <input type="number" name="delay_minutes" min="0" max="240" value="${delay}" /></label>
                     <input type="hidden" name="is_cancelled" value="false" />
                     <label>Cancelled <input type="checkbox" name="is_cancelled" value="true" ${cancelled} /></label>
@@ -690,7 +704,7 @@ function renderTestHarnessPage({ state, message = null }) {
                     <label>Length <input type="number" name="length" min="1" max="24" value="${escapeHtml(departure.length || '')}" /></label>
                     <button type="submit">Update</button>
                 </form>
-                <form class="inline-form" method="POST" action="/admin/test-harness/departures/${encodeURIComponent(departure.serviceID || '')}/clear">
+                <form class="inline-form" method="POST" action="${escapeHtml(url(`/admin/test-harness/departures/${encodeURIComponent(departure.serviceID || '')}/clear`))}">
                     <button type="submit" class="secondary">Clear override</button>
                 </form>
             </td>
@@ -698,10 +712,11 @@ function renderTestHarnessPage({ state, message = null }) {
     }).join('');
 
     return renderAdminShell({
+        requestPath,
         title: 'Train Track Test Harness',
         body: `
     <div class="wrap">
-        <a href="/admin">Back to Admin</a>
+        <a href="${escapeHtml(url('/admin'))}">Back to Admin</a>
         <h1>Train Track Test Harness</h1>
         <div class="meta">Synthetic route: ${escapeHtml(from.name)} (${escapeHtml(from.crs)}) to ${escapeHtml(to.name)} (${escapeHtml(to.crs)}) · Status: ${status}</div>
         ${messageHtml}
@@ -715,15 +730,15 @@ function renderTestHarnessPage({ state, message = null }) {
                     <div><dt>Started at</dt><dd>${formatDate(state.startedAt) || '<span class="never">—</span>'}</dd></div>
                     <div><dt>Updated at</dt><dd>${formatDate(state.updatedAt) || '<span class="never">—</span>'}</dd></div>
                 </dl>
-                <form class="control-form" method="POST" action="/admin/test-harness/start">
+                <form class="control-form" method="POST" action="${escapeHtml(url('/admin/test-harness/start'))}">
                     <label>Interval minutes <input type="number" name="interval_minutes" min="1" max="60" value="${escapeHtml(state.intervalMinutes)}" /></label>
                     <label>Default platform <input type="text" name="default_platform" value="${escapeHtml(state.defaultPlatform)}" /></label>
                     <label>Default train length <input type="number" name="default_length" min="1" max="24" value="${escapeHtml(state.defaultLength)}" /></label>
                     <button type="submit">Start</button>
                 </form>
                 <div class="button-row">
-                    <form method="POST" action="/admin/test-harness/stop"><button type="submit" class="secondary">Stop</button></form>
-                    <form method="POST" action="/admin/test-harness/reset"><button type="submit" class="danger">Reset</button></form>
+                    <form method="POST" action="${escapeHtml(url('/admin/test-harness/stop'))}"><button type="submit" class="secondary">Stop</button></form>
+                    <form method="POST" action="${escapeHtml(url('/admin/test-harness/reset'))}"><button type="submit" class="danger">Reset</button></form>
                 </div>
             </div>
         </section>
@@ -764,7 +779,8 @@ function renderTestHarnessPage({ state, message = null }) {
     });
 }
 
-function renderDeviceListPage({ query, devices, page, pageSize, total, totalPages }) {
+function renderDeviceListPage({ query, devices, page, pageSize, total, totalPages, requestPath = '/admin/devices' }) {
+    const url = createAdminUrl(requestPath);
     const renderedAt = escapeHtml(new Date().toISOString());
     const qValue = escapeHtml(query || '');
     const prevHref = page > 1 ? deviceListHref({ query, page: page - 1, pageSize }) : null;
@@ -773,7 +789,7 @@ function renderDeviceListPage({ query, devices, page, pageSize, total, totalPage
         const lastSeen = device.lastSeenAt
             ? `<span title="${escapeHtml(device.lastSeenAt)}">${escapeHtml(relativeTime(new Date(device.lastSeenAt), new Date()))}</span>`
             : '<span class="never">—</span>';
-        const href = `devices/${encodeURIComponent(device.deviceId)}`;
+        const href = escapeHtml(url(`/admin/devices/${encodeURIComponent(device.deviceId)}`));
         return `<tr>
             <td class="device-id"><a href="${href}">${escapeHtml(device.deviceId)}</a></td>
             <td>${escapeHtml(device.scheduledCount)}</td>
@@ -787,6 +803,7 @@ function renderDeviceListPage({ query, devices, page, pageSize, total, totalPage
     }).join('');
 
     return renderAdminShell({
+        requestPath,
         title: 'Train Track Device Admin',
         body: `
     <div class="wrap">
@@ -797,7 +814,7 @@ function renderDeviceListPage({ query, devices, page, pageSize, total, totalPage
             <input type="hidden" name="per_page" value="${pageSize}" />
             <button type="submit">Search</button>
             <a href="?">Clear</a>
-            <a href="../admin">Dashboard</a>
+            <a href="${escapeHtml(url('/admin'))}">Dashboard</a>
         </form>
         <section class="panel">
             <h2>Devices <span class="panel-count">${devices.length} shown</span></h2>
@@ -828,12 +845,13 @@ function renderDeviceListPage({ query, devices, page, pageSize, total, totalPage
     });
 }
 
-function renderDeviceDetailPage(detail) {
+function renderDeviceDetailPage(detail, requestPath) {
+    const url = createAdminUrl(requestPath);
     const now = new Date();
     const title = `Device ${detail.deviceId}`;
-    const scheduledRows = detail.scheduledSubscriptions.map((subscription) => renderSubscriptionDetailRow(subscription)).join('');
-    const liveNotificationRows = detail.liveNotificationSubscriptions.map((subscription) => renderSubscriptionDetailRow(subscription)).join('');
-    const notificationRows = detail.notifications.map((event) => renderNotificationDetailRow(event)).join('');
+    const scheduledRows = detail.scheduledSubscriptions.map((subscription) => renderSubscriptionDetailRow(subscription, url)).join('');
+    const liveNotificationRows = detail.liveNotificationSubscriptions.map((subscription) => renderSubscriptionDetailRow(subscription, url)).join('');
+    const notificationRows = detail.notifications.map((event) => renderNotificationDetailRow(event, url)).join('');
     const liveActivityRows = detail.liveActivitySessions.map((session) => {
         return `<tr>
             <td title="${escapeHtml(session.activityId || '')}">${escapeHtml(shortId(session.activityId))}</td>
@@ -868,10 +886,11 @@ function renderDeviceDetailPage(detail) {
     const lastSeen = detail.lastSeenAt ? relativeTime(new Date(detail.lastSeenAt), now) : 'never';
 
     return renderAdminShell({
+        requestPath,
         title,
         body: `
     <div class="wrap">
-        <a href="../devices">Back to Devices</a>
+        <a href="${escapeHtml(url('/admin/devices'))}">Back to Devices</a>
         <h1>Device ${escapeHtml(detail.deviceId)}</h1>
         <div class="meta">Last seen: ${escapeHtml(lastSeen)}${detail.lastSeenAt ? ` · ${escapeHtml(detail.lastSeenAt)}` : ''}</div>
 
@@ -1012,7 +1031,8 @@ function renderDeviceDetailPage(detail) {
     });
 }
 
-function renderLiveActivityAdminPage({ query, rows, pagination, tokenPolicy }) {
+function renderLiveActivityAdminPage({ query, rows, pagination, tokenPolicy, requestPath = '/admin/live-activities' }) {
+    const url = createAdminUrl(requestPath);
     const renderedAt = escapeHtml(new Date().toISOString());
     const qValue = escapeHtml(query || '');
     const prevHref = pagination.page > 1
@@ -1021,7 +1041,7 @@ function renderLiveActivityAdminPage({ query, rows, pagination, tokenPolicy }) {
     const nextHref = pagination.page < pagination.totalPages
         ? liveActivityAdminHref({ query, page: pagination.page + 1, pageSize: pagination.pageSize })
         : null;
-    const rowHtml = rows.map((row) => renderLiveActivityAdminRow(row)).join('');
+    const rowHtml = rows.map((row) => renderLiveActivityAdminRow(row, url)).join('');
     const ttlPolicy = tokenPolicy?.minimumTtlSeconds
         ? formatDurationSeconds(tokenPolicy.minimumTtlSeconds)
         : '90 days';
@@ -1030,10 +1050,11 @@ function renderLiveActivityAdminPage({ query, rows, pagination, tokenPolicy }) {
         : ttlPolicy;
 
     return renderAdminShell({
+        requestPath,
         title: 'Train Track Live Activities',
         body: `
     <div class="wrap">
-        <a href="../admin">Back to Admin</a>
+        <a href="${escapeHtml(url('/admin'))}">Back to Admin</a>
         <h1>Live Activities</h1>
         <div class="meta">Rendered at ${renderedAt} · Push-to-start token policy: ${escapeHtml(refreshPolicy)} logical TTL, refreshed whenever the app reposts the token · Page ${pagination.page} of ${pagination.totalPages}</div>
         <form class="search" method="GET" action="">
@@ -1041,7 +1062,7 @@ function renderLiveActivityAdminPage({ query, rows, pagination, tokenPolicy }) {
             <input type="hidden" name="per_page" value="${escapeHtml(pagination.pageSize)}" />
             <button type="submit">Search</button>
             <a href="?">Clear</a>
-            <a href="live-activity-payloads">Payload Replay</a>
+            <a href="${escapeHtml(url('/admin/live-activity-payloads'))}">Payload Replay</a>
         </form>
         <section class="panel">
             <h2>User Live Activities <span class="panel-count">${pagination.totalItems}</span></h2>
@@ -1077,7 +1098,7 @@ function renderLiveActivityAdminPage({ query, rows, pagination, tokenPolicy }) {
     });
 }
 
-function renderLiveActivityAdminRow(row) {
+function renderLiveActivityAdminRow(row, url) {
     const token = row.pushToStartToken;
     const tokenCell = token
         ? `<span class="token" title="${escapeHtml(token.deviceId || '')}">${escapeHtml(token.token || '')}</span>`
@@ -1086,7 +1107,7 @@ function renderLiveActivityAdminRow(row) {
         ? ` <span class="badge ${token.useSandbox ? 'badge-sandbox' : 'badge-prod'}">${token.useSandbox ? 'sandbox' : 'prod'}</span>`
         : '';
     return `<tr>
-        <td class="device-id"><a href="devices/${encodeURIComponent(row.deviceId || '')}">${escapeHtml(row.deviceId || '')}</a></td>
+        <td class="device-id"><a href="${escapeHtml(url(`/admin/devices/${encodeURIComponent(row.deviceId || '')}`))}">${escapeHtml(row.deviceId || '')}</a></td>
         <td title="${escapeHtml(row.activityId || '')}">${escapeHtml(shortId(row.activityId))}</td>
         <td>${escapeHtml(row.source || '')}</td>
         <td>${escapeHtml(row.event || '')}</td>
@@ -1098,23 +1119,25 @@ function renderLiveActivityAdminRow(row) {
         <td>${tokenCell}${tokenEnv}</td>
         <td>${formatDate(token?.updatedAt) || '<span class="never">—</span>'}</td>
         <td>${formatPushToStartTtl(token)}</td>
-        <td>${row.rawHref ? `<a href="${escapeHtml(row.rawHref)}">JSON</a>` : '<span class="never">—</span>'}</td>
+        <td>${row.rawHref ? `<a href="${escapeHtml(url(row.rawHref))}">JSON</a>` : '<span class="never">—</span>'}</td>
     </tr>`;
 }
 
-function renderLiveActivityPayloadListPage({ query, limit, payloads, targetDeviceId, recentDevices = [], devicePagination, replayResult }) {
+function renderLiveActivityPayloadListPage({ query, limit, payloads, targetDeviceId, recentDevices = [], devicePagination, replayResult, requestPath = '/admin/live-activity-payloads' }) {
+    const url = createAdminUrl(requestPath);
     const renderedAt = escapeHtml(new Date().toISOString());
-    const rows = payloads.map((record) => renderLiveActivityPayloadRow(record, targetDeviceId)).join('');
+    const rows = payloads.map((record) => renderLiveActivityPayloadRow(record, targetDeviceId, url)).join('');
     const deviceRows = (devicePagination?.items || [])
         .map((device) => renderRecentLiveActivityDeviceRow(device, query, limit))
         .join('');
     const devicePager = renderDevicePager({ pagination: devicePagination, query, limit, targetDeviceId });
     const replayBlock = replayResult ? renderReplayResult(replayResult) : '';
     return renderAdminShell({
+        requestPath,
         title: 'Live Activity Payload Replay',
         body: `
     <div class="wrap">
-        <a href="../admin">Back to Admin</a>
+        <a href="${escapeHtml(url('/admin'))}">Back to Admin</a>
         <h1>Live Activity Payload Replay</h1>
         <div class="meta">Rendered at ${renderedAt} · Payloads retained for 7 days · Default target ${escapeHtml(DEFAULT_REPLAY_DEVICE_ID)}</div>
         ${replayBlock}
@@ -1169,7 +1192,8 @@ function renderLiveActivityPayloadListPage({ query, limit, payloads, targetDevic
     });
 }
 
-function renderLiveActivityPayloadDetailPage({ payload, targetDeviceId, targetActivityId = '', replayResult }) {
+function renderLiveActivityPayloadDetailPage({ payload, targetDeviceId, targetActivityId = '', replayResult, requestPath }) {
+    const url = createAdminUrl(requestPath);
     const event = payload?.event || payload?.payload?.aps?.event || '';
     const reason = payload?.context?.end_reason || payload?.context?.reason || '';
     const isStartPayload = payload?.payload?.aps?.event === 'start';
@@ -1182,16 +1206,17 @@ function renderLiveActivityPayloadDetailPage({ payload, targetDeviceId, targetAc
         ? 'Start replay uses the target device push-to-start token. Leave Target activity ID blank.'
         : 'Update/end replay uses an active Live Activity update token. Leave Target activity ID blank to use the latest active activity for that device.';
     return renderAdminShell({
+        requestPath,
         title: `Live Activity Payload ${payload?.id || ''}`,
         body: `
     <div class="wrap">
-        <a href="?target_device_id=${encodeURIComponent(targetDeviceId || DEFAULT_REPLAY_DEVICE_ID)}" onclick="this.href = window.location.pathname.replace(/\\/replay\\/?$/, '').replace(/\\/[^/]+\\/?$/, '') + '?target_device_id=${encodeURIComponent(targetDeviceId || DEFAULT_REPLAY_DEVICE_ID)}'">Back to Payload Replay</a>
+        <a href="${escapeHtml(url(`/admin/live-activity-payloads?target_device_id=${encodeURIComponent(targetDeviceId || DEFAULT_REPLAY_DEVICE_ID)}`))}">Back to Payload Replay</a>
         <h1>Live Activity Payload ${escapeHtml(payload?.id || '')}</h1>
         <div class="meta">Event: ${escapeHtml(event)} · Reason: ${escapeHtml(reason || 'n/a')} · Recorded: ${formatDate(payload?.recorded_at) || '<span class="never">—</span>'}</div>
         ${replayResult ? renderReplayResult(replayResult) : ''}
         <section class="panel">
             <h2>Replay</h2>
-            <form class="search" method="POST" action="replay" onsubmit="this.action = window.location.pathname.replace(/\\/replay\\/?$/, '').replace(/\\/$/, '') + '/replay'">
+            <form class="search" method="POST" action="${escapeHtml(url(`/admin/live-activity-payloads/${encodeURIComponent(payload?.id || '')}/replay`))}">
                 <input type="text" name="target_device_id" value="${escapeHtml(targetDeviceId || DEFAULT_REPLAY_DEVICE_ID)}" placeholder="Target test device ID" />
                 <input type="text" name="target_activity_id" value="${escapeHtml(activityInputValue || '')}" placeholder="${escapeHtml(activityInputPlaceholder)}"${activityInputDisabled} />
                 <button type="submit">Replay Payload</button>
@@ -1253,7 +1278,7 @@ function renderDevicePager({ pagination, query, limit, targetDeviceId }) {
     </div>`;
 }
 
-function renderLiveActivityPayloadRow(record, targetDeviceId) {
+function renderLiveActivityPayloadRow(record, targetDeviceId, url) {
     const contentState = record?.payload?.aps?.['content-state'] || {};
     const route = contentState.routeTitle || `${contentState.fromCRS || ''} → ${contentState.toCRS || ''}`;
     const scheduleKey = contentState.scheduleKey || record?.context?.schedule_key || '';
@@ -1268,12 +1293,12 @@ function renderLiveActivityPayloadRow(record, targetDeviceId) {
         <td>${escapeHtml(record.environment || '')}</td>
         <td>${escapeHtml(formatStatus(status))}</td>
         <td>
-            <form method="POST" action="live-activity-payloads/${encodeURIComponent(record.id || '')}/replay" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+            <form method="POST" action="${escapeHtml(url(`/admin/live-activity-payloads/${encodeURIComponent(record.id || '')}/replay`))}" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
                 <input type="hidden" name="target_device_id" value="${escapeHtml(targetDeviceId || DEFAULT_REPLAY_DEVICE_ID)}" />
                 <button type="submit">Replay</button>
             </form>
         </td>
-        <td><a href="live-activity-payloads/${encodeURIComponent(record.id || '')}?target_device_id=${encodeURIComponent(targetDeviceId || DEFAULT_REPLAY_DEVICE_ID)}">JSON</a></td>
+        <td><a href="${escapeHtml(url(`/admin/live-activity-payloads/${encodeURIComponent(record.id || '')}?target_device_id=${encodeURIComponent(targetDeviceId || DEFAULT_REPLAY_DEVICE_ID)}`))}">JSON</a></td>
     </tr>`;
 }
 
@@ -1365,7 +1390,7 @@ async function buildReplayFailureResult({ payloadRecord, targetDeviceId, targetA
     return result;
 }
 
-function renderSubscriptionDetailRow(subscription) {
+function renderSubscriptionDetailRow(subscription, url) {
     const legs = Array.isArray(subscription.legs) ? subscription.legs.filter((leg) => leg && leg.enabled !== false) : [];
     const firstLeg = legs[0] || {};
     const extraLegs = legs.length > 1 ? ` +${legs.length - 1}` : '';
@@ -1380,11 +1405,11 @@ function renderSubscriptionDetailRow(subscription) {
         <td>${escapeHtml(formatDays(subscription.daysOfWeek))}</td>
         <td>${escapeHtml(formatList(subscription.notificationTypes))}</td>
         <td>${escapeHtml(subscription.useSandbox ? 'sandbox' : 'prod')}</td>
-        <td><a href="../subscriptions/${encodeURIComponent(subscription.id || '')}">JSON</a></td>
+        <td><a href="${escapeHtml(url(`/admin/subscriptions/${encodeURIComponent(subscription.id || '')}`))}">JSON</a></td>
     </tr>`;
 }
 
-function renderNotificationDetailRow(event) {
+function renderNotificationDetailRow(event, url) {
     const successCell = event.success
         ? '<span class="badge badge-ok">ok</span>'
         : '<span class="badge badge-err">fail</span>';
@@ -1402,11 +1427,12 @@ function renderNotificationDetailRow(event) {
         <td>${escapeHtml(formatStatus(event.status))}</td>
         <td>${escapeHtml(event.error || '')}</td>
         <td>${escapeHtml(event.apns_environment || '')}</td>
-        <td><a href="../notifications/${encodeURIComponent(event.id || '')}">JSON</a></td>
+        <td><a href="${escapeHtml(url(`/admin/notifications/${encodeURIComponent(event.id || '')}`))}">JSON</a></td>
     </tr>`;
 }
 
-function renderAdminShell({ title, body, extraStyle = '' }) {
+export function renderAdminShell({ title, body, extraStyle = '', requestPath = '/admin' }) {
+    const url = createAdminUrl(requestPath);
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1429,6 +1455,10 @@ function renderAdminShell({ title, body, extraStyle = '' }) {
             background: linear-gradient(145deg, #f3f6fa, #eaf0f7);
         }
         .wrap { max-width: 1500px; margin: 24px auto 48px; padding: 0 16px; }
+        .admin-nav { max-width: 1500px; margin: 18px auto 0; padding: 0 16px; display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 13px; }
+        .admin-nav a { padding: 6px 0; }
+        .admin-nav a:hover { text-decoration: underline; }
+        .admin-nav a:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
         h1 { margin: 8px 0 4px; font-size: 28px; }
         a { color: var(--accent); text-decoration: none; }
         .meta { color: var(--muted); margin-bottom: 18px; font-size: 13px; }
@@ -1495,7 +1525,7 @@ function renderAdminShell({ title, body, extraStyle = '' }) {
         ${extraStyle}
     </style>
 </head>
-<body>${body}</body>
+<body><nav class="admin-nav" aria-label="Admin pages"><a href="${escapeHtml(url('/admin'))}">Dashboard</a><a href="${escapeHtml(url('/admin/devices'))}">Devices</a><a href="${escapeHtml(url('/admin/live-activities'))}">Live Activities</a><a href="${escapeHtml(url('/admin/journey-planner'))}">Journey Planner</a></nav>${body}</body>
 </html>`;
 }
 
@@ -1722,7 +1752,7 @@ function buildLiveActivityAdminRows({ subscriptions = [], liveActivitySessions =
                 lastPushAt: null,
                 latestAt: subscription?.updatedAt || subscription?.createdAt || null,
                 environment: subscription?.useSandbox ? 'sandbox' : 'prod',
-                rawHref: `subscriptions/${encodeURIComponent(subscription?.id || '')}`,
+                rawHref: `/admin/subscriptions/${encodeURIComponent(subscription?.id || '')}`,
                 pushToStartToken: tokensByDevice.get(deviceId) || null,
                 searchable: ''
             };
@@ -1783,7 +1813,7 @@ function buildLiveActivityAdminRows({ subscriptions = [], liveActivitySessions =
             lastPushAt: payload?.recorded_at || payload?.sent_at || null,
             latestAt: payload?.recorded_at || payload?.sent_at || null,
             environment: payload?.environment || context.environment || '',
-            rawHref: `live-activity-payloads/${encodeURIComponent(payload?.id || '')}`,
+            rawHref: `/admin/live-activity-payloads/${encodeURIComponent(payload?.id || '')}`,
             pushToStartToken: tokensByDevice.get(deviceId) || null,
             searchable: ''
         };

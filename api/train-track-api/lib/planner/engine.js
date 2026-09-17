@@ -1,10 +1,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { getHeapStatistics } from 'node:v8';
 import { API_VERSION, POLICY_VERSION, CAPABILITIES, PlannerError, addDays,
     londonDate, encodeCursor, journeyID, normalizeRequest } from './contract.js';
 
 const DAY = 86400000;
 const HOUR = 3600000;
+const MEMORY_RELIEF_RATIO = 0.7;
+const MEMORY_RESET_RATIO = 0.85;
 const scheduledWarning = 'Scheduled timetable only. Live delays and changes are not included.';
 const coverageWarnings = [
     'Some services are omitted, including ferry connections and trains with special holiday rules.',
@@ -163,7 +166,26 @@ export class PlannerEngine {
         return { ...request, origin: origin.crs, destination: destination.crs };
     }
 
+    /** Shed derived caches before the worker's heap limit terminates it. Results
+     * are unaffected; the next searches rebuild what they need. */
+    async relieveMemoryPressure() {
+        const stats = getHeapStatistics();
+        const ratio = stats.used_heap_size / stats.heap_size_limit;
+        if (ratio < MEMORY_RELIEF_RATIO) return;
+        this.searches.clear();
+        const snapshots = this.livePlanner?.snapshots;
+        while (snapshots?.size > 2) snapshots.delete(snapshots.keys().next().value);
+        const { releaseIndexCaches } = await import('./router.js');
+        for (const network of this.networks.values()) releaseIndexCaches(network);
+        if (ratio >= MEMORY_RESET_RATIO) this.networks.clear();
+        if (!this.memoryWarnedAt || this.now() - this.memoryWarnedAt > 60000) {
+            this.memoryWarnedAt = this.now();
+            console.warn(`[planner] memory pressure: released caches at ${Math.round(stats.used_heap_size / 1048576)} MB of ${Math.round(stats.heap_size_limit / 1048576)} MB heap`);
+        }
+    }
+
     async network(repo, request, signal) {
+        await this.relieveMemoryPressure();
         const time = Date.parse(request.time);
         const windowMs = request.windowMinutes * 60000;
         const lower = request.timeType === 'arriveBy' ? time - windowMs - DAY : time;
@@ -176,14 +198,19 @@ export class PlannerEngine {
         // One hot national index. Release the previous index before preparing another
         // date range, otherwise alternating dates can temporarily retain three indexes.
         this.networks.clear();
-        // Keep dates adjacent to the new range: today/tomorrow searches alternate
-        // between ranges that differ by one date and would otherwise re-resolve it.
+        // Keep dates adjacent to the new range while at most four dates stay
+        // resident: today/tomorrow searches alternate between ranges that differ
+        // by one date and would otherwise re-resolve it on every switch.
         const keepFrom = addDays(firstDate, -1);
         const keepTo = addDays(lastDate, 1);
+        const adjacent = [];
         for (const dateKey of this.dates.keys()) {
             const date = dateKey.slice(-10);
             if (!dateKey.startsWith(`${repo.version}:`) || date < keepFrom || date > keepTo) this.dates.delete(dateKey);
+            else if (date < firstDate || date > lastDate) adjacent.push(dateKey);
         }
+        let resident = Math.round((Date.parse(`${lastDate}T00:00:00Z`) - Date.parse(`${firstDate}T00:00:00Z`)) / DAY) + 1 + adjacent.length;
+        for (const dateKey of adjacent) if (resident-- > 4) this.dates.delete(dateKey);
         const services = [];
         const diagnostics = { counts: {}, examples: [] };
         for (let date = firstDate; date <= lastDate; date = addDays(date, 1)) {
@@ -233,7 +260,9 @@ export class PlannerEngine {
         this.stats.searches++;
         const key = `${repo.version}:${POLICY_VERSION}:${JSON.stringify(request)}:${offset}`;
         const cached = this.searches.get(key);
-        if (!request.realtime && cached && this.now() - cached.createdAt < 5 * 60000) {
+        const cacheHit = !request.realtime && cached && this.now() - cached.createdAt < 5 * 60000;
+        execution.onTelemetry?.({ cacheStatus: cacheHit ? 'hit' : liveSnapshotId ? 'unknown' : 'miss', datasetVersion: repo.version });
+        if (cacheHit) {
             this.stats.cacheHits++;
             for (const journey of cached.result.journeys) this.retainJourney(journey, repo.version);
             const dataset = this.publicMetadata(repo);
@@ -270,7 +299,7 @@ export class PlannerEngine {
                 execution.onProgress?.('live');
                 try {
                     result = await this.livePlanner.search({ request, network, version: repo.version, offset, liveSnapshotId,
-                        route, check, abortSignal: execution.abortSignal });
+                        route, check, abortSignal: execution.abortSignal, onTelemetry: execution.onTelemetry });
                 } catch (error) {
                     check();
                     if (error.code === 'SEARCH_CANCELLED') throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);

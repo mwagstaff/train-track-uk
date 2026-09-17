@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { decodeCursor, normalizeRequest, PlannerError } from './contract.js';
 import { plannerConfig } from './service.js';
+import { noOpPlannerSearchLog } from '../planner-search-log.js';
 
 const pending = work => work.state === 'queued' || work.state === 'running';
 
@@ -8,10 +9,11 @@ const pending = work => work.state === 'queued' || work.state === 'running';
 // caller cancelling or disappearing must not cancel another caller's search.
 export class PlannerSearchJobs {
     constructor(service, { now = Date.now, leaseMs = 120000, resultMs = 600000,
-        maxLeases = 128, maxPerClient = 2, maxPerNetwork = 4 } = {}) {
+        maxLeases = 128, maxPerClient = 2, maxPerNetwork = 4, searchLog = noOpPlannerSearchLog } = {}) {
         this.service = service;
         this.config = { ...plannerConfig({}), ...service.config };
         this.now = now;
+        this.searchLog = searchLog;
         Object.assign(this, { leaseMs, resultMs, maxLeases, maxPerClient, maxPerNetwork });
         this.leases = new Map();
         this.work = new Map();
@@ -24,7 +26,19 @@ export class PlannerSearchJobs {
         this.sweep.unref();
     }
 
-    async submit(body, { client = 'anonymous', network = client, idempotencyKey } = {}) {
+    async submit(body, options = {}) {
+        const startedAt = new Date(this.now());
+        try { return await this.admit(body, options, startedAt); }
+        catch (error) {
+            let request = body;
+            try { if (body?.cursor !== undefined) request = decodeCursor(body.cursor).request; } catch { /* Invalid cursor has no public route. */ }
+            this.searchLog.start({ source: 'search-job', request, startedAt }).finish({ status: 'fail',
+                outcome: 'rejected', errorCode: error.code || 'DATASET_UNAVAILABLE', finishedAt: new Date(this.now()) });
+            throw error;
+        }
+    }
+
+    async admit(body, { client = 'anonymous', network = client, idempotencyKey } = {}, startedAt) {
         if (this.closed) throw new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is unavailable.', 503);
         if (idempotencyKey && !/^[A-Za-z0-9_-]{8,128}$/.test(idempotencyKey)) {
             throw new PlannerError('INVALID_REQUEST', 'Use an 8–128 character Idempotency-Key.');
@@ -73,12 +87,16 @@ export class PlannerSearchJobs {
         // Eviction can remove the last lease of the work we were going to reuse.
         work = this.work.get(key);
         if (work && !pending(work)) work = null;
+        const coalesced = Boolean(work);
         if (!work) {
             work = { key, payload, state: 'queued', createdAt: this.now(), leases: new Set(), controller: new AbortController() };
             this.work.set(key, work);
             this.queue.push(work);
         }
-        const lease = { id: randomUUID(), work, client, network, retryKey, requestedKey, touchedAt: this.now() };
+        const observation = this.searchLog.start({ source: 'search-job', request: payload.request, startedAt,
+            datasetVersion: payload.version, coalesced, ...work.telemetry });
+        observation.update({ phase: work.state });
+        const lease = { id: randomUUID(), work, client, network, retryKey, requestedKey, touchedAt: this.now(), observation };
         this.leases.set(lease.id, lease);
         if (retryKey) this.idempotency.set(retryKey, lease.id);
         work.leases.add(lease.id);
@@ -105,11 +123,14 @@ export class PlannerSearchJobs {
         if (!lease) return; // Idempotent cancellation also covers an expired lease.
         lease.cancelled = true;
         lease.cancelledAt = this.now();
+        lease.observation.finish({ status: 'other', outcome: 'cancelled', finishedAt: new Date(this.now()) });
         lease.work.leases.delete(id);
         this.releaseWork(lease.work);
     }
 
     removeLease(lease) {
+        if (!lease.cancelled && pending(lease.work)) lease.observation.finish({ status: 'other', outcome: 'expired',
+            finishedAt: new Date(this.now()) });
         this.leases.delete(lease.id);
         if (lease.retryKey) this.idempotency.delete(lease.retryKey);
         lease.work.leases.delete(lease.id);
@@ -137,6 +158,7 @@ export class PlannerSearchJobs {
                 work.state = 'failed';
                 work.error = { code: 'SEARCH_BUSY', message: 'The search queue stayed busy for too long. Please try again.' };
                 work.finishedAt = now;
+                this.finishWork(work, { status: 'fail', outcome: 'failed', errorCode: work.error.code });
             }
         }
         this.queue = this.queue.filter(pending);
@@ -152,22 +174,30 @@ export class PlannerSearchJobs {
             cpuDutyCycle: this.config.jobCpuDutyCycle };
         const options = { signal: work.controller.signal, execution,
             queueTimeoutMs: Math.max(1, this.config.jobQueueTimeoutMs - (this.now() - work.createdAt)),
-            onStart: () => { if (pending(work)) work.state = 'running'; },
-            onProgress: progress => { work.phase = progress.phase; } };
+            onStart: () => { if (pending(work)) { work.state = 'running'; this.updateWork(work, { phase: 'running' }); } },
+            onProgress: progress => { work.phase = progress.phase; this.updateWork(work, { phase: progress.phase }); },
+            onTelemetry: telemetry => { work.telemetry = { ...work.telemetry, ...telemetry }; this.updateWork(work, telemetry); } };
         let retry = false;
         Promise.resolve().then(() => this.service.call('search', work.payload, options)).then(result => {
-            if (!work.controller.signal.aborted) { work.result = result; work.state = 'completed'; }
+            if (!work.controller.signal.aborted) {
+                work.result = result; work.state = 'completed';
+                this.finishWork(work, { status: 'success', outcome: result.journeys?.length ? 'completed' : 'empty',
+                    resultCount: result.journeys?.length ?? 0, datasetVersion: result.dataset?.version });
+            }
         }, error => {
             if (!work.controller.signal.aborted) {
                 if (error.code === 'SEARCH_BUSY') {
                     retry = true;
                     work.state = 'queued';
+                    this.updateWork(work, { phase: 'queued' });
                     this.queue.unshift(work);
                     return;
                 }
                 work.state = 'failed';
                 work.error = { code: error.code || 'DATASET_UNAVAILABLE', message: error instanceof PlannerError
                     ? error.message : 'Journey planning is temporarily unavailable. Please try again.' };
+                this.finishWork(work, { status: error.code === 'SEARCH_CANCELLED' ? 'other' : 'fail',
+                    outcome: error.code === 'SEARCH_CANCELLED' ? 'cancelled' : 'failed', errorCode: work.error.code });
             }
         }).finally(() => {
             if (!retry) work.finishedAt = this.now();
@@ -179,12 +209,23 @@ export class PlannerSearchJobs {
         });
     }
 
+    updateWork(work, fields) {
+        for (const id of work.leases) this.leases.get(id)?.observation.update(fields);
+    }
+
+    finishWork(work, fields) {
+        for (const id of work.leases) this.leases.get(id)?.observation.finish({ ...fields, finishedAt: new Date(this.now()) });
+    }
+
     close() {
         this.closed = true;
         clearInterval(this.sweep);
         clearTimeout(this.retryTimer);
         this.retryTimer = null;
-        for (const work of this.work.values()) work.controller.abort();
+        for (const work of this.work.values()) {
+            if (pending(work)) this.finishWork(work, { status: 'other', outcome: 'closed' });
+            work.controller.abort();
+        }
         this.queue = [];
         this.leases.clear();
         this.work.clear();

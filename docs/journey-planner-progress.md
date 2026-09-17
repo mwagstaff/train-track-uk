@@ -271,7 +271,84 @@ Profiling the routing worker against the RJTTF939 snapshot showed that most sear
 - Dates adjacent to a newly prepared range are retained, so alternating today/tomorrow searches no longer re-resolve a date each time.
 - The routing worker pre-warms today's dates and national index shortly after start and again when the London date or active timetable changes (`PLANNER_PREWARM=false` disables it). It skips warming when fewer than 300 MB of heap headroom remain or while a request is active.
 
+### Worker memory correction — 17 September 2026
+
+Production logged `ERR_WORKER_OUT_OF_MEMORY` after the deployment. The retained (post-GC) heap of the routing worker was already about 535 MB before this work with four resolved dates and one national index, leaving under 500 MB of the 1024 MB limit for live re-routing and saved-board replans; the first version of the shared bounds cache also kept each search's eligible-event caches alive on the index.
+
+- Only the temporal bounds are shared between searches; the eligible-event and call caches now live on a per-search view and are released with it. The shared cache holds at most four target keys. Retained heap on a twelve-search mixed workload is back to the original 534 MB.
+- At most four dates stay resident: adjacent dates are retained only within that budget. Pre-warming resolves the daytime range only (three dates).
+- A memory valve runs before each network preparation: above 70% of the worker heap limit it drops the search result cache, the derived index caches and all but the two newest live snapshots; above 85% it also releases the national index. Each release logs `[planner] memory pressure` at most once a minute. Results are unaffected; the following searches rebuild what they need.
+
 Eight local unthrottled cases (M5 Pro, cold worker, no pre-warm) fell from 17.6 to 10.7 seconds in total; for example KTH–VIC 2.69 → 1.58 s, BHM–EDB arrive-by 2.50 → 1.20 s, VIC–BTN late-evening 3.31 → 1.68 s, KTH–INV 16:00 1.40 → 0.89 s. Full journey payloads, pagination and warnings for these and the twelve repository benchmark cases are byte-identical at both the five-journey page and the complete frontier. With pre-warming, the first Depart-now KTH–VIC search after worker start took 0.35 seconds instead of 1.76. All 235 planner tests pass, including the full-dataset regressions. No routing policy or cursor version changed.
+
+## Search history and admin dashboard — 17 September 2026
+
+Implemented locally; **not deployed**. The new Mongo `planner_searches` collection
+retains search lifecycle records for seven days using a fixed TTL index on
+`startedAt`. Startup creates the collection/indexes through the standard API
+deployment. No app rebuild, new credential, timetable import or migration is
+required. Existing API request/response contracts remain unchanged.
+
+- Synchronous searches and queued caller submissions record submission and
+  completion times, queue-inclusive duration, public route fields, result count,
+  outcome and observed cache hit/miss/unknown. Status polls and accepted
+  idempotent retries do not create duplicates. Coalesced callers retain separate
+  outcomes. Saved-route initial stage chains are one record; subsequent actual
+  refresh/replan work is separate. Internal capacity retries retain their record.
+- Writes run independently, with a bounded buffer, one batch at a time, retries
+  and revision guards against late pending writes overwriting completed records.
+  Unfinished/cancelled/expired work is distinguishable from failure, and an empty
+  search is still successful. Logs contain no device IDs, IPs, raw requests,
+  cursors or provider credentials.
+- `/admin/journey-planner`, linked from the existing admin portal, displays the
+  newest searches first. All eight headings sort server-side; pagination and
+  hour/day/week and source filters operate across the retained dataset. Cards
+  report full-filter counts, success/failure percentages, exact nearest-rank p99,
+  maximum, average and cache-hit rate. Definitions explain exclusions and the
+  15-second shared statistics snapshot.
+
+Verification:
+
+- **388 selected backend tests passed**, with two previously documented unrelated
+  baseline exclusions and the separate opt-in Mongo integration test skipped in
+  this ordinary run. Log: `/tmp/traintrack-search-log-backend-final.log`.
+- The integration test **passed against an isolated MongoDB 7.0.43 instance**,
+  exercising actual bulk upserts/revision guards, TTL indexes, 245 retained plus
+  five expired fixture rows, all heading sort directions, pagination and
+  whole-window statistics. The private test databases, process, downloaded
+  binaries and temporary data were removed afterward. It can be repeated with
+  `MONGO_TEST_URI` and `test/planner-search-log-mongo.test.js` against a local test
+  Mongo instance.
+- Browser verification passed at desktop and 390-pixel mobile width, including
+  keyboard sorting, both sort directions, source filtering, next-page navigation,
+  unchanged summary cards across pages, empty data and database error states.
+  Both layouts were visually reviewed; the temporary synthetic fixture and tabs
+  were closed and viewport overrides reset. Eight focused admin tests are included
+  in the backend total.
+
+No production code, process or database was changed. See the
+[operations runbook](journey-planner-operations.md#search-history-in-mongo-and-the-admin-portal)
+for lifecycle definitions, retention and logging-outage limits.
+
+## Admin links behind the production proxy — 17 September 2026
+
+Fixed locally after the deployed search-history page dropped `/train-track/`
+from Refresh and other links. All admin destinations now resolve relative to
+the request path: planner filters, sorting, pagination and retry; shared
+navigation; device and raw-record links; payload replay forms/backlinks;
+test-harness forms/redirects; and the dashboard's subscription API request.
+This preserves arbitrary proxy prefixes without deployment-specific settings,
+including trailing-slash and nested POST replay pages. API contracts are
+unchanged. This fix needs an API redeploy and browser reload only.
+
+Verification: **399 backend tests passed**, with the same two unrelated baseline
+exclusions and opt-in Mongo test skipped. Log:
+`/tmp/traintrack-admin-prefix-tests.log`. Automated checks exercise direct and
+mounted HTTP routes, every admin link/form and the five harness redirects;
+helper checks include encoded IDs and deeper prefixes. Browser checks passed
+for Refresh, sorting, pagination, filters and navigation at the simulated
+`/train-track/admin/journey-planner` deployment path. Synthetic fixture and test
+browser tab were closed afterward.
 
 ## Baseline and remaining external inputs
 

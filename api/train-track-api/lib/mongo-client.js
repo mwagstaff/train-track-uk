@@ -18,8 +18,16 @@ export const COLLECTIONS = Object.freeze({
     subscriptionAuditEvents: 'subscription_audit_events',
     geofenceEvents: 'geofence_events',
     holidayMode: 'holiday_mode',
-    recentDepartures: 'recent_departures'
+    recentDepartures: 'recent_departures',
+    plannerSearches: 'planner_searches'
 });
+
+export const PLANNER_SEARCH_INDEXES = [
+    { key: { startedAt: 1 }, name: 'started_at_7_day_ttl', expireAfterSeconds: 7 * 24 * 60 * 60 },
+    { key: { startedAt: -1, _id: -1 }, name: 'latest_searches' },
+    { key: { source: 1, startedAt: -1 }, name: 'source_started_at' },
+    { key: { durationMs: 1, startedAt: 1 }, name: 'search_duration' }
+];
 
 export async function getMongoClient() {
     if (!clientPromise) {
@@ -64,6 +72,7 @@ export async function ensureMongoIndexes() {
 async function createIndexes() {
     const db = await getMongoDb();
     await Promise.all([
+        db.collection(COLLECTIONS.plannerSearches).createIndexes(PLANNER_SEARCH_INDEXES),
         db.collection(COLLECTIONS.notificationSubscriptions).createIndexes([
             { key: { deviceId: 1, source: 1 }, name: 'device_source' },
             { key: { source: 1, activeUntil: 1 }, name: 'source_active_until' },

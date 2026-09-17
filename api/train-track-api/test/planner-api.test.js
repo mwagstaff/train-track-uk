@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { registerPlannerRoutes } from '../lib/planner-routes.js';
+import { noOpPlannerSearchLog } from '../lib/planner-search-log.js';
 import { normalizeRequest, encodeCursor, decodeCursor, PlannerError, CAPABILITIES } from '../lib/planner/contract.js';
 import { PlannerEngine } from '../lib/planner/engine.js';
 import { PlannerService, plannerConfig } from '../lib/planner/service.js';
@@ -117,8 +118,12 @@ test('cache keys distinguish exact times and page offsets; repeated result retai
     let calls = 0;
     const instance = engine({ findJourneys(req, network, options) { calls++; return result(req); } });
     const normalized = normalizeRequest(request);
-    const first = await instance.search({ request: normalized });
-    const repeated = await instance.search({ request: normalized });
+    const telemetry = [];
+    const execution = { onTelemetry: value => telemetry.push(value) };
+    const first = await instance.search({ request: normalized }, undefined, execution);
+    const repeated = await instance.search({ request: normalized }, undefined, execution);
+    assert.deepEqual(telemetry, [{ cacheStatus: 'miss', datasetVersion: version }, { cacheStatus: 'hit', datasetVersion: version }]);
+    assert.equal(first.cacheStatus, undefined, 'Internal cache observations must not change the public response');
     assert.equal(calls, 1);
     assert.equal(first.journeys[0].id, repeated.journeys[0].id);
     const next = decodeCursor(first.pagination.more);
@@ -226,7 +231,7 @@ test('adding planner routes preserves legacy route payloads and accepts requests
     app.get('/api/v2/stations', (req, res) => res.json([{ crs: 'KTH', name: 'Kent House' }]));
     app.get('/api/v2/config', (req, res) => res.json({ max_subscriptions_per_device: 3 }));
     const instance = engine();
-    registerPlannerRoutes(app, { service: {
+    registerPlannerRoutes(app, { searchLog: noOpPlannerSearchLog, service: {
         status: () => instance.status(), stations: query => instance.stationList(query),
         search: body => instance.search({ request: normalizeRequest(body) }), journey: id => instance.journey(id)
     } });

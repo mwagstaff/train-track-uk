@@ -33,6 +33,7 @@ parentPort.on('message', async ({ id, method, payload, cancelBuffer, execution }
         else if (method === 'search') result = await engine.search(payload, signal, {
             ...execution,
             abortSignal: networkController.signal,
+            onTelemetry: telemetry => parentPort.postMessage({ id, telemetry }),
             ...(execution ? { onProgress: phase => parentPort.postMessage({ id, progress: { phase } }) } : {})
         });
         else if (['routeBoardProfile', 'routeBoardRefresh', 'routeBoardReplan'].includes(method)) result = await engine[method](payload, signal, {
@@ -73,10 +74,8 @@ async function prewarm() {
     try {
         const query = time => engine.checkQuery(repo, normalizeRequest({ origin: origin.crs, destination: destination.crs,
             time: new Date(time).toISOString(), timeType: 'departAfter' }));
-        // A late-evening query spans the widest range (yesterday to the day after
-        // tomorrow): resolving it caches every date today's and tomorrow's
-        // searches can need. Then build the index for a daytime search.
-        await engine.network(repo, query(Date.parse(`${today}T22:00:00Z`)));
+        // A daytime search's range (yesterday to tomorrow) covers most searches;
+        // later ranges resolve their extra date on demand to bound worker memory.
         const network = await engine.network(repo, query(Date.parse(`${today}T12:00:00Z`)));
         (await import('./router.js')).prepareNetwork(network);
         warmed = { date: today, version: repo.version };

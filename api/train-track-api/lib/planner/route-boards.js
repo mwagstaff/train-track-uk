@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { API_VERSION, normalizeRequest, PlannerError, POLICY_VERSION, LIVE_POLICY_VERSION } from './contract.js';
 import { RouteBoardCache } from './route-board-cache.js';
+import { noOpPlannerSearchLog } from '../planner-search-log.js';
 
 const HOUR = 3600000;
 const LIVE_MS = 30000;
@@ -48,8 +49,8 @@ export function routeBoardKey(request, version, now) {
 // never waits for a national route calculation. All work uses the existing worker.
 export class PlannerRouteBoards {
     constructor(service, { cache = new RouteBoardCache(), now = Date.now, maxPending = 8, maxPerClient = 2, maxPerNetwork = 4, maxEntries = 64,
-        maxProfileBytes = 32 * 1024 * 1024 } = {}) {
-        Object.assign(this, { service, cache, now, maxPending, maxPerClient, maxPerNetwork, maxEntries, maxProfileBytes });
+        maxProfileBytes = 32 * 1024 * 1024, searchLog = noOpPlannerSearchLog } = {}) {
+        Object.assign(this, { service, cache, now, maxPending, maxPerClient, maxPerNetwork, maxEntries, maxProfileBytes, searchLog });
         this.entries = new Map();
         this.queue = [];
         this.active = null;
@@ -68,7 +69,22 @@ export class PlannerRouteBoards {
         return this.statusPromise;
     }
 
-    async get(body, { client = 'anonymous', network = client } = {}) {
+    async get(body, options = {}) {
+        const startedAt = new Date(this.now());
+        try { return await this.readBoards(body, options, startedAt); }
+        catch (error) {
+            this.recordRejected(body, error.code || 'DATASET_UNAVAILABLE', startedAt);
+            throw error;
+        }
+    }
+
+    recordRejected(body, errorCode, startedAt = new Date(this.now())) {
+        const requests = Array.isArray(body?.routes) && body.routes.length ? body.routes.slice(0, 8) : [null];
+        for (const request of requests) this.searchLog.start({ source: 'saved-route', request, startedAt })
+            .finish({ status: 'fail', outcome: 'rejected', errorCode, finishedAt: new Date(this.now()) });
+    }
+
+    async readBoards(body, { client = 'anonymous', network = client } = {}, startedAt) {
         let now = this.now();
         const routes = normalizeRouteBoards(body, now);
         if (this.closed) throw new PlannerError('DATASET_UNAVAILABLE', 'Saved journey planning is unavailable.', 503);
@@ -76,12 +92,13 @@ export class PlannerRouteBoards {
         const metadata = await this.status();
         now = this.now();
         if (!metadata.available || !metadata.dataset?.version) {
+            this.recordRejected(body, 'DATASET_UNAVAILABLE', startedAt);
             return { apiVersion: API_VERSION, boards: routes.map(route => ({ id: route.id, status: 'unavailable', pollAfterMs: 20000,
                 error: { code: 'DATASET_UNAVAILABLE', message: metadata.reason || 'Saved journey planning is unavailable.' } })) };
         }
         for (const entry of this.entries.values()) {
             if (entry.version !== metadata.dataset.version || entry.bucket !== Math.floor(now / (2 * HOUR)) * 2 * HOUR) {
-                entry.pending?.controller.abort();
+                this.cancelEntry(entry, 'superseded');
                 this.queue = this.queue.filter(work => work.entry !== entry);
                 this.entries.delete(entry.key);
             }
@@ -103,14 +120,20 @@ export class PlannerRouteBoards {
             const queued = entry.waiting ?? (entry.pending !== this.active ? entry.pending : null);
             if (queued) {
                 queued.mode = route.realtime;
-                if (queued.kind === 'replan' && route.realtime === 'ignore') queued.kind = 'refresh';
+                if (queued.kind === 'replan' && route.realtime === 'ignore') {
+                    this.finishObservation(queued, { status: 'other', outcome: 'superseded' });
+                    queued.kind = 'refresh';
+                    queued.observation = this.observe(entry, 'refresh', route.realtime, startedAt);
+                    queued.observationFinished = false;
+                }
             }
             if (!entry.pending && !entry.waiting && now >= entry.retryAt) {
-                if (created) this.enqueue(entry, 'load', route.realtime, { client, network });
-                else if (!entry.profile || entry.expiresAt <= now) this.enqueue(entry, 'profile', route.realtime, { client, network });
+                const owner = { client, network, logStartedAt: startedAt };
+                if (created) this.enqueue(entry, 'load', route.realtime, owner);
+                else if (!entry.profile || entry.expiresAt <= now) this.enqueue(entry, 'profile', route.realtime, owner);
                 else if (!entry.results.has(route.realtime) || now - entry.results.get(route.realtime).at >= LIVE_MS
                     || entry.results.get(route.realtime).result.journeys.some(journey => Date.parse(journey.departure) < now)) {
-                    this.enqueue(entry, 'refresh', route.realtime, { client, network });
+                    this.enqueue(entry, 'refresh', route.realtime, owner);
                 }
             }
             return this.present(entry, route, now);
@@ -145,10 +168,20 @@ export class PlannerRouteBoards {
         ...(entry.error ? { error: entry.error } : {}) };
     }
 
+    observe(entry, kind, mode, startedAt = new Date(this.now())) {
+        return this.searchLog.start({
+            source: kind === 'refresh' ? 'saved-refresh' : kind === 'replan' ? 'saved-replan' : 'saved-route',
+            request: { ...entry.request, time: new Date(this.now()).toISOString(), realtime: mode, windowMinutes: 360, limit: 5 },
+            startedAt, datasetVersion: entry.version
+        });
+    }
+
     enqueue(entry, kind, mode, owner) {
         if (entry.pending || entry.waiting || this.closed) return false;
         if (kind === 'replan' && mode === 'ignore') kind = 'refresh';
-        entry.waiting = { entry, kind, mode, client: owner.client, network: owner.network,
+        const observation = owner.observation && !owner.observationFinished ? owner.observation
+            : this.observe(entry, kind, mode, owner.logStartedAt);
+        entry.waiting = { entry, kind, mode, client: owner.client, network: owner.network, observation,
             queuedAt: owner.queuedAt ?? this.now(), order: owner.order ?? ++this.sequence,
             phase: 'queued', controller: new AbortController() };
         return true;
@@ -230,11 +263,15 @@ export class PlannerRouteBoards {
         const config = this.service.config ?? {};
         const execution = { timeoutMs: config.jobTimeoutMs ?? 600000, maxOperations: config.jobMaxOperations ?? 1000000000,
             cpuDutyCycle: config.jobCpuDutyCycle ?? 0.5 };
-        const onStart = () => { work.startedAt = this.now(); work.phase = kind === 'refresh' ? 'live' : 'preparing'; };
+        const onStart = () => {
+            work.startedAt = this.now(); work.phase = kind === 'refresh' ? 'live' : 'preparing';
+            work.observation.update({ phase: work.phase });
+        };
         const onProgress = progress => {
             const value = typeof progress === 'string' ? { phase: progress } : progress;
             if (!['preparing', 'searching', 'live'].includes(value?.phase)) return;
             work.phase = value.phase;
+            work.observation.update({ phase: value.phase });
             if (Number.isInteger(value.completedWindows) && Number.isInteger(value.totalWindows)
                 && value.completedWindows >= 0 && value.completedWindows <= value.totalWindows && value.totalWindows <= 8) {
                 work.completedWindows = value.completedWindows;
@@ -248,16 +285,18 @@ export class PlannerRouteBoards {
                 onStart();
                 const stored = await this.cache.get(entry.key);
                 if (stored?.profile?.version === entry.version && stored.expiresAt > this.now()) {
+                    work.observation.update({ cacheStatus: 'hit' });
                     const bytes = this.profileSize(stored.profile);
                     this.reserveProfile(entry, bytes, 'profileBytes');
                     Object.assign(entry, stored);
                     entry.profileBytes = bytes;
                     this.metrics.cacheHits++;
                     next = 'refresh';
-                } else next = 'profile';
+                } else { work.observation.update({ cacheStatus: 'miss' }); next = 'profile'; }
                 return;
             }
             if (kind === 'profile') {
+                work.observation.update({ cacheStatus: 'miss' });
                 this.metrics.profiles++;
                 const value = await call('routeBoardProfile', { request: entry.request, version: entry.version });
                 if (controller.signal.aborted) return;
@@ -274,6 +313,7 @@ export class PlannerRouteBoards {
                 return;
             }
             const replan = kind === 'replan';
+            work.observation.update({ cacheStatus: replan ? 'miss' : 'hit' });
             this.metrics[replan ? 'replans' : 'liveRefreshes']++;
             if (replan) entry.lastReplanAt = this.now();
             const value = await call(replan ? 'routeBoardReplan' : 'routeBoardRefresh', {
@@ -291,6 +331,8 @@ export class PlannerRouteBoards {
             }
             if (replan) entry.replannedFingerprint = disruptionFingerprint ?? entry.pendingFingerprint;
             entry.results.set(mode, { result, at: this.now() });
+            this.finishObservation(work, { status: 'success', outcome: result.journeys?.length ? 'completed' : 'empty',
+                resultCount: result.journeys?.length ?? 0 });
             // Replanned candidates may carry live annotations: keep them only for
             // this short-lived result, never persist them as a scheduled profile.
             if (!replan && needsReplan && disruptionFingerprint !== entry.replannedFingerprint
@@ -301,47 +343,67 @@ export class PlannerRouteBoards {
         }).then(() => { entry.error = null; entry.retryAt = 0; }, error => {
             if (!controller.signal.aborted) {
                 this.metrics.failures++;
+                if (error.code === 'SEARCH_BUSY') work.observation.update({ phase: 'retrying' });
+                else this.finishObservation(work, { status: 'fail', outcome: 'failed', errorCode: error.code || 'DATASET_UNAVAILABLE' });
                 entry.error = failure(error);
                 entry.retryAt = this.now() + (error.code === 'SEARCH_BUSY' ? 5000 : 20000);
                 next = kind;
             }
         }).finally(() => {
+            if (controller.signal.aborted) this.finishObservation(work, { status: 'other', outcome: 'cancelled' });
             entry.pending = null;
             this.active = null;
             if (!entry.error && entry.requestedMode !== mode && next !== 'profile') next = 'refresh';
             if (!controller.signal.aborted && next && this.now() - entry.lastRequested < LEASE_MS) {
                 // A successful first result releases its place before a replan;
                 // automatic retries also go behind older outstanding routes.
-                const owner = next === 'replan' || entry.error ? { client: work.client, network: work.network } : work;
+                const owner = next === 'replan' || entry.error ? { client: work.client, network: work.network,
+                    ...(entry.error?.code === 'SEARCH_BUSY' ? { observation: work.observation } : {}) } : work;
                 this.enqueue(entry, next, entry.requestedMode ?? mode, owner);
-            }
+            } else if (next) this.finishObservation(work, { status: 'other', outcome: 'expired' });
             this.prune();
             this.admitWaiting();
             this.pump();
         });
     }
 
+    finishObservation(work, fields) {
+        work.observationFinished = true;
+        work.observation.finish({ ...fields, finishedAt: new Date(this.now()) });
+    }
+
+    cancelEntry(entry, outcome) {
+        for (const work of [entry.pending, entry.waiting].filter(Boolean)) {
+            this.finishObservation(work, { status: 'other', outcome });
+            work.controller.abort();
+        }
+    }
+
     prune() {
         const now = this.now();
         for (const entry of this.entries.values()) {
             if (entry.bucket !== Math.floor(now / (2 * HOUR)) * 2 * HOUR) {
-                entry.pending?.controller.abort();
+                this.cancelEntry(entry, 'superseded');
                 this.queue = this.queue.filter(work => work.entry !== entry);
                 this.entries.delete(entry.key);
                 continue;
             }
             for (const [client, caller] of entry.callers) if (now - caller.at > LEASE_MS) entry.callers.delete(client);
             if (entry.pending && now - entry.lastRequested > LEASE_MS) {
-                entry.pending.controller.abort();
+                this.cancelEntry(entry, 'expired');
                 this.queue = this.queue.filter(work => work.entry !== entry);
                 if (this.active?.entry !== entry) entry.pending = null;
             }
-            if (!entry.pending && now - entry.lastRequested > LEASE_MS) this.entries.delete(entry.key);
+            if (!entry.pending && now - entry.lastRequested > LEASE_MS) {
+                this.cancelEntry(entry, 'expired');
+                this.entries.delete(entry.key);
+            }
         }
         let bytes = [...this.entries.values()].reduce((total, entry) => total + (entry.profileBytes ?? 0) + (entry.refreshProfileBytes ?? 0), 0);
         for (const entry of [...this.entries.values()].sort((a, b) => a.lastRequested - b.lastRequested)) {
             if (this.entries.size <= this.maxEntries && bytes <= this.maxProfileBytes) break;
             if (!entry.pending) {
+                this.cancelEntry(entry, 'evicted');
                 bytes -= (entry.profileBytes ?? 0) + (entry.refreshProfileBytes ?? 0);
                 this.entries.delete(entry.key);
             }
@@ -351,6 +413,7 @@ export class PlannerRouteBoards {
     close() {
         this.closed = true;
         clearInterval(this.sweep);
+        for (const entry of this.entries.values()) this.cancelEntry(entry, 'closed');
         this.active?.controller.abort();
         this.queue = [];
         this.entries.clear();
