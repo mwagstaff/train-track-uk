@@ -38,6 +38,13 @@ export function createCooperativeSignal(cancelBuffer, { timeoutMs, cpuDutyCycle 
         if (time >= deadline) throw new PlannerError('SEARCH_TIMEOUT', 'The search exceeded its execution time budget.', 504);
     }
     return {
+        // A parked operation shares this thread with other searches. Their CPU
+        // time must not be charged to it when it regains the execution slot.
+        // The original deadline and shared cancellation flag remain unchanged.
+        resetAccounting() {
+            lastWall = now();
+            lastCpu = cpuDutyCycle < 1 ? cpuTime() : null;
+        },
         get aborted() {
             if (Atomics.load(cancelled, 0) !== 0) return true;
             let time = now();

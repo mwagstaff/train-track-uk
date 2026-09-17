@@ -144,7 +144,7 @@ export function selectRouteBoardJourneys(journeys, limit = 5) {
  * caller owns profile lifetime, response caching and deduplicated full replans.
  */
 export async function refreshRouteBoard({ profile, network, time, limit = 5, realtime = 'apply',
-    check: callerCheck = () => {}, abortSignal, budget }, { provider, now = Date.now, createBudget } = {}) {
+    check: callerCheck = () => {}, abortSignal, budget, awaitIO = work => work() }, { provider, now = Date.now, createBudget } = {}) {
     const check = () => {
         callerCheck();
         if (abortSignal?.aborted) throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);
@@ -177,7 +177,7 @@ export async function refreshRouteBoard({ profile, network, time, limit = 5, rea
             createBudget ??= tools.createLiveRequestBudget;
         }
         budget ??= createBudget ? createBudget(64) : { limit: 64, used: 0 };
-        const boards = await provider.fetchBoards(stations, { signal: abortSignal, budget });
+        const boards = await awaitIO(() => provider.fetchBoards(stations, { signal: abortSignal, budget }));
         check();
         visited.push(...stations);
         errors.push(...(boards.errors ?? []));
@@ -200,7 +200,7 @@ export async function refreshRouteBoard({ profile, network, time, limit = 5, rea
         for (const match of wantedMatches.slice(MAX_TRAINS)) match.candidates.forEach(candidate => pending.add(candidate.scheduledServiceId));
         limited ||= wantedMatches.length + extraMatches.length > MAX_TRAINS;
         const references = selectedMatches.map(({ station, serviceID }) => ({ station, serviceID }));
-        const details = await provider.fetchDetails(references, { signal: abortSignal, budget });
+        const details = await awaitIO(() => provider.fetchDetails(references, { signal: abortSignal, budget }));
         check();
         errors.push(...(details.errors ?? []));
         limited ||= Boolean(details.limited);
@@ -240,7 +240,7 @@ export async function refreshRouteBoard({ profile, network, time, limit = 5, rea
             for (const target of [...staffTargets.values()].slice(MAX_STAFF)) target.ids.forEach(id => pending.add(id));
             limited ||= staffTargets.size > MAX_STAFF;
             if (chosen.length) {
-                const staff = await provider.fetchStaffBoards(chosen.map(({ station, departure }) => ({ station, departure })), { signal: abortSignal, budget });
+                const staff = await awaitIO(() => provider.fetchStaffBoards(chosen.map(({ station, departure }) => ({ station, departure })), { signal: abortSignal, budget }));
                 check(); errors.push(...(staff.errors ?? [])); limited ||= Boolean(staff.limited);
                 if (staff.limited) chosen.forEach(target => target.ids.forEach(id => pending.add(id)));
                 snapshot = mergeSnapshots(snapshot, matchStaffObservations(network, staff.boards,

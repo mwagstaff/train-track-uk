@@ -636,7 +636,7 @@ private extension MyJourneysView {
                 onToggleExpanded: { toggleExpanded(group.id) },
                 onToggleJourneyReversed: { toggleReversed(group.id) },
                 onOpenDeparture: { leg, departure in
-                    if displayedGroup.legs.count > 1 {
+                    if displayedGroup.legs.count > 1 && leg.toStation.crs != displayedGroup.endStation.crs {
                         cardDestination = .itinerary(
                             group: displayedGroup,
                             firstDeparture: departure

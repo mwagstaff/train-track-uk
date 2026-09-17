@@ -108,9 +108,18 @@ export function normaliseCallTimes(calls) {
   return result;
 }
 
-export function resolveCallTimes(calls, originDate) {
+export function resolveCallTimes(calls, originDate, { compact = false } = {}) {
   const offset = originOffsetMinutes(originDate, calls[0].workDeparture % 86400);
   const base = Date.parse(`${dateOnly(originDate)}T00:00:00Z`) - offset * 60000;
+  // Routing retains hundreds of thousands of calls per date range. Parsing
+  // fields have already served their purpose; keep only routing, presentation
+  // and exact live-service matching fields in that long-lived network.
+  if (compact) return calls.filter(call => call.station && (call.canBoard || call.canAlight)).map(call => ({
+    tiploc: call.tiploc, sequence: call.sequence, station: call.station,
+    arrival: call.arrivalSeconds === null ? null : base + call.arrivalSeconds * 1000,
+    departure: call.departureSeconds === null ? null : base + call.departureSeconds * 1000,
+    canBoard: call.canBoard, canAlight: call.canAlight, platform: call.platform
+  }));
   return calls.map(call => ({ ...call,
     arrival: call.arrivalSeconds === null ? null : base + call.arrivalSeconds * 1000,
     departure: call.departureSeconds === null ? null : base + call.departureSeconds * 1000,

@@ -4,6 +4,8 @@
 import express from 'express';
 import { renderAdminShell } from '../../lib/admin-portal.js';
 import { registerPlannerSearchAdminRoutes } from '../../lib/planner-search-admin.js';
+import { normalizePlannerSearchLogQuery } from '../../lib/planner-search-log.js';
+import { plannerSearchWindow } from '../../lib/planner-search-range.js';
 
 const app = express();
 const admin = express.Router();
@@ -20,19 +22,21 @@ const rows = Array.from({ length: 76 }, (_, index) => {
         status, outcome: status === 'other' ? 'cancelled' : status, phase: 'searching',
         errorCode: status === 'fail' ? 'SEARCH_TIMEOUT' : null,
         cacheStatus: index === 0 || index % 9 === 0 ? 'unknown' : index % 3 === 0 ? 'miss' : 'hit',
-        durationMs, source: sources[index % sources.length], resultCount: index % 13 === 0 ? 0 : 5, coalesced: index % 4 === 0 };
+        durationMs, source: sources[index % sources.length], resultCount: index % 13 === 0 ? 0 : 5, coalesced: index % 4 === 0,
+        ...(index === 1 ? { metrics: { queueWaitMs: 120, resumeQueueMs: 0, preparationMs: 180, routingMs: 1100,
+            liveLookupMs: 525, cpuMs: 910, routeCalls: 2, operations: 25102, labels: 250, candidates: 14 },
+            resourcePeaks: { heapUsedBytes: 420 * 1048576, rssBytes: 950 * 1048576 } } : {}) };
 });
 
 registerPlannerSearchAdminRoutes(admin, {
     renderShell: renderAdminShell,
     listSearches: async query => {
         if (query.fixture === 'error') throw new Error('Synthetic repository unavailable');
-        const range = ['1h', '24h', '7d'].includes(query.range) ? query.range : '24h';
-        const source = sources.includes(query.source) ? query.source : 'all';
-        const sort = ['origin', 'destination', 'startedAt', 'finishedAt', 'status', 'cacheStatus', 'durationMs', 'source'].includes(query.sort) ? query.sort : 'startedAt';
-        const direction = query.direction === 'asc' ? 'asc' : 'desc';
-        const pageSize = [25, 50, 100].includes(Number(query.per_page)) ? Number(query.per_page) : 25;
-        const matching = query.fixture === 'empty' ? [] : rows.filter(row => (source === 'all' || row.source === source) && (range !== '1h' || row.startedAt >= now - 3600000));
+        const selected = normalizePlannerSearchLogQuery({ per_page: '25', ...query });
+        const { source, sort, direction, pageSize } = selected;
+        const window = plannerSearchWindow(selected, now);
+        const matching = query.fixture === 'empty' ? [] : rows.filter(row => (source === 'all' || row.source === source)
+            && row.startedAt >= window.from && row.startedAt <= window.to);
         const count = predicate => matching.filter(predicate).length;
         const durations = matching.filter(row => row.status === 'success' || row.status === 'fail').map(row => row.durationMs).sort((a, b) => a - b);
         const stats = { total: matching.length, success: count(row => row.status === 'success'), fail: count(row => row.status === 'fail'), pending: count(row => row.status === 'pending'), other: count(row => row.status === 'other'), completed: durations.length,
@@ -46,7 +50,7 @@ registerPlannerSearchAdminRoutes(admin, {
         });
         const totalPages = Math.max(1, Math.ceil(matching.length / pageSize));
         const page = Math.min(totalPages, Math.max(1, Number(query.page) || 1));
-        return { rows: matching.slice((page - 1) * pageSize, page * pageSize), total: matching.length, page, pageSize, totalPages, range, source, sort, direction, stats };
+        return { ...selected, rows: matching.slice((page - 1) * pageSize, page * pageSize), total: matching.length, page, totalPages, stats, window };
     }
 });
 // Express removes this mount prefix before the route sees req.path, just as the

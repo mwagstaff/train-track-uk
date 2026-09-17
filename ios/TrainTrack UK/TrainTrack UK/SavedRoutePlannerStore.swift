@@ -34,6 +34,8 @@ struct SavedRouteBoard: Decodable {
     let expiresAt: Date?
     let error: PlannerError?
     var progress: SavedRouteBoardProgress? = nil
+    var source: String? = nil
+    var direct: JourneyDeparturesSnapshot? = nil
 }
 
 struct SavedRouteBoardProgress: Decodable {
@@ -55,6 +57,39 @@ struct SavedRouteBoardsResponse: Decodable {
     let boards: [SavedRouteBoard]
 }
 
+/// The v4 server has verified that this train serves every required stop.
+/// Present it as one through service without changing the user's saved route.
+enum SavedRouteDirectPresentation {
+    static func throughGroup(_ group: JourneyGroup) -> JourneyGroup {
+        let first = group.legs.first!
+        let leg = Journey(id: first.id, groupId: group.id, legIndex: 0,
+                          fromStation: group.startStation, toStation: group.endStation,
+                          createdAt: first.createdAt, favorite: group.favorite)
+        return JourneyGroup(id: group.id, legs: [leg])
+    }
+
+    static func time(_ departure: DepartureV2, useLiveTimes: Bool) -> String {
+        useLiveTimes ? JourneyItineraryBuilder.departureDisplayTime(departure) : departure.departureTime.scheduled
+    }
+
+    static func departureDate(_ departure: DepartureV2, useLiveTimes: Bool, now: Date, observedAt: Date? = nil) -> Date? {
+        PlannerTrainTracking.date(time(departure, useLiveTimes: useLiveTimes), near: departure.evidenceObservedAt ?? observedAt ?? now)
+    }
+
+    static func upcoming(_ departures: [DepartureV2], useLiveTimes: Bool, now: Date, observedAt: Date? = nil) -> [DepartureV2] {
+        departures.filter {
+            let delayedWithoutTime = useLiveTimes && $0.departureTime.estimated
+                .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "delayed"
+            let earliest = now.addingTimeInterval(delayedWithoutTime ? -2 * 3600 : -60)
+            return departureDate($0, useLiveTimes: useLiveTimes, now: now, observedAt: observedAt).map { $0 >= earliest } ?? true
+        }.sorted {
+            let left = departureDate($0, useLiveTimes: useLiveTimes, now: now, observedAt: observedAt) ?? .distantFuture
+            let right = departureDate($1, useLiveTimes: useLiveTimes, now: now, observedAt: observedAt) ?? .distantFuture
+            return left == right ? $0.serviceID < $1.serviceID : left < right
+        }
+    }
+}
+
 enum SavedRouteBoardError: Error { case unsupported }
 
 @MainActor
@@ -72,8 +107,19 @@ struct SavedRouteBoardState {
     var waitingForCapacity = false
 
     var result: PlannerSearchResponse? { board?.result }
+    var direct: JourneyDeparturesSnapshot? { board?.source == "direct" ? board?.direct : nil }
+    var usesDirectDepartures: Bool { direct != nil }
     var isPending: Bool { board?.progress?.phase == "retrying" || waitingForCapacity || (board == nil && message == nil) || board?.status == "queued" || board?.status == "refreshing" }
     var isStale: Bool { board?.status != "ready" || message != nil }
+
+    func directAvailability(at now: Date = Date()) -> JourneyDataAvailability? {
+        guard let direct else { return nil }
+        let observed = direct.lastSuccessfulUpdate ?? direct.departures.compactMap(\.evidenceObservedAt).min()
+        let expired = observed.map { now.timeIntervalSince($0) >= 90 } ?? false
+        let status: JourneyDataStatus = (isStale || expired) && direct.dataStatus.severity < JourneyDataStatus.stale.severity
+            ? .stale : direct.dataStatus
+        return JourneyDataAvailability(status: status, lastSuccessfulUpdate: observed)
+    }
 
     func progressPresentation(at now: Date) -> SavedRouteProgressPresentation? {
         guard isPending else { return nil }
@@ -179,14 +225,25 @@ final class SavedRoutePlannerStore {
                 do {
                     let response = try await self.client.routeBoards(batch)
                     try Task.checkCancellation()
-                    guard response.apiVersion == 3 else { throw PlannerError(code: "INVALID_RESPONSE", message: "Journey options could not be read. Please try again.") }
+                    guard [3, 4].contains(response.apiVersion) else { throw PlannerError(code: "INVALID_RESPONSE", message: "Journey options could not be read. Please try again.") }
                     for (query, key) in zip(batch, keys) {
                         guard var board = response.boards.first(where: { $0.id == query.id }) else {
                             self.fail(key: key, message: "Journey options were not returned. Please try again.")
                             continue
                         }
-                        let previous = self.states[key]?.result
-                        if board.result == nil { board.result = previous }
+                        guard response.apiVersion == 3 || (["direct", "planned"].contains(board.source ?? "")
+                            && !(board.source == "direct" && board.status == "ready" && board.direct == nil)) else {
+                            self.fail(key: key, message: "Departure options could not be read. Please try again.")
+                            continue
+                        }
+                        let previous = self.states[key]?.board
+                        if board.source == "direct" {
+                            board.result = nil
+                            if board.direct == nil && previous?.source == "direct" { board.direct = previous?.direct }
+                        } else {
+                            board.direct = nil
+                            if board.result == nil && previous?.source != "direct" { board.result = previous?.result }
+                        }
                         let interval = min(20, max(1, (board.pollAfterMs ?? 20000) / 1000))
                         let waiting = board.error?.code == "SEARCH_BUSY"
                         self.states[key] = SavedRouteBoardState(board: board, message: waiting ? nil : board.error?.message,

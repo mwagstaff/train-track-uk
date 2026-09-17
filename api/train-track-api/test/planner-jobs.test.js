@@ -53,6 +53,38 @@ test('queued jobs return immediately, pin versions and give processing its own e
     assert.equal(calls.length, 2);
 });
 
+test('I/O-capable service admits two bounded operations and cancellation frees the next place', async t => {
+    const calls = [];
+    const service = { supportsIOYield: true, config: plannerConfig({}),
+        status: async () => ({ available: true, dataset: { version } }),
+        call(method, payload, options) {
+            options.onStart();
+            return new Promise((resolve, reject) => {
+                calls.push({ resolve, options });
+                options.signal.addEventListener('abort', () => reject(new PlannerError('SEARCH_CANCELLED', 'Cancelled', 499)), { once: true });
+            });
+        } };
+    const jobs = new PlannerSearchJobs(service);
+    t.after(() => jobs.close());
+    const submitted = [];
+    for (const [index, destination] of ['BYM', 'VIC', 'INV'].entries()) {
+        submitted.push(await jobs.submit({ ...request, destination }, { client: `client-${index}` }));
+    }
+    await tick();
+    assert.equal(calls.length, 2);
+    assert.equal(jobs.inFlight.size, 2);
+    assert.equal(jobs.get(submitted[2].id).queuePosition, 3);
+    jobs.cancel(submitted[0].id);
+    await tick();
+    assert.equal(calls.length, 3);
+    assert.equal(calls[1].options.signal.aborted, false);
+    assert.equal(jobs.get(submitted[2].id).status, 'running');
+    calls[1].resolve({ journeys: [] });
+    calls[2].resolve({ journeys: [] });
+    await tick();
+    assert.equal(jobs.inFlight.size, 0);
+});
+
 test('idempotent retries and shared work retain independent cancellation leases', async t => {
     const { jobs, calls } = fixture(t);
     const [first, retry] = await Promise.all([jobs.submit(request, { client: 'one', idempotencyKey: 'same-key' }),
@@ -68,6 +100,29 @@ test('idempotent retries and shared work retain independent cancellation leases'
     await assert.rejects(jobs.submit({ ...request, destination: 'VIC' }, { client: 'one', idempotencyKey: 'same-key' }), { status: 409 });
     jobs.cancel(shared.id);
     assert.equal(calls[0].options.signal.aborted, true);
+});
+
+test('overlapping admission failures share one backoff timer and close clears it', async t => {
+    const rejections = [];
+    const service = { supportsIOYield: true, config: plannerConfig({}),
+        status: async () => ({ available: true, dataset: { version } }),
+        call: () => new Promise((resolve, reject) => rejections.push(reject)) };
+    const jobs = new PlannerSearchJobs(service);
+    t.after(() => jobs.close());
+    await jobs.submit(request, { client: 'one' });
+    await jobs.submit({ ...request, destination: 'VIC' }, { client: 'two' });
+    await tick();
+    assert.equal(rejections.length, 2);
+    rejections[0](new PlannerError('SEARCH_BUSY', 'Busy', 429));
+    await tick();
+    const timer = jobs.retryTimer;
+    assert.ok(timer);
+    rejections[1](new PlannerError('SEARCH_BUSY', 'Busy', 429));
+    await tick();
+    assert.equal(jobs.retryTimer, timer);
+    assert.equal(jobs.queue.length, 2);
+    jobs.close();
+    assert.equal(jobs.retryTimer, null);
 });
 
 test('admission is globally bounded and per-client/network limits leave room for other users', async t => {

@@ -44,6 +44,55 @@ test('direct profiles retain later departures and overtaking, with actual source
     assert.equal(result.journeys[0].legs[0].variantId, 'variant:fast');
 });
 
+test('completion bounds retain each departure and its direct versus faster connection tradeoff', () => {
+    const net = network([
+        train('direct', 'OP', [['AAA', null, 10], ['DDD', 60, null]]),
+        train('later', 'OP', [['AAA', null, 20], ['DDD', 70, null]]),
+        train('in', 'OP', [['AAA', null, 10], ['BBB', 20, null]]),
+        train('out', 'OP', [['BBB', null, 25], ['DDD', 40, null]])
+    ]);
+    const query = { origin: 'AAA', destination: 'DDD', time: iso(0), timeType: 'departAfter', maxChanges: 2, windowMinutes: 120, limit: 20 };
+    const result = findJourneys(query, net, { departureProfile: true });
+    assert.deepEqual(result.journeys.map(serviceIds), [['in', 'out'], ['direct'], ['later']]);
+    for (const journey of result.journeys) assert.ok(validateJourney(journey, net, query));
+    // The equivalent reverse profile fixes arrival boundaries instead.
+    const mirrored = network(net.services.map(service => ({ ...service, calls: [...service.calls].reverse().map(call => ({
+        ...call, station: call.station === 'AAA' ? 'DDD' : call.station === 'DDD' ? 'AAA' : call.station,
+        arrival: call.departure == null ? null : time(100) - (call.departure - zero),
+        departure: call.arrival == null ? null : time(100) - (call.arrival - zero),
+        canBoard: call.canAlight, canAlight: call.canBoard
+    })) })));
+    const reverseQuery = { ...query, time: iso(100), timeType: 'arriveBy' };
+    const reverse = findJourneys(reverseQuery, mirrored, { departureProfile: true });
+    assert.deepEqual(reverse.journeys.map(serviceIds), [['out', 'in'], ['direct'], ['later']]);
+    for (const journey of reverse.journeys) assert.ok(validateJourney(journey, mirrored, reverseQuery));
+});
+
+test('label exhaustion is distinguishable from elapsed or operation budget exhaustion', () => {
+    const net = network([train('direct', 'OP', [['AAA', null, 10], ['DDD', 20, null]])]);
+    const query = { origin: 'AAA', destination: 'DDD', time: iso(0), timeType: 'departAfter' };
+    assert.throws(() => findJourneys(query, net, { maxLabels: 1 }), error => error.code === 'SEARCH_TIMEOUT' && error.reason === 'labelLimit');
+    assert.throws(() => findJourneys(query, net, { maxOperations: 1 }), error => error.code === 'SEARCH_TIMEOUT' && error.reason === undefined);
+});
+
+test('saved fallback finds connections even when an unavailable scheduled direct train would dominate them', () => {
+    const net = network([
+        train('direct', 'OP', [['AAA', null, 10], ['DDD', 30, null]]),
+        train('in', 'OP', [['AAA', null, 5], ['BBB', 20, null]]),
+        train('out', 'OP', [['BBB', null, 25], ['DDD', 45, null]])
+    ]);
+    const query = { origin: 'AAA', destination: 'DDD', time: iso(0), timeType: 'departAfter',
+        maxChanges: 2, windowMinutes: 120, limit: 5 };
+    assert.deepEqual(findJourneys(query, net).journeys.map(serviceIds), [['direct']]);
+    const fallback = findJourneys(query, net, { excludeDirect: true });
+    assert.deepEqual(fallback.journeys.map(serviceIds), [['in', 'out']]);
+    assert.ok(validateJourney(fallback.journeys[0], net, query));
+    assert.equal(findJourneys({ ...query, maxChanges: 0 }, net, { excludeDirect: true }).journeys.length, 0);
+    assert.deepEqual(findJourneys({ ...query, time: iso(60), timeType: 'arriveBy' }, net,
+        { excludeDirect: true }).journeys.map(serviceIds), [['in', 'out']]);
+    assert.deepEqual(findJourneys(query, net).journeys.map(serviceIds), [['direct']], 'The opt-in must not change legacy searches');
+});
+
 test('connection exact threshold and extra buffer, including fractional seconds', () => {
     for (const offset of [-1 / 60, 0, 1 / 60]) {
         const net = network([

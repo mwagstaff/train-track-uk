@@ -110,8 +110,7 @@ export function resolveServices(repository, originDate, { summaryOnly = false, s
   for (const { variant, decision } of selected) {
     check();
     try {
-      const calls = resolveCallTimes(decodeCalls(JSON.parse(storedCalls.get(variant.variantId)), repository.stationByTiploc), originDate)
-        .filter(call => call.station && (call.canBoard || call.canAlight));
+      const calls = resolveCallTimes(decodeCalls(JSON.parse(storedCalls.get(variant.variantId)), repository.stationByTiploc), originDate, { compact: true });
       if (calls.length < 2) { recordDiagnostic(diagnostics, 'INSUFFICIENT_PASSENGER_CALLS', { uid: variant.uid }); continue; }
       if (summaryOnly) {
         summary.serviceCount++;

@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { PlannerRouteBoards, normalizeRouteBoards, routeBoardKey } from '../lib/planner/route-boards.js';
+import { PlannerRouteBoards, normalizeRouteBoards, routeBoardKey, routeBoardFragmentKey } from '../lib/planner/route-boards.js';
 import { RouteBoardCache } from '../lib/planner/route-board-cache.js';
 import { registerPlannerRoutes } from '../lib/planner-routes.js';
 import { PlannerError } from '../lib/planner/contract.js';
@@ -43,6 +43,145 @@ function fixture(t, overrides = {}) {
     t.after(() => manager.close());
     return { manager, service, records, calls, cache, advance: ms => { now += ms; }, setVersion: value => { currentVersion = value; } };
 }
+
+function chunkFixture(t, overrides = {}) {
+    const f = fixture(t, { ...overrides, call: async (method, payload, options) => {
+        if (overrides.beforeCall) await overrides.beforeCall(method, payload, options);
+        options.onStart?.();
+        if (method === 'routeBoardProfileChunk') {
+            const departure = new Date(Date.parse(payload.chunk.from) + 15 * 60000).toISOString();
+            const arrival = new Date(Date.parse(departure) + 20 * 60000).toISOString();
+            return { profile: { version: payload.version, request: payload.request, dataset: { version: payload.version },
+                candidates: [{ departure, arrival, durationMinutes: 20, changes: 0, legs: [] }],
+                searchWindow: { ...payload.chunk, fromInclusive: true, toInclusive: false }, searchTruncated: false, warnings: [],
+                profile: { policy: 'route-profile-v1', createdAt: new Date(start).toISOString(), departureTimesAvailable: 1,
+                    routingChunkMinutes: 15, complete: true } } };
+        }
+        return { journeys: payload.profile.candidates.filter(journey => Date.parse(journey.departure) >= Date.parse(payload.time)).slice(0, 5),
+            dataset: { version: payload.profile.version }, search: {}, warnings: [], pagination: {} };
+    } });
+    f.service.supportsProfileChunks = true;
+    return f;
+}
+
+test('hourly profiles publish the current hour before later worker turns and expose real coverage', async t => {
+    let release;
+    let chunks = 0;
+    const f = chunkFixture(t, { beforeCall: async method => {
+        if (method === 'routeBoardProfileChunk' && ++chunks === 2) await new Promise(resolve => { release = resolve; });
+    } });
+    await f.manager.get(body);
+    for (let i = 0; i < 30 && !release; i++) await tick();
+    assert.ok(release);
+    const early = (await f.manager.get(body)).boards[0];
+    assert.equal(early.status, 'refreshing');
+    assert.equal(early.result.journeys.length, 1);
+    assert.equal(early.coverage.complete, false);
+    assert.equal(early.coverage.completedWindows, 1);
+    assert.equal(early.progress.totalWindows, 8);
+    assert.deepEqual(f.calls.filter(call => call.method !== 'routeBoardPreview').slice(0, 3).map(call => call.method),
+        ['routeBoardProfileChunk', 'routeBoardRefresh', 'routeBoardProfileChunk']);
+    assert.equal(f.calls[0].payload.chunk.from, '2026-09-17T12:00:00.000Z');
+    assert.equal(f.calls.filter(call => call.method === 'routeBoardProfileChunk')[1].payload.chunkMinutes, 15);
+    release();
+    await idle(f.manager);
+    const finished = (await f.manager.get(body)).boards[0];
+    assert.equal(finished.coverage.complete, true);
+    assert.equal(finished.coverage.completedWindows, 8);
+    assert.equal(f.calls.filter(call => call.method === 'routeBoardProfileChunk').length, 8);
+    assert.equal(f.calls.filter(call => call.method === 'routeBoardRefresh').length, 2);
+});
+
+test('scheduled provisional results are visible while the first live lookup is still waiting', async t => {
+    let release;
+    let waits = 0;
+    const updates = [];
+    const f = chunkFixture(t, { options: { searchLog: { start: () => ({ update: value => updates.push(value), finish() {} }) } },
+        beforeCall: async method => {
+            if (method === 'routeBoardRefresh' && ++waits === 1) await new Promise(resolve => { release = resolve; });
+        } });
+    await f.manager.get(body);
+    for (let i = 0; i < 30 && !release; i++) await tick();
+    assert.ok(release);
+    const board = (await f.manager.get(body)).boards[0];
+    assert.equal(board.result.journeys.length, 1);
+    assert.equal(board.result.search.provisional, true);
+    assert.equal(board.coverage.completedWindows, 1);
+    assert.equal(updates.filter(value => value.firstResultAt).length, 1);
+    release();
+    await idle(f.manager);
+    assert.equal((await f.manager.get(body)).boards[0].result.search.provisional, undefined);
+});
+
+test('hourly cache reuses six overlapping intervals at rollover and never shares different required vias', async t => {
+    const f = chunkFixture(t);
+    await f.manager.get(body); await idle(f.manager);
+    f.advance(2 * 3600000);
+    await f.manager.get(body); await idle(f.manager);
+    assert.equal(f.calls.filter(call => call.method === 'routeBoardProfileChunk').length, 10);
+    assert.equal([...f.manager.entries.values()][0].profile.profile.coverage.complete, true);
+    assert.ok(f.manager.metrics.cacheHits >= 6);
+    const canonical = routeBoardKey(normalizeRouteBoards(body, start)[0].request, version, start);
+    const from = '2026-09-17T12:00:00.000Z', to = '2026-09-17T13:00:00.000Z';
+    assert.notEqual(routeBoardFragmentKey(canonical.request, version, from, to),
+        routeBoardFragmentKey({ ...canonical.request, via: ['BMS'] }, version, from, to));
+    assert.notEqual(routeBoardFragmentKey(canonical.request, version, from, to),
+        routeBoardFragmentKey(canonical.request, 'b'.repeat(64), from, to));
+});
+
+test('profile continuation yields saved-route admission to another cold card', async t => {
+    const f = chunkFixture(t);
+    await f.manager.get({ routes: [body.routes[0], { id: 'other', origin: 'ECR', destination: 'VIC' }] });
+    await idle(f.manager);
+    const first = f.calls.filter(call => call.method === 'routeBoardProfileChunk').slice(0, 2);
+    assert.deepEqual(first.map(call => call.payload.request.origin), ['KTH', 'ECR']);
+    assert.ok([...f.manager.entries.values()].every(entry => entry.profile.profile.coverage.complete));
+});
+
+test('saved-route telemetry includes outer admission waits once per queued stage', async t => {
+    let release;
+    let held = false;
+    const updates = [];
+    const f = chunkFixture(t, { options: { searchLog: { start: ({ request }) => ({
+        update: value => updates.push({ origin: request.origin, ...value }), finish() {}
+    }) } }, beforeCall: async method => {
+        if (!held && method === 'routeBoardProfileChunk') {
+            held = true;
+            await new Promise(resolve => { release = resolve; });
+        }
+    } });
+    await f.manager.get({ routes: [body.routes[0], { id: 'other', origin: 'ECR', destination: 'VIC' }] });
+    for (let i = 0; i < 30 && !release; i++) await tick();
+    f.advance(7000);
+    release();
+    await idle(f.manager);
+    const waits = updates.filter(value => value.origin === 'ECR').map(value => value.metricsDelta?.admissionQueueMs ?? 0);
+    assert.equal(waits.reduce((a, b) => a + b, 0), 7000);
+    assert.ok(updates.filter(value => value.metricsDelta).every(value => Number.isFinite(value.metricsDelta.admissionQueueMs)));
+});
+
+test('a failed later hour preserves visible options and resumes without discarding completed fragments', async t => {
+    let failed = false;
+    const f = chunkFixture(t, { beforeCall: async (method, payload) => {
+        if (method === 'routeBoardProfileChunk' && payload.chunk.from === '2026-09-17T13:00:00.000Z' && !failed) {
+            failed = true;
+            throw new PlannerError('SEARCH_TIMEOUT', 'Try again.', 504);
+        }
+    } });
+    await f.manager.get(body); await idle(f.manager);
+    const partial = (await f.manager.get(body)).boards[0];
+    assert.equal(partial.error.code, 'SEARCH_TIMEOUT');
+    assert.equal(partial.result.journeys.length, 1);
+    assert.equal(partial.coverage.completedWindows, 1);
+    assert.equal(f.records.size, 1, 'Only the successful hour is cached');
+    f.advance(21000);
+    await f.manager.get(body); await idle(f.manager);
+    const finished = (await f.manager.get(body)).boards[0];
+    assert.equal(finished.error, undefined);
+    assert.equal(finished.coverage.complete, true);
+    assert.equal(f.calls.filter(call => call.method === 'routeBoardProfileChunk'
+        && call.payload.chunk.from === '2026-09-17T12:00:00.000Z').length, 1);
+});
 
 test('new contract validates bounded batches, ordered required vias and stable cross-client keys', () => {
     const [route] = normalizeRouteBoards({ routes: [{ id: 'a', origin: ' kth ', destination: 'vic', via: [' bms '] }] }, start);
@@ -590,7 +729,7 @@ test('real engine and saved-board facade serve a dated engineering diversion aft
     const engine = new PlannerEngine({ ...plannerConfig({}), datasetPath: '/fixture' }, { openDataset: async () => repo,
         now: () => start, liveProvider: { fetchBoards: async () => ({ boards: [], errors: [] }), fetchDetails: async () => ({ details: [], errors: [] }) } });
     const methods = [];
-    const service = { status: () => engine.status(), call: (method, payload, options) => {
+    const service = { supportsProfileChunks: true, status: () => engine.status(), call: (method, payload, options) => {
         methods.push(method); return engine[method](payload, options.signal, options.execution);
     } };
     const records = new Map();
@@ -610,5 +749,6 @@ test('real engine and saved-board facade serve a dated engineering diversion aft
     t.after(() => restarted.close());
     await restarted.get(body); await idle(restarted);
     assert.equal((await restarted.get(body)).boards[0].result.journeys.length, 1);
-    assert.equal(methods.filter(method => method === 'routeBoardProfile').length, 1);
+    assert.equal(methods.filter(method => method === 'routeBoardProfileChunk').length, 8);
+    assert.equal(methods.filter(method => method === 'routeBoardProfile').length, 0);
 });

@@ -17,6 +17,49 @@ const details = (crs = 'ECR') => ({ crs, generatedAt: '2026-09-16T11:59:55Z', st
   ]
 });
 
+test('overlapping searches share a live lookup and one caller cancelling does not cancel the other', async () => {
+  let release, count = 0, upstreamSignal;
+  const provider = new PlannerLiveProvider({ credentials, now: () => now, request: async ({ signal }) => {
+    count++; upstreamSignal = signal;
+    await new Promise(resolve => { release = resolve; });
+    return { data: board() };
+  } });
+  const controller = new AbortController();
+  const budget = createLiveRequestBudget(1);
+  const first = provider.fetchBoards(['ECR'], { offsets: [0], signal: controller.signal, budget });
+  const second = provider.fetchBoards(['ECR'], { offsets: [0], budget: createLiveRequestBudget(0) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(count, 1);
+  controller.abort();
+  await assert.rejects(first, { code: 'SEARCH_CANCELLED' });
+  assert.equal(upstreamSignal.aborted, false);
+  release();
+  const result = await second;
+  assert.equal(result.boards.length, 1);
+  assert.equal(result.requestCount, 0);
+  assert.equal(result.limited, false);
+  assert.equal(budget.used, 1);
+  assert.equal(provider.inflight.size, 0);
+});
+
+test('shared observations are independent copies and failures are retried rather than cached', async () => {
+  let calls = 0;
+  const provider = new PlannerLiveProvider({ credentials, now: () => now, request: async () => {
+    calls++;
+    await new Promise(resolve => setImmediate(resolve));
+    if (calls === 1) throw Object.assign(new Error('Unavailable'), { response: { status: 503 } });
+    return { data: board() };
+  } });
+  const options = { offsets: [0] };
+  const failed = await Promise.all([provider.fetchBoards(['ECR'], options), provider.fetchBoards(['ECR'], options)]);
+  assert.ok(failed.every(value => value.errors[0].reason === 'upstream'));
+  assert.equal(calls, 1);
+  const [one, two] = await Promise.all([provider.fetchBoards(['ECR'], options), provider.fetchBoards(['ECR'], options)]);
+  assert.equal(calls, 2);
+  one.boards[0].services[0].platform = 'changed';
+  assert.equal(two.boards[0].services[0].platform, '2');
+});
+
 test('raw boards explicitly request unfiltered bounded past/current/future windows and retain live identity', async () => {
   const requests = [];
   const provider = new PlannerLiveProvider({ credentials, now: () => now, request: async request => {

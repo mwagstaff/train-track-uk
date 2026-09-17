@@ -48,6 +48,7 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
     private let selectedBaseURL: @MainActor () -> String
     private let clientID: String
     private let timing: SearchTiming
+    private var unavailableV4Until: [String: TimeInterval] = [:]
 
     init(session: URLSession = .shared, selectedBaseURL: (@MainActor () -> String)? = nil,
          clientID: String? = nil, timing: SearchTiming? = nil) {
@@ -67,6 +68,14 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
 
     // Version only this new service. Existing departures, tracking and configuration keep their v2 URLs.
     static func plannerBaseURL(from existingBase: String) throws -> URL {
+        try serviceBaseURL(from: existingBase, version: 3)
+    }
+
+    static func routeBoardsBaseURL(from existingBase: String) throws -> URL {
+        try serviceBaseURL(from: existingBase, version: 4)
+    }
+
+    private static func serviceBaseURL(from existingBase: String, version: Int) throws -> URL {
         guard var components = URLComponents(string: existingBase),
               ["http", "https"].contains(components.scheme), components.host != nil else {
             throw PlannerError(code: "CONFIGURATION", message: "The journey planner server address is invalid.")
@@ -75,7 +84,7 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
         guard path.hasSuffix("api/v2") else {
             throw PlannerError(code: "CONFIGURATION", message: "The selected server does not have a supported API address.")
         }
-        components.path = "/" + String(path.dropLast("api/v2".count)) + "api/v3/journey-planner"
+        components.path = "/" + String(path.dropLast("api/v2".count)) + "api/v\(version)/journey-planner"
         components.query = nil
         components.fragment = nil
         guard let url = components.url else {
@@ -92,9 +101,21 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
 
     func routeBoards(_ routes: [SavedRouteQuery]) async throws -> SavedRouteBoardsResponse {
         struct Request: Encodable { let routes: [SavedRouteQuery] }
-        let base = try Self.plannerBaseURL(from: selectedBaseURL())
+        let server = selectedBaseURL()
+        let body = try JSONEncoder().encode(Request(routes: routes))
+        if (unavailableV4Until[server] ?? -.infinity) <= timing.now() {
+            do {
+                return try await send(path: ["route-boards"], body: body,
+                                      base: Self.routeBoardsBaseURL(from: server), headers: ["X-Planner-Client": clientID],
+                                      timeout: 15, preserveHTTPStatus: true)
+            } catch let failure as HTTPFailure {
+                guard failure.status == 404 else { throw failure.error }
+                unavailableV4Until[server] = timing.now() + 300
+            }
+        }
+        let base = try Self.plannerBaseURL(from: server)
         do {
-            return try await send(path: ["route-boards"], body: JSONEncoder().encode(Request(routes: routes)),
+            return try await send(path: ["route-boards"], body: body,
                                   base: base, headers: ["X-Planner-Client": clientID], timeout: 15, preserveHTTPStatus: true)
         } catch let failure as HTTPFailure {
             if failure.status == 404 { throw SavedRouteBoardError.unsupported }

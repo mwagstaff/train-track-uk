@@ -152,11 +152,17 @@ struct JourneyCard: View {
         var id: String { firstDeparture.serviceID }
     }
 
-    private var firstLeg: Journey { group.legs.first! }
+    private var usesDirectDepartures: Bool { plannedBoard?.usesDirectDepartures == true }
+    private var presentationGroup: JourneyGroup { usesDirectDepartures ? SavedRouteDirectPresentation.throughGroup(group) : group }
+    private var firstLeg: Journey { presentationGroup.legs.first! }
     private var isScheduled: Bool { !scheduledSubscriptions.isEmpty }
 
     private var upcomingDepartures: [DepartureV2] {
-        depStore.departures(for: firstLeg).filter {
+        if let direct = plannedBoard?.direct {
+            return SavedRouteDirectPresentation.upcoming(direct.departures, useLiveTimes: usesLiveTimes?.wrappedValue ?? true,
+                now: Date(), observedAt: direct.lastSuccessfulUpdate)
+        }
+        return depStore.departures(for: firstLeg).filter {
             JourneyCardPresentation.isUpcomingDeparture($0)
         }
     }
@@ -176,7 +182,8 @@ struct JourneyCard: View {
     private var firstSummary: Summary? { summaries.first }
 
     private var dataAvailability: JourneyDataAvailability {
-        group.legs
+        if let direct = plannedBoard?.directAvailability() { return direct }
+        return group.legs
             .map(depStore.dataAvailability(for:))
             .max { $0.status.severity < $1.status.severity }
             ?? .live
@@ -192,11 +199,19 @@ struct JourneyCard: View {
                     .padding(.horizontal, 16)
             }
 
-            if let plannedBoard, !plannedBoard.usesLegacyDepartures {
+            if let plannedBoard, !plannedBoard.usesLegacyDepartures, !plannedBoard.usesDirectDepartures {
                 SavedRouteBoardView(state: plannedBoard, routeKey: group.stationSequence.map(\.crs).joined(separator: "-"), departureCount: defaultDepartureCount,
                     isInteractive: isInteractive, isExpanded: isExpanded, onToggleExpanded: onToggleExpanded,
                     usesLiveTimes: usesLiveTimes)
             } else {
+            if usesDirectDepartures, let usesLiveTimes {
+                DisclosureGroup("Departure options") {
+                    Toggle("Use live times", isOn: usesLiveTimes)
+                        .accessibilityIdentifier("saved-route.live-times")
+                    Text("When off, departures use scheduled times and keep live disruption warnings.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }.font(.subheadline).padding(16).disabled(!isInteractive)
+            }
             if let message = plannedBoard?.message {
                 Text(message).font(.caption).foregroundStyle(.secondary).padding(16)
             }
@@ -272,7 +287,7 @@ struct JourneyCard: View {
                 .stroke(Color.primary.opacity(0.05), lineWidth: 1)
         }
         .task(id: prefetchTaskID) {
-            guard plannedBoard == nil || plannedBoard?.usesLegacyDepartures == true else { return }
+            guard plannedBoard == nil || plannedBoard?.usesLegacyDepartures == true || usesDirectDepartures else { return }
             await prefetchVisibleServiceDetails()
         }
     }
@@ -640,7 +655,8 @@ struct JourneyCard: View {
                 .font(.title3)
                 .monospacedDigit()
                 .strikethrough(summary.cancellation != nil)
-                .foregroundStyle(summary.cancellation != nil ? Color.secondary : Color.primary)
+                .foregroundStyle(summary.cancellation != nil ? (usesDirectDepartures ? Color.red : Color.secondary)
+                    : (usesDirectDepartures && isRunningLate(summary.firstDeparture) ? Color.yellow : Color.primary))
             if summary.cancellation == nil {
                 TrainLengthIndicator(
                     cars: summary.firstDeparture.length,
@@ -733,20 +749,22 @@ struct JourneyCard: View {
 
     private func buildSummary(startingWith firstDeparture: DepartureV2) -> Summary? {
         let itinerary = JourneyItineraryBuilder.build(
-            group: group,
+            group: presentationGroup,
             firstDeparture: firstDeparture,
             departuresForJourney: depStore.departures(for:),
             serviceDetailsByID: depStore.serviceDetailsById
         )
         guard JourneyCardPresentation.shouldDisplaySummary(
-            legCount: group.legs.count,
+            legCount: presentationGroup.legs.count,
             hasServicesForAllLegs: itinerary.hasServicesForAllLegs
         ) else { return nil }
 
         return Summary(
             firstLeg: firstLeg,
             firstDeparture: firstDeparture,
-            finalArrivalTime: itinerary.finalArrivalTime,
+            finalArrivalTime: usesDirectDepartures && usesLiveTimes?.wrappedValue == false
+                ? itinerary.legs.last?.scheduledArrivalDate.map { PlannerTime.display($0, includeDate: false) }
+                : itinerary.finalArrivalTime,
             cancellation: JourneyItineraryBuilder.cancellation(
                 for: firstDeparture,
                 at: firstLeg.toStation.crs,
@@ -786,14 +804,20 @@ struct JourneyCard: View {
             estimated: departure.departureTime.estimated,
             scheduled: departure.departureTime.scheduled
         ), minutes > 0 {
-            return ("Delayed", minutes >= 5 ? .red : .yellow)
+            return ("Delayed", usesDirectDepartures ? .yellow : (minutes >= 5 ? .red : .yellow))
         }
         let estimated = departure.departureTime.estimated.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if estimated == "delayed" { return ("Delayed", .yellow) }
+        if usesDirectDepartures && [.stale, .unavailable].contains(dataAvailability.status) {
+            return ("Updates unavailable", .secondary)
+        }
         return ("On time", .green)
     }
 
     private func departureDisplayTime(_ departure: DepartureV2) -> String {
+        if usesDirectDepartures {
+            return SavedRouteDirectPresentation.time(departure, useLiveTimes: usesLiveTimes?.wrappedValue ?? true)
+        }
         let estimated = departure.departureTime.estimated.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = estimated.lowercased()
         if estimated.isEmpty || lower == "delayed" || lower == "cancelled" || lower == "on time" {
@@ -811,7 +835,11 @@ struct JourneyCard: View {
     }
 
     private func departureDate(_ departure: DepartureV2) -> Date? {
-        parseHHmm(departureDisplayTime(departure)) ?? parseHHmm(departure.departureTime.scheduled)
+        if usesDirectDepartures {
+            return SavedRouteDirectPresentation.departureDate(departure, useLiveTimes: usesLiveTimes?.wrappedValue ?? true,
+                now: Date(), observedAt: plannedBoard?.direct?.lastSuccessfulUpdate)
+        }
+        return parseHHmm(departureDisplayTime(departure)) ?? parseHHmm(departure.departureTime.scheduled)
     }
 
     private func parseHHmm(_ value: String?) -> Date? {
@@ -836,14 +864,16 @@ struct JourneyCard: View {
     private var prefetchTaskID: String {
         let visibleCount = isExpanded ? upcomingDepartures.count : defaultDepartureCount
         let ids = upcomingDepartures.prefix(visibleCount).map(\.serviceID).joined(separator: ",")
-        return "\(isExpanded)-\(ids)"
+        let observed = plannedBoard?.direct?.lastSuccessfulUpdate
+            ?? plannedBoard?.direct?.departures.compactMap(\.evidenceObservedAt).max()
+        return "\(usesDirectDepartures)-\(firstLeg.fromStation.crs)-\(firstLeg.toStation.crs)-\(isExpanded)-\(ids)-\(observed?.timeIntervalSince1970 ?? 0)"
     }
 
     private func prefetchVisibleServiceDetails() async {
         let requestedTaskID = prefetchTaskID
         let visibleCount = isExpanded ? upcomingDepartures.count : defaultDepartureCount
         var ids = upcomingDepartures.prefix(visibleCount).map(\.serviceID)
-        for leg in group.legs.dropFirst() {
+        for leg in presentationGroup.legs.dropFirst() {
             ids.append(contentsOf: depStore.departures(for: leg).prefix(8).map(\.serviceID))
         }
         let uniqueIDs = Array(Set(ids))
@@ -854,7 +884,10 @@ struct JourneyCard: View {
                 isLoadingServiceDetails = false
             }
         }
-        await depStore.ensureServiceDetails(for: uniqueIDs)
+        let context = usesDirectDepartures ? ServiceDetailsLookupContext(fromCRS: firstLeg.fromStation.crs,
+            toCRS: firstLeg.toStation.crs, originCRS: nil, operator: nil,
+            destinationCRSs: [firstLeg.toStation.crs], length: nil) : nil
+        await depStore.ensureServiceDetails(for: uniqueIDs, freshFor: usesDirectDepartures ? 30 : nil, context: context)
     }
 }
 

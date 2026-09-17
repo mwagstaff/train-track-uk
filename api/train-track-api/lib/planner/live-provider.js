@@ -47,6 +47,7 @@ export class PlannerLiveProvider {
     this.cache = new Map();
     this.active = 0;
     this.queue = [];
+    this.inflight = new Map();
   }
 
   async fetchBoards(stations, options = {}) {
@@ -108,16 +109,14 @@ export class PlannerLiveProvider {
         if (cached) { result[resultKey].push(cached); continue; }
         const key = this.credentials()[request.kind === 'staff' ? 'staff' : request.kind === 'board' ? 'board' : 'details'];
         if (!key) { result.errors.push(failure(request, 'credentialsUnavailable')); continue; }
-        if (budget.used >= budget.limit) {
+        if (!this.inflight.has(request.key) && budget.used >= budget.limit) {
           result.limited = true;
           result.errors.push(failure(request, 'requestLimit'));
           continue;
         }
-        budget.used++;
-        result.requestCount++;
+        if (!this.inflight.has(request.key)) { budget.used++; result.requestCount++; }
         try {
-          const value = await this.fetchOne(request, key, options.signal, options.now);
-          this.remember(request.key, value, options.now ?? this.now());
+          const value = await this.sharedFetch(request, key, options.signal, options.now);
           result[resultKey].push(value);
         } catch (error) {
           throwIfCancelled(options.signal);
@@ -126,6 +125,39 @@ export class PlannerLiveProvider {
       }
     }));
     return result;
+  }
+
+  sharedFetch(item, apiKey, signal, fixedNow) {
+    throwIfCancelled(signal);
+    let flight = this.inflight.get(item.key);
+    if (!flight) {
+      flight = { controller: new AbortController(), consumers: 0 };
+      const current = flight;
+      flight.promise = this.fetchOne(item, apiKey, flight.controller.signal, fixedNow).then(value => {
+        this.remember(item.key, value, fixedNow ?? this.now());
+        return value;
+      }).finally(() => {
+        if (this.inflight.get(item.key) === current) this.inflight.delete(item.key);
+      });
+      this.inflight.set(item.key, flight);
+    }
+    flight.consumers++;
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const finish = (error, value) => {
+        if (done) return;
+        done = true;
+        signal?.removeEventListener('abort', cancelled);
+        if (--flight.consumers === 0) {
+          flight.controller.abort();
+          if (this.inflight.get(item.key) === flight) this.inflight.delete(item.key);
+        }
+        error ? reject(error) : resolve(structuredClone(value));
+      };
+      const cancelled = () => finish(Object.assign(new Error('Live request cancelled'), { code: 'SEARCH_CANCELLED' }));
+      signal?.addEventListener('abort', cancelled, { once: true });
+      flight.promise.then(value => finish(null, value), error => finish(error));
+    });
   }
 
   async fetchOne(item, apiKey, signal, fixedNow) {

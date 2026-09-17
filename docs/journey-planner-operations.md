@@ -210,7 +210,8 @@ Rebuild the app to enable this flow. The existing `/search` endpoint, v1/v2 rout
 | `PLANNER_JOB_TIMEOUT_MS` | 600000 processing time |
 | `PLANNER_JOB_MAX_OPERATIONS` | 1000000000 |
 | `PLANNER_JOB_CPU_DUTY_CYCLE` | 1 (no throttling) |
-| `PLANNER_PREWARM` | `true`: the routing worker resolves today's dates and builds the national index shortly after start and after each London date or timetable change |
+| `PLANNER_MAX_LIVE_WAITERS` | 1 suspended live-lookup task; 0 disables I/O overlap |
+| `PLANNER_PREWARM` | `true`: a low-priority idle task resolves today's dates and builds the national index after worker start and after each London date or timetable change |
 
 The source generation date determines freshness; reimporting old data does not make it fresh. The 35/45-day thresholds are explicit prototype assumptions for the proposed monthly feed and need an operational decision before production. Search/cache keys include the exact instant, options, policy and version. Public metadata is refreshed even for cached results.
 
@@ -226,18 +227,40 @@ direct local access and trailing-slash URLs also work. No proxy configuration
 change is required. Redeploy the API and reload any already-open admin page to
 receive the corrected links; no app rebuild is needed.
 The table defaults to newest searches first. All headings sort the complete
-selected dataset, with server-side pagination. Period filters cover the last
-hour, 24 hours (default), or seven days; source filters distinguish manual
+selected dataset, with server-side pagination. Period filters offer relative
+presets and custom start/end dates; 24 hours is the default. Source filters distinguish manual
 searches, queued searches, saved-route planning, live refreshes and replans.
 Station names are displayed alongside codes; station columns sort by code.
+
+All filters are in the address and survive refresh, sorting and pagination:
+
+- `?q=-5m`: the last five minutes whenever the bookmark is opened.
+- `?q=-2h` or `?q=-7d`: negative whole minutes (`m`), hours (`h`) or days (`d`),
+  up to seven days. The old `?range=1h`, `24h` and `7d` links still work.
+- `?q=custom&from=2026-09-17T09:00:00Z&to=2026-09-17T11:30:00Z`:
+  a fixed interval. Explicit offsets are supported; encode `+` as `%2B` in URLs.
+  Custom form fields are labelled **UTC**; table timestamps remain Europe/London.
+  Both endpoints are inclusive. Dates older than retention are excluded, and
+  invalid or reversed ranges show a correctable validation message.
+
+For example, the production five-minute bookmark is
+[recent searches](https://api.skynolimit.dev/train-track/admin/journey-planner?q=-5m).
+Cards and rows use the same resolved time window, including custom filters.
+Expand **Timing details** on a new row to see queue/resume waiting, timetable
+preparation, routing and live lookup durations, measured routing/preparation CPU
+time, routing counts and sampled heap/RSS maxima. First-result time records when
+provisional options became available. These measurements are additive across
+worker tasks; older records have no breakdown. Sampled memory is not a guaranteed
+allocation peak, and overlapping live I/O can include time while another task
+uses the worker. RSS includes the whole API process.
 
 The `planner_searches` collection stores one record per synchronous search or
 asynchronous caller submission. An accepted idempotent retry reuses that record;
 status polling does not add records. Concurrent callers sharing a calculation
 have independent records and cancellation outcomes, marked **Shared work**.
 Rejected submissions are recorded as failures. A saved route's first
-cache-load/profile/live-check cycle is one record; later actual refreshes and
-replans have separate records. Polls that simply read an existing board do not
+cache-load/profile/live-check cycle is one record; subsequent profile continuation,
+live refresh and replan cycles have separate records. Polls that simply read an existing board do not
 count as new searches.
 
 - `startedAt` is admission/submission time and `finishedAt` is when a result or
@@ -264,7 +287,7 @@ count as new searches.
   asynchronous. See [MongoDB TTL behaviour](https://www.mongodb.com/docs/manual/core/index-ttl/).
 - Logged fields are limited to public station codes, ordered intermediate
   stops, requested date/time/mode, source, outcome, timing, cache evidence,
-  result count and dataset version. Device IDs, IP addresses, request headers,
+  result count, phase/resource measurements and dataset version. Device IDs, IP addresses, request headers,
   raw cursors, results and provider credentials are not stored.
 
 Persistence runs separately from the planner, with one Mongo write batch at a
@@ -392,13 +415,21 @@ a failed calculation retains its real error while waiting to retry.
   Profiles are bounded at 512 candidates and 4 MiB including their envelope;
   incomplete profiles are marked. Candidates are retained across departure times
   before filling remaining space with alternatives. Smaller departure windows
-  are calculated sequentially under one cumulative work/time budget to control
-  memory use. Live-validated boards return up to five choices.
+  are calculated as separate hourly worker tasks. Current-hour options appear
+  first with an explicit scheduled/live-pending warning; later hours continue
+  in the background. Additive `coverage`/`search.profileCoverage` fields identify
+  searched windows, and `search.provisional` identifies previews. Interactive
+  requests can run between tasks. A label-heavy hour subdivides into disjoint
+  intervals; elapsed deadlines and cancellation remain enforced. Completed
+  hours survive a later chunk failure. Live-validated boards return up to five choices.
   Connecting options incur a ten-minute arrival-ranking penalty against direct
   trains, so a connection arriving at least ten minutes earlier can rank first.
 - The new `planner_route_profiles_v1` Mongo collection creates its own expiry
   index lazily. Records contain only scheduled route data, never caller
-  identities or live forecasts. Persistent records are limited to 64 and 4 MiB
+  identities or live forecasts. Versioned hourly fragments reuse overlapping
+  hours across the two-hour bucket boundary; each expires two hours after its
+  departure interval ends or two hours after calculation, whichever is later.
+  Top-level profiles retain their two-hour lifetime. Persistent records are limited to 256 and 4 MiB
   each; the memory front cache is limited to 32 MiB. Database unavailability
   falls back to memory. Expiry is checked on reads independently of Mongo cleanup.
 - Live results are reused for 30 seconds and never served as current after their
@@ -426,12 +457,33 @@ a failed calculation retains its real error while waiting to retry.
   profile and reloads the scheduled cache at its turn, preserving its queue age.
   A profile currently in use is protected; memory and concurrency limits do not
   increase to admit more routes.
+- Live lookups can release the routing slot while awaiting network responses.
+  Only one context may be suspended, and only below 55% of the worker heap;
+  resumed CPU work reacquires the same exclusive slot. All contexts remain
+  inside existing admission/deadline/cancellation limits. In-flight provider
+  requests coalesce across searches, with independent caller cancellation,
+  at most two active planner lookups, and the same main-process upstream request
+  spacing used by legacy departure calls. On-time observations and scheduled
+  overrides annotate existing routes without recalculating unchanged routing.
+  The search-job manager admits at most two operations to support this overlap;
+  only one runs routing CPU work at a time.
+- Keep the current single worker and 1,024 MiB heap initially. Runtime call
+  compaction and shared path nodes reduce memory, but the worker's limit is not
+  a process RSS cap. Measure phase timings and host headroom before increasing
+  worker count or heap. A worker failure discards its active/suspended work;
+  unstarted queued work survives one restart with its original deadline.
 - Refreshing is demand-driven. Polling renews interest; two minutes without any
   interested client cancels pending work. Closing one client does not cancel
   work still requested by another. Both app tabs share their requests and poll
   only while active. Regular 20-second refreshes do not rebuild scheduled profiles.
 
 ### Rollout and data updates
+
+The September performance and admin-filter improvements require only a standard
+API redeployment and a reload of the admin page. Existing app builds can display
+the earlier scheduled options. No app rebuild, timetable reimport, additional
+upstream key or heap/concurrency configuration change is required for these
+improvements. Mongo creates any required indexes through the existing cache setup.
 
 Deploy the API first using the existing project deployment process, then release
 the rebuilt app. No new upstream keys, timetable import or manual database
@@ -447,6 +499,110 @@ delivery and amendment ingestion still need the feed agreement. New full
 snapshots can be imported and activated ad hoc using the existing commands.
 Activation immediately changes new cache keys; no two-hour wait is required.
 Live cancellations cannot supply a missing replacement timetable.
+
+## Direct-first saved departures — v4
+
+New app builds use `POST /api/v4/journey-planner/route-boards` for Favourites and
+My Journeys. It accepts the same saved-route batch fields as v3 and returns
+`apiVersion: 4`. A board has `source: "direct"` with `direct` containing the
+existing departure-board data, or `source: "planned"` with the existing planner
+`result` shape. Queue/progress and polling remain per board. Existing v1/v2
+departure endpoints, v3 saved boards and manual planner searches retain their
+contracts. New clients fall back to v3 only when the server returns 404 for v4.
+
+The v4 flow is:
+
+1. Check the existing fresh, shared live departure lookup for the saved origin
+   and destination. Available direct trains appear without starting a planner
+   worker or checking timetable readiness. Required intermediate stations must
+   belong to the same ordered passenger branch before a train qualifies.
+2. When a successful fresh board returns no suitable direct train, check the
+   shared route-plan cache. Provider errors, stale observations and incomplete
+   empty responses remain live-data errors and do not trigger national searches.
+   An empty board establishes only that no suitable train was returned in that
+   board window, not the absence of every future direct service.
+3. On a cache miss, run one ordinary six-hour connecting-journey search. The
+   fallback does not build eight hourly departure profiles. Scheduled direct
+   trains cannot suppress connecting alternatives when live data just ruled
+   them out. Required vias, transfer allowances and mode options still apply.
+4. Cache the resulting route patterns and scheduled examples for two hours from
+   completion. Updates check direct trains first, then refresh the train pairs
+   in the cached patterns and rebuild feasible connections with the saved
+   connection rules. This refresh needs neither the national timetable index
+   nor another national route calculation. Delays/cancellations affect those
+   connections; the scheduled-time override retains the warnings.
+
+Planned v4 boards show only the earliest arrival for options that start on the
+same train at the same time and follow the same route, before limiting results.
+Live mode compares live arrivals; the override compares scheduled arrivals.
+Different first trains, operators or stopping patterns remain separate, as do
+disrupted options. The cached plan retains all connection candidates so later
+trains can still be selected after a delay or cancellation. The app highlights
+change counts with labelled pills, from green for one change to coral for five
+or more; direct journeys retain their neutral label.
+
+The separate `planner_saved_route_plans_v1` collection has an automatic expiry
+index. Keys include timetable version, London date, ordered vias and route
+options; exact request times, two-hour clock buckets and client IDs do not enter
+the identity. Empty successful plans are cached too. A timetable activation or
+expiry permits a new discovery search. A failed live refresh does not invalidate
+the cached route or create a replan loop. Missing live coverage remains explicit.
+
+Live checks have four bounded slots and reuse the existing shared departure
+cache; one fallback calculation can run through the existing routing worker.
+The fallback queue admits eight jobs with the existing per-client/network
+limits. Plans are limited to 256 KiB each, with 64 cached records and an 8 MiB
+memory cache. The API continues serving metadata and direct departures while
+fallback work waits. A fallback calculation records one planner search. Initial
+reuse of a shared cached plan records a cache hit; routine direct lookups and
+subsequent cached-leg updates do not inflate search totals.
+
+Deploy the API and rebuild/release the app to use this flow. No timetable
+reimport, new upstream key or manual Mongo migration is required. Older app
+builds keep using their existing endpoints.
+
+Local real-worker checks at 13:30 UTC on 17 September, with the unchanged 1 GiB
+worker, full CPU duty and no live-provider latency, returned five connecting options in
+3.05 seconds for Farringdon–Kent House via Herne Hill (cold), 1.31 seconds for
+East Croydon–Worthing via Brighton, and 5.44 seconds for Euston–Inverness.
+Each used one routing call and had no truncation. Cached payloads including the
+complete calling patterns used to verify per-train tracking were 40–55 KiB.
+These are scheduled fallback
+measurements on the development machine, not end-to-end production guarantees.
+
+V4 validation: 488 API tests passed, including full-timetable regressions and the
+direct → cached connection → new live trains → direct transition. One optional
+Mongo integration test was skipped; the unchanged device-deletion suite remains
+excluded because it previously passed its assertions without exiting. The app
+built successfully and the planner/saved-route tests passed, including the
+21-test saved-route follow-up covering unknown delays, source changes and
+per-train tracking from complete live calling patterns.
+
+## Local performance checks — 17 September 2026
+
+These are local Node 25.8.1 measurements against RJTTF939, not production latency
+promises. A three-day national network retained 258 MiB after indexing and GC,
+down from 382 MiB before runtime-call compaction (32% less). Parent-linked routing
+paths and indexed completion bounds preserved complete result equivalence in
+representative comparisons; Euston–Edinburgh's hourly routing fell from 8.75 to
+5.05 seconds in that comparison.
+
+A separate complete eight-hour Euston–Edinburgh saved-profile run used the real
+worker with the unchanged 1,024 MiB heap and full CPU duty. It published five
+provisional options after 7.59 seconds and completed all eight hours in 54.89
+seconds, including the hour that previously exceeded its label budget. Immediate
+journey-details retrieval worked before completion. Observed worker heap reached
+662 MiB and process RSS 1,093 MiB. No upstream rail requests were made in this
+benchmark, so live-service latency is additional. Hourly fragments and the complete
+profile were cached. Sampled heap does not establish the allocation peak or a
+production capacity guarantee; use new log diagnostics after deployment to check
+first-result latency, queue pressure and memory on `sky`.
+
+Validation: 448 API tests passed, including the full-timetable regressions; the
+optional real-Mongo integration test was skipped. The unchanged device-deletion test file was excluded
+from that run because an earlier full-suite attempt passed its four assertions
+but did not exit. Admin relative/custom filters and timing details were also
+checked in the browser. These changes have not been deployed by this work.
 
 ## Interpretation limits
 

@@ -131,7 +131,8 @@ export class LivePlanner {
         return this.provider;
     }
 
-    async search({ request, network, version, offset = 0, liveSnapshotId, route, check, abortSignal, onTelemetry }) {
+    async search({ request, network, version, offset = 0, liveSnapshotId, route, check, abortSignal, onTelemetry,
+        awaitIO = work => work() }) {
         const startedAt = this.now();
         const key = rawKey(request, version);
         for (const [id, value] of this.snapshots) if (value.expiresAt <= startedAt) this.snapshots.delete(id);
@@ -188,7 +189,7 @@ export class LivePlanner {
                 if (wanted.length > stations.length) limited = true;
                 stations.forEach(station => visited.add(station));
                 if (stations.length) {
-                    const boards = await provider.fetchBoards(stations, { signal: abortSignal, budget });
+                    const boards = await awaitIO(() => provider.fetchBoards(stations, { signal: abortSignal, budget }));
                     check();
                     observations.boards.push(...boards.boards);
                     errors.push(...(boards.errors ?? []));
@@ -201,7 +202,7 @@ export class LivePlanner {
                 const requested = candidates.slice(0, maximum).map(({ serviceID, station }) => ({ serviceID, station }));
                 if (!stations.length && !requested.length) break;
                 requested.forEach(value => detailed.add(`${value.station}:${value.serviceID}`));
-                const details = await provider.fetchDetails(requested, { signal: abortSignal, budget });
+                const details = await awaitIO(() => provider.fetchDetails(requested, { signal: abortSignal, budget }));
                 check();
                 observations.details.push(...details.details);
                 errors.push(...(details.errors ?? []));
@@ -234,8 +235,8 @@ export class LivePlanner {
                     }
                     if (selected.length) {
                         selected.forEach(([key]) => staffQueried.add(key));
-                        const staff = await provider.fetchStaffBoards(selected.map(([, { station, departure }]) => ({ station, departure })),
-                            { signal: abortSignal, budget });
+                        const staff = await awaitIO(() => provider.fetchStaffBoards(selected.map(([, { station, departure }]) => ({ station, departure })),
+                            { signal: abortSignal, budget }));
                         check();
                         staffBoards.push(...staff.boards);
                         errors.push(...(staff.errors ?? []));
@@ -253,7 +254,8 @@ export class LivePlanner {
                 }
                 if (snapshot.services.length && snapshot.id !== previousSnapshot) {
                     const changed = applyLiveSnapshot(network, snapshot, { mode: request.realtime, check });
-                    all = await completeRoute(changed);
+                    all = changed.routingChangedServiceIds.size ? await completeRoute(changed)
+                        : { ...scheduled, journeys: scheduled.journeys.map(journey => annotateLiveJourney(journey, changed)) };
                 } else if (!snapshot.services.length) all = scheduled;
                 check();
             }

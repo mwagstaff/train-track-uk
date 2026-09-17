@@ -35,8 +35,11 @@ export function annotateLiveJourney(journey, network) {
         if (leg.kind !== 'vehicle' || !service?.plannerLive) return leg;
         const calls = new Map(service.calls.map(call => [call.sequence, call]));
         return { ...leg, ...liveLeg(service, leg.boardIndex, leg.alightIndex),
-            callingPoints: leg.callingPoints.map(call => ({ ...call,
-                ...(calls.has(call.sequence) ? liveCall(service, calls.get(call.sequence)) : {}) })) };
+            platform: service.calls[leg.boardIndex]?.platform ?? leg.platform,
+            callingPoints: leg.callingPoints.map(call => {
+                const updated = calls.get(call.sequence);
+                return updated ? { ...call, platform: updated.platform ?? call.platform, ...liveCall(service, updated) } : call;
+            }) };
     }) };
 }
 
@@ -114,6 +117,7 @@ export function applyLiveSnapshot(network, snapshot, { mode = 'apply', check = (
     const updates = new Map((snapshot.services || []).map(service => [service.serviceId, service]));
     const services = [];
     const changedServiceIds = new Set();
+    const routingChangedServiceIds = new Set();
     const warnings = [...(snapshot.warnings || [])];
     for (const original of network.services) {
         check();
@@ -175,7 +179,14 @@ export function applyLiveSnapshot(network, snapshot, { mode = 'apply', check = (
             warnings: unique([...(update.warnings || []), ...(invalidSegments ? ['The cancelled part of this train could not be determined.'] : [])])
         };
         if (mode === 'ignore') { services.push(service); continue; }
-        if (fullCancelled || update.unknownDelay || invalidSegments) continue;
+        if (fullCancelled || update.unknownDelay || invalidSegments) {
+            routingChangedServiceIds.add(original.id);
+            continue;
+        }
+        if (cancelledSegments.length || service.calls.some((call, index) => {
+            const before = original.calls[index];
+            return ['arrival', 'departure', 'canBoard', 'canAlight'].some(key => call[key] !== before[key]);
+        })) routingChangedServiceIds.add(original.id);
         const sections = cancelledSegments.length ? operationalSections(service.calls.length, cancelledSegments)
             : [[0, service.calls.length - 1]];
         for (const [first, last] of sections) {
@@ -190,6 +201,7 @@ export function applyLiveSnapshot(network, snapshot, { mode = 'apply', check = (
                 }
             }
             if (!consistent) {
+                routingChangedServiceIds.add(original.id);
                 warnings.push('Some live train times were inconsistent and could not be used safely.');
                 continue;
             }
@@ -198,6 +210,6 @@ export function applyLiveSnapshot(network, snapshot, { mode = 'apply', check = (
             } : service);
         }
     }
-    return { ...network, services, baseNetwork: network, changedServiceIds, live: { id: snapshot.id, observedAt: snapshot.observedAt,
+    return { ...network, services, baseNetwork: network, changedServiceIds, routingChangedServiceIds, live: { id: snapshot.id, observedAt: snapshot.observedAt,
         expiresAt: snapshot.expiresAt, mode, warnings: unique(warnings) } };
 }

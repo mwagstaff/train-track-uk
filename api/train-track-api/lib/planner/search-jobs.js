@@ -19,12 +19,17 @@ export class PlannerSearchJobs {
         this.work = new Map();
         this.idempotency = new Map();
         this.queue = [];
-        this.active = null;
+        this.inFlight = new Set();
+        // A second admitted operation lets the service use a slot released for
+        // live I/O. CPU execution is still exclusive in the routing worker.
+        this.maxInFlight = service.supportsIOYield && this.config.maxLiveWaiters > 0 ? 2 : 1;
         this.closed = false;
         this.retryTimer = null;
         this.sweep = setInterval(() => this.prune(), Math.min(10000, leaseMs));
         this.sweep.unref();
     }
+
+    get active() { return this.inFlight.values().next().value ?? null; }
 
     async submit(body, options = {}) {
         const startedAt = new Date(this.now());
@@ -89,7 +94,8 @@ export class PlannerSearchJobs {
         if (work && !pending(work)) work = null;
         const coalesced = Boolean(work);
         if (!work) {
-            work = { key, payload, state: 'queued', createdAt: this.now(), leases: new Set(), controller: new AbortController() };
+            work = { key, payload, state: 'queued', createdAt: this.now(), admissionQueuedAt: this.now(),
+                leases: new Set(), controller: new AbortController() };
             this.work.set(key, work);
             this.queue.push(work);
         }
@@ -112,7 +118,8 @@ export class PlannerSearchJobs {
         const work = lease.work;
         const status = lease.cancelled ? 'cancelled' : work.state;
         return { id, status, pollAfterMs: 1000,
-            ...(status === 'queued' ? { queuePosition: work === this.active ? 1 : this.queue.indexOf(work) + 1 + Number(Boolean(this.active)) } : {}),
+            ...(status === 'queued' ? { queuePosition: this.inFlight.has(work)
+                ? [...this.inFlight].indexOf(work) + 1 : this.queue.indexOf(work) + 1 + this.inFlight.size } : {}),
             ...(status === 'running' && work.phase ? { phase: work.phase } : {}),
             ...(status === 'completed' ? { result: work.result } : {}),
             ...(status === 'failed' ? { error: work.error } : {}) };
@@ -166,17 +173,24 @@ export class PlannerSearchJobs {
     }
 
     pump() {
-        if (this.closed || this.active || this.retryTimer) return;
+        if (this.closed || this.inFlight.size >= this.maxInFlight || this.retryTimer) return;
         const work = this.queue.shift();
         if (!work) return;
-        this.active = work;
+        this.inFlight.add(work);
+        this.updateWork(work, { metricsDelta: { admissionQueueMs: this.now() - work.admissionQueuedAt } });
         const execution = { timeoutMs: this.config.jobTimeoutMs, maxOperations: this.config.jobMaxOperations,
             cpuDutyCycle: this.config.jobCpuDutyCycle };
         const options = { signal: work.controller.signal, execution,
             queueTimeoutMs: Math.max(1, this.config.jobQueueTimeoutMs - (this.now() - work.createdAt)),
             onStart: () => { if (pending(work)) { work.state = 'running'; this.updateWork(work, { phase: 'running' }); } },
             onProgress: progress => { work.phase = progress.phase; this.updateWork(work, { phase: progress.phase }); },
-            onTelemetry: telemetry => { work.telemetry = { ...work.telemetry, ...telemetry }; this.updateWork(work, telemetry); } };
+            onTelemetry: telemetry => {
+                // Deltas belong to this instant; replaying them when finishing
+                // or joining shared work would double-count phase measurements.
+                const { metricsDelta, resourcePeaks, ...state } = telemetry;
+                work.telemetry = { ...work.telemetry, ...state };
+                this.updateWork(work, telemetry);
+            } };
         let retry = false;
         Promise.resolve().then(() => this.service.call('search', work.payload, options)).then(result => {
             if (!work.controller.signal.aborted) {
@@ -189,6 +203,7 @@ export class PlannerSearchJobs {
                 if (error.code === 'SEARCH_BUSY') {
                     retry = true;
                     work.state = 'queued';
+                    work.admissionQueuedAt = this.now();
                     this.updateWork(work, { phase: 'queued' });
                     this.queue.unshift(work);
                     return;
@@ -201,12 +216,15 @@ export class PlannerSearchJobs {
             }
         }).finally(() => {
             if (!retry) work.finishedAt = this.now();
-            this.active = null;
+            this.inFlight.delete(work);
             if (retry) {
-                this.retryTimer = setTimeout(() => { this.retryTimer = null; this.prune(); }, 1000);
-                this.retryTimer.unref();
+                if (!this.closed && !this.retryTimer) {
+                    this.retryTimer = setTimeout(() => { this.retryTimer = null; this.prune(); }, 1000);
+                    this.retryTimer.unref();
+                }
             } else this.pump();
         });
+        this.pump();
     }
 
     updateWork(work, fields) {

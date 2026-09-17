@@ -640,6 +640,38 @@ private struct PlannerResultsView: View {
     }
 }
 
+struct PlannerChangesBadge: View {
+    let changes: Int
+
+    private var fill: Color {
+        let rgb: (Double, Double, Double)
+        switch changes {
+        case 1: rgb = (191, 232, 195)
+        case 2: rgb = (231, 232, 160)
+        case 3: rgb = (244, 211, 138)
+        case 4: rgb = (244, 179, 131)
+        default: rgb = (236, 146, 139)
+        }
+        return Color(red: rgb.0 / 255, green: rgb.1 / 255, blue: rgb.2 / 255)
+    }
+
+    var body: some View {
+        if changes > 0 {
+            Text("\(changes) change\(changes == 1 ? "" : "s")")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.black)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(fill, in: Capsule())
+                .overlay(Capsule().stroke(Color.black.opacity(0.14), lineWidth: 1))
+                .fixedSize()
+                .accessibilityIdentifier("planner.changes.\(changes)")
+        } else {
+            Text("Direct").font(.caption).foregroundStyle(Color.plannerSecondaryText)
+        }
+    }
+}
+
 struct PlannerJourneySummary: View {
     let journey: PlannedJourney
     var showsChevron = false
@@ -727,11 +759,26 @@ struct PlannerJourneySummary: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var durationAndChanges: some View {
-        Text("\(PlannerTime.minutes(journey.durationMinutes)) · \(journey.changes == 0 ? "Direct" : "\(journey.changes) change\(journey.changes == 1 ? "" : "s")")")
+    @ViewBuilder private var durationAndChanges: some View {
+        if journey.changes == 0 {
+            Text("\(PlannerTime.minutes(journey.durationMinutes)) · Direct")
+                .font(.caption).foregroundStyle(Color.plannerSecondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(PlannerTime.minutes(journey.durationMinutes))
+                    PlannerChangesBadge(changes: journey.changes)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(PlannerTime.minutes(journey.durationMinutes))
+                    PlannerChangesBadge(changes: journey.changes)
+                }
+            }
             .font(.caption)
             .foregroundStyle(Color.plannerSecondaryText)
             .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     private var departureDetails: some View {

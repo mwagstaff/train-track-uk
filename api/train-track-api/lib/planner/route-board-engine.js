@@ -5,6 +5,7 @@ import { presentLivePage } from './live-coverage.js';
 export const ROUTE_PROFILE_POLICY = 'route-profile-v1';
 export const ROUTE_PROFILE_LIMIT = 512;
 export const ROUTE_PROFILE_BYTES = 4 * 1024 * 1024 - 4096;
+export const PROFILE_BUILD_WARNING = 'More departure times are still being planned.';
 
 const compare = (a, b) => Date.parse(a.arrival) - Date.parse(b.arrival) || a.changes - b.changes
     || Date.parse(b.departure) - Date.parse(a.departure);
@@ -33,6 +34,29 @@ function boundProfile(profile, candidates, check, preferredKeys = new Set()) {
             lastRetainedDeparture: departures.at(-1) ?? null } };
 }
 
+// Combining immutable departure intervals is bounded by the same candidate and
+// byte limits as a complete profile. Partial coverage is explicit, rather than
+// treating hours that have not been searched yet as an empty timetable.
+export function mergeRouteBoardProfiles(previous, fragment, request, { completedWindows, totalWindows, now } = {}) {
+    const coverage = { complete: completedWindows === totalWindows, completedWindows, totalWindows,
+        windows: [...(previous?.profile?.coverage?.windows ?? []), fragment.searchWindow]
+            .sort((a, b) => a.from.localeCompare(b.from)) };
+    const candidatesTruncated = Boolean(previous?.profile?.candidatesTruncated || fragment.searchTruncated);
+    const profile = boundProfile({ version: fragment.version, request, dataset: fragment.dataset,
+        searchWindow: { from: request.time, to: new Date(Date.parse(request.time) + request.windowMinutes * 60000).toISOString(),
+            fromInclusive: true, toInclusive: false },
+        searchTruncated: candidatesTruncated,
+        warnings: [...new Set([...(previous?.warnings ?? []), ...(fragment.warnings ?? [])])],
+        profile: { policy: ROUTE_PROFILE_POLICY, createdAt: previous?.profile?.createdAt ?? new Date(now).toISOString(),
+            candidateLimit: ROUTE_PROFILE_LIMIT, coverage,
+            departureTimesAvailable: (previous?.profile?.departureTimesAvailable ?? 0) + (fragment.profile?.departureTimesAvailable ?? 0) }
+    }, [...(previous?.candidates ?? []), ...fragment.candidates], () => {});
+    profile.profile.candidatesTruncated = profile.searchTruncated;
+    profile.searchTruncated ||= !coverage.complete;
+    profile.profile.complete = !profile.searchTruncated;
+    return profile;
+}
+
 function normalizeProfileRequest(input) {
     if (!input || typeof input !== 'object') throw new PlannerError('INVALID_REQUEST', 'A saved route request is required.');
     const request = normalizeRequest({ ...input, windowMinutes: 360, limit: 10, realtime: 'off' });
@@ -58,22 +82,32 @@ async function context(engine, payload, signal, execution) {
         if (performance.now() - started >= timeoutMs) throw new PlannerError('SEARCH_TIMEOUT', 'The route search exceeded its execution time budget.', 504);
     };
     check();
-    const repo = await engine.dataset(payload.version ?? payload.profile?.dataset?.version);
-    const request = engine.checkQuery(repo, normalizeProfileRequest(payload.request ?? payload.profile?.request));
-    for (const code of request.via) {
-        const canonical = engine.checkQuery(repo, { ...request, origin: code }).origin;
-        if (canonical !== code) throw new PlannerError('INVALID_STATION', 'Use canonical intermediate station codes.');
-    }
     execution.onProgress?.('preparing');
-    const network = await engine.network(repo, request, signal);
+    const prepare = async () => {
+        const repo = await engine.dataset(payload.version ?? payload.profile?.dataset?.version);
+        const request = engine.checkQuery(repo, normalizeProfileRequest(payload.request ?? payload.profile?.request));
+        for (const code of request.via) {
+            const canonical = engine.checkQuery(repo, { ...request, origin: code }).origin;
+            if (canonical !== code) throw new PlannerError('INVALID_STATION', 'Use canonical intermediate station codes.');
+        }
+        return { repo, request, network: await engine.network(repo, request, signal) };
+    };
+    const { repo, request, network } = await (execution.measure ? execution.measure('preparationMs', prepare) : prepare());
     check();
     const routeCurrent = async (query, current, options = {}) => {
         check();
         if (remainingOperations <= 0) throw new PlannerError('SEARCH_TIMEOUT', 'The route search exceeded its work budget.', 504);
-        const result = await engine.route({ ...query, via: request.via }, current, {
-            ...options, signal, maxDurationMinutes: 1440, maxOperations: remainingOperations,
-            timeoutMs: Math.max(1, timeoutMs - (performance.now() - started))
-        });
+        let result;
+        try {
+            result = await engine.route({ ...query, via: request.via }, current, {
+                ...options, signal, measure: execution.measure, onTelemetry: execution.onTelemetry,
+                maxDurationMinutes: 1440, maxOperations: remainingOperations,
+                timeoutMs: Math.max(1, timeoutMs - (performance.now() - started))
+            });
+        } catch (error) {
+            remainingOperations -= error.metrics?.operations ?? 0;
+            throw error;
+        }
         remainingOperations -= result.metrics?.operations ?? 0;
         check();
         return result;
@@ -93,7 +127,8 @@ async function context(engine, payload, signal, execution) {
             if (remainingOperations <= 0) throw new PlannerError('SEARCH_TIMEOUT', 'The route search exceeded its work budget.', 504);
             const part = await engine.route({ ...query, time: new Date(from).toISOString(),
                 windowMinutes: Math.min(60, (end - from) / 60000), via: request.via, limit: ROUTE_PROFILE_LIMIT + 1 }, current, {
-                ...options, signal, departureProfile: true, balanceDepartures: true, offset: 0, maxDurationMinutes: 1440,
+                ...options, signal, measure: execution.measure, onTelemetry: execution.onTelemetry,
+                departureProfile: true, balanceDepartures: true, offset: 0, maxDurationMinutes: 1440,
                 maxOperations: remainingOperations, timeoutMs: Math.max(1, timeoutMs - (performance.now() - started))
             });
             if (!first) first = { ...part, journeys: [] };
@@ -146,8 +181,9 @@ function envelope(engine, repo, request, raw, profile, time = request.time, netw
     return { journeys: raw.journeys.map(present), dataset,
         ...(raw.live ? { live: raw.live, disruptedJourneys: (raw.disruptedJourneys ?? []).map(present) } : {}),
         search: { ...request, time, realtime: raw.live?.mode ?? request.realtime, limit: raw.journeys.length, window: profile.searchWindow,
-            searchTruncated },
+            searchTruncated, ...(profile.profile.coverage ? { profileCoverage: profile.profile.coverage } : {}) },
         warnings: [...new Set([...dataset.warnings, ...(profile.warnings ?? []), ...(raw.warnings ?? []), ...(raw.live?.warnings ?? []),
+            ...(profile.profile.coverage && !profile.profile.coverage.complete ? [PROFILE_BUILD_WARNING] : []),
             ...(searchTruncated ? ['More alternatives may exist; this route list is limited.'] : [])])],
         pagination: {}, ...(raw.needsReplan !== undefined ? { needsReplan: raw.needsReplan } : {}),
         ...(raw.disruptionFingerprint ? { disruptionFingerprint: raw.disruptionFingerprint } : {}) };
@@ -169,6 +205,85 @@ export async function routeBoardProfile(engine, payload, signal, execution = {})
     return { result, profile };
 }
 
+async function preview(engine, repo, profile, time, realtime = 'apply') {
+    const request = engine.checkQuery(repo, normalizeRequest({ ...profile.request, time, realtime, windowMinutes: 360, limit: 5 }));
+    const { selectRouteBoardJourneys } = await import('./route-board-live.js');
+    const warning = 'Live times are being checked; scheduled times are shown.';
+    const journeys = selectRouteBoardJourneys(profile.candidates.filter(journey => Date.parse(journey.departure) >= Date.parse(time)), 5);
+    const result = envelope(engine, repo, request, { journeys, warnings: [warning],
+        live: { mode: realtime, status: 'unavailable', windowHours: 4, warnings: [warning] } }, profile, time);
+    result.search.provisional = true;
+    return result;
+}
+
+export async function routeBoardPreview(engine, payload, signal) {
+    if (signal?.aborted) throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);
+    if (payload.profile?.profile?.policy !== ROUTE_PROFILE_POLICY || !Array.isArray(payload.profile?.candidates)
+        || payload.profile.candidates.length > ROUTE_PROFILE_LIMIT) throw new PlannerError('CURSOR_EXPIRED', 'The saved route profile needs to be refreshed.', 410);
+    const repo = await engine.dataset(payload.profile.version);
+    if (signal?.aborted) throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);
+    return preview(engine, repo, payload.profile, payload.time, payload.realtime);
+}
+
+// One worker turn owns at most one hour. Busy intervals are split only when the
+// label-memory bound is reached; timeouts/cancellation are never retried here.
+// The disjoint half-open intervals preserve every departure at a split boundary.
+export async function routeBoardProfileChunk(engine, payload, signal, execution = {}) {
+    const { repo, request, network, check, routeCurrent } = await context(engine, payload, signal, execution);
+    const from = Date.parse(payload.chunk?.from), to = Date.parse(payload.chunk?.to);
+    const begin = Date.parse(request.time), end = begin + request.windowMinutes * 60000;
+    if (!Number.isFinite(from) || !Number.isFinite(to) || from < begin || to > end || to <= from || to - from > 3600000) {
+        throw new PlannerError('INVALID_REQUEST', 'Use a departure interval of at most one hour inside the saved profile.');
+    }
+    // Starting with quarters avoids expensive failed wide probes on long-distance
+    // profiles; the small local-route overhead is outweighed by the lower peak.
+    const chunkMs = payload.chunkMinutes == null ? 15 * 60000 : payload.chunkMinutes * 60000;
+    if (!Number.isFinite(chunkMs) || chunkMs < 1000 || chunkMs > 3600000) {
+        throw new PlannerError('INVALID_REQUEST', 'Invalid saved profile subdivision.');
+    }
+    execution.onProgress?.('searching');
+    let smallestChunk = chunkMs;
+    const combine = (left, right) => ({ ...left,
+        journeys: departureProfileOrder([...left.journeys, ...right.journeys].sort(compare)).slice(0, ROUTE_PROFILE_LIMIT + 1),
+        searchTruncated: left.searchTruncated || right.searchTruncated
+            || (left.pagination.total + right.pagination.total > ROUTE_PROFILE_LIMIT),
+        warnings: [...new Set([...(left.warnings ?? []), ...(right.warnings ?? [])])],
+        pagination: { total: left.pagination.total + right.pagination.total,
+            departureTimes: left.pagination.departureTimes + right.pagination.departureTimes } });
+    const search = async (first, last) => {
+        check();
+        const query = { ...request, time: new Date(first).toISOString(), windowMinutes: (last - first) / 60000 };
+        try {
+            const result = await routeCurrent(query, network, { departureProfile: true, balanceDepartures: true,
+                offset: 0, maxLabels: 50000 });
+            smallestChunk = Math.min(smallestChunk, last - first);
+            return result;
+        } catch (error) {
+            if (error.reason !== 'labelLimit' || last - first <= 1000) throw error;
+            check();
+            const middle = Math.floor((first + last) / 2);
+            const left = await search(first, middle);
+            const right = await search(middle, last);
+            return combine(left, right);
+        }
+    };
+    let routed;
+    for (let first = from; first < to; first += chunkMs) {
+        const part = await search(first, Math.min(to, first + chunkMs));
+        routed = routed ? combine(routed, part) : part;
+    }
+    const profile = boundProfile({ version: repo.version, request,
+        dataset: engine.publicMetadata(repo), searchWindow: { from: new Date(from).toISOString(), to: new Date(to).toISOString(),
+            fromInclusive: true, toInclusive: false },
+        searchTruncated: Boolean(routed.searchTruncated || routed.pagination.total > ROUTE_PROFILE_LIMIT),
+        warnings: routed.warnings ?? [], profile: { policy: ROUTE_PROFILE_POLICY,
+            createdAt: new Date(engine.now()).toISOString(), candidateLimit: ROUTE_PROFILE_LIMIT,
+            departureTimesAvailable: routed.pagination.departureTimes, routingChunkMinutes: smallestChunk / 60000 }
+    }, routed.journeys, check);
+    check();
+    return { profile, ...(payload.time ? { result: await preview(engine, repo, profile, payload.time, payload.realtime) } : {}) };
+}
+
 export async function routeBoardRefresh(engine, payload, signal, execution = {}) {
     if (payload.profile?.profile?.policy !== ROUTE_PROFILE_POLICY || !Array.isArray(payload.profile?.candidates)
         || payload.profile.candidates.length > ROUTE_PROFILE_LIMIT) throw new PlannerError('CURSOR_EXPIRED', 'The saved route profile needs to be refreshed.', 410);
@@ -185,7 +300,7 @@ export async function routeBoardRefresh(engine, payload, signal, execution = {})
     const { refreshRouteBoard } = await import('./route-board-live.js');
     execution.onProgress?.('live');
     const raw = await refreshRouteBoard({ profile: payload.profile, network, time: current.time, limit: current.limit,
-        realtime: payload.realtime ?? 'apply', check, abortSignal: execution.abortSignal },
+        realtime: payload.realtime ?? 'apply', check, abortSignal: execution.abortSignal, awaitIO: execution.awaitIO },
     { provider, now: engine.now, createBudget: engine.livePlanner.createBudget });
     check();
     return envelope(engine, repo, request, raw, payload.profile, current.time, network);
@@ -206,7 +321,8 @@ export async function routeBoardReplan(engine, payload, signal, execution = {}) 
     if (!(remainingMinutes > 0)) throw new PlannerError('CURSOR_EXPIRED', 'The saved route profile needs to be refreshed.', 410);
     const raw = await engine.livePlanner.search({ request: { ...request, time: current.time,
         windowMinutes: Math.min(360, remainingMinutes), realtime: payload.realtime ?? 'apply' }, network,
-        version: repo.version, route: routeCurrent, check, abortSignal: execution.abortSignal });
+        version: repo.version, route: routeCurrent, check, abortSignal: execution.abortSignal,
+        awaitIO: execution.awaitIO, onTelemetry: execution.onTelemetry });
     // The refresh helper owns the same direct/connecting ranking policy. Its
     // input candidates may be freshly routed; it rechecks them before display.
     const { selectRouteBoardJourneys } = await import('./route-board-live.js');

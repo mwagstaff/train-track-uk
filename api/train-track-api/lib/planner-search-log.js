@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
+import { normalizePlannerSearchRange, plannerSearchWindow } from './planner-search-range.js';
 
 export const PLANNER_SEARCH_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const PLANNER_SEARCH_SOURCES = ['search', 'search-job', 'saved-route', 'saved-refresh', 'saved-replan'];
@@ -14,6 +15,9 @@ const date = value => {
 };
 const member = (value, allowed, fallback) => allowed.includes(value) ? value : fallback;
 const code = value => typeof value === 'string' && /^[A-Z0-9_]{1,80}$/.test(value) ? value : null;
+const METRICS = ['admissionQueueMs', 'queueWaitMs', 'resumeQueueMs', 'preparationMs', 'routingMs', 'liveLookupMs',
+    'cpuMs', 'routeCalls', 'operations', 'labels', 'candidates'];
+const RESOURCE_PEAKS = ['heapUsedBytes', 'rssBytes'];
 
 // Search completion must never wait for Mongo. Coalesce lifecycle updates and
 // bound both retained records and actual database operations during an outage.
@@ -47,6 +51,21 @@ export class PlannerSearchLog {
                 if (typeof fields.coalesced === 'boolean') row.coalesced = fields.coalesced;
                 if (['queued', 'running', 'preparing', 'searching', 'live', 'retrying'].includes(fields.phase)) row.phase = fields.phase;
                 if (typeof fields.datasetVersion === 'string') row.datasetVersion = fields.datasetVersion.slice(0, 128);
+                const firstResultAt = date(fields.firstResultAt);
+                if (!row.firstResultAt && firstResultAt) {
+                    row.firstResultAt = firstResultAt;
+                    row.firstResultMs = Math.max(0, firstResultAt - startedAt);
+                }
+                for (const key of METRICS) {
+                    const value = fields.metricsDelta?.[key];
+                    if (Number.isFinite(value) && value >= 0) row.metrics = { ...row.metrics,
+                        [key]: Math.round(((row.metrics?.[key] ?? 0) + value) * 1000) / 1000 };
+                }
+                for (const key of RESOURCE_PEAKS) {
+                    const value = fields.resourcePeaks?.[key];
+                    if (Number.isFinite(value) && value >= 0) row.resourcePeaks = { ...row.resourcePeaks,
+                        [key]: Math.max(row.resourcePeaks?.[key] ?? 0, Math.round(value)) };
+                }
             };
             update(input);
             this.enqueue(row);
@@ -141,7 +160,7 @@ const positive = (value, fallback, max) => /^\d+$/.test(String(value ?? '')) && 
 export function normalizePlannerSearchLogQuery(query = {}) {
     return { page: positive(query.page, 1, 100000), pageSize: positive(query.per_page, 50, 200),
         sort: member(query.sort, SORTS, 'startedAt'), direction: member(query.direction, ['asc', 'desc'], 'desc'),
-        range: member(query.range, ['1h', '24h', '7d'], '24h'), source: member(query.source, ['all', ...PLANNER_SEARCH_SOURCES], 'all') };
+        ...normalizePlannerSearchRange(query), source: member(query.source, ['all', ...PLANNER_SEARCH_SOURCES], 'all') };
 }
 
 const emptyStats = () => ({ total: 0, success: 0, fail: 0, other: 0, pending: 0, completed: 0,
@@ -152,8 +171,8 @@ const isStatus = value => ({ $eq: ['$status', value] });
 // Rows and statistics stay in Mongo. A small shared snapshot avoids rescanning
 // the seven-day log on every sort/page click; all cards cover the whole filter.
 export class PlannerSearchLogReader {
-    constructor({ getCollection = collection, now = Date.now, statsTtlMs = 15000, maxReads = 4 } = {}) {
-        Object.assign(this, { getCollection, now, statsTtlMs, maxReads });
+    constructor({ getCollection = collection, now = Date.now, statsTtlMs = 15000, maxReads = 4, maxSnapshots = 32 } = {}) {
+        Object.assign(this, { getCollection, now, statsTtlMs, maxReads, maxSnapshots });
         this.snapshots = new Map();
         this.reads = new Map();
     }
@@ -169,16 +188,18 @@ export class PlannerSearchLogReader {
     }
 
     async snapshot(db, options) {
-        const key = `${options.range}:${options.source}`;
+        const key = JSON.stringify([options.range, options.q, options.from, options.to, options.source]);
         const old = this.snapshots.get(key);
         if (old && this.now() - old.at < this.statsTtlMs) return old.promise;
         const at = this.now();
-        const hours = { '1h': 1, '24h': 24, '7d': 168 }[options.range];
-        const filter = { startedAt: { $gte: new Date(at - hours * 3600000), $lte: new Date(at) },
+        const window = plannerSearchWindow(options, at);
+        const filter = { startedAt: { $gte: window.from, $lte: window.to },
             ...(options.source !== 'all' ? { source: options.source } : {}) };
-        const promise = this.statistics(db, filter).then(stats => ({ filter, stats: { ...stats, asOf: new Date(at) } }))
-            .catch(error => { this.snapshots.delete(key); throw error; });
+        const promise = this.statistics(db, filter).then(stats => ({ filter, window, stats: { ...stats, asOf: new Date(at) } }))
+            .catch(error => { if (this.snapshots.get(key)?.promise === promise) this.snapshots.delete(key); throw error; });
+        this.snapshots.delete(key);
         this.snapshots.set(key, { at, promise });
+        while (this.snapshots.size > this.maxSnapshots) this.snapshots.delete(this.snapshots.keys().next().value);
         return promise;
     }
 
@@ -208,7 +229,7 @@ export class PlannerSearchLogReader {
 
     async read(options) {
         const db = await this.getCollection();
-        const { filter, stats } = await this.snapshot(db, options);
+        const { filter, window, stats } = await this.snapshot(db, options);
         const totalPages = Math.max(1, Math.ceil(stats.total / options.pageSize));
         const page = Math.min(options.page, totalPages);
         const direction = options.direction === 'asc' ? 1 : -1;
@@ -218,7 +239,7 @@ export class PlannerSearchLogReader {
             $gte: new Date(Math.max(filter.startedAt.$gte.getTime(), this.now() - PLANNER_SEARCH_RETENTION_MS)) } };
         const records = await db.find(currentFilter, { maxTimeMS: 5000, timeoutMS: 6000, timeoutMode: 'cursorLifetime', allowDiskUse: true })
             .sort({ [options.sort]: direction, _id: direction }).skip((page - 1) * options.pageSize).limit(options.pageSize).toArray();
-        return { ...options, page, total: stats.total, totalPages, stats,
+        return { ...options, page, total: stats.total, totalPages, stats, window,
             rows: records.map(({ _id, revision, ...row }) => ({ id: String(_id), ...row })) };
     }
 }

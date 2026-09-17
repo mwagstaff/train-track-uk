@@ -182,6 +182,8 @@ struct JourneyDeparturesSnapshot: Decodable, Hashable {
         case departures
         case dataStatus = "data_status"
         case lastSuccessfulUpdate = "last_successful_update"
+        case camelDataStatus = "dataStatus"
+        case camelLastSuccessfulUpdate = "lastSuccessfulUpdate"
         case siri
     }
 
@@ -209,9 +211,11 @@ struct JourneyDeparturesSnapshot: Decodable, Hashable {
 
         let container = try decoder.container(keyedBy: CodingKeys.self)
         departures = try container.decode([DepartureV2].self, forKey: .departures)
-        dataStatus = try container.decode(JourneyDataStatus.self, forKey: .dataStatus)
+        dataStatus = try container.decodeIfPresent(JourneyDataStatus.self, forKey: .dataStatus)
+            ?? container.decode(JourneyDataStatus.self, forKey: .camelDataStatus)
         siri = try container.decodeIfPresent(SiriBoardProvenance.self, forKey: .siri)
-        if let value = try container.decodeIfPresent(String.self, forKey: .lastSuccessfulUpdate) {
+        if let value = try container.decodeIfPresent(String.self, forKey: .lastSuccessfulUpdate)
+            ?? container.decodeIfPresent(String.self, forKey: .camelLastSuccessfulUpdate) {
             lastSuccessfulUpdate = Self.parseISO8601Date(value)
         } else {
             lastSuccessfulUpdate = nil

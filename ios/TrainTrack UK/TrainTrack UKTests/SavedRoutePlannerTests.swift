@@ -18,6 +18,89 @@ struct SavedRoutePlannerTests {
         #expect(query.id != SavedRouteQuery(group: group(["KTH", "EUS", "VIC", "INV"])).id)
     }
 
+    @Test func v4SwitchesBetweenDirectAndPlannedWithoutResurrectingThePreviousSource() async throws {
+        let client = RouteBoardStub()
+        client.apiVersion = 4
+        client.source = "planned"
+        client.result = try result()
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "VIC"])
+        await store.refresh(groups: [route])
+        #expect(store.state(for: route).result != nil)
+        client.source = "direct"
+        client.result = nil
+        client.direct = JourneyDeparturesSnapshot(departures: [], dataStatus: .live, lastSuccessfulUpdate: now)
+        await store.refresh(groups: [route], force: true)
+        #expect(store.state(for: route).usesDirectDepartures)
+        #expect(store.state(for: route).result == nil)
+        client.failure = PlannerError(code: "NETWORK", message: "Offline")
+        await store.refresh(groups: [route], force: true)
+        #expect(store.state(for: route).usesDirectDepartures)
+        #expect(store.state(for: route).directAvailability(at: now)?.status == .stale)
+        client.failure = nil
+        client.source = "planned"
+        client.direct = nil
+        client.status = "queued"
+        await store.refresh(groups: [route], force: true)
+        #expect(!store.state(for: route).usesDirectDepartures)
+        #expect(store.state(for: route).result == nil)
+        #expect(store.state(for: route).isPending)
+    }
+
+    @Test func directSnapshotsAcceptBothKeyStylesAndKeepOriginalObservationAge() throws {
+        for (status, updated) in [("data_status", "last_successful_update"), ("dataStatus", "lastSuccessfulUpdate")] {
+            let data = try JSONSerialization.data(withJSONObject: ["departures": [], status: "live", updated: PlannerTime.iso8601(now)])
+            let direct = try PlannerTime.decoder().decode(JourneyDeparturesSnapshot.self, from: data)
+            let board = SavedRouteBoard(id: "r", status: "ready", pollAfterMs: nil, result: nil,
+                computedAt: now.addingTimeInterval(500), expiresAt: nil, error: nil, source: "direct", direct: direct)
+            let state = SavedRouteBoardState(board: board)
+            #expect(state.directAvailability(at: now)?.status == .live)
+            #expect(state.directAvailability(at: now.addingTimeInterval(91))?.status == .stale)
+            #expect(state.directAvailability(at: now.addingTimeInterval(91))?.lastSuccessfulUpdate == now)
+        }
+    }
+
+    @Test func verifiedDirectServiceViaRequiredStopsPresentsOneTrainWithoutChangingSavedLegs() {
+        let route = group(["KTH", "BMS", "VIC"])
+        let presented = SavedRouteDirectPresentation.throughGroup(route)
+        #expect(presented.id == route.id)
+        #expect(presented.legs.count == 1)
+        #expect(presented.legs[0].fromStation.crs == "KTH")
+        #expect(presented.legs[0].toStation.crs == "VIC")
+        #expect(presented.favorite == route.favorite)
+        #expect(route.stationSequence.map(\.crs) == ["KTH", "BMS", "VIC"])
+        #expect(route.legs.count == 2)
+    }
+
+    @Test func directScheduledOverrideChangesTimeAndOrderWhileKeepingDisruptionEvidence() {
+        let observed = PlannerTime.dateOnly("2026-09-17")!.addingTimeInterval(12 * 3600)
+        let delayed = DepartureV2(departureTime: .init(scheduled: "12:10", estimated: "12:30"), serviceType: "train", platform: "2",
+            isCancelled: false, length: 8, destination: [], origin: nil, serviceID: "delayed", delayReason: "A delay", cancelReason: nil, timestamp: observed)
+        let onTime = DepartureV2(departureTime: .init(scheduled: "12:20", estimated: "On time"), serviceType: "train", platform: "1",
+            isCancelled: false, length: 8, destination: [], origin: nil, serviceID: "on-time", delayReason: nil, cancelReason: nil, timestamp: observed)
+        #expect(SavedRouteDirectPresentation.upcoming([delayed, onTime], useLiveTimes: true, now: observed).map(\.id) == ["on-time", "delayed"])
+        #expect(SavedRouteDirectPresentation.upcoming([delayed, onTime], useLiveTimes: false, now: observed).map(\.id) == ["delayed", "on-time"])
+        #expect(SavedRouteDirectPresentation.time(delayed, useLiveTimes: false) == "12:10")
+        #expect(delayed.departureTime.estimated == "12:30")
+        #expect(delayed.delayReason == "A delay")
+        #expect(SavedRouteDirectPresentation.upcoming([delayed, onTime], useLiveTimes: false, now: observed.addingTimeInterval(25 * 60)).isEmpty)
+        #expect(SavedRouteDirectPresentation.upcoming([delayed, onTime], useLiveTimes: true, now: observed.addingTimeInterval(25 * 60)).map(\.id) == ["delayed"])
+    }
+
+    @Test func unknownDirectDelayStaysVisibleAndCachedClocksDoNotBecomeTomorrowsTrain() {
+        let observed = PlannerTime.dateOnly("2026-09-17")!.addingTimeInterval(12 * 3600)
+        let delayed = DepartureV2(departureTime: .init(scheduled: "11:55", estimated: "Delayed"), serviceType: "train", platform: nil,
+            isCancelled: false, length: nil, destination: [], origin: nil, serviceID: "waiting", delayReason: "Awaiting an update", cancelReason: nil, timestamp: nil)
+        #expect(SavedRouteDirectPresentation.upcoming([delayed], useLiveTimes: true, now: observed, observedAt: observed).map(\.id) == ["waiting"])
+        #expect(SavedRouteDirectPresentation.upcoming([delayed], useLiveTimes: false, now: observed, observedAt: observed).isEmpty)
+        #expect(SavedRouteDirectPresentation.upcoming([delayed], useLiveTimes: true,
+            now: observed.addingTimeInterval(2 * 3600), observedAt: observed).isEmpty)
+        let tomorrow = observed.addingTimeInterval(23 * 3600)
+        #expect(SavedRouteDirectPresentation.upcoming([delayed], useLiveTimes: true, now: tomorrow, observedAt: observed).isEmpty)
+        #expect(SavedRouteDirectPresentation.departureDate(delayed, useLiveTimes: true, now: tomorrow, observedAt: observed)
+            == observed.addingTimeInterval(-5 * 60))
+    }
+
     @Test func duplicateRoutesShareRequestsAndBatchesNeverExceedEight() async {
         let client = RouteBoardStub()
         let store = SavedRoutePlannerStore(client: client, now: { now })
@@ -266,6 +349,37 @@ struct SavedRoutePlannerTests {
         #expect(!PlannerTrainTracking.matches(departure, details: try details(), leg: leg, now: observed))
     }
 
+    @Test func dynamicV4TrainUsesItsCompleteLiveBranchForTrackingWithoutATimetableUID() throws {
+        let observed = PlannerTime.dateOnly("2026-09-17")!.addingTimeInterval(12 * 3600)
+        let place: (String) -> [String: String] = { ["crs": $0, "name": $0] }
+        let dated: (Int) -> String = { PlannerTime.iso8601(observed.addingTimeInterval(Double($0) * 60)) }
+        let raw: [String: Any] = ["kind": "vehicle", "mode": "rail", "operator": "SN", "serviceId": "live:ORG:new-provider-ID",
+            "from": place("ORG"), "to": place("DST"), "departure": dated(5), "arrival": dated(25),
+            "scheduledDeparture": dated(5), "scheduledArrival": dated(25),
+            "callingPoints": [["station": place("ORG"), "departure": dated(5)], ["station": place("DST"), "arrival": dated(25)]],
+            "serviceCallingPoints": [["station": place("BEF"), "arrival": dated(-15)],
+                ["station": place("ORG"), "departure": dated(5)], ["station": place("DST"), "arrival": dated(25)],
+                ["station": place("AFT"), "arrival": dated(45)]]]
+        var leg = try PlannerTime.decoder().decode(PlannedJourney.Leg.self, from: JSONSerialization.data(withJSONObject: raw))
+        let departure = DepartureV2(departureTime: .init(scheduled: "12:05", estimated: "On time"), serviceType: "train", platform: "2",
+            isCancelled: false, length: nil, destination: [], origin: nil, serviceID: "new-provider-ID", delayReason: nil,
+            cancelReason: nil, timestamp: observed, operatorCode: "SN")
+        var detail: [String: Any] = ["generatedAt": dated(0), "serviceType": "train", "crs": "ORG", "locationName": "ORG",
+            "operatorCode": "SN", "std": "12:05", "previousCallingPoints": [["callingPoint": [["crs": "BEF", "locationName": "BEF", "st": "11:45"]]]],
+            "subsequentCallingPoints": [["callingPoint": [["crs": "DST", "locationName": "DST", "st": "12:25"],
+                ["crs": "AFT", "locationName": "AFT", "st": "12:45"]]]]]
+        func details() throws -> ServiceDetails { try PlannerTime.decoder().decode(ServiceDetails.self, from: JSONSerialization.data(withJSONObject: detail)) }
+        #expect(leg.uid == nil && leg.originDate == nil && leg.tracking == nil)
+        #expect(PlannerTrainTracking.canStart(departure, details: try details(), leg: leg, selectedServer: "A", currentServer: "A", now: observed))
+        let wholePattern = leg.serviceCallingPoints
+        leg.serviceCallingPoints = leg.callingPoints
+        #expect(!PlannerTrainTracking.matches(departure, details: try details(), leg: leg, now: observed))
+        leg.serviceCallingPoints = wholePattern
+        detail["subsequentCallingPoints"] = [["callingPoint": [["crs": "DST", "locationName": "DST", "st": "12:25"],
+            ["crs": "AFT", "locationName": "AFT", "st": "12:46"]]]]
+        #expect(!PlannerTrainTracking.matches(departure, details: try details(), leg: leg, now: observed))
+    }
+
     @Test func publicClocksCannotDisambiguateAutumnFoldOrNormalizeSpringGap() throws {
         let decode: (String) throws -> Date = { try PlannerTime.decoder().decode(Date.self, from: JSONEncoder().encode($0)) }
         for value in ["2026-10-25T00:30:00Z", "2026-10-25T01:30:00Z", "2026-03-29T01:30:00Z"] {
@@ -332,14 +446,18 @@ struct SavedRoutePlannerTests {
     var failure: Error?
     var boardError: PlannerError?
     var progress: SavedRouteBoardProgress?
+    var apiVersion = 3
+    var source: String?
+    var direct: JourneyDeparturesSnapshot?
     var hold = false
     var continuation: CheckedContinuation<Void, Never>?
     func routeBoards(_ routes: [SavedRouteQuery]) async throws -> SavedRouteBoardsResponse {
         requests.append(routes)
         if hold { await withCheckedContinuation { continuation = $0 } }
         if let failure { throw failure }
-        return SavedRouteBoardsResponse(apiVersion: 3, boards: routes.map {
-            SavedRouteBoard(id: $0.id, status: status, pollAfterMs: 20000, result: result, computedAt: nil, expiresAt: nil, error: boardError, progress: progress)
+        return SavedRouteBoardsResponse(apiVersion: apiVersion, boards: routes.map {
+            SavedRouteBoard(id: $0.id, status: status, pollAfterMs: 20000, result: result, computedAt: nil, expiresAt: nil, error: boardError,
+                progress: progress, source: source, direct: direct)
         })
     }
 }

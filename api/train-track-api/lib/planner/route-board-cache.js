@@ -4,10 +4,11 @@ const COLLECTION = 'planner_route_profiles_v1';
 const MAX_RECORD_BYTES = 4 * 1024 * 1024;
 
 // Only dated scheduled profiles live here. Provider IDs, forecasts and caller
-// identities never enter this shared two-hour cache.
+// identities never enter this shared cache. Whole profiles last two hours;
+// immutable hourly fragments survive until overlapping profiles stop using them.
 export class RouteBoardCache {
     constructor({ collection = () => getMongoCollection(COLLECTION), now = Date.now,
-        maxEntries = 64, maxBytes = 32 * 1024 * 1024, deadlineMs = 750 } = {}) {
+        maxEntries = 256, maxBytes = 32 * 1024 * 1024, deadlineMs = 750 } = {}) {
         Object.assign(this, { collection, now, maxEntries, maxBytes, deadlineMs });
         this.memory = new Map();
         this.bytes = 0;

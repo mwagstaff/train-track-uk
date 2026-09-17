@@ -116,6 +116,22 @@ test('admin queries allow only known sorts, sources and bounded pagination', () 
     { page: 100000, pageSize: 200, sort: 'startedAt', direction: 'desc', range: '24h', source: 'all' });
 });
 
+test('phase telemetry accumulates task deltas and sampled resource peaks without accepting arbitrary fields', async () => {
+    const log = new PlannerSearchLog({ now: () => epoch, getCollection: async () => ({ bulkWrite: async () => {} }) });
+    const handle = log.start({});
+    handle.update({ metricsDelta: { routingMs: 10, routeCalls: 1, queueWaitMs: 5, secret: 99 },
+        resourcePeaks: { heapUsedBytes: 500, rssBytes: 900 } });
+    const first = [...log.pending.values()][0].row;
+    handle.update({ metricsDelta: { routingMs: 20, routeCalls: 2, liveLookupMs: 15, cpuMs: NaN },
+        resourcePeaks: { heapUsedBytes: 400, rssBytes: 1000 } });
+    handle.finish({ status: 'success' });
+    const row = [...log.pending.values()][0].row;
+    assert.deepEqual(row.metrics, { routingMs: 30, routeCalls: 3, queueWaitMs: 5, liveLookupMs: 15 });
+    assert.deepEqual(row.resourcePeaks, { heapUsedBytes: 500, rssBytes: 1000 });
+    assert.equal(first.metrics.routingMs, 10, 'Earlier queued writes are immutable');
+    await log.flush();
+});
+
 test('statistics cover all selected rows and p99 uses nearest rank, independent of table sorting and page size', async () => {
     const queries = [];
     let aggregates = 0;

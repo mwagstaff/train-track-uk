@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { findJourneys, validateJourney, scheduledCandidate, departureProfileOrder } from '../lib/planner/router.js';
-import { ROUTE_PROFILE_BYTES } from '../lib/planner/route-board-engine.js';
+import { ROUTE_PROFILE_BYTES, routeBoardProfileChunk, routeBoardPreview, mergeRouteBoardProfiles } from '../lib/planner/route-board-engine.js';
 import { PlannerEngine } from '../lib/planner/engine.js';
 import { plannerConfig } from '../lib/planner/service.js';
 import { normalizeRequest } from '../lib/planner/contract.js';
@@ -192,6 +192,89 @@ test('hourly profile partitions preserve the monolithic frontier at exact bounda
     assert.deepEqual(metrics(profile.candidates), metrics(findJourneys(query, network(services), { departureProfile: true }).journeys));
     assert.ok(profile.candidates.some(journey => journey.departure === iso(60)));
     assert.ok(profile.candidates.every(journey => journey.departure !== iso(480)));
+});
+
+test('independent profile chunks merge to the complete frontier with honest partial coverage', async t => {
+    const services = [0, 59, 60, 119, 120, 359, 360, 479, 480].map((departure, index) =>
+        train(`T${index}`, [['AAA', null, departure], ['BBB', departure + 20, departure + 21], ['DDD', departure + 50, null]]));
+    const engine = fixture(t, services), query = request({ via: ['BBB'] });
+    let merged;
+    for (const [index, hour] of [2, 3, 4, 5, 6, 7, 1, 0].entries()) {
+        const { profile } = await routeBoardProfileChunk(engine, { request: query,
+            chunk: { from: iso(hour * 60), to: iso((hour + 1) * 60) } });
+        merged = mergeRouteBoardProfiles(merged, profile, query, { completedWindows: index + 1, totalWindows: 8, now: at(120) });
+        assert.equal(merged.profile.coverage.complete, index === 7);
+        assert.equal(merged.searchTruncated, index !== 7);
+        assert.equal(merged.profile.coverage.windows.length, index + 1);
+    }
+    const complete = await engine.routeBoardProfile({ request: query });
+    assert.deepEqual(metrics(merged.candidates), metrics(complete.profile.candidates));
+    assert.ok(merged.candidates.every(journey => journey.departure !== iso(480)));
+});
+
+test('label-limited chunks subdivide without losing exact-boundary departures, and reuse the safe width', async t => {
+    const services = [0, 14, 15, 29, 30, 44, 45, 59, 60, 75].map((departure, index) =>
+        train(`T${index}`, [['AAA', null, departure], ['DDD', departure + 20, null]]));
+    const engine = fixture(t, services), attempts = [];
+    const route = engine.route.bind(engine);
+    engine.route = (query, network, options) => {
+        attempts.push(query.windowMinutes);
+        assert.equal(options.maxLabels, 50000);
+        if (query.windowMinutes > 15) throw Object.assign(new Error('bounded labels'), { code: 'SEARCH_TIMEOUT', reason: 'labelLimit' });
+        return route(query, network, options);
+    };
+    const { profile } = await routeBoardProfileChunk(engine, { request: request(), chunk: { from: iso(0), to: iso(60) }, chunkMinutes: 60 });
+    assert.equal(profile.profile.routingChunkMinutes, 15);
+    assert.deepEqual(profile.candidates.map(journey => journey.departure).sort(), [0, 14, 15, 29, 30, 44, 45, 59].map(iso));
+    assert.equal(profile.searchTruncated, false);
+    assert.deepEqual(attempts, [60, 30, 15, 15, 30, 15, 15]);
+    attempts.length = 0;
+    await routeBoardProfileChunk(engine, { request: request(), chunk: { from: iso(60), to: iso(120) },
+        chunkMinutes: profile.profile.routingChunkMinutes });
+    assert.deepEqual(attempts, [15, 15, 15, 15]);
+});
+
+test('profile chunks never retry a timeout, cancellation or invalid interval as a label split', async t => {
+    const engine = fixture(t, [train('T1', [['AAA', null, 5], ['DDD', 20, null]])]);
+    const payload = { request: request(), chunk: { from: iso(0), to: iso(60) } };
+    for (const code of ['SEARCH_TIMEOUT', 'SEARCH_CANCELLED']) {
+        let calls = 0;
+        engine.route = () => { calls++; throw Object.assign(new Error(code), { code }); };
+        await assert.rejects(routeBoardProfileChunk(engine, payload), { code });
+        assert.equal(calls, 1);
+    }
+    await assert.rejects(routeBoardProfileChunk(engine, { ...payload, chunk: { from: iso(-1), to: iso(60) } }), { code: 'INVALID_REQUEST' });
+    await assert.rejects(routeBoardProfileChunk(engine, { ...payload, chunkMinutes: 0 }), { code: 'INVALID_REQUEST' });
+});
+
+test('failed label attempts consume the same cumulative work budget as successful subdivisions', async t => {
+    const engine = fixture(t, [train('T1', [['AAA', null, 5], ['DDD', 20, null]])]);
+    let calls = 0;
+    engine.route = () => {
+        calls++;
+        throw Object.assign(new Error('bounded labels'), { code: 'SEARCH_TIMEOUT', reason: 'labelLimit',
+            metrics: { operations: 1000, labels: 50001 } });
+    };
+    await assert.rejects(routeBoardProfileChunk(engine, { request: request(), chunk: { from: iso(0), to: iso(60) } },
+        undefined, { timeoutMs: 10000, maxOperations: 1000 }), error => error.code === 'SEARCH_TIMEOUT' && !error.reason);
+    assert.equal(calls, 1);
+});
+
+test('fresh and cached profile previews use scheduled warnings without live I/O or national preparation', async t => {
+    const engine = fixture(t, [train('T1', [['AAA', null, 150], ['DDD', 180, null]])]);
+    engine.liveProvider = { fetchBoards() { throw new Error('Preview must not fetch live data'); } };
+    const { profile, result } = await routeBoardProfileChunk(engine, { request: request(),
+        chunk: { from: iso(120), to: iso(180) }, time: iso(120), realtime: 'apply' });
+    assert.equal(result.journeys.length, 1);
+    assert.equal(result.search.provisional, true);
+    assert.equal(result.live.status, 'unavailable');
+    assert.equal(result.dataset.scheduledOnly, true);
+    assert.ok(result.warnings.includes('Live times are being checked; scheduled times are shown.'));
+    engine.network = () => { throw new Error('Cached preview must not prepare a national network'); };
+    const cached = await routeBoardPreview(engine, { profile: JSON.parse(JSON.stringify(profile)), time: iso(120), realtime: 'ignore' });
+    assert.equal(cached.journeys.length, 1);
+    assert.equal(cached.live.mode, 'ignore');
+    assert.ok(cached.journeys[0].legs.every(leg => !leg.live));
 });
 
 test('saved route progress reports completed departure windows and stops on cancellation', async t => {

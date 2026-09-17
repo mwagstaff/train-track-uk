@@ -30,6 +30,7 @@ export function plannerConfig(env = process.env) {
         // The routing worker is its own thread; Express is not blocked by it.
         // Throttle only when the host must reserve CPU for other services.
         jobCpuDutyCycle: number('PLANNER_JOB_CPU_DUTY_CYCLE', 1, 0.1, 1),
+        maxLiveWaiters: number('PLANNER_MAX_LIVE_WAITERS', 1, 0, 1),
         maxSearchJobs: number('PLANNER_MAX_SEARCH_JOBS', 8, 1, 32),
         // Resolve the current dates and build the national index before the
         // first search of the day asks for them.
@@ -45,10 +46,14 @@ export class PlannerService {
         this.worker = null;
         this.queue = [];
         this.active = null;
+        this.parked = new Map();
+        this.upstream = new Map();
         this.sequence = 0;
         this.closed = false;
         this.metadataOnly = metadataOnly;
         this.standardWorker = workerURL.href === defaultWorkerURL.href;
+        this.supportsProfileChunks = this.standardWorker && !metadataOnly;
+        this.supportsIOYield = this.standardWorker && !metadataOnly;
         this.metadataService = null;
         this.journeys = new Map();
     }
@@ -100,7 +105,7 @@ export class PlannerService {
     call(method, payload, { signal, execution, onStart, onProgress, onTelemetry, queueTimeoutMs, priority = 'interactive' } = {}) {
         if (this.closed) return Promise.reject(new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is unavailable.', 503));
         if (signal?.aborted) return Promise.reject(new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499));
-        if (this.queue.length + Number(Boolean(this.active)) >= this.config.maxQueue) {
+        if (new Set([...this.queue, ...this.parked.values(), ...(this.active ? [this.active] : [])]).size >= this.config.maxQueue) {
             return Promise.reject(new PlannerError('SEARCH_BUSY', 'Journey planning is busy. Please try again shortly.', 429));
         }
         return new Promise((resolve, reject) => {
@@ -122,14 +127,20 @@ export class PlannerService {
         job.settled = true;
         clearTimeout(job.timer);
         job.signal?.removeEventListener('abort', job.abort);
-        if (!error && ['search', 'routeBoardRefresh', 'routeBoardReplan'].includes(job.method) && result?.dataset) {
-            for (const journey of [...(result.journeys ?? []), ...(result.disruptedJourneys ?? [])]) {
-                this.journeys.delete(journey.id);
-                this.journeys.set(journey.id, { journey, version: result.dataset.version, at: Date.now(), live: result.live });
-            }
-            while (this.journeys.size > 500) this.journeys.delete(this.journeys.keys().next().value);
+        const presented = ['routeBoardProfileChunk', 'savedRoutePlan'].includes(job.method) ? result?.result : result;
+        if (!error && ['search', 'routeBoardRefresh', 'routeBoardReplan', 'routeBoardPreview', 'routeBoardProfileChunk', 'savedRoutePlan'].includes(job.method)) {
+            this.retainResult(presented);
         }
         error ? job.reject(error) : job.resolve(result);
+    }
+
+    retainResult(result) {
+        if (!result?.dataset) return;
+        for (const journey of [...(result.journeys ?? []), ...(result.disruptedJourneys ?? [])]) {
+            this.journeys.delete(journey.id);
+            this.journeys.set(journey.id, { journey, version: result.dataset.version, at: Date.now(), live: result.live });
+        }
+        while (this.journeys.size > 500) this.journeys.delete(this.journeys.keys().next().value);
     }
 
     cancel(job, error) {
@@ -138,7 +149,7 @@ export class PlannerService {
         Atomics.store(cancelled, 0, 1);
         Atomics.notify(cancelled, 0);
         this.settle(job, error);
-        this.queue = this.queue.filter(item => item !== job);
+        this.queue = this.queue.filter(item => item !== job || job.resuming);
         if (this.active === job) {
             // Also bound non-cooperative work, such as a blocked SQLite call.
             job.killTimer = setTimeout(() => {
@@ -154,14 +165,40 @@ export class PlannerService {
         });
         this.worker = worker;
         worker.on('message', message => {
-            if (worker !== this.worker || message.id !== this.active?.id) return;
-            const job = this.active;
+            if (worker !== this.worker) return;
+            if (message.upstream) { void this.requestUpstream(worker, message); return; }
+            if (message.cancelUpstream) { this.upstream.get(message.requestId)?.abort(); return; }
+            const job = message.id === this.active?.id ? this.active : this.parked.get(message.id);
+            if (!job) return;
             if (message.progress) { job.onProgress?.(message.progress); return; }
             if (message.telemetry) { job.onTelemetry?.(message.telemetry); return; }
+            if (message.waitingForIO) {
+                // At most one suspended context. It retains its immutable network;
+                // avoid admitting a second network during existing heap pressure.
+                if (this.active === job && this.parked.size < (this.config.maxLiveWaiters ?? 1)
+                    && message.heapRatio < 0.55) {
+                    this.parked.set(job.id, job);
+                    this.active = null;
+                    this.pump();
+                }
+                return;
+            }
+            if (message.readyToResume) {
+                if (this.active === job) worker.postMessage({ id: job.id, resume: true });
+                else if (!job.resuming) {
+                    job.resuming = true;
+                    job.resumeQueuedAt = Date.now();
+                    this.queue.push(job);
+                    this.pump();
+                }
+                return;
+            }
             clearTimeout(job.killTimer);
-            this.active = null;
+            if (this.active === job) this.active = null;
+            this.parked.delete(job.id);
             this.settle(job, message.error
-                ? new PlannerError(message.error.code, message.error.message, message.error.status) : null, message.result);
+                ? Object.assign(new PlannerError(message.error.code, message.error.message, message.error.status),
+                    message.error.reason ? { reason: message.error.reason } : {}) : null, message.result);
             this.pump();
         });
         worker.on('error', error => {
@@ -171,10 +208,39 @@ export class PlannerService {
         worker.on('exit', () => {
             if (worker === this.worker) this.resetWorker(new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is temporarily unavailable.', 503));
         });
+        if (this.config.prewarm && this.standardWorker && !this.metadataOnly) {
+            const warm = () => {
+                if (this.worker === worker && !this.active && !this.parked.size && !this.queue.length) {
+                    void this.call('prewarm', {}, { priority: 'background' }).catch(() => {});
+                }
+            };
+            this.warmTimer = setTimeout(warm, 2000);
+            this.warmTimer.unref();
+            this.warmInterval = setInterval(warm, 60000);
+            this.warmInterval.unref();
+        }
+    }
+
+    async requestUpstream(worker, message) {
+        const controller = new AbortController();
+        this.upstream.set(message.requestId, controller);
+        try {
+            // Run on Express's asynchronous I/O path, sharing request spacing
+            // and upstream metrics with existing departure-board consumers.
+            const { getWithRetry } = await import('../upstream-api-client.js');
+            const result = await getWithRetry({ ...message.upstream, signal: controller.signal });
+            if (this.worker === worker) worker.postMessage({ requestId: message.requestId, upstreamResult: { data: result.data } });
+        } catch (error) {
+            if (this.worker === worker) worker.postMessage({ requestId: message.requestId, upstreamError: {
+                code: error.code, name: error.name, status: error.response?.status
+            } });
+        } finally {
+            if (this.upstream.get(message.requestId) === controller) this.upstream.delete(message.requestId);
+        }
     }
 
     pump() {
-        if (this.active || this.closed) return;
+        if (this.active || this.closed || this.restarting) return;
         // Saved-route warming shares this worker and its resource limits. Give
         // interactive searches the next slot, but eventually serve old refreshes.
         const waitingRefresh = this.queue.findIndex(job => job.priority === 'background'
@@ -182,17 +248,28 @@ export class PlannerService {
         const interactive = this.queue.findIndex(job => job.priority !== 'background');
         const index = waitingRefresh >= 0 ? waitingRefresh : Math.max(0, interactive);
         const [job] = this.queue.splice(index, 1);
-        if (!job) { this.worker?.unref(); return; }
+        if (!job) { if (!this.parked.size) this.worker?.unref(); return; }
         try {
             if (!this.worker) this.startWorker();
             this.worker.ref();
             this.active = job;
+            if (job.resuming) {
+                job.resuming = false;
+                this.parked.delete(job.id);
+                if (job.settled) job.killTimer = setTimeout(() => {
+                    if (this.active === job) this.resetWorker(new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499));
+                }, 1000);
+                job.onTelemetry?.({ metricsDelta: { resumeQueueMs: Date.now() - job.resumeQueuedAt } });
+                this.worker.postMessage({ id: job.id, resume: true });
+                return;
+            }
             if (job.execution) {
                 clearTimeout(job.timer);
                 job.timer = setTimeout(() => this.cancel(job,
                     new PlannerError('SEARCH_TIMEOUT', 'This search could not finish within the available processing time. Please try a different time.', 504)), job.execution.timeoutMs);
             }
             job.onStart?.();
+            job.onTelemetry?.({ metricsDelta: { queueWaitMs: Date.now() - job.enqueuedAt } });
             this.worker.postMessage({ id: job.id, method: job.method, payload: job.payload,
                 cancelBuffer: job.cancelBuffer, execution: job.execution });
         } catch {
@@ -204,20 +281,38 @@ export class PlannerService {
     resetWorker(error) {
         const worker = this.worker;
         this.worker = null;
+        clearTimeout(this.warmTimer);
+        clearInterval(this.warmInterval);
+        for (const controller of this.upstream.values()) controller.abort();
+        this.upstream.clear();
         if (this.active) {
             clearTimeout(this.active.killTimer);
             this.settle(this.active, error);
             this.active = null;
         }
-        // Fail admitted work explicitly; a later request may restart the worker.
-        for (const job of this.queue.splice(0)) this.settle(job, error);
-        worker?.terminate().catch(() => {});
+        for (const job of this.parked.values()) this.settle(job, error);
+        this.parked.clear();
+        // Unstarted work has no worker state to lose. Keep it through one
+        // recovery, with its original queue deadline and cancellation signal.
+        this.queue = this.queue.filter(job => {
+            if (this.closed || job.settled || (job.workerRestarts = (job.workerRestarts ?? 0) + 1) > 1) {
+                this.settle(job, error);
+                return false;
+            }
+            return true;
+        });
+        this.restarting = true;
+        Promise.resolve(worker?.terminate()).catch(() => {}).finally(() => {
+            this.restarting = false;
+            this.pump();
+        });
     }
 
     close() {
         this.closed = true;
         this.searchJobs?.close();
         this.routeBoards?.close();
+        this.savedRouteBoards?.close();
         this.metadataService?.close();
         this.journeys.clear();
         this.resetWorker(new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is closed.', 503));

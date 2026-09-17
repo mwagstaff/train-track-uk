@@ -43,6 +43,26 @@ test('CPU duty accounting yields half of active intervals without banking I/O id
     assert.deepEqual(idle.waits, [10], 'Earlier I/O idle time must not buy a later full-CPU burst');
 });
 
+test('resuming excludes another job’s CPU usage without resetting cancellation or the deadline', () => {
+    const fixture = clock({ timeoutMs: 150 });
+    fixture.advance(10);
+    assert.equal(fixture.signal.aborted, false);
+    // Another operation uses the thread while this one is parked for live I/O.
+    fixture.advance(80, 80);
+    fixture.signal.resetAccounting();
+    fixture.advance(10, 10);
+    assert.equal(fixture.signal.aborted, false);
+    assert.deepEqual(fixture.waits, [10, 10], 'Only this job’s own active intervals are throttled');
+    fixture.advance(31, 0);
+    fixture.signal.resetAccounting();
+    assert.throws(() => fixture.signal.aborted, { code: 'SEARCH_TIMEOUT' });
+
+    const cancelled = clock();
+    Atomics.store(cancelled.cancelled, 0, 1);
+    cancelled.signal.resetAccounting();
+    assert.equal(cancelled.signal.aborted, true);
+});
+
 test('long native work is repaid in bounded slices and cancellation interrupts the next slice', () => {
     const fixture = clock();
     fixture.advance(80);

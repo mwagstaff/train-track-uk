@@ -92,6 +92,32 @@ test('public metadata, stations and journeys never expose source paths or raw re
     assert.equal(details.dataset.sourceGenerationDate, '2026-08-25');
 });
 
+test('saved-route discovery performs one ordinary search, preserves vias and exports only relevant connection rules', async () => {
+    const repo = repository();
+    repo.stations.push({ crs: 'EUS', name: 'Euston', minimumChangeMinutes: 15 });
+    repo.rules.tsi = [{ station: 'VIC', arrivingOperator: 'SE', departingOperator: 'SN', minutes: 10 },
+        { station: 'EUS', arrivingOperator: 'VT', departingOperator: 'SR', minutes: 15 }];
+    repo.rules.links = [{ origin: 'VIC', destination: 'KTH', mode: 'walk', minutes: 30 },
+        { origin: 'EUS', destination: 'VIC', mode: 'tubeTransfer', minutes: 15 }];
+    const calls = [];
+    const instance = engine({ openDataset: async () => repo, findJourneys: (query, network, options) => {
+        calls.push({ query, options }); return result(query);
+    } });
+    const plan = await instance.savedRoutePlan({ request: { ...request, via: ['ABW'], realtime: 'apply' }, version });
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].query.via, ['ABW']);
+    assert.equal(calls[0].query.realtime, undefined);
+    assert.notEqual(calls[0].options.departureProfile, true);
+    assert.equal(calls[0].options.excludeDirect, true);
+    assert.equal(plan.result.journeys.length, 1);
+    assert.deepEqual(plan.connections.stations.map(station => station.crs), ['KTH', 'VIC']);
+    assert.deepEqual(plan.connections.rules.tsi, repo.rules.tsi.slice(0, 1));
+    assert.deepEqual(plan.connections.rules.links, repo.rules.links.slice(0, 1));
+    assert.equal(plan.result.connections, undefined, 'Internal rule context must not change public search results');
+    await assert.rejects(instance.savedRoutePlan({ request: { ...request, via: ['ABX'] }, version }), { code: 'INVALID_STATION' });
+    await assert.rejects(instance.savedRoutePlan({ request: { ...request, via: ['KTH'] }, version }), { code: 'INVALID_STATION' });
+});
+
 test('journey details include the full dated service without changing the travelled stops', async () => {
     const repo = repository();
     repo.resolveServices = date => ({ services: [{ id: 'full-service', calls: [
@@ -112,6 +138,35 @@ test('journey details include the full dated service without changing the travel
     assert.equal(journey.legs[0].serviceCallingPoints, undefined);
     assert.equal(JSON.stringify(details).includes('/private'), false);
     await assert.rejects(instance.journey(journey.id, { aborted: true }), { code: 'SEARCH_CANCELLED' });
+});
+
+test('saved-route plans retain the full passenger pattern for tracking without another routing calculation', async () => {
+    const repo = repository();
+    let preparations = 0, routes = 0;
+    repo.resolveServices = date => {
+        preparations++;
+        return { services: [{ id: `service-${date}`, calls: [
+            { station: 'ABW', departure: Date.parse(`${date}T05:30:00Z`), canBoard: true },
+            { station: 'PASS', departure: Date.parse(`${date}T05:45:00Z`), canBoard: false, canAlight: false },
+            { station: 'KTH', departure: Date.parse(`${date}T06:00:00Z`), canBoard: true },
+            { station: 'VIC', arrival: Date.parse(`${date}T06:21:00Z`), canAlight: true }
+        ] }], diagnostics: { counts: {} } };
+    };
+    let preparedAtSearch;
+    const instance = engine({ openDataset: async () => repo, findJourneys: query => {
+        routes++;
+        preparedAtSearch = preparations;
+        const found = result(query);
+        Object.assign(found.journeys[0].legs[0], { serviceId: 'service-2026-09-08', originDate: '2026-09-08' });
+        return found;
+    } });
+    const plan = await instance.savedRoutePlan({ request, version });
+    assert.equal(routes, 1);
+    assert.equal(preparations, preparedAtSearch, 'Tracking metadata reuses the dates prepared for discovery');
+    const leg = plan.result.journeys[0].legs[0];
+    assert.deepEqual(leg.serviceCallingPoints.map(point => point.station.crs), ['ABW', 'KTH', 'VIC']);
+    assert.equal(leg.callingPoints[0].station.crs, 'KTH', 'The travelled segment remains unchanged');
+    assert.equal(leg.tracking, undefined, 'A timetable pattern is not a verified live provider reference');
 });
 
 test('cache keys distinguish exact times and page offsets; repeated result retains detail', async () => {
@@ -265,6 +320,35 @@ test('worker failures and missing dataset leave the HTTP process usable', async 
         await assert.rejects(service.search(request), { code: 'DATASET_UNAVAILABLE' });
         assert.equal((await service.status()).available, false);
     } finally { service.close(); }
+});
+
+test('direct-first saved boards are versioned separately and preserve existing v3 behavior', async t => {
+    const app = express(), calls = [];
+    const direct = { apiVersion: 4, boards: [{ id: 'home', status: 'ready', source: 'direct',
+        direct: { departures: [{ serviceID: 'existing-live-id', departure_time: { scheduled: '14:57', estimated: '14:59' } }],
+            dataStatus: 'live', lastSuccessfulUpdate: '2026-09-17T13:40:00Z' } }] };
+    const planned = { apiVersion: 3, boards: [{ id: 'home', status: 'queued' }] };
+    const service = registerPlannerRoutes(app, { service: { config }, searchLog: noOpPlannerSearchLog,
+        savedRouteBoards: { get: async (body, caller) => { calls.push({ body, caller }); return direct; } },
+        routeBoards: { get: async () => planned } });
+    t.after(() => service.searchJobs.close());
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise(resolve => server.once('listening', resolve));
+    t.after(() => new Promise(resolve => server.close(resolve)));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const options = { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Planner-Client': 'test-device' },
+        body: JSON.stringify({ routes: [{ id: 'home', origin: 'KTH', destination: 'VIC' }] }) };
+    const response = await fetch(`${base}/api/v4/journey-planner/route-boards`, options);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.deepEqual(await response.json(), direct);
+    assert.equal(calls[0].caller.client, 'test-device');
+    assert.deepEqual(await (await fetch(`${base}/api/v3/journey-planner/route-boards`, options)).json(), planned);
+    assert.equal((await fetch(`${base}/api/v4/journey-planner/search`, options)).status, 404);
+    assert.equal((await fetch(`${base}/api/v4/journey-planner/route-boards`, { method: 'POST', body: '{}' })).status, 415);
+    assert.equal((await fetch(`${base}/api/v4/journey-planner/route-boards`, { ...options,
+        body: JSON.stringify({ padding: 'x'.repeat(17000) }) })).status, 413);
+    assert.equal(calls.length, 1, 'Invalid requests must never reach saved departure lookups');
 });
 
 test('bounded queue rejects overload and an aborted queued request does not execute', async t => {

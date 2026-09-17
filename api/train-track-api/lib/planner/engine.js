@@ -254,11 +254,12 @@ export class PlannerEngine {
         };
         check();
         execution.onProgress?.('preparing');
-        const repo = await this.dataset(version);
+        const measure = execution.measure ?? ((name, work) => work());
+        const repo = await measure('preparationMs', () => this.dataset(version));
         check();
         request = this.checkQuery(repo, request);
         this.stats.searches++;
-        const key = `${repo.version}:${POLICY_VERSION}:${JSON.stringify(request)}:${offset}`;
+        const key = `${repo.version}:${POLICY_VERSION}:${JSON.stringify(request)}:${offset}${execution.excludeDirect ? ':connecting' : ''}`;
         const cached = this.searches.get(key);
         const cacheHit = !request.realtime && cached && this.now() - cached.createdAt < 5 * 60000;
         execution.onTelemetry?.({ cacheStatus: cacheHit ? 'hit' : liveSnapshotId ? 'unknown' : 'miss', datasetVersion: repo.version });
@@ -275,7 +276,7 @@ export class PlannerEngine {
             result = { journeys: [], warnings: ['You are already at the destination.'],
                 searchTruncated: false, searchWindow: { from: request.time, to: request.time }, pagination: {} };
         } else {
-            const network = await this.network(repo, request, signal);
+            const network = await measure('preparationMs', () => this.network(repo, request, signal));
             check();
             if (Object.entries(network.diagnostics.counts).some(([code, count]) => code !== 'CANCELLED' && count > 0)) {
                 resolutionWarnings.push('Some timetable records could not be resolved safely; results may be incomplete.');
@@ -286,7 +287,9 @@ export class PlannerEngine {
                 if (remainingOperations <= 0) throw new PlannerError('SEARCH_TIMEOUT', 'The search exceeded its work budget.', 504);
                 const routed = await this.route(query, current, {
                     signal, maxDurationMinutes: 1440, maxOperations: remainingOperations,
-                    timeoutMs: Math.max(1, timeoutMs - (performance.now() - started)), offset, ...options
+                    timeoutMs: Math.max(1, timeoutMs - (performance.now() - started)), offset,
+                    measure: execution.measure, onTelemetry: execution.onTelemetry,
+                    ...(execution.excludeDirect ? { excludeDirect: true } : {}), ...options
                 });
                 remainingOperations -= routed.metrics?.operations ?? 0;
                 return routed;
@@ -299,7 +302,7 @@ export class PlannerEngine {
                 execution.onProgress?.('live');
                 try {
                     result = await this.livePlanner.search({ request, network, version: repo.version, offset, liveSnapshotId,
-                        route, check, abortSignal: execution.abortSignal, onTelemetry: execution.onTelemetry });
+                        route, check, abortSignal: execution.abortSignal, onTelemetry: execution.onTelemetry, awaitIO: execution.awaitIO });
                 } catch (error) {
                     check();
                     if (error.code === 'SEARCH_CANCELLED') throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);
@@ -401,16 +404,93 @@ export class PlannerEngine {
 
     async route(request, network, options) {
         if (!this.findJourneys) this.findJourneys = (await import('./router.js')).findJourneys;
-        try { return await this.findJourneys(request, network, options); }
+        try {
+            if (options?.measure) options.onTelemetry?.({ metricsDelta: { routeCalls: 1 } });
+            const work = () => this.findJourneys(request, network, options);
+            const result = await (options?.measure ? options.measure('routingMs', work) : work());
+            if (options?.measure) options.onTelemetry?.({ metricsDelta: {
+                operations: result.metrics?.operations ?? 0, labels: result.metrics?.labels ?? 0,
+                candidates: result.journeys.length } });
+            return result;
+        }
         catch (error) {
-            if (error.code === 'SEARCH_TIMEOUT') throw new PlannerError('SEARCH_TIMEOUT', 'The search exceeded its work budget. Try a narrower time window.', 504);
+            if (options?.measure && error.metrics) options.onTelemetry?.({ metricsDelta: {
+                operations: error.metrics.operations ?? 0, labels: error.metrics.labels ?? 0 } });
+            if (error.code === 'SEARCH_TIMEOUT') throw Object.assign(new PlannerError('SEARCH_TIMEOUT', 'The search exceeded its work budget. Try a narrower time window.', 504),
+                error.reason ? { reason: error.reason } : {}, error.metrics ? { metrics: error.metrics } : {});
             if (error.code === 'SEARCH_CANCELLED') throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);
             throw error;
         }
     }
 
+    // V4 saved departures request one ordinary search only after the live board
+    // finds no direct option. Export just enough connection rules to refresh
+    // those routes without retaining or rebuilding the national train network.
+    async savedRoutePlan(payload, signal, execution) {
+        const via = payload.request?.via ?? [];
+        if (!Array.isArray(via) || via.length > 4 || via.some(code => typeof code !== 'string' || !/^[A-Z0-9]{3}$/.test(code))) {
+            throw new PlannerError('INVALID_STATION', 'Supply at most four required intermediate stations in order.');
+        }
+        const request = { ...normalizeRequest({ ...payload.request, realtime: 'off' }), via };
+        if (new Set([request.origin, ...via, request.destination]).size !== via.length + 2) {
+            throw new PlannerError('INVALID_STATION', 'Choose different stations along the saved journey.');
+        }
+        const repo = await this.dataset(payload.version);
+        for (const code of via) {
+            if (this.checkQuery(repo, { ...request, origin: code }).origin !== code) {
+                throw new PlannerError('INVALID_STATION', 'Use canonical intermediate station codes.');
+            }
+        }
+        const searched = await this.search({ request, version: repo.version }, signal, { ...execution, excludeDirect: true });
+        if (signal?.aborted) throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);
+        // Keep the complete passenger pattern for the existing per-train
+        // tracking verification. These dated services were resolved by search;
+        // exporting their calls does not run routing or build another network.
+        const wanted = new Map();
+        for (const leg of searched.journeys.flatMap(journey => journey.legs)) {
+            if (leg.kind !== 'vehicle' || !leg.originDate || !leg.serviceId) continue;
+            if (!wanted.has(leg.originDate)) wanted.set(leg.originDate, new Set());
+            wanted.get(leg.originDate).add(leg.serviceId);
+        }
+        const services = new Map(), catalogue = new Map((repo.allStations ?? repo.stations).map(station => [station.crs, station]));
+        for (const [date, ids] of wanted) {
+            if (signal?.aborted) throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);
+            const key = `${repo.version}:${date}`;
+            const resolved = this.dates.get(key) ?? remember(this.dates, key,
+                await repo.resolveServices(date, { signal }), this.config.dateCacheSize);
+            for (const service of resolved.services) if (ids.has(service.id)) services.set(service.id, service);
+        }
+        const result = { ...searched, journeys: searched.journeys.map(journey => ({ ...journey,
+            legs: journey.legs.map(leg => {
+                const service = services.get(leg.serviceId);
+                return service ? { ...leg, serviceCallingPoints: service.calls.filter(call => call.canBoard || call.canAlight).map(call => ({
+                    station: this.publicStation(catalogue.get(call.station) ?? call.station),
+                    arrival: Number.isFinite(call.arrival) ? new Date(call.arrival).toISOString() : null,
+                    departure: Number.isFinite(call.departure) ? new Date(call.departure).toISOString() : null
+                })) } : leg;
+            })
+        })) };
+        for (const journey of result.journeys) this.retainJourney(journey, repo.version);
+        const stations = new Set(result.journeys.flatMap(journey => journey.legs.flatMap(leg => [leg.from.crs, leg.to.crs])));
+        return { result, connections: {
+            stations: (repo.allStations ?? repo.stations).filter(station => stations.has(station.crs)),
+            rules: {
+                tsi: (repo.rules?.tsi ?? []).filter(rule => stations.has(rule.station)),
+                links: (repo.rules?.links ?? []).filter(rule => stations.has(rule.origin) && stations.has(rule.destination))
+            }
+        } };
+    }
+
     async routeBoardProfile(payload, signal, execution) {
         return (await import('./route-board-engine.js')).routeBoardProfile(this, payload, signal, execution);
+    }
+
+    async routeBoardProfileChunk(payload, signal, execution) {
+        return (await import('./route-board-engine.js')).routeBoardProfileChunk(this, payload, signal, execution);
+    }
+
+    async routeBoardPreview(payload, signal, execution) {
+        return (await import('./route-board-engine.js')).routeBoardPreview(this, payload, signal, execution);
     }
 
     async routeBoardRefresh(payload, signal, execution) {

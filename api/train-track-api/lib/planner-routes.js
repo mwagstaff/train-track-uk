@@ -3,15 +3,18 @@ import { PlannerService } from './planner/service.js';
 import { API_VERSION, CAPABILITIES, decodeCursor, PlannerError } from './planner/contract.js';
 import { PlannerSearchJobs } from './planner/search-jobs.js';
 import { PlannerRouteBoards } from './planner/route-boards.js';
+import { SavedRouteBoards } from './planner/saved-route-boards.js';
 import { isIP } from 'node:net';
 import { plannerSearchLog } from './planner-search-log.js';
 
 export function registerPlannerRoutes(app, { service = new PlannerService(), recordRequest = () => {}, requestMiddleware,
-    searchLog = plannerSearchLog, routeBoards = new PlannerRouteBoards(service, { searchLog }) } = {}) {
+    searchLog = plannerSearchLog, routeBoards = new PlannerRouteBoards(service, { searchLog }),
+    savedRouteBoards = new SavedRouteBoards(service, { searchLog }) } = {}) {
     const router = express.Router();
     const jobs = new PlannerSearchJobs(service, { searchLog });
     service.searchJobs = jobs;
     service.routeBoards = routeBoards;
+    service.savedRouteBoards = savedRouteBoards;
     const observeRequest = operation => (req, res, next) => {
         const started = performance.now();
         req.plannerStartedAt = new Date();
@@ -146,5 +149,18 @@ export function registerPlannerRoutes(app, { service = new PlannerService(), rec
     router.delete('/search-jobs/:id', ...beforeRequest('job-cancel'), jobHandler('cancel'));
     // No aliases or middleware on any existing API namespace.
     app.use('/api/v3/journey-planner', router);
+    // New apps opt into direct-first saved departures. Existing planner and
+    // departure endpoints keep their established response and routing behavior.
+    app.post('/api/v4/journey-planner/route-boards', ...beforeRequest('saved-route-boards-v4'),
+        requireJSON, express.json({ limit: '16kb' }), parseError, async (req, res) => {
+            try { res.json(await savedRouteBoards.get(req.body, caller(req))); }
+            catch (error) {
+                const known = error instanceof PlannerError;
+                const status = known ? error.status : 503;
+                if (status === 429) res.set('Retry-After', '5');
+                res.status(status).json({ error: { code: known ? error.code : 'DATASET_UNAVAILABLE',
+                    message: known ? error.message : 'Saved departures are temporarily unavailable.' } });
+            }
+        });
     return service;
 }

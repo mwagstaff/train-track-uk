@@ -181,6 +181,28 @@ test('time resolver retains origin clock convention across both clock changes an
   assert.equal(originOffsetMinutes('2026-10-25', 7200), 0);
 });
 
+test('compact runtime calls retain matching identities and origin-clock times without parsing fields', () => {
+  const calls = normaliseCallTimes([
+    { tiploc: 'DEPOT', sequence: 0, station: null, workingDeparture: '2350 ', canBoard: false, canAlight: false },
+    { tiploc: 'ORIGIN', sequence: 1, station: 'ORG', workingDeparture: '2359 ', publicDeparture: '2359', canBoard: true, canAlight: false, platform: '2' },
+    { tiploc: 'PASS', sequence: 2, station: 'MID', workingPass: '0100 ', canBoard: false, canAlight: false },
+    { tiploc: 'DEST', sequence: 3, station: 'DST', workingArrival: '0200 ', publicArrival: '0200', canBoard: false, canAlight: true }
+  ]);
+  for (const date of ['2026-03-28', '2026-10-24']) {
+    const verbose = resolveCallTimes(calls, date);
+    const compact = resolveCallTimes(calls, date, { compact: true });
+    assert.deepEqual(compact.map(call => [call.station, call.tiploc, call.sequence]), [['ORG', 'ORIGIN', 1], ['DST', 'DEST', 3]]);
+    for (const call of compact) {
+      const original = verbose.find(value => value.sequence === call.sequence);
+      for (const field of Object.keys(call)) assert.equal(call[field], original[field], field);
+      assert.deepEqual(Object.keys(call).sort(), ['arrival', 'canAlight', 'canBoard', 'departure', 'platform', 'sequence', 'station', 'tiploc'].sort());
+    }
+    assert.equal(compact[0].platform, '2');
+    assert.equal(compact[0].arrival, null);
+    assert.equal(compact[1].departure, null);
+  }
+});
+
 test('0000 requires midnight working context; small backwards working times fail', () => {
   const calls = normaliseCallTimes([
     { workingDeparture: '2359H', publicDeparture: '2359', canBoard: true },

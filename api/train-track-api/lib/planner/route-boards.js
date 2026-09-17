@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { API_VERSION, normalizeRequest, PlannerError, POLICY_VERSION, LIVE_POLICY_VERSION } from './contract.js';
 import { RouteBoardCache } from './route-board-cache.js';
 import { noOpPlannerSearchLog } from '../planner-search-log.js';
+import { mergeRouteBoardProfiles, PROFILE_BUILD_WARNING } from './route-board-engine.js';
 
 const HOUR = 3600000;
 const LIVE_MS = 30000;
@@ -43,6 +44,12 @@ export function routeBoardKey(request, version, now) {
     const profileRequest = { ...request, time: new Date(bucket - 2 * HOUR).toISOString(), windowMinutes: 480, limit: 512 };
     const identity = { policy: PROFILE_POLICY, routing: POLICY_VERSION, live: LIVE_POLICY_VERSION, version, request: profileRequest };
     return { key: createHash('sha256').update(JSON.stringify(identity)).digest('hex'), request: profileRequest, bucket };
+}
+
+export function routeBoardFragmentKey(request, version, from, to) {
+    const identity = { policy: `${PROFILE_POLICY}-hourly-v1`, routing: POLICY_VERSION, version,
+        request: { ...request, time: from, windowMinutes: (Date.parse(to) - Date.parse(from)) / 60000, limit: 512 } };
+    return createHash('sha256').update(JSON.stringify(identity)).digest('hex');
 }
 
 // Request-driven refreshes: a POST reads shared state and renews interest; it
@@ -163,6 +170,7 @@ export class PlannerRouteBoards {
             : entry.error && !entry.pending ? 'unavailable' : 'queued',
         pollAfterMs: entry.waiting ? 5000 : entry.pending ? 1000 : entry.error ? 5000 : 20000,
         ...(progress ? { progress } : {}),
+        ...(entry.profile?.profile?.coverage ? { coverage: entry.profile.profile.coverage } : {}),
         ...(result ? { result } : {}),
         ...(entry.computedAt ? { computedAt: new Date(entry.computedAt).toISOString(), expiresAt: new Date(entry.expiresAt).toISOString() } : {}),
         ...(entry.error ? { error: entry.error } : {}) };
@@ -183,6 +191,8 @@ export class PlannerRouteBoards {
             : this.observe(entry, kind, mode, owner.logStartedAt);
         entry.waiting = { entry, kind, mode, client: owner.client, network: owner.network, observation,
             queuedAt: owner.queuedAt ?? this.now(), order: owner.order ?? ++this.sequence,
+            stageQueuedAt: this.now(),
+            ...(entry.build ? { completedWindows: entry.build.completed, totalWindows: entry.build.total } : {}),
             phase: 'queued', controller: new AbortController() };
         return true;
     }
@@ -245,6 +255,7 @@ export class PlannerRouteBoards {
                 work.kind = 'load';
                 other.profile = null;
                 other.profileBytes = 0;
+                other.build = null;
                 if (other.refreshProfile) other.replannedFingerprint = null;
                 other.refreshProfile = null;
                 other.refreshProfileBytes = 0;
@@ -253,11 +264,92 @@ export class PlannerRouteBoards {
         if (total > this.maxProfileBytes) throw new PlannerError('SEARCH_BUSY', 'Saved journey planning is busy. Please try again shortly.', 429);
     }
 
+    async profileChunk(entry, work, call) {
+        if (!entry.build) {
+            const begin = Date.parse(entry.request.time), end = begin + entry.request.windowMinutes * 60000;
+            const windows = [];
+            for (let from = begin; from < end; from += HOUR) windows.push({ from: new Date(from).toISOString(),
+                to: new Date(Math.min(end, from + HOUR)).toISOString() });
+            const currentHour = Math.floor(this.now() / HOUR) * HOUR;
+            // Current departures first, then upcoming hours, then the lookback
+            // that can recover trains running late. No interval is omitted.
+            windows.sort((a, b) => {
+                const rank = value => Date.parse(value.from) >= currentHour
+                    ? Date.parse(value.from) - currentHour : end - Date.parse(value.from);
+                return rank(a) - rank(b);
+            });
+            entry.build = { windows, completed: 0, total: windows.length };
+            entry.profile = null;
+            entry.profileBytes = 0;
+            entry.refreshProfile = null;
+            entry.refreshProfileBytes = 0;
+        }
+        const build = entry.build;
+        const chunk = build.windows[0];
+        const key = routeBoardFragmentKey(entry.request, entry.version, chunk.from, chunk.to);
+        const stored = await this.cache.get(key);
+        if (work.controller.signal.aborted) return;
+        let fragment, provisional;
+        if (stored?.profile?.version === entry.version && stored.expiresAt > this.now()
+            && stored.profile.searchWindow?.from === chunk.from && stored.profile.searchWindow?.to === chunk.to) {
+            fragment = stored.profile;
+            work.observation.update({ cacheStatus: 'hit' });
+            this.metrics.cacheHits++;
+        } else {
+            work.observation.update({ cacheStatus: 'miss' });
+            this.metrics.profiles++;
+            const value = await call('routeBoardProfileChunk', { request: entry.request, version: entry.version, chunk,
+                time: new Date(this.now()).toISOString(), realtime: work.mode,
+                ...(build.chunkMinutes ? { chunkMinutes: build.chunkMinutes } : {}) });
+            if (work.controller.signal.aborted) return;
+            fragment = value.profile;
+            provisional = value.result;
+            this.profileSize(fragment);
+            // A future hour remains immutable while it moves into the next
+            // two-hour bucket. Versioned keys isolate timetable activations.
+            await this.cache.set(key, { profile: fragment, computedAt: this.now(),
+                expiresAt: Math.max(this.now() + 2 * HOUR, Date.parse(chunk.to) + 2 * HOUR) });
+        }
+        if (work.controller.signal.aborted) return;
+        const chunkMinutes = fragment.profile?.routingChunkMinutes;
+        if (Number.isFinite(chunkMinutes) && chunkMinutes >= 1 / 60 && chunkMinutes <= 60) {
+            build.chunkMinutes = Math.min(build.chunkMinutes ?? 60, chunkMinutes);
+        }
+        const profile = mergeRouteBoardProfiles(entry.profile, fragment, entry.request, {
+            completedWindows: build.completed + 1, totalWindows: build.total, now: this.now() });
+        const bytes = this.profileSize(profile);
+        this.reserveProfile(entry, bytes, 'profileBytes');
+        entry.profile = profile;
+        entry.profileBytes = bytes;
+        entry.computedAt = this.now();
+        entry.expiresAt = this.now() + 2 * HOUR;
+        build.windows.shift();
+        build.completed++;
+        work.completedWindows = build.completed;
+        work.totalWindows = build.total;
+        if (!entry.results.has(work.mode)) {
+            if (build.completed > 1) provisional = undefined; // A mode change needs all completed hours, not just the newest one.
+            provisional ??= await call('routeBoardPreview', { profile, time: new Date(this.now()).toISOString(), realtime: work.mode });
+            if (work.controller.signal.aborted) return;
+            entry.results.set(work.mode, { at: this.now(), result: { ...provisional,
+                warnings: [...new Set([...(provisional.warnings ?? []), ...(!profile.profile.coverage.complete ? [PROFILE_BUILD_WARNING] : [])])],
+                search: { ...provisional.search,
+                provisional: true, window: profile.searchWindow, searchTruncated: profile.searchTruncated,
+                profileCoverage: profile.profile.coverage } } });
+            work.observation.update({ firstResultAt: new Date(this.now()) });
+        }
+        if (!build.windows.length) {
+            entry.build = null;
+            await this.cache.set(entry.key, { profile, computedAt: entry.computedAt, expiresAt: entry.expiresAt });
+        }
+    }
+
     pump() {
         if (this.active || this.closed) return;
         const work = this.queue.shift();
         if (!work) return;
         this.active = work;
+        work.observation.update({ metricsDelta: { admissionQueueMs: Math.max(0, this.now() - work.stageQueuedAt) } });
         const { entry, kind, mode, controller } = work;
         let next = null;
         const config = this.service.config ?? {};
@@ -279,7 +371,8 @@ export class PlannerRouteBoards {
             }
         };
         const call = (method, payload) => this.service.call(method, payload, { signal: controller.signal, execution,
-            priority: 'background', queueTimeoutMs: config.jobQueueTimeoutMs ?? 480000, onStart, onProgress });
+            priority: 'background', queueTimeoutMs: config.jobQueueTimeoutMs ?? 480000, onStart, onProgress,
+            onTelemetry: telemetry => work.observation.update(telemetry) });
         Promise.resolve().then(async () => {
             if (kind === 'load') {
                 onStart();
@@ -291,11 +384,26 @@ export class PlannerRouteBoards {
                     Object.assign(entry, stored);
                     entry.profileBytes = bytes;
                     this.metrics.cacheHits++;
+                    if (this.service.supportsProfileChunks && !entry.results.has(mode)) {
+                        const result = await call('routeBoardPreview', { profile: entry.profile,
+                            time: new Date(this.now()).toISOString(), realtime: mode });
+                        if (controller.signal.aborted) return;
+                        entry.results.set(mode, { result, at: this.now() });
+                        work.observation.update({ firstResultAt: new Date(this.now()) });
+                    }
                     next = 'refresh';
                 } else { work.observation.update({ cacheStatus: 'miss' }); next = 'profile'; }
                 return;
             }
             if (kind === 'profile') {
+                if (this.service.supportsProfileChunks) {
+                    await this.profileChunk(entry, work, call);
+                    if (controller.signal.aborted) return;
+                    const previous = entry.results.get(mode);
+                    next = !entry.build || !previous || previous.result.search?.provisional
+                        || this.now() - previous.at >= LIVE_MS ? 'refresh' : 'profile';
+                    return;
+                }
                 work.observation.update({ cacheStatus: 'miss' });
                 this.metrics.profiles++;
                 const value = await call('routeBoardProfile', { request: entry.request, version: entry.version });
@@ -331,8 +439,10 @@ export class PlannerRouteBoards {
             }
             if (replan) entry.replannedFingerprint = disruptionFingerprint ?? entry.pendingFingerprint;
             entry.results.set(mode, { result, at: this.now() });
+            work.observation.update({ firstResultAt: new Date(this.now()) });
             this.finishObservation(work, { status: 'success', outcome: result.journeys?.length ? 'completed' : 'empty',
                 resultCount: result.journeys?.length ?? 0 });
+            if (entry.build) { next = 'profile'; return; }
             // Replanned candidates may carry live annotations: keep them only for
             // this short-lived result, never persist them as a scheduled profile.
             if (!replan && needsReplan && disruptionFingerprint !== entry.replannedFingerprint
@@ -357,7 +467,8 @@ export class PlannerRouteBoards {
             if (!controller.signal.aborted && next && this.now() - entry.lastRequested < LEASE_MS) {
                 // A successful first result releases its place before a replan;
                 // automatic retries also go behind older outstanding routes.
-                const owner = next === 'replan' || entry.error ? { client: work.client, network: work.network,
+                const owner = next === 'replan' || entry.error || (next === 'profile' && entry.build) ? { client: work.client, network: work.network,
+                    ...(next === 'profile' && entry.build && !work.observationFinished ? { observation: work.observation } : {}),
                     ...(entry.error?.code === 'SEARCH_BUSY' ? { observation: work.observation } : {}) } : work;
                 this.enqueue(entry, next, entry.requestedMode ?? mode, owner);
             } else if (next) this.finishObservation(work, { status: 'other', outcome: 'expired' });

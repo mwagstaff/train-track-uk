@@ -18,6 +18,24 @@ const request = values => ({ origin: 'AAA', destination: 'DDD', time: iso(0), ti
 const snapshot = services => ({ id: 'live-test', observedAt: zero, expiresAt: time(1), services });
 const ids = result => result.journeys.map(journey => journey.legs.filter(leg => leg.kind === 'vehicle').map(leg => leg.scheduledServiceId || leg.serviceId));
 
+test('unchanged routing annotation preserves live platforms, calling points and warnings without changing the scheduled journey', () => {
+    const original = network([train('train', [['AAA', null, 0], ['BBB', 10, 11], ['DDD', 20, null]])]);
+    original.services[0].calls.forEach(call => { call.platform = '1'; });
+    const scheduled = findJourneys(request(), original).journeys[0];
+    const before = structuredClone(scheduled);
+    const live = applyLiveSnapshot(original, snapshot([{ serviceId: 'train', warnings: ['Service warning'], calls: [
+        { index: 0, departure: time(0), platform: '2', warnings: ['Boarding warning'] },
+        { index: 1, arrival: time(10), departure: time(11), platform: '3' },
+        { index: 2, arrival: time(20) }
+    ] }]));
+    assert.equal(live.routingChangedServiceIds.size, 0);
+    const annotated = annotateLiveJourney(scheduled, live);
+    assert.deepEqual(annotated.legs, findJourneys(request(), live).journeys[0].legs);
+    assert.deepEqual(annotated.legs[0].callingPoints.map(call => call.platform), ['2', '3', '1']);
+    assert.deepEqual(annotated.legs[0].warnings, ['Service warning', 'Boarding warning']);
+    assert.deepEqual(scheduled, before);
+});
+
 test('departure platform and train length belong to the selected boarding stop in both live modes', () => {
     const original = network([train('train', [['AAA', null, 0], ['BBB', 10, 11], ['DDD', 20, null]])]);
     const update = snapshot([{ serviceId: 'train', calls: [

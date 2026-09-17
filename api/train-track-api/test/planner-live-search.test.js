@@ -85,6 +85,32 @@ function fixture(t, services, updates = {}) {
     search: (changes, signal, execution) => engine.search({ request: request(changes) }, signal, execution) };
 }
 
+test('on-time live observations annotate without repeating scheduled routing in either mode', async t => {
+  for (const realtime of ['apply', 'ignore']) {
+    const f = fixture(t, [direct('A', '12:10', '12:40')]);
+    let routes = 0;
+    f.engine.findJourneys = (...args) => { routes++; return findJourneys(...args); };
+    const result = await f.search({ realtime });
+    assert.equal(routes, 1, realtime);
+    assert.equal(result.journeys[0].legs[0].live.status, 'onTime');
+    assert.equal(result.journeys[0].departure, iso('12:10'));
+  }
+});
+
+test('scheduled override keeps delay warnings without rerouting; applying delays still reroutes', async t => {
+  for (const realtime of ['ignore', 'apply']) {
+    const f = fixture(t, [direct('A', '12:10', '12:40')], {
+      A: { ORG: { etd: '12:20' }, DST: { eta: '12:50' } }
+    });
+    let routes = 0;
+    f.engine.findJourneys = (...args) => { routes++; return findJourneys(...args); };
+    const result = await f.search({ realtime });
+    assert.equal(routes, realtime === 'ignore' ? 1 : 2);
+    assert.equal(result.journeys[0].legs[0].live.status, 'delayed');
+    assert.equal(result.journeys[0].departure, iso(realtime === 'ignore' ? '12:10' : '12:20'));
+  }
+});
+
 
 function failPublicDetails(f, failures) {
   const fetch = f.provider.fetchDetails;
@@ -391,7 +417,8 @@ test('retained pages omit departed trains without shifting the next original off
 });
 
 test('observations that expire during computation cannot produce an immediately expired more cursor', async t => {
-  const f = fixture(t, [direct('A00025', '12:05', '12:25'), direct('A00026', '12:10', '12:30')]);
+  const f = fixture(t, [direct('A00025', '12:05', '12:25'), direct('A00026', '12:10', '12:30')],
+    { A00025: { ORG: { etd: '12:06' }, DST: { eta: '12:26' } } });
   f.engine.findJourneys = (query, network, options) => {
     const result = findJourneys(query, network, options);
     if (network.live) f.setNow(f.now() + 120_000);
@@ -455,7 +482,8 @@ test('identical timetable journeys retain separate off, apply, ignore and unavai
 
 test('live reroutes share one operation budget even when each individual route pass fits', async t => {
   const services = [direct('A00031', '12:05', '12:25'), direct('A00032', '12:10', '12:30')];
-  const measured = fixture(t, services);
+  const updates = { A00031: { ORG: { etd: '12:06' }, DST: { eta: '12:26' } } };
+  const measured = fixture(t, services, updates);
   const operations = [];
   measured.engine.findJourneys = (query, network, options) => {
     const result = findJourneys(query, network, options);
@@ -466,7 +494,7 @@ test('live reroutes share one operation budget even when each individual route p
   assert.ok(operations.length >= 2);
   const budget = Math.max(...operations) + 1;
   assert.ok(operations.reduce((sum, count) => sum + count, 0) > budget);
-  const bounded = fixture(t, services);
+  const bounded = fixture(t, services, updates);
   bounded.engine.config = { ...config, maxOperations: budget };
   await assert.rejects(bounded.search(), { code: 'SEARCH_TIMEOUT' });
 });
@@ -560,7 +588,7 @@ test('staff queries are capped across rounds and unchanged recovered observation
   assert.equal(f.calls.staff[0].targets.length, 8);
   assert.equal(new Set(f.calls.staff[0].targets.map(target => `${target.station}:${target.departure}`)).size, 8);
   assert.equal(f.calls.details.length, 2);
-  assert.equal(routes, 2); // One scheduled route, one changed overlay; next pass has the same hash.
+  assert.equal(routes, 1); // On-time observations need annotations only, including staff recovery.
   assert.equal(response.live.updatedAt, new Date(observation).toISOString());
   assert.equal(Date.parse(response.live.expiresAt), observation + 90000);
   const retained = [...f.engine.livePlanner.snapshots.values()][0];

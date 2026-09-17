@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import express from 'express';
 import { registerPlannerSearchAdminRoutes, renderPlannerSearchPage } from '../lib/planner-search-admin.js';
+import { normalizePlannerSearchLogQuery } from '../lib/planner-search-log.js';
 
 const shell = ({ title, body }) => `<title>${title}</title>${body}`;
 const now = new Date('2026-09-17T12:00:00Z');
@@ -104,7 +105,7 @@ test('repository failure returns an accessible retry page without leaking error 
     assert.equal(res.statusCode, 503);
     assert.match(res.html, /role="alert"/);
     assert.match(res.html, /Search logs are unavailable/);
-    assert.match(res.html, /href="\.\/journey-planner">Try again/);
+    assert.match(res.html, /href="\.\/journey-planner\?range=24h[^\"]*">Try again/);
     assert.equal(res.html.includes('private Mongo address'), false);
     assert.match(logged[1], /private Mongo address/);
 });
@@ -163,6 +164,90 @@ test('retry links and shell navigation receive the current request depth', async
         renderPlannerSearchPage(data(), { requestPath, renderShell: options => { shellRequestPath = options.requestPath; return shell(options); } });
         assert.equal(shellRequestPath, requestPath);
     }
+});
+
+test('custom period fields explicitly use UTC and canonical bookmarks survive every sort, refresh and page link', () => {
+    const chosen = normalizePlannerSearchLogQuery({ q: 'custom', from: '2026-10-25T01:15:00+01:00', to: '2026-10-25T01:45:00Z', source: 'saved-route' });
+    const html = render(data({ ...chosen, page: 2, window: { from: chosen.from, to: chosen.to } }));
+    assert.match(html, /Table times Europe\/London/);
+    assert.match(html, /<option value="custom" selected>/);
+    assert.match(html, /<details class="planner-custom" open>/);
+    assert.match(html, /From \(UTC\)/);
+    assert.match(html, /name="timezone" value="UTC"/);
+    assert.match(html, /name="from"[^>]*value="2026-10-25T00:15:00\.000"/);
+    assert.match(html, /name="to"[^>]*value="2026-10-25T01:45:00\.000"/);
+    const links = [...html.matchAll(/href="([^"]+)"/g)].map(match => new URL(match[1].replaceAll('&amp;', '&'), 'https://example.test/train-track/admin/journey-planner'));
+    assert.equal(links.length, 11);
+    for (const link of links) {
+        assert.equal(link.pathname, '/train-track/admin/journey-planner');
+        assert.equal(link.searchParams.get('q'), 'custom');
+        assert.equal(link.searchParams.get('from'), '2026-10-25T00:15:00.000Z');
+        assert.equal(link.searchParams.get('to'), '2026-10-25T01:45:00.000Z');
+        assert.equal(link.searchParams.get('source'), 'saved-route');
+        assert.equal(link.searchParams.get('per_page'), '50');
+    }
+});
+
+test('relative URL ranges and non-preset durations remain selected and preserved through links', () => {
+    for (const q of ['-5m', '-2h']) {
+        const html = render(data({ ...normalizePlannerSearchLogQuery({ q, source: 'search-job' }) }));
+        assert.match(html, new RegExp(`<option value="${q}" selected>`));
+        const links = [...html.matchAll(/href="([^"]+)"/g)];
+        for (const [, href] of links) {
+            const query = new URL(href.replaceAll('&amp;', '&'), 'https://example.test/admin/journey-planner').searchParams;
+            assert.equal(query.get('q'), q);
+            assert.equal(query.get('source'), 'search-job');
+        }
+    }
+});
+
+test('invalid ranges return a correctable 400 form while unavailable custom-range requests preserve their retry URL', async () => {
+    let handler;
+    registerPlannerSearchAdminRoutes({ get(_path, callback) { handler = callback; } }, {
+        listSearches: async query => { normalizePlannerSearchLogQuery(query); throw new Error('offline'); },
+        renderShell: shell, logger: { error() {} }
+    });
+    const query = { q: 'custom', timezone: 'UTC', from: '2026-09-17T11:00', to: '2026-09-17T10:00', source: 'saved-route', sort: 'durationMs', direction: 'asc', per_page: '25' };
+    const invalid = response();
+    await handler({ path: '/admin/journey-planner/', query }, invalid);
+    assert.equal(invalid.statusCode, 400);
+    assert.match(invalid.html, /The end must be later than the start/);
+    assert.match(invalid.html, /name="from"[^>]*value="2026-09-17T11:00:00\.000"/);
+    assert.match(invalid.html, /name="to"[^>]*value="2026-09-17T10:00:00\.000"/);
+    assert.match(invalid.html, /option value="saved-route" selected/);
+
+    query.to = '2026-09-17T12:00';
+    const offline = response();
+    await handler({ path: '/admin/journey-planner/', query }, offline);
+    assert.equal(offline.statusCode, 503);
+    const href = offline.html.match(/href="([^"]+)">Try again/)[1].replaceAll('&amp;', '&');
+    const target = new URL(href, 'https://example.test/train-track/admin/journey-planner/');
+    assert.equal(target.pathname, '/train-track/admin/journey-planner');
+    for (const [key, value] of Object.entries(query)) assert.equal(target.searchParams.get(key), value);
+});
+
+test('optional timing diagnostics separate queue, routing, live I/O, CPU and sampled memory without changing legacy rows', () => {
+    assert.equal(render(data()).includes('<summary>Timing details</summary>'), false);
+    const html = render(data({ rows: [{ origin: 'KTH', destination: 'VIC', status: 'success', durationMs: 2600, firstResultMs: 1900,
+        metrics: { admissionQueueMs: 800, queueWaitMs: 200, resumeQueueMs: 0, preparationMs: 200, routingMs: 950, liveLookupMs: 450,
+            cpuMs: 725, routeCalls: 2, operations: 123456, labels: 200, candidates: 12 },
+        resourcePeaks: { heapUsedBytes: 256 * 1048576, rssBytes: 1024 * 1048576 } }] }));
+    assert.match(html, /<summary>Timing details<\/summary>/);
+    assert.match(html, /First results<\/dt><dd>1\.9 s/);
+    assert.match(html, /Admission queue<\/dt><dd>800 ms/);
+    assert.match(html, /Worker queue<\/dt><dd>200 ms/);
+    assert.match(html, /Queue wait between stages<\/dt><dd>0 ms/);
+    assert.match(html, /Route calculation<\/dt><dd>950 ms/);
+    assert.match(html, /Live lookups<\/dt><dd>450 ms/);
+    assert.match(html, /CPU time \(excludes I\/O\)<\/dt><dd>725 ms/);
+    assert.match(html, /Routing operations<\/dt><dd>123,456/);
+    assert.match(html, /Sampled heap peak<\/dt><dd>256\.0 MiB/);
+    assert.match(html, /Sampled process memory peak \(RSS\)<\/dt><dd>1024\.0 MiB/);
+    assert.match(html, /Memory peaks are sampled and may miss brief spikes/);
+    const malicious = render(data({ rows: [{ firstResultMs: '<img src=x>', metrics: { admissionQueueMs: -5, queueWaitMs: '<img src=x>', routeCalls: Infinity, operations: -5 }, resourcePeaks: { rssBytes: '<script>' } }] }));
+    assert.equal(malicious.includes('<summary>Timing details</summary>'), false);
+    assert.equal(malicious.includes('<img'), false);
+    assert.equal(malicious.includes('<script>'), false);
 });
 
 function render(input) { return renderPlannerSearchPage(input, { renderShell: shell, now }); }

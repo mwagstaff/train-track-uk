@@ -12,13 +12,15 @@ struct JourneyPlannerTests {
 
     @Test func savedRouteBoardsUseAdditiveEndpointAndOnly404EnablesFallback() async throws {
         let session = stubSession()
+        defer { session.invalidateAndCancel(); PlannerStubProtocol.handler = nil }
         let client = JourneyPlannerClient(session: session, selectedBaseURL: { "https://example.com/api/v2" }, clientID: "installation")
         let station = Station(crs: "KTH", name: "Kent House", longitude: "0", latitude: "51")
         let destination = Station(crs: "VIC", name: "Victoria", longitude: "0", latitude: "51")
         let leg = Journey(fromStation: station, toStation: destination)
         let query = SavedRouteQuery(group: JourneyGroup(id: leg.groupId, legs: [leg]))
+        var paths: [String] = []
         PlannerStubProtocol.handler = { request in
-            #expect(request.url?.path == "/api/v3/journey-planner/route-boards")
+            paths.append(request.url!.path)
             #expect(request.httpMethod == "POST")
             #expect(request.value(forHTTPHeaderField: "X-Planner-Client") == "installation")
             let body = try #require(JSONSerialization.jsonObject(with: PlannerStubProtocol.body(request)) as? [String: Any])
@@ -27,12 +29,55 @@ struct JourneyPlannerTests {
             return (404, Data("Not found".utf8))
         }
         await #expect(throws: SavedRouteBoardError.self) { try await client.routeBoards([query]) }
+        #expect(paths == ["/api/v4/journey-planner/route-boards", "/api/v3/journey-planner/route-boards"])
         PlannerStubProtocol.handler = { _ in (503, Data(#"{"error":{"code":"SEARCH_BUSY","message":"Please wait"}}"#.utf8)) }
         do {
             _ = try await client.routeBoards([query])
             Issue.record("Expected the structured server failure")
         } catch let error as PlannerError { #expect(error.code == "SEARCH_BUSY") }
-        session.invalidateAndCancel()
+    }
+
+    @Test func savedV4DirectBoardsPreserveProxyPathsAndPlannerSearchRemainsV3() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); PlannerStubProtocol.handler = nil }
+        let client = JourneyPlannerClient(session: session, selectedBaseURL: { "https://example.com/train-track/api/v2" })
+        PlannerStubProtocol.handler = { request in
+            #expect(request.url?.path == "/train-track/api/v4/journey-planner/route-boards")
+            return (200, Data(#"{"apiVersion":4,"boards":[{"id":"direct","status":"ready","source":"direct","direct":{"departures":[],"data_status":"live","last_successful_update":"2026-09-17T12:00:00Z"}}]}"#.utf8))
+        }
+        let response = try await client.routeBoards([])
+        #expect(response.apiVersion == 4)
+        #expect(response.boards.first?.direct?.dataStatus == .live)
+        #expect(response.boards.first?.source == "direct")
+        #expect(try JourneyPlannerClient.plannerBaseURL(from: "https://example.com/train-track/api/v2").path == "/train-track/api/v3/journey-planner")
+    }
+
+    @Test func savedV4FallbackIsLimitedTo404AndRetriesAfterItsShortCompatibilityCache() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); PlannerStubProtocol.handler = nil }
+        var tick: TimeInterval = 0
+        let client = JourneyPlannerClient(session: session, selectedBaseURL: { "https://example.com/api/v2" },
+            timing: .init(now: { tick }, sleep: { _ in }))
+        var paths: [String] = []
+        PlannerStubProtocol.handler = { request in
+            paths.append(request.url!.path)
+            if request.url?.path.contains("/v4/") == true { return (404, Data()) }
+            return (200, Data(#"{"apiVersion":3,"boards":[]}"#.utf8))
+        }
+        #expect(try await client.routeBoards([]).apiVersion == 3)
+        #expect(try await client.routeBoards([]).apiVersion == 3)
+        #expect(paths.filter { $0.contains("/v4/") }.count == 1)
+        tick = 301
+        paths = []
+        PlannerStubProtocol.handler = { request in
+            paths.append(request.url!.path)
+            return (503, Data(#"{"error":{"code":"SEARCH_BUSY","message":"Please wait"}}"#.utf8))
+        }
+        do {
+            _ = try await client.routeBoards([])
+            Issue.record("Expected v4 failure without invoking v3")
+        } catch let error as PlannerError { #expect(error.code == "SEARCH_BUSY") }
+        #expect(paths == ["/api/v4/journey-planner/route-boards"])
     }
 
     @Test func plannerUsesV3WithoutChangingExistingHostPaths() throws {

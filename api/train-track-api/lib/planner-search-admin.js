@@ -10,7 +10,8 @@ const SOURCES = [
     ['saved-refresh', 'Live refresh'],
     ['saved-replan', 'Route replan']
 ];
-const RANGES = [['1h', 'Last hour'], ['24h', 'Last 24 hours'], ['7d', 'Last 7 days']];
+const RANGES = [['-5m', 'Last 5 minutes'], ['-15m', 'Last 15 minutes'], ['-1h', 'Last hour'],
+    ['-24h', 'Last 24 hours'], ['-7d', 'Last 7 days'], ['custom', 'Custom dates']];
 const COLUMNS = [
     ['origin', 'From'], ['destination', 'To'], ['startedAt', 'Search started'],
     ['finishedAt', 'Results returned'], ['status', 'Status'], ['cacheStatus', 'Cache'],
@@ -32,15 +33,18 @@ export function registerPlannerSearchAdminRoutes(app, { listSearches, renderShel
             const data = await listSearches(req.query || {});
             res.type('html').send(renderPlannerSearchPage(data, { renderShell, requestPath }));
         } catch (error) {
-            logger.error('[admin] Failed to load journey planner searches:', error?.message || error);
-            res.status(503).type('html').send(renderShell({
+            const invalid = error?.code === 'INVALID_SEARCH_RANGE';
+            if (!invalid) logger.error('[admin] Failed to load journey planner searches:', error?.message || error);
+            const url = createAdminUrl(requestPath);
+            const fields = errorFilters(req.query);
+            res.status(invalid ? 400 : 503).type('html').send(renderShell({
                 requestPath,
                 title: 'Journey planner searches · Train Track Admin',
                 extraStyle: styles,
                 body: `<main class="wrap planner-admin"><h1>Journey planner searches</h1>
-                    <section class="planner-error" role="alert"><h2>Search logs are unavailable</h2>
-                    <p>The search history could not be loaded. Try refreshing this page.</p>
-                    <a class="planner-button" href="${escapeHtml(createAdminUrl(requestPath)(ROUTE))}">Try again</a></section></main>`
+                    <section class="planner-error" role="alert"><h2>${invalid ? 'Check the selected period' : 'Search logs are unavailable'}</h2>
+                    <p>${invalid ? escapeHtml(error.message) : 'The search history could not be loaded. Try refreshing this page.'}</p>
+                    ${invalid ? filters(fields, url) : `<a class="planner-button" href="${href(url, fields)}">Try again</a>`}</section></main>`
             }));
         }
     });
@@ -48,8 +52,9 @@ export function registerPlannerSearchAdminRoutes(app, { listSearches, renderShel
 
 export function renderPlannerSearchPage(data, { renderShell, now = new Date(), requestPath = ROUTE }) {
     const url = createAdminUrl(requestPath);
-    const { rows, total, page, pageSize, totalPages, sort, direction, range, source, stats } = data;
-    const filteredLabel = RANGES.find(([value]) => value === range)?.[1] || 'Last 24 hours';
+    const { rows, total, page, pageSize, totalPages, sort, direction, range, stats } = data;
+    const selectedPeriod = data.q ?? `-${range}`;
+    const filteredLabel = RANGES.find(([value]) => value === selectedPeriod)?.[1] || relativeLabel(selectedPeriod);
     const successRate = percentage(stats.success, stats.completed);
     const failureRate = percentage(stats.fail, stats.completed);
     const cacheRate = percentage(stats.cacheHits, stats.cacheHits + stats.cacheMisses);
@@ -78,20 +83,13 @@ export function renderPlannerSearchPage(data, { renderShell, now = new Date(), r
         body: `<main class="wrap planner-admin">
             <header class="planner-heading"><div><p class="planner-eyebrow">Train Track Admin</p>
                 <h1>Journey planner searches</h1>
-                <p class="meta">Seven days of search history · All times Europe/London</p></div>
+                <p class="meta">Seven days of search history · Table times Europe/London</p></div>
                 <a class="planner-button secondary" href="${href(url, data)}">Refresh</a>
             </header>
-            <form class="planner-filters" action="${escapeHtml(url(ROUTE))}" method="GET">
-                <div class="planner-filter"><label for="planner-period">Period</label><select id="planner-period" name="range">${options(RANGES, range)}</select></div>
-                <div class="planner-filter"><label for="planner-source">Source</label><select id="planner-source" name="source">${options(SOURCES, source)}</select></div>
-                <div class="planner-filter"><label for="planner-page-size">Rows per page</label><select id="planner-page-size" name="per_page">${options([[25, '25'], [50, '50'], [100, '100']], pageSize)}</select></div>
-                <input type="hidden" name="sort" value="${escapeHtml(sort)}">
-                <input type="hidden" name="direction" value="${escapeHtml(direction)}">
-                <button type="submit">Apply filters</button>
-                <span class="planner-updated">Figures checked ${formatTime(stats.asOf || now, false)}</span>
-            </form>
+            ${filters(data, url, now)}
             <section aria-labelledby="planner-summary-title">
                 <h2 id="planner-summary-title" class="planner-section-title">${escapeHtml(filteredLabel)}<span>All matching searches, across every page</span></h2>
+                ${data.window ? `<p class="planner-window">${windowLabel(data.window)} · Europe/London · By search start time</p>` : ''}
                 <dl class="planner-stats">${cards.map(([label, value, detail]) => `<div><dt>${label}</dt><dd>${value}</dd><p>${detail}</p></div>`).join('')}</dl>
                 <details class="planner-definitions"><summary>How these figures are calculated</summary>
                     <p>Durations run from search submission to completion on the server, including queue time. They do not include delivery to the device. The 99th percentile is the observed nearest-rank value; small samples may equal the longest search. Success, failure and duration figures include successful and failed searches only. A search returning no journeys still counts as successful.</p>
@@ -130,9 +128,31 @@ function renderRow(row) {
         <td class="planner-date">${row.finishedAt ? formatTime(row.finishedAt) : '<span class="planner-muted">—</span>'}</td>
         <td><span class="planner-status status-${status}">${statusLabel}</span>${detail && !['success', 'fail'].includes(detail) ? `<small class="planner-outcome">${escapeHtml(humanize(detail))}</small>` : ''}${resultDetail ? `<small>${resultDetail}</small>` : ''}</td>
         <td><span class="planner-cache cache-${cache}">${cache === 'unknown' ? 'Unknown' : cache === 'hit' ? 'Hit' : 'Miss'}</span>${row.coalesced ? '<small>Shared work</small>' : ''}</td>
-        <td class="planner-duration">${duration(row.durationMs)}</td>
+        <td class="planner-duration">${duration(row.durationMs)}${diagnostics(row)}</td>
         <td>${escapeHtml(sourceLabel)}</td>
     </tr>`;
+}
+
+function diagnostics(row) {
+    const items = [];
+    const valid = value => Number.isFinite(value) && value >= 0;
+    if (valid(row.firstResultMs)) items.push(['First results', duration(row.firstResultMs)]);
+    for (const [key, label] of [['admissionQueueMs', 'Admission queue'], ['queueWaitMs', 'Worker queue'], ['resumeQueueMs', 'Queue wait between stages'],
+        ['preparationMs', 'Timetable preparation'], ['routingMs', 'Route calculation'], ['liveLookupMs', 'Live lookups'],
+        ['cpuMs', 'CPU time (excludes I/O)']]) {
+        if (valid(row.metrics?.[key])) items.push([label, duration(row.metrics[key])]);
+    }
+    for (const [key, label] of [['routeCalls', 'Route calculations'], ['operations', 'Routing operations'],
+        ['labels', 'Routing states'], ['candidates', 'Candidates checked']]) {
+        if (Number.isSafeInteger(row.metrics?.[key]) && row.metrics[key] >= 0) items.push([label, number(row.metrics[key])]);
+    }
+    for (const [key, label] of [['heapUsedBytes', 'Sampled heap peak'], ['rssBytes', 'Sampled process memory peak (RSS)']]) {
+        if (valid(row.resourcePeaks?.[key])) items.push([label, `${(row.resourcePeaks[key] / 1048576).toFixed(1)} MiB`]);
+    }
+    if (!items.length) return '';
+    return `<details class="planner-diagnostics"><summary>Timing details</summary><dl>${items.map(([label, value]) =>
+        `<div><dt>${label}</dt><dd>${value}</dd></div>`).join('')}</dl>
+        <p>CPU time excludes I/O waits. Memory peaks are sampled and may miss brief spikes.</p></details>`;
 }
 
 function station(code) {
@@ -168,16 +188,109 @@ function percentage(numerator, denominator) {
 function number(value) { return Number(value || 0).toLocaleString('en-GB'); }
 function humanize(value) { return String(value).replace(/[_-]+/g, ' '); }
 function options(values, selected) { return values.map(([value, label]) => `<option value="${escapeHtml(value)}"${String(value) === String(selected) ? ' selected' : ''}>${escapeHtml(label)}</option>`).join(''); }
+function relativeLabel(value) {
+    const match = /^-([1-9]\d*)([mhd])$/.exec(value);
+    if (!match) return 'Selected period';
+    const unit = { m: 'minute', h: 'hour', d: 'day' }[match[2]];
+    return `Last ${match[1]} ${unit}${match[1] === '1' ? '' : 's'}`;
+}
+function utcInput(value) {
+    const parsed = new Date(typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(value) ? `${value}Z` : value);
+    return Number.isFinite(parsed.getTime()) ? parsed.toISOString().slice(0, 23) : '';
+}
+function windowLabel(window) {
+    if (new Date(window.from) > new Date(window.to)) return 'This period is outside the retained search history';
+    const label = value => { const parsed = new Date(value); return `${dateFormatter.format(parsed)}, ${timeFormatter.format(parsed)}`; };
+    return `${label(window.from)} – ${label(window.to)}`;
+}
+function filters(data, url, now = new Date()) {
+    const selected = data.q ?? `-${data.range || '24h'}`;
+    const periods = RANGES.some(([value]) => value === selected) ? RANGES : [[selected, relativeLabel(selected)], ...RANGES];
+    const from = data.from ?? data.window?.from ?? new Date(new Date(now).getTime() - 86400000);
+    const to = data.to ?? data.window?.to ?? now;
+    return `<form class="planner-filters" action="${escapeHtml(url(ROUTE))}" method="GET" aria-describedby="planner-filter-help">
+        <div class="planner-filter"><label for="planner-period">Period</label><select id="planner-period" name="q">${options(periods, selected)}</select></div>
+        <div class="planner-filter"><label for="planner-source">Source</label><select id="planner-source" name="source">${options(SOURCES, data.source)}</select></div>
+        <div class="planner-filter"><label for="planner-page-size">Rows per page</label><select id="planner-page-size" name="per_page">${options([[25, '25'], [50, '50'], [100, '100']], data.pageSize)}</select></div>
+        <input type="hidden" name="sort" value="${escapeHtml(data.sort)}">
+        <input type="hidden" name="direction" value="${escapeHtml(data.direction)}">
+        <input type="hidden" name="timezone" value="UTC">
+        <details class="planner-custom"${selected === 'custom' ? ' open' : ''}><summary>Custom date and time</summary>
+            <div class="planner-custom-inputs">
+                <div class="planner-filter"><label for="planner-from">From (UTC)</label><input id="planner-from" type="datetime-local" name="from" step="0.001" value="${utcInput(from)}" aria-describedby="planner-time-help"></div>
+                <div class="planner-filter"><label for="planner-to">To (UTC)</label><input id="planner-to" type="datetime-local" name="to" step="0.001" value="${utcInput(to)}" aria-describedby="planner-time-help"></div>
+            </div><p id="planner-time-help">Choose “Custom dates” to use these fields. UTC is one hour behind UK summer time. Maximum seven days; older records are deleted.</p>
+        </details>
+        <button type="submit">Apply filters</button>
+        <span id="planner-filter-help" class="planner-muted">Select Apply filters to update the results.</span>
+        ${data.stats ? `<span class="planner-updated">Figures checked ${formatTime(data.stats.asOf || now, false)}</span>` : ''}
+    </form><script data-planner-filter-controls>(${initializePlannerFilters.toString()})();</script>`;
+}
+
+function initializePlannerFilters() {
+    const form = document.querySelector('.planner-filters');
+    const period = form.elements.namedItem('q');
+    const from = form.elements.namedItem('from');
+    const to = form.elements.namedItem('to');
+    const timezone = form.elements.namedItem('timezone');
+    const custom = form.querySelector('.planner-custom');
+    form.querySelector('#planner-filter-help').textContent = 'Filters update automatically when changed.';
+    // Validate only active date filters; incomplete custom edits must not stop
+    // the user switching back to a relative period.
+    form.noValidate = true;
+    form.addEventListener('submit', event => {
+        const useDates = period.value === 'custom';
+        custom.open = useDates;
+        for (const input of [from, to, timezone]) input.disabled = !useDates;
+        from.required = to.required = useDates;
+        to.setCustomValidity('');
+        if (useDates && from.validity.valid && to.validity.valid) {
+            const start = Date.parse(from.value + 'Z'), end = Date.parse(to.value + 'Z');
+            if (end <= start) to.setCustomValidity('The end must be later than the start.');
+            else if (end - start > 7 * 86400000) to.setCustomValidity('Choose a period of seven days or less.');
+        }
+        if (!form.reportValidity()) event.preventDefault();
+        // Native GET submission updates the address and history, keeps the
+        // relative action's proxy prefix, and resets pagination to page one.
+    });
+    form.addEventListener('change', event => {
+        if (!event.target.matches('select, input[type="datetime-local"]')) return;
+        if (event.target === from || event.target === to) period.value = 'custom';
+        form.requestSubmit();
+    });
+    window.addEventListener('pageshow', () => {
+        // Back/forward may restore changed controls with the previous results.
+        // Server-rendered defaults describe the period in this page's URL.
+        form.reset();
+        for (const input of [from, to, timezone]) input.disabled = false;
+        from.required = to.required = false;
+        to.setCustomValidity('');
+        custom.open = period.value === 'custom';
+    });
+}
+function errorFilters(query = {}) {
+    const text = (value, fallback) => typeof value === 'string' && value.length <= 100 ? value : fallback;
+    return { range: text(query.range, '24h'), q: text(query.q, query.range === 'custom' || query.from || query.to ? 'custom' : undefined),
+        from: text(query.from, undefined), to: text(query.to, undefined), timezone: query.timezone === 'UTC' ? 'UTC' : undefined,
+        source: text(query.source, 'all'), sort: text(query.sort, 'startedAt'), direction: text(query.direction, 'desc'),
+        page: text(query.page, '1'), pageSize: text(query.per_page, '50') };
+}
 function href(url, data, overrides = {}) {
     const next = { ...data, ...overrides };
     const query = new URLSearchParams({ range: next.range, source: next.source, sort: next.sort, direction: next.direction, page: next.page, per_page: next.pageSize });
+    if (next.q) query.set('q', next.q);
+    if (next.q === 'custom') {
+        if (next.from) query.set('from', next.from);
+        if (next.to) query.set('to', next.to);
+        if (next.timezone) query.set('timezone', next.timezone);
+    }
     return escapeHtml(url(`${ROUTE}?${query}`));
 }
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character])); }
 
 const styles = `
     .planner-admin { max-width: 1500px; }
-    .planner-admin :is(a,button,select,summary,[tabindex]):focus-visible { outline: 3px solid #0057b8; outline-offset: 3px; }
+    .planner-admin :is(a,button,input,select,summary,[tabindex]):focus-visible { outline: 3px solid #0057b8; outline-offset: 3px; }
     .planner-heading { display:flex; align-items:center; justify-content:space-between; gap:20px; }
     .planner-eyebrow { margin:0 0 8px; color:var(--muted); font-size:12px; letter-spacing:.08em; text-transform:uppercase; font-weight:600; }
     .planner-heading h1 { margin:0 0 8px; font-size:clamp(25px,3vw,34px); letter-spacing:-.025em; }
@@ -188,6 +301,12 @@ const styles = `
     .planner-filter { display:grid; gap:6px; }
     .planner-filters label { font-size:12px; font-weight:600; color:var(--muted); }
     .planner-filters select { min-height:39px; border:1px solid var(--line); background:var(--panel); color:var(--text); border-radius:7px; padding:8px 34px 8px 10px; font:inherit; font-size:14px; font-weight:400; }
+    .planner-custom { width:100%; color:var(--muted); font-size:12px; }
+    .planner-custom summary { cursor:pointer; width:fit-content; color:var(--accent); }
+    .planner-custom-inputs { display:flex; flex-wrap:wrap; gap:12px; margin-top:12px; }
+    .planner-custom input { min-height:39px; max-width:100%; box-sizing:border-box; border:1px solid var(--line); border-radius:7px; padding:8px 10px; color:var(--text); background:var(--panel); font:inherit; font-size:14px; }
+    .planner-custom p { margin:10px 0 0; line-height:1.5; }
+    .planner-window { color:var(--muted); font-size:12px; line-height:1.5; margin:-5px 0 14px; }
     .planner-filters button { min-height:39px; font-size:14px; }
     .planner-updated { margin-left:auto; align-self:end; padding-bottom:10px; font-size:12px; color:var(--muted); }
     .planner-section-title { margin:23px 0 14px; font-size:15px; font-weight:600; }
@@ -217,6 +336,13 @@ const styles = `
     .planner-station strong { letter-spacing:.04em; }
     .planner-date { white-space:nowrap; font-variant-numeric:tabular-nums; }
     .planner-duration { font-weight:600; white-space:nowrap; font-variant-numeric:tabular-nums; }
+    .planner-diagnostics { margin-top:7px; font-size:11px; font-weight:400; white-space:normal; }
+    .planner-diagnostics summary { cursor:pointer; color:var(--accent); white-space:nowrap; }
+    .planner-diagnostics dl { width:245px; margin:10px 0; }
+    .planner-diagnostics dl>div { display:flex; justify-content:space-between; gap:10px; padding:4px 0; border-bottom:1px solid var(--line); }
+    .planner-diagnostics dt { color:var(--muted); }
+    .planner-diagnostics dd { margin:0; white-space:nowrap; }
+    .planner-diagnostics p { max-width:245px; margin:8px 0 0; color:var(--muted); line-height:1.5; }
     .planner-status, .planner-cache { display:inline-block; border-radius:4px; padding:3px 7px; font-size:11px; line-height:1.4; font-weight:600; white-space:nowrap; }
     .status-success { background:#e1f2e8; color:#17633b; }
     .status-fail { background:#fbe7e6; color:#a22b27; }
