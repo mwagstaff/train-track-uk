@@ -674,10 +674,6 @@ struct PlannerJourneySummary: View {
 
     private var cancelled: Bool { journey.legs.contains { $0.live?.isCancelled == true } }
     private var departureLeg: PlannedJourney.Leg? { journey.legs.first }
-    private var includesDate: Bool {
-        !PlannerTime.calendar.isDate(journey.departure, inSameDayAs: journey.arrival)
-    }
-
     private var status: (text: String, color: Color) {
         let annotations = journey.legs.compactMap(\.live)
         if cancelled { return ("Cancelled", .plannerDestructiveText) }
@@ -704,11 +700,12 @@ struct PlannerJourneySummary: View {
     }
 
     var body: some View {
+        let times = PlannerTime.journeyResultTimes(from: journey.departure, to: journey.arrival)
         DepartureSummaryRow(timing: {
             VStack(alignment: .leading, spacing: 0) {
                 JourneyTimesView(
-                    departure: PlannerTime.display(journey.departure, includeDate: includesDate),
-                    arrival: PlannerTime.display(journey.arrival, includeDate: includesDate),
+                    departure: times.departure,
+                    arrival: times.arrival,
                     departureColor: cancelled ? .plannerSecondaryText : .primary,
                     cancelled: cancelled
                 )

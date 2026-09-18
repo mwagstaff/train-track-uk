@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getHeapStatistics } from 'node:v8';
 import { randomUUID } from 'node:crypto';
+import { ROUTING_PROFILE_FIELDS } from './telemetry.js';
 import { API_VERSION, POLICY_VERSION, CAPABILITIES, PlannerError, addDays,
     londonDate, encodeCursor, journeyID, normalizeRequest } from './contract.js';
 
@@ -22,6 +23,12 @@ function remember(map, key, value, maximum) {
     map.set(key, value);
     while (map.size > maximum) map.delete(map.keys().next().value);
     return value;
+}
+
+function routingProfile(metrics = {}) {
+    return Object.fromEntries(ROUTING_PROFILE_FIELDS
+        .filter(name => Number.isFinite(metrics?.[name]) && metrics[name] >= 0)
+        .map(name => [name, metrics[name]]));
 }
 
 export class PlannerEngine {
@@ -477,12 +484,13 @@ export class PlannerEngine {
             }
             if (options?.measure) options.onTelemetry?.({ metricsDelta: {
                 operations: result.metrics?.operations ?? 0, labels: result.metrics?.labels ?? 0,
-                candidates: result.journeys.length } });
+                candidates: result.journeys.length, ...routingProfile(result.metrics) } });
             return result;
         }
         catch (error) {
             if (options?.measure && error.metrics) options.onTelemetry?.({ metricsDelta: {
-                operations: error.metrics.operations ?? 0, labels: error.metrics.labels ?? 0 } });
+                operations: error.metrics.operations ?? 0, labels: error.metrics.labels ?? 0,
+                ...routingProfile(error.metrics) } });
             if (error.code === 'SEARCH_TIMEOUT') throw Object.assign(new PlannerError('SEARCH_TIMEOUT', 'The search exceeded its work budget. Try a narrower time window.', 504),
                 error.reason ? { reason: error.reason } : {}, error.metrics ? { metrics: error.metrics } : {});
             if (error.code === 'SEARCH_CANCELLED') throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);

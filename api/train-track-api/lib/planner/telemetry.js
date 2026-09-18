@@ -1,5 +1,12 @@
 // Measurements are deltas so a logical search can span several worker tasks.
 // Heap/RSS values are sampled high-water marks, not allocator-level maxima.
+export const ROUTING_PROFILE_FIELDS = Object.freeze([
+    'indexBuildMs', 'topologyBoundsMs', 'temporalBoundsMs', 'labelExpansionMs',
+    'transferResolutionMs', 'resultAssemblyMs',
+    'topologyBoundsBuilds', 'topologyBoundsCacheHits', 'temporalBoundsBuilds',
+    'temporalBoundsCacheHits', 'internalRoutePasses'
+]);
+
 export function createPlannerTelemetry(emit = () => {}) {
     const sample = () => {
         const memory = process.memoryUsage();

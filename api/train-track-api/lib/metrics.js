@@ -1,6 +1,8 @@
 import os from 'os';
 import fs from 'fs';
 import client from 'prom-client';
+import { registerTimetableIngestionMetrics } from './planner/ingestion-metrics.js';
+import { timetableIngestionConfig } from './planner/ingestion-source.js';
 
 const DEFAULT_METRIC_LABELS = Object.freeze({
     service_name: process.env.PROMETHEUS_SERVICE_NAME || 'train-track-api',
@@ -11,6 +13,9 @@ const DEFAULT_METRIC_LABELS = Object.freeze({
 // Create a Registry to register the metrics
 const register = new client.Registry();
 register.setDefaultLabels(DEFAULT_METRIC_LABELS);
+const timetableIngestionMetrics = registerTimetableIngestionMetrics({
+    register, currentEnabled: timetableIngestionConfig().enabled
+});
 
 // Add default process/runtime metrics from Node.js.
 client.collectDefaultMetrics({ register });
@@ -658,6 +663,7 @@ function calculatePercentiles() {
 // Export metrics in Prometheus format.
 export async function getMetrics() {
     updateDeviceGauges();
+    await timetableIngestionMetrics.refresh();
 
     let metrics = await register.metrics();
 

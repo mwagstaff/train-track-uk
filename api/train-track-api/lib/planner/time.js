@@ -125,3 +125,16 @@ export function resolveCallTimes(calls, originDate, { compact = false } = {}) {
     departure: call.departureSeconds === null ? null : base + call.departureSeconds * 1000,
   }));
 }
+
+// Schema v2 has already discarded all parse-only fields and non-routing stops.
+// Decode directly to the runtime shape, without allocating verbose call objects.
+export function resolveRoutingCallTimes({ originDeparture, calls }, originDate) {
+  const offset = originOffsetMinutes(originDate, originDeparture % 86400);
+  const base = Date.parse(`${dateOnly(originDate)}T00:00:00Z`) - offset * 60000;
+  return calls.map(row => ({
+    tiploc: row[0], sequence: row[1], station: row[2],
+    arrival: row[3] === null ? null : base + row[3] * 1000,
+    departure: row[4] === null ? null : base + row[4] * 1000,
+    canBoard: row[4] !== null, canAlight: row[3] !== null, platform: row[5] || undefined
+  }));
+}

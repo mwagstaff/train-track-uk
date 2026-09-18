@@ -11,6 +11,24 @@ import { parseDisplayDate } from './parser.js';
 const TYPES = ['DAT', 'MCA', 'MSN', 'TSI', 'ALF', 'FLF', 'ZTR', 'REJ', 'SET'];
 const DEFAULT_MAX_BYTES = 2 * 1024 ** 3;
 
+// Daily deliveries replace MCA with CFA and use C for DAT/CFA, but F for
+// refreshed supporting files. They can be inspected, never used as a baseline.
+function packageDetails(identities) {
+  const manifest = identities.find(member => member.type === 'DAT');
+  if (!manifest) throw new Error('Missing timetable manifest');
+  const feedMode = manifest.packageId.startsWith('RJTTF') ? 'full' : 'update';
+  const sequence = manifest.packageId.slice(-3);
+  const expected = TYPES.map(type => feedMode === 'update' && type === 'MCA' ? 'CFA' : type);
+  if (identities.length !== expected.length || expected.some(type => !identities.some(member => member.type === type))) {
+    throw new Error(`Expected nine complete ${feedMode === 'full' ? 'full-feed' : 'daily-update'} members`);
+  }
+  for (const member of identities) {
+    const prefix = feedMode === 'update' && ['DAT', 'CFA'].includes(member.type) ? 'RJTTC' : 'RJTTF';
+    if (member.packageId !== `${prefix}${sequence}`) throw new Error('Mixed timetable packages');
+  }
+  return { packageId: manifest.packageId, sequence, feedMode };
+}
+
 export function memberIdentity(name) {
   const match = /^(RJTT[FC]\d{3})(?:\.(DAT|MCA|CFA|MSN|TSI|ALF|FLF|ZTR|REJ|SET)|(DAT|MCA|CFA|MSN|TSI|ALF|FLF|ZTR|REJ|SET)\.txt)$/i.exec(name);
   if (!match) throw new Error(`Unrecognised timetable member: ${name}`);
@@ -37,7 +55,7 @@ async function zipEntries(path, maxBytes) {
     const directory = Buffer.alloc(directorySize);
     await handle.read(directory, 0, directorySize, offset);
     const entries = [], names = new Set(), logicalTypes = new Set();
-    let packageId;
+    const identities = [];
     let position = 0, expanded = 0;
     for (let i = 0; i < count; i++) {
       if (position + 46 > directory.length || directory.readUInt32LE(position) !== 0x02014b50) throw new Error('Malformed ZIP central record');
@@ -50,9 +68,9 @@ async function zipEntries(path, maxBytes) {
         throw new Error(`Unsafe, duplicate, encrypted or unsupported ZIP member: ${name}`);
       }
       const identity = memberIdentity(name);
-      if (logicalTypes.has(identity.type) || (packageId && packageId !== identity.packageId)) throw new Error('Conflicting logical ZIP members');
+      if (logicalTypes.has(identity.type)) throw new Error('Conflicting logical ZIP members');
       logicalTypes.add(identity.type);
-      packageId = identity.packageId;
+      identities.push(identity);
       expanded += size;
       if (expanded > maxBytes) throw new Error('ZIP exceeds expanded-size limit');
       names.add(name.toUpperCase());
@@ -60,7 +78,7 @@ async function zipEntries(path, maxBytes) {
       position += 46 + nameLength + extraLength + commentLength;
     }
     if (position !== directorySize) throw new Error('ZIP directory size mismatch');
-    if (!packageId?.startsWith('RJTTF') || TYPES.some(type => !logicalTypes.has(type))) throw new Error('ZIP is not a complete full refresh package');
+    packageDetails(identities);
     return entries;
   } finally { await handle.close(); }
 }
@@ -97,21 +115,19 @@ export async function prepareSource(sourcePath, { signal, maxExpandedBytes = DEF
       }
     }
     const names = (await readdir(directory)).sort();
-    if (names.length !== 9) throw new Error(`Expected nine full-feed members, found ${names.length}`);
+    if (names.length !== 9) throw new Error(`Expected nine timetable members, found ${names.length}`);
     const members = [], seen = new Set();
-    let total = 0, packageId;
+    let total = 0;
     for (const name of names) {
       const identity = memberIdentity(name);
       const memberPath = join(directory, name), memberStat = await lstat(memberPath);
       if (!memberStat.isFile() || memberStat.isSymbolicLink()) throw new Error(`Member is not a regular file: ${name}`);
       if (seen.has(identity.type)) throw new Error(`Conflicting logical member: ${identity.type}`);
-      if (packageId && packageId !== identity.packageId) throw new Error('Mixed timetable packages');
-      packageId = identity.packageId;
       seen.add(identity.type);
       total += memberStat.size;
       members.push({ ...identity, name, path: memberPath, size: memberStat.size, mtimeMs: memberStat.mtimeMs, ctimeMs: memberStat.ctimeMs });
     }
-    if (!packageId.startsWith('RJTTF') || TYPES.some(type => !seen.has(type))) throw new Error('Expected a complete full refresh package; incremental packages are unsupported');
+    const { packageId, sequence: packageSequence, feedMode } = packageDetails(members);
     if (total > maxExpandedBytes) throw new Error('Source exceeds expanded-size limit');
     const manifest = await readFile(members.find(m => m.type === 'DAT').path, 'latin1');
     const listed = manifest.split(/\r?\n/).filter(line => line.trim() && !line.startsWith('/')).map(line => line.trim());
@@ -122,7 +138,7 @@ export async function prepareSource(sourcePath, { signal, maxExpandedBytes = DEF
     const generated = /\/!! Generated:\s*(\d{2}\/\d{2}\/\d{4})/.exec(manifest);
     const sequence = /\/!! Sequence:\s*(\d{3})/.exec(manifest);
     if (!generated || !sequence || sequence[1] !== packageId.slice(-3) || !/\/!! End of file \(8 records\)/.test(manifest)) throw new Error('Malformed/truncated manifest metadata');
-    return { path, directory, kind: temporary ? 'zip' : 'directory', packageId, sequence: sequence[1],
+    return { path, directory, kind: temporary ? 'zip' : 'directory', packageId, sequence: packageSequence, feedMode,
       generationDate: parseDisplayDate(generated[1]), members, totalBytes: total,
       cleanup: async () => { if (temporary) await rm(directory, { recursive: true, force: true }); } };
   } catch (error) { if (temporary) await rm(directory, { recursive: true, force: true }); throw error; }
@@ -130,6 +146,7 @@ export async function prepareSource(sourcePath, { signal, maxExpandedBytes = DEF
 
 async function inspectMember(member, options) {
   const counts = {}, widths = {}, hash = createHash('sha256');
+  const transactions = {}, stp = {};
   let remaining = '', lines = 0, last = '', seenEnd = false, header = false, footerCount = null, records = 0, msnEnd = false;
   let generationDate = null, sequence = null;
   function line(text) {
@@ -149,14 +166,21 @@ async function inspectMember(member, options) {
     if (!text.trim()) return;
     records++;
     let type;
-    if (member.type === 'MCA' || member.type === 'ZTR') {
+    if (['MCA', 'CFA', 'ZTR'].includes(member.type)) {
       if (text.length !== 80) throw new Error(`${member.name}:${lines}: expected 80 characters, found ${text.length}`);
       type = text.slice(0, 2);
       if (seenEnd) throw new Error(`${member.name}: data after ZZ`);
       if (!header && type !== 'HD') throw new Error(`${member.name}: missing HD`);
       if (type === 'HD') { if (header) throw new Error('Duplicate HD'); header = true; }
       if (type === 'ZZ') seenEnd = true;
-      if (!['HD','TI','AA','BS','BX','LO','LI','CR','LT','ZZ'].includes(type)) throw new Error(`${member.name}:${lines}: unsupported record ${type}`);
+      const allowed = ['HD','TI','AA','BS','BX','LO','LI','CR','LT','ZZ', ...(member.type === 'CFA' ? ['TA', 'TD'] : [])];
+      if (!allowed.includes(type)) throw new Error(`${member.name}:${lines}: unsupported record ${type}`);
+      if (['BS', 'AA'].includes(type)) {
+        transactions[type] ??= {};
+        transactions[type][text[2]] = (transactions[type][text[2]] ?? 0) + 1;
+        stp[type] ??= {};
+        stp[type][text[79]] = (stp[type][text[79]] ?? 0) + 1;
+      }
     } else if (member.type === 'MSN') {
       type = text.startsWith('A') ? text.includes('FILE-SPEC=') ? 'header' : 'A'
         : text.startsWith('L') ? 'L' : /^(-1| 0| 1)/.test(text) ? 'CRS-usage' : 'legacy';
@@ -173,13 +197,14 @@ async function inspectMember(member, options) {
     for (const text of parts) line(text);
   }
   if (remaining.length) line(remaining);
-  if (['MCA','ZTR'].includes(member.type) && (!header || !seenEnd || last !== 'ZZ')) throw new Error(`${member.name}: missing final ZZ`);
+  if (['MCA','CFA','ZTR'].includes(member.type) && (!header || !seenEnd || last !== 'ZZ')) throw new Error(`${member.name}: missing final ZZ`);
   if (['DAT','FLF','MSN','SET'].includes(member.type) && !seenEnd) throw new Error(`${member.name}: missing end marker`);
   if (member.type === 'FLF' && counts.END !== 1) throw new Error(`${member.name}: missing/duplicate END`);
   if (member.type === 'MSN' && (!msnEnd || counts.header !== 1)) throw new Error(`${member.name}: missing MSN header or End of File`);
   if (member.type === 'REJ' && last !== 'End of rejected trains file') throw new Error(`${member.name}: missing rejection trailer`);
   if (footerCount !== null && footerCount !== records) throw new Error(`${member.name}: footer count ${footerCount} does not match ${records}`);
-  return { type: member.type, name: member.name, size: member.size, sha256: hash.digest('hex'), counts, widths, lines, generationDate, sequence };
+  return { type: member.type, name: member.name, size: member.size, sha256: hash.digest('hex'), counts, widths, lines, generationDate, sequence,
+    ...(Object.keys(transactions).length ? { transactions, stp } : {}) };
 }
 
 export async function inspectPreparedSource(prepared, options = {}) {
@@ -194,6 +219,7 @@ export async function inspectPreparedSource(prepared, options = {}) {
   }
   const contentHash = createHash('sha256').update(members.map(member => `${member.type}\0${member.size}\0${member.sha256}\n`).sort().join('')).digest('hex');
   const result = { kind: prepared.kind, path: prepared.path, packageId: prepared.packageId, sequence: prepared.sequence,
+    feedMode: prepared.feedMode, requiresBaseline: prepared.feedMode === 'update',
     generationDate: prepared.generationDate, totalBytes: prepared.totalBytes, contentHash, members };
   if (prepared.kind === 'zip') {
     const hash = createHash('sha256');

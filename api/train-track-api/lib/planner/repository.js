@@ -1,14 +1,16 @@
-import { mkdir, open, readFile, writeFile, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, rm, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { prepareSource, inspectPreparedSource } from './source.js';
 import { readLines, parseStation, parseInterchange, parseFixedLink, parseTimetable, PARSER_VERSION } from './parser.js';
 import { makeDiagnostics, recordDiagnostic, resolveServices, selectVariant, runsOn, weekdayIndex } from './calendar.js';
 import { addDays } from './time.js';
+import { acquireOwnedLock } from './ingestion-lock.js';
 
 export { inspectSource } from './source.js';
 const DATABASE_FILE = 'timetable.sqlite';
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
+const SUPPORTED_SCHEMA_VERSIONS = new Set([1, SCHEMA_VERSION]);
 
 async function database(path, readOnly = false) {
   // Loaded only for planner work. Existing API startup remains compatible when
@@ -25,10 +27,15 @@ async function optionalJson(path) {
 }
 async function writeJson(path, value) { await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }); }
 
-function compactCalls(calls) {
-  return calls.map(call => [call.tiploc, call.suffix, call.arrivalSeconds ?? null, call.departureSeconds ?? null,
-    call.workArrival ?? null, call.workDeparture ?? null, call.workPass ?? null, call.publicArrival,
-    call.publicDeparture, call.activity, call.platform ?? '', call.sourceRef.line]);
+function compactCalls(value, stationByTiploc) {
+  // The working origin (which may be a depot) determines the whole service's
+  // GMT/BST convention. Sequence remains its position in the original working
+  // so stripping passing/unmapped calls cannot change live-service matching.
+  return { originDeparture: value.calls[0]?.workDeparture ?? null,
+    calls: value.excludedReason || value.stp === 'C' ? [] : value.calls
+      .filter(call => (call.canBoard || call.canAlight) && stationByTiploc.has(call.tiploc))
+      .map(call => [call.tiploc, call.sequence, stationByTiploc.get(call.tiploc).crs,
+        call.arrivalSeconds ?? null, call.departureSeconds ?? null, call.platform ?? '']) };
 }
 
 async function loadStations(member, options) {
@@ -67,15 +74,12 @@ export async function importFullSnapshot(sourcePath, targetDirectory, options = 
   const target = resolve(targetDirectory);
   await mkdir(dirname(target), { recursive: true });
   const lockPath = `${target}.import.lock`;
-  const lock = await open(lockPath, 'wx').catch(error => {
-    if (error.code === 'EEXIST') throw new Error(`Another import owns ${lockPath}`);
-    throw error;
-  });
+  const lock = await acquireOwnedLock(lockPath, { message: `Another import owns ${lockPath}`, stagingTarget: target });
   const building = `${target}.building-${randomUUID()}`;
   let prepared, db;
   try {
-    await lock.writeFile(`${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`);
     prepared = await prepareSource(sourcePath, options);
+    if (prepared.feedMode !== 'full') throw new Error('Daily CFA updates require a matching full baseline and an unbroken update sequence; they cannot be imported as full snapshots');
     const source = await inspectPreparedSource(prepared, options);
     const version = createHash('sha256').update(`${SCHEMA_VERSION}\0${PARSER_VERSION}\0${source.contentHash}`).digest('hex');
     const existing = await optionalJson(join(target, 'metadata.json'));
@@ -104,7 +108,8 @@ export async function importFullSnapshot(sourcePath, targetDirectory, options = 
     for (const record of stationByTiploc.values()) insertLocation.run(record.tiploc, JSON.stringify(record));
     const ruleInsert = db.prepare('INSERT INTO rules VALUES (?, ?)');
     const counts = { stations: 0, stationDefinitions: records.length, schedules: 0, supportedSchedules: 0,
-      associations: 0, fixedLinks: 0, interchanges: 0, calls: 0, passengerCalls: 0, changesEnRoute: 0 };
+      associations: 0, fixedLinks: 0, interchanges: 0, calls: 0, passengerCalls: 0, changesEnRoute: 0,
+      routingCalls: 0, routingCallBytes: 0 };
     for (const [type, parse] of [['TSI', parseInterchange], ['ALF', parseFixedLink]]) {
       for await (const { text, line } of readLines(members.get(type).path, options)) {
         if (!text.trim() || text.startsWith('/')) continue;
@@ -158,9 +163,12 @@ export async function importFullSnapshot(sourcePath, targetDirectory, options = 
             }
             maximumServiceDurationSeconds = Math.max(maximumServiceDurationSeconds, last - first);
           }
-          const { calls, ...detail } = value;
+          const routing = compactCalls(value, stationByTiploc);
+          const storedCalls = JSON.stringify(routing);
+          counts.routingCalls += routing.calls.length;
+          counts.routingCallBytes += Buffer.byteLength(storedCalls);
           variantInsert.run(value.variantId, sourceType, value.uid, value.startDate, value.endDate, value.days, value.stp,
-            value.operator, value.mode, value.excludedReason, value.sourceRef.line, JSON.stringify(compactCalls(calls)), JSON.stringify(detail));
+            value.operator, value.mode, value.excludedReason, value.sourceRef.line, storedCalls, '{}');
           if (counts.schedules % 2000 === 0) {
             db.exec('COMMIT; BEGIN;');
             options.onProgress?.({ phase: 'import', source: sourceType, schedules: counts.schedules, calls: counts.calls });
@@ -172,7 +180,7 @@ export async function importFullSnapshot(sourcePath, targetDirectory, options = 
     const insertStation = db.prepare('INSERT INTO stations VALUES (?, ?)');
     for (const station of stationByCrs.values()) { insertStation.run(station.crs, JSON.stringify(station)); if (station.selectable) counts.stations++; }
     db.exec(`COMMIT;
-      CREATE INDEX variant_calendar ON variants(start_date, end_date);
+      CREATE INDEX variant_calendar ON variants(start_date, end_date, days, variant_id, source, uid, stp, operator, mode, excluded_reason, line);
       CREATE INDEX variant_uid ON variants(source, uid);
       CREATE INDEX association_uid ON associations(source, base_uid, associated_uid);
       PRAGMA optimize;`);
@@ -185,9 +193,10 @@ export async function importFullSnapshot(sourcePath, targetDirectory, options = 
     const metadata = { schemaVersion: SCHEMA_VERSION, parserVersion: PARSER_VERSION, version, source,
       importedAt: new Date().toISOString(), coverage: { startDate, endDate, basis: 'Supported MCA schedule date range; completeness not guaranteed' },
       counts, maxEventDayOffset, maximumServiceDurationSeconds, diagnostics,
+      ...(options.delivery ? { delivery: options.delivery } : {}),
       capabilities: { scheduledOnly: true, departAfter: true, arriveBy: true, maximumChanges: 2,
         throughServices: false, supplementaryServices: false, fixedLinks: true },
-      limitations: ['Scheduled timetable only; later timetable changes and live running are not included.',
+      limitations: ['Scheduled timetable only; changes after this delivery and live running are not included.',
         'Supplementary ZTR services and unsupported modes are retained but excluded.',
         'Train split/join associations are retained; staying aboard across separate service records is not enabled.',
         'Schedules with holiday restrictions are excluded until an authoritative holiday calendar is configured.',
@@ -206,8 +215,7 @@ export async function importFullSnapshot(sourcePath, targetDirectory, options = 
     db?.close();
     await prepared?.cleanup();
     await rm(building, { recursive: true, force: true });
-    await lock.close();
-    await rm(lockPath, { force: true });
+    await lock.release();
   }
 }
 
@@ -216,12 +224,25 @@ export async function validateDataset(datasetPath) {
   const metadata = await json(join(path, 'metadata.json'));
   const db = await database(join(path, DATABASE_FILE), true);
   try {
-    if (metadata.schemaVersion !== SCHEMA_VERSION || metadata.parserVersion !== PARSER_VERSION) errors.push('Unsupported snapshot schema/parser version');
+    if (!SUPPORTED_SCHEMA_VERSIONS.has(metadata.schemaVersion) || metadata.parserVersion !== PARSER_VERSION) errors.push('Unsupported snapshot schema/parser version');
     const check = db.prepare('PRAGMA integrity_check').get();
     if (Object.values(check)[0] !== 'ok') errors.push('SQLite integrity check failed');
     const counts = db.prepare(`SELECT COUNT(*) total, SUM(CASE WHEN excluded_reason IS NULL AND stp != 'C' THEN 1 ELSE 0 END) supported FROM variants`).get();
     if (counts.total !== metadata.counts.schedules) errors.push('Schedule inventory mismatch');
     if (!counts.supported || !metadata.counts.stations || !metadata.coverage.startDate || !metadata.coverage.endDate) errors.push('No supported passenger timetable');
+    if (metadata.schemaVersion === 2) {
+      try {
+        const routing = db.prepare(`SELECT SUM(json_array_length(calls, '$.calls')) callCount,
+          SUM(length(CAST(calls AS BLOB))) callBytes,
+          SUM(CASE WHEN excluded_reason IS NULL AND stp != 'C' AND
+            (json_type(calls, '$.originDeparture') IS NOT 'integer' OR
+             json_type(calls, '$.calls') IS NOT 'array' OR json_array_length(calls, '$.calls') < 2)
+            THEN 1 ELSE 0 END) invalidSupported FROM variants`).get();
+        if (routing.callCount !== metadata.counts.routingCalls) errors.push('Routing-call inventory mismatch');
+        if (routing.callBytes !== metadata.counts.routingCallBytes) errors.push('Routing-call byte inventory mismatch');
+        if (routing.invalidSupported) errors.push(`${routing.invalidSupported} supported variants have invalid compact routing calls`);
+      } catch (error) { errors.push(`Invalid compact routing payload: ${error.message}`); }
+    }
     const conflicts = db.prepare(`SELECT COUNT(*) count FROM (SELECT source,uid,start_date,stp FROM variants GROUP BY source,uid,start_date,stp HAVING COUNT(*)>1)`).get().count;
     if (conflicts) errors.push(`${conflicts} duplicate schedule-definition identities`);
     if (metadata.diagnostics && Object.keys(metadata.diagnostics.counts).length) warnings.push('Some records are excluded or have missing passenger mappings; inspect diagnostics');
@@ -248,7 +269,7 @@ export async function validateDataset(datasetPath) {
 
 export async function openDataset(datasetPath) {
   const path = resolve(datasetPath), metadata = await json(join(path, 'metadata.json'));
-  if (metadata.schemaVersion !== SCHEMA_VERSION || metadata.parserVersion !== PARSER_VERSION) throw new Error('Unsupported planner snapshot format');
+  if (!SUPPORTED_SCHEMA_VERSIONS.has(metadata.schemaVersion) || metadata.parserVersion !== PARSER_VERSION) throw new Error('Unsupported planner snapshot format');
   const db = await database(join(path, DATABASE_FILE), true);
   const allStations = db.prepare('SELECT data FROM stations').all().map(row => JSON.parse(row.data));
   const stationByTiploc = new Map(db.prepare('SELECT data FROM timing_locations').all().map(row => { const value = JSON.parse(row.data); return [value.tiploc, value]; }));
@@ -289,12 +310,15 @@ export async function getActiveDataset(dataDirectory) { return optionalJson(join
 export async function activateDataset(datasetPath, dataDirectory, options = {}) {
   const path = resolve(datasetPath), directory = resolve(dataDirectory);
   await mkdir(directory, { recursive: true });
-  const lockPath = join(directory, '.activation.lock'), lock = await open(lockPath, 'wx');
+  const lockPath = join(directory, '.activation.lock'), lock = await acquireOwnedLock(lockPath);
   try {
     const validation = await validateDataset(path);
     if (!validation.valid) throw new Error(`Cannot activate invalid dataset: ${validation.errors.join('; ')}`);
     const previous = await getActiveDataset(directory);
-    if (previous?.version === validation.version) return { ...previous, unchanged: true };
+    if (Object.hasOwn(options, 'expectedPreviousVersion') && (previous?.version ?? null) !== options.expectedPreviousVersion) {
+      throw new Error('Activation blocked: active dataset changed while importing; retry against the new baseline');
+    }
+    if (previous?.version === validation.version && !(options.relocateSameVersion && previous.path !== path)) return { ...previous, unchanged: true };
     if (previous && !options.allowLargeChange) {
       const priorMetadata = await json(join(previous.path, 'metadata.json'));
       for (const key of ['stations', 'supportedSchedules']) {
@@ -327,7 +351,7 @@ export async function activateDataset(datasetPath, dataDirectory, options = {}) 
     await writeJson(nextPointer, pointer);
     await rename(nextPointer, join(directory, 'active.json'));
     return pointer;
-  } finally { await lock.close(); await rm(lockPath, { force: true }); }
+  } finally { await lock.release(); }
 }
 
 export async function rollbackDataset(version, dataDirectory) {

@@ -84,9 +84,11 @@ function fallback(index, query, parts, response, notes) {
         notes.add(CLOSURE_NOTE);
         return [];
     }
-    const stations = new Map(index.stations);
+    // resolveConnection reads station allowances only for these two endpoints;
+    // the rule/window indexes stay shared, without copying every station.
+    const stations = new Map();
     for (const [crs, minutes] of [[query.from, parts.exitMinutes], [query.to, parts.entryMinutes]]) {
-        stations.set(crs, { ...stations.get(crs), minimumChangeMinutes: minutes });
+        stations.set(crs, { ...index.stations.get(crs), minimumChangeMinutes: minutes });
     }
     const connection = resolveConnection({ ...index, stations }, query);
     if (!connection) return [];
@@ -307,10 +309,12 @@ export function createTubeResolver(provider, { signal, check = () => {}, awaitIO
 export function validateTubeConnection(index, connection, extraConnectionMinutes = 0) {
     const { from, to, start, end, movementStart, movementEnd, ruleId, mode, breakdown: parts, localJourney: local } = connection;
     if (local?.status === 'unavailable' && parts && mode === 'tubeTransfer') {
-        const stations = new Map(index.stations);
+        // validateFixedLink likewise reads allowances only for from/to. Keep
+        // the endpoint insertion order so entry still wins when they coincide.
+        const stations = new Map();
         for (const [crs, minutes] of [[from, parts.exitMinutes], [to, parts.entryMinutes]]) {
             if (!Number.isFinite(minutes) || minutes < 0) return false;
-            stations.set(crs, { ...stations.get(crs), minimumChangeMinutes: minutes });
+            stations.set(crs, { ...index.stations.get(crs), minimumChangeMinutes: minutes });
         }
         return validateFixedLink({ ...index, stations }, connection, extraConnectionMinutes);
     }

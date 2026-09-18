@@ -6,7 +6,7 @@ The planner is an additive, public API under **`/api/v3/journey-planner`**. Exis
 
 The iOS Debug build opens the planner from Add Journey. Release builds retain the current Add Journey screen until the local `journeyPlannerEnabled` feature flag is enabled. Debug can also use the `JOURNEY_PLANNER_ENABLED` launch environment variable. The planner always offers **Add a saved route**, which opens the existing manual route, favourites and tracking screen. A selected dated itinerary cannot yet be saved or tracked. The ten most recent successful searches are stored on the device, can be reused or removed, and preserve Depart now as an intent rather than an old timestamp.
 
-The API deployment now has a project-specific Node runtime and persistent timetable storage. S3 delivery, a monthly unattended import job, incremental updates and acceptable production feed age still need the delivery agreement. The commands below accept a complete local directory or ZIP staged from that delivery. They do not fetch from unconfirmed cloud infrastructure.
+The API deployment has a project-specific Node runtime and persistent timetable storage. The new [hourly S3 ingestion process](planner-s3-ingestion.md) downloads monthly full data, applies contiguous daily amendments, builds compact search snapshots, validates and activates them. It also provides manual `sync`, validation-only `sync --dry-run`, and a freshness/data-quality Grafana dashboard. The supplied daily CFA still needs a current full baseline or the missing update chain; see the [daily feed audit](planner-daily-feed-audit.md). The local full-import commands below remain available separately.
 
 The [TubeTrack integration guide](tubetrack-integration.md) covers London station
 mapping, disruption-aware transfer timing, line colours, fallback, validation and
@@ -19,10 +19,10 @@ deploy either.
 
 - The planner worker and importer require **Node 22.16 or later** with `node:sqlite` available. Tested on Node 24.21.0 and locally on Node 25.8.1. The main API imports SQLite lazily in the isolated planner worker, so an unavailable planner does not prevent existing routes from loading.
 - ZIP ingestion requires the system `unzip` utility. Members are checked before streaming; no archive files are executed. Expanded input is bounded to 2 GiB. The supplied extracted directory does not require `unzip`.
-- Install the API's existing dependencies as usual. There are no new npm packages.
+- Install lockfile dependencies as usual; S3 ingestion adds `@aws-sdk/client-s3`.
 - Full data is private local input and excluded from Git. Snapshots contain licensed timetable content too.
 - Use an absolute `PLANNER_DATA_DIR` **outside deployed source**. The existing deployment uses deletion during synchronisation; source-tree snapshots would not be durable.
-- The supplied package needs about 676.5 MB of source files and a 1.07 GB SQLite snapshot, plus metadata. Budget space for source, staging, active and rollback snapshots, validation and future growth. Activation does not delete old snapshots.
+- The supplied package needs about 676.5 MB of source files. Its existing schema v1 SQLite snapshot is 1.07 GB; new compact schema v2 imports measured 275.7 MB with the same supported routing data. Existing v1 snapshots remain readable. See [search optimisation and measurements](planner-search-optimisation.md). Budget space for source, staging, active and rollback snapshots, validation and future growth. Activation does not delete old snapshots.
 - One worker runs routing sequentially; a separate small worker handles station lookups and timetable metadata while a search is running. Queue admission, elapsed time, operation count and V8 heap are bounded. SQLite native memory and total process RSS are not capped by the V8 heap setting; measure on the deployment host before release.
 
 ## Production deployment on `sky`
@@ -41,7 +41,7 @@ The standard deployment command can now be used for subsequent code releases:
 rtk proxy /Users/mwagstaff/dev/server-tooling/deploy/node_project.zsh train-track-api sky --quick
 ```
 
-Full deployments use the same runtime pin and exclusions. A missing pinned runtime fails before deployment changes begin. Other projects retain their existing runtime selection. Code deployment does not import or activate a new timetable. Existing excluded source-tree copies are protected by rsync; they are not the production data source.
+Full deployments use the same runtime pin and exclusions. A missing pinned runtime fails before deployment changes begin. Other projects retain their existing runtime selection. **With S3 credentials present, the new ingestion worker enables automatically at API startup**; set `PLANNER_INGESTION_ENABLED=false` for a controlled deployment and manual dry run first. Existing excluded source-tree copies are protected by rsync; they are not the production data source.
 
 The supplied RJTTF939 snapshot was validated on the host and moved to `PLANNER_DATA_DIR/snapshots/3d9d573635ed619ac3808338176858077f4d35650846ba0a0e829ed53ad64f5c`, then activated with the CLI. `active.json` contains the absolute Linux path. The unit is `com.train-track-api.api.service`; its wrapper and static configuration are regenerated by the deployer.
 
@@ -80,7 +80,7 @@ Use `--source /absolute/path/to/package.zip` for a ZIP. Directory input records 
 
 The import example bounds V8 old-space to 512 MiB. The full supplied input passed with this setting in 18.21 seconds and 421.09 MiB peak process RSS on the local M5 Pro. This heap setting is not a total resident-memory limit; size the production job against measured host headroom and monitor native SQLite memory too. This setting applies to the standalone importer; the routing worker has its own 1024 MB default.
 
-The version is derived from source content plus schema and parser versions. Reimport after a parser change; opening a snapshot from an incompatible parser fails safely. Only full imports are accepted; an incremental transaction is rejected explicitly.
+The version is derived from source content plus schema and parser versions. Reimport after a parser change; opening a snapshot from an incompatible parser fails safely. New imports use compact schema v2; schema v1 remains supported for reads/validation/rollback, but a compact reimport requires a new snapshot directory. `import` accepts only full packages; use managed `sync` for S3 full + daily amendments. `inspect` accepts daily packages, including their normal mixed C/F member names, reports update-operation inventories and labels them as requiring a baseline. Inspection is not completeness certification.
 
 ## Exercise the candidate before activation
 
@@ -106,7 +106,7 @@ npm run planner -- rollback --version PREVIOUS_64_CHARACTER_VERSION --data-dir /
 
 Activation revalidates the candidate and acquires a publication lock. It rejects large reductions in supported schedules/stations and significant per-operator loss on the overlapping source publication date. It writes history and atomically switches `active.json`; the previous snapshot remains available. A failed activation leaves the current pointer untouched. Investigate blocked changes before using the repository's explicit coverage-change override in controlled administration; the CLI deliberately does not expose a bypass switch.
 
-Existing in-flight searches use their selected snapshot. Cursors keep that version until it is no longer active or previous, then return `CURSOR_EXPIRED`. Detail responses are cached for up to one hour and may expire earlier after eviction, restart or snapshot removal. Re-search in that case. Keep all referenced files until no active or rollback pointer needs them; no automatic deletion is included.
+Existing in-flight searches use their selected snapshot. Cursors keep that version until it is no longer active or previous, then return `CURSOR_EXPIRED`. Detail responses are cached for up to one hour and may expire earlier after eviction, restart or snapshot removal. Re-search in that case. Manual snapshots are not deleted. Managed S3 stores have bounded retention protecting active/immediate rollback pointers; see the ingestion runbook before requesting an older rollback.
 
 ## Local server and app
 
@@ -501,9 +501,9 @@ starting a separate one-leg tracking flow. It does not automatically switch an
 active train or provide end-to-end multi-leg notifications.
 
 Engineering diversions depend on dated services present in the active snapshot.
-The current importer explicitly rejects incremental deliveries; automatic S3
-delivery and amendment ingestion still need the feed agreement. New full
-snapshots can be imported and activated ad hoc using the existing commands.
+The direct `import` command rejects incremental deliveries; managed S3 `sync`
+applies them only against a matching baseline and an unbroken update chain.
+New full snapshots can also be imported and activated ad hoc using the existing commands.
 Activation immediately changes new cache keys; no two-hour wait is required.
 Live cancellations cannot supply a missing replacement timetable.
 

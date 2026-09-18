@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { createAdminUrl } from './admin-url.js';
+import { ROUTING_PROFILE_FIELDS } from './planner/telemetry.js';
 
 const ROUTE = '/admin/journey-planner';
 const SOURCES = [
@@ -138,21 +139,30 @@ function diagnostics(row) {
     const valid = value => Number.isFinite(value) && value >= 0;
     if (valid(row.firstResultMs)) items.push(['First results', duration(row.firstResultMs)]);
     for (const [key, label] of [['admissionQueueMs', 'Admission queue'], ['queueWaitMs', 'Worker queue'], ['resumeQueueMs', 'Queue wait between stages'],
-        ['preparationMs', 'Timetable preparation'], ['routingMs', 'Route calculation'], ['liveLookupMs', 'Live lookups'],
+        ['preparationMs', 'Timetable preparation'], ['routingMs', 'Route calculation'],
+        ['indexBuildMs', 'Routing index build'], ['topologyBoundsMs', 'Topology-bound scans'],
+        ['temporalBoundsMs', 'Temporal-bound scans'], ['labelExpansionMs', 'Routing-state expansion'],
+        ['transferResolutionMs', 'Transfer resolution'], ['resultAssemblyMs', 'Result assembly'], ['liveLookupMs', 'Live lookups'],
         ['cpuMs', 'CPU time (excludes I/O)']]) {
         if (valid(row.metrics?.[key])) items.push([label, duration(row.metrics[key])]);
     }
     for (const [key, label] of [['routeCalls', 'Route calculations'], ['operations', 'Routing operations'],
-        ['labels', 'Routing states'], ['candidates', 'Candidates checked']]) {
+        ['labels', 'Routing states'], ['candidates', 'Candidates checked'],
+        ['topologyBoundsBuilds', 'Topology-bound builds'], ['topologyBoundsCacheHits', 'Topology-bound cache hits'],
+        ['temporalBoundsBuilds', 'Temporal-bound builds'], ['temporalBoundsCacheHits', 'Temporal-bound cache hits'],
+        ['internalRoutePasses', 'Internal routing passes']]) {
         if (Number.isSafeInteger(row.metrics?.[key]) && row.metrics[key] >= 0) items.push([label, number(row.metrics[key])]);
     }
     for (const [key, label] of [['heapUsedBytes', 'Sampled heap peak'], ['rssBytes', 'Sampled process memory peak (RSS)']]) {
         if (valid(row.resourcePeaks?.[key])) items.push([label, `${(row.resourcePeaks[key] / 1048576).toFixed(1)} MiB`]);
     }
     if (!items.length) return '';
+    const routingProfile = ROUTING_PROFILE_FIELDS.some(key => key.endsWith('Ms') ? valid(row.metrics?.[key])
+        : Number.isSafeInteger(row.metrics?.[key]) && row.metrics[key] >= 0);
     return `<details class="planner-diagnostics"><summary>Timing details</summary><dl>${items.map(([label, value]) =>
         `<div><dt>${label}</dt><dd>${value}</dd></div>`).join('')}</dl>
-        <p>CPU time excludes I/O waits. Memory peaks are sampled and may miss brief spikes.</p></details>`;
+        <p>CPU time excludes I/O waits. Memory peaks are sampled and may miss brief spikes.</p>
+        ${routingProfile ? '<p>Routing phase timings are wall-clock measurements within Route calculation, not extra durations to add to it. Transfer resolution includes provider waits. Internal routing passes include TfL retries.</p>' : ''}</details>`;
 }
 
 function station(code) {

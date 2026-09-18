@@ -1,15 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, cp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { inspectSource, memberIdentity } from '../lib/planner/source.js';
 import { parseTimetable, parseFixedLink, parseInterchange } from '../lib/planner/parser.js';
 import { runsOn, selectVariant } from '../lib/planner/calendar.js';
-import { addDays, cifDate, normaliseCallTimes, originOffsetMinutes, parseClock, resolveCallTimes } from '../lib/planner/time.js';
+import { addDays, cifDate, normaliseCallTimes, originOffsetMinutes, parseClock, resolveCallTimes, resolveRoutingCallTimes } from '../lib/planner/time.js';
 import { importFullSnapshot, openDataset, validateDataset, activateDataset, getActiveDataset, rollbackDataset } from '../lib/planner/repository.js';
 
 const run = promisify(execFile);
@@ -191,6 +193,9 @@ test('compact runtime calls retain matching identities and origin-clock times wi
   for (const date of ['2026-03-28', '2026-10-24']) {
     const verbose = resolveCallTimes(calls, date);
     const compact = resolveCallTimes(calls, date, { compact: true });
+    assert.deepEqual(resolveRoutingCallTimes({ originDeparture: calls[0].workDeparture,
+      calls: calls.filter(call => call.station && (call.canBoard || call.canAlight))
+        .map(call => [call.tiploc, call.sequence, call.station, call.arrivalSeconds, call.departureSeconds, call.platform ?? '']) }, date), compact);
     assert.deepEqual(compact.map(call => [call.station, call.tiploc, call.sequence]), [['ORG', 'ORIGIN', 1], ['DST', 'DEST', 3]]);
     for (const call of compact) {
       const original = verbose.find(value => value.sequence === call.sequence);
@@ -201,6 +206,87 @@ test('compact runtime calls retain matching identities and origin-clock times wi
     assert.equal(compact[0].arrival, null);
     assert.equal(compact[1].departure, null);
   }
+});
+
+test('schema v2 strips parse-only calls and payloads while preserving v1 date resolution and controls', async t => {
+  const path = await temporary(t);
+  const intermediate = [
+    fixed('LI', { 3: 'MIDDLE ', 21: '0705H', 26: '0000', 30: '0000' }),
+    fixed('LI', { 3: 'MIDDLE 2', 11: '0709H', 16: '0710 ', 26: '0710', 30: '0710', 34: '2', 43: 'U' }),
+    fixed('LI', { 3: 'UNMAP  ', 11: '0711 ', 16: '0712 ', 26: '0711', 30: '0712', 43: 'T' }),
+    fixed('LI', { 3: 'MIDDLE 3', 11: '0715 ', 16: '0716 ', 26: '0715', 30: '0716', 43: 'D' }),
+  ];
+  const depot = options => working({ start: '260101', days: '1111111', departure: '0050', arrival: '0230',
+    intermediate: [fixed('LI', { 3: 'ORIGIN ', 11: '0159 ', 16: '0200 ', 26: '0159', 30: '0200', 43: 'T' })], ...options })
+    .map(line => line.startsWith('LO') ? fixed('LO', { 3: 'DEPOT  ', 11: `${options?.departure ?? '0050'} `, 16: '0000', 30: 'TB' }) : line);
+  const source = await fixture(join(path, 'source'), [
+    ...working({ uid: 'A00001', start: '260101', days: '1111111', intermediate }),
+    ...depot({ uid: 'B00001' }), ...depot({ uid: 'B00002', departure: '0150' }),
+    ...working({ uid: 'C00001' }), ...working({ uid: 'C00001', stp: 'C', start: '260908', end: '260908' }),
+    ...working({ uid: 'D00001' }), ...working({ uid: 'D00001', stp: 'O', start: '260908', end: '260908', extra: { 31: 'ZZ' } }),
+  ]);
+  const modern = await importFullSnapshot(source, join(path, 'modern'));
+  assert.equal(modern.metadata.schemaVersion, 2);
+  assert.equal(modern.metadata.counts.calls, 18);
+  assert.equal(modern.metadata.counts.passengerCalls, modern.metadata.counts.routingCalls);
+  assert.ok(modern.metadata.counts.routingCalls < modern.metadata.counts.calls);
+  const db = new DatabaseSync(join(modern.path, 'timetable.sqlite'), { readOnly: true });
+  const stored = db.prepare('SELECT uid,stp,excluded_reason excludedReason,calls,data FROM variants').all();
+  assert.ok(stored.every(row => row.data === '{}'));
+  assert.equal(modern.metadata.counts.routingCallBytes, stored.reduce((bytes, row) => bytes + Buffer.byteLength(row.calls), 0));
+  const compact = JSON.parse(stored.find(row => row.uid === 'A00001').calls);
+  assert.deepEqual(compact.calls.map(row => row.slice(0, 3)), [
+    ['ORIGIN', 0, 'ORG'], ['MIDDLE', 2, 'MID'], ['MIDDLE', 4, 'MID'], ['DEST', 5, 'DST']
+  ]);
+  assert.equal(compact.calls[1][3], null); assert.equal(compact.calls[1][4], 25800); assert.equal(compact.calls[1][5], '2');
+  assert.equal(compact.calls[2][3], 26100); assert.equal(compact.calls[2][4], null);
+  assert.ok(stored.filter(row => row.excludedReason || row.stp === 'C').every(row => JSON.parse(row.calls).calls.length === 0));
+  const plan = db.prepare(`EXPLAIN QUERY PLAN SELECT variant_id,source,uid,start_date,end_date,days,stp,operator,mode,excluded_reason,line
+    FROM variants WHERE start_date<=? AND end_date>=? AND substr(days,?,1)='1'`).all('2026-09-08', '2026-09-08', 2);
+  assert.ok(plan.some(row => row.detail.includes('COVERING INDEX variant_calendar')));
+  db.close();
+
+  // Recreate the previous on-disk format from the same parsed source, so this
+  // exercises real v1 opening/validation rather than only a decoder fixture.
+  const legacyPath = join(path, 'legacy');
+  await cp(modern.path, legacyPath, { recursive: true });
+  const legacyDb = new DatabaseSync(join(legacyPath, 'timetable.sqlite'));
+  const update = legacyDb.prepare('UPDATE variants SET calls=?,data=? WHERE variant_id=?');
+  for await (const record of parseTimetable(join(source, 'RJTTF001MCA.txt'), 'MCA')) {
+    if (record.type !== 'schedule') continue;
+    const { calls, ...detail } = record.value;
+    update.run(JSON.stringify(calls.map(call => [call.tiploc, call.suffix, call.arrivalSeconds ?? null, call.departureSeconds ?? null,
+      call.workArrival ?? null, call.workDeparture ?? null, call.workPass ?? null, call.publicArrival,
+      call.publicDeparture, call.activity, call.platform ?? '', call.sourceRef.line])), JSON.stringify(detail), record.value.variantId);
+  }
+  legacyDb.close();
+  const legacyMetadata = { ...modern.metadata, schemaVersion: 1,
+    version: createHash('sha256').update(`1\0${modern.metadata.parserVersion}\0${modern.metadata.source.contentHash}`).digest('hex') };
+  await writeFile(join(legacyPath, 'metadata.json'), JSON.stringify(legacyMetadata));
+  assert.equal((await validateDataset(legacyPath)).valid, true);
+  await assert.rejects(importFullSnapshot(source, legacyPath), /different dataset/);
+  const modernRepo = await openDataset(modern.path), legacyRepo = await openDataset(legacyPath);
+  try {
+    for (const date of ['2026-03-28', '2026-03-29', '2026-09-08', '2026-09-09', '2026-10-24', '2026-10-25']) {
+      const resolved = modernRepo.resolveServices(date), old = legacyRepo.resolveServices(date);
+      assert.deepEqual({ ...resolved, services: resolved.services.map(service => ({ ...service, id: service.id.replace(modernRepo.version, legacyRepo.version) })) }, old, date);
+      assert.deepEqual(modernRepo.resolveServices(date, { summaryOnly: true }), legacyRepo.resolveServices(date, { summaryOnly: true }), date);
+      for (const uid of ['C00001', 'D00001']) {
+        assert.deepEqual({ ...modernRepo.resolveServiceExplanation(uid, date), version: legacyRepo.version }, legacyRepo.resolveServiceExplanation(uid, date));
+      }
+    }
+    assert.equal(modernRepo.resolveServiceExplanation('C00001', '2026-09-08').reason, 'CANCELLED');
+    const overlay = modernRepo.resolveServiceExplanation('D00001', '2026-09-08');
+    assert.equal(overlay.reason, 'OVERLAY');
+    assert.ok(overlay.candidates.some(row => row.excludedReason === 'UNSUPPORTED_MODE'));
+    assert.ok(!modernRepo.resolveServices('2026-09-08').services.some(service => service.uid === 'D00001'));
+    for (const [date, departure] of [['2026-03-29', '2026-03-29T02:00:00.000Z'], ['2026-10-25', '2026-10-25T01:00:00.000Z']]) {
+      const resolved = modernRepo.resolveServices(date);
+      assert.equal(new Date(resolved.services.find(service => service.uid === 'B00001').calls[0].departure).toISOString(), departure);
+      assert.ok(!resolved.services.some(service => service.uid === 'B00002'));
+      assert.equal(resolved.diagnostics.counts.AMBIGUOUS_CLOCK_CHANGE, 1);
+    }
+  } finally { modernRepo.close(); legacyRepo.close(); }
 });
 
 test('0000 requires midnight working context; small backwards working times fail', () => {
@@ -277,6 +363,39 @@ test('partial operating records and update transactions cannot become a successf
   await assert.rejects(importFullSnapshot(source, join(path, 'delta')), /full importer rejects D/);
   const controller = new AbortController(); controller.abort();
   await assert.rejects(importFullSnapshot(source, join(path, 'cancelled'), { signal: controller.signal }), /abort/i);
+});
+
+test('schema v2 validation detects corrupted compact inventories and prevents activation', async t => {
+  const path = await temporary(t), source = await fixture(join(path, 'source'));
+  const first = await importFullSnapshot(source, join(path, 'first')), data = join(path, 'active');
+  await activateDataset(first.path, data);
+  const candidate = join(path, 'candidate');
+  await cp(first.path, candidate, { recursive: true });
+  const db = new DatabaseSync(join(candidate, 'timetable.sqlite'));
+  const row = db.prepare('SELECT variant_id variantId,calls FROM variants').get();
+  const original = JSON.parse(row.calls);
+  const update = db.prepare('UPDATE variants SET calls=? WHERE variant_id=?');
+  try {
+    const changedPlatform = structuredClone(original);
+    changedPlatform.calls[0][5] = '123';
+    for (const [payload, expected] of [
+      [{ ...original, calls: original.calls.slice(0, 1) }, /Routing-call inventory mismatch/],
+      [changedPlatform, /Routing-call byte inventory mismatch/],
+      [{ calls: original.calls }, /supported variants have invalid compact routing calls/],
+      [{ ...original, originDeparture: null }, /supported variants have invalid compact routing calls/],
+    ]) {
+      update.run(JSON.stringify(payload), row.variantId);
+      const validation = await validateDataset(candidate);
+      assert.equal(validation.valid, false);
+      assert.ok(validation.errors.some(error => expected.test(error)), validation.errors.join('; '));
+      await assert.rejects(activateDataset(candidate, data), /invalid dataset/);
+      assert.equal((await getActiveDataset(data)).path, first.path);
+    }
+    update.run('{', row.variantId);
+    assert.ok((await validateDataset(candidate)).errors.some(error => /Invalid compact routing payload/.test(error)));
+    update.run(row.calls, row.variantId);
+    assert.equal((await validateDataset(candidate)).valid, true);
+  } finally { db.close(); }
 });
 
 test('source changes during inspection/import cannot acquire an earlier content identity', async t => {

@@ -445,6 +445,20 @@ enum PlannerTime {
         return display(departure, includeDate: includeDate) + separator + display(arrival, includeDate: includeDate)
     }
 
+    static func journeyResultTimes(from departure: Date, to arrival: Date) -> (departure: String, arrival: String) {
+        let departureTime = display(departure, includeDate: false)
+        let arrivalTime = display(arrival, includeDate: false)
+        guard !calendar.isDate(departure, inSameDayAs: arrival) else {
+            return (departureTime, arrivalTime)
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_GB")
+        formatter.timeZone = zone
+        formatter.dateFormat = "EEE"
+        return (departureTime, "\(arrivalTime) (\(formatter.string(from: arrival)))")
+    }
+
     static func decoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { decoder in

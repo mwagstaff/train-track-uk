@@ -75,6 +75,38 @@ test('label exhaustion is distinguishable from elapsed or operation budget exhau
     assert.throws(() => findJourneys(query, net, { maxOperations: 1 }), error => error.code === 'SEARCH_TIMEOUT' && error.reason === undefined);
 });
 
+test('routing batches clock/cancellation polls while retaining exact operation limits', () => {
+    const net = network(Array.from({ length: 1000 }, (_, i) =>
+        train(`direct${i}`, 'OP', [['AAA', null, 1 + i / 10], ['DDD', 20 + i / 10, null]])));
+    const query = { origin: 'AAA', destination: 'DDD', time: iso(0), timeType: 'departAfter', maxChanges: 0 };
+    let polls = 0;
+    const signal = { get aborted() { polls++; return false; } };
+    const cold = findJourneys(query, net, { signal });
+    assert.ok(cold.metrics.operations > 1000);
+    assert.ok(polls >= 3 && polls < cold.metrics.operations / 32, 'Polls must not scale one-for-one with operations');
+    const warm = findJourneys(query, net);
+    assert.deepEqual(findJourneys(query, net, { maxOperations: warm.metrics.operations }).journeys, warm.journeys);
+    assert.throws(() => findJourneys(query, net, { maxOperations: warm.metrics.operations - 1 }), { code: 'SEARCH_TIMEOUT' });
+    polls = 0;
+    assert.throws(() => findJourneys(query, net, {
+        signal: { get aborted() { return ++polls === 3; } }
+    }), { code: 'SEARCH_CANCELLED' });
+    assert.equal(polls, 3, 'Cancellation during graph work must stop at the next poll');
+});
+
+test('short searches poll cancellation and deadline before publishing a result', t => {
+    const query = { origin: 'AAA', destination: 'DDD', time: iso(0), timeType: 'departAfter', maxChanges: 0 };
+    const net = network([train('direct', 'OP', [['AAA', null, 10], ['DDD', 20, null]])]);
+    assert.ok(findJourneys(query, net).metrics.operations < 256);
+    let polls = 0;
+    assert.throws(() => findJourneys(query, net, {
+        signal: { get aborted() { return ++polls === 3; } }
+    }), { code: 'SEARCH_CANCELLED' });
+    let clocks = 0;
+    t.mock.method(Date, 'now', () => ++clocks >= 4 ? 100 : 0);
+    assert.throws(() => findJourneys(query, net, { timeoutMs: 50 }), { code: 'SEARCH_TIMEOUT' });
+});
+
 test('saved fallback finds connections even when an unavailable scheduled direct train would dominate them', () => {
     const net = network([
         train('direct', 'OP', [['AAA', null, 10], ['DDD', 30, null]]),

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PlannerSearchLog, PlannerSearchLogReader, normalizePlannerSearchLogQuery, PLANNER_SEARCH_RETENTION_MS } from '../lib/planner-search-log.js';
 import { PLANNER_SEARCH_INDEXES, COLLECTIONS } from '../lib/mongo-client.js';
+import { ROUTING_PROFILE_FIELDS } from '../lib/planner/telemetry.js';
 
 const epoch = Date.parse('2026-09-17T12:00:00Z');
 const rowFrom = operation => operation.updateOne.update[0].$replaceWith.$cond[2].$literal;
@@ -130,6 +131,44 @@ test('phase telemetry accumulates task deltas and sampled resource peaks without
     assert.deepEqual(row.resourcePeaks, { heapUsedBytes: 500, rssBytes: 1000 });
     assert.equal(first.metrics.routingMs, 10, 'Earlier queued writes are immutable');
     await log.flush();
+});
+
+test('routing profile fields accumulate across passes and persist measured zero without inventing legacy values', async () => {
+    assert.deepEqual(ROUTING_PROFILE_FIELDS, ['indexBuildMs', 'topologyBoundsMs', 'temporalBoundsMs', 'labelExpansionMs',
+        'transferResolutionMs', 'resultAssemblyMs',
+        'topologyBoundsBuilds', 'topologyBoundsCacheHits', 'temporalBoundsBuilds', 'temporalBoundsCacheHits', 'internalRoutePasses']);
+    assert.equal(Object.isFrozen(ROUTING_PROFILE_FIELDS), true);
+    const writes = [];
+    const log = new PlannerSearchLog({ now: () => epoch,
+        getCollection: async () => ({ bulkWrite: async operations => writes.push(...operations) }) });
+    log.start({}).finish({ status: 'success' });
+    await log.flush();
+    assert.equal(rowFrom(writes[0]).metrics, undefined, 'Older or unprofiled searches have unknown phase measurements');
+
+    const handle = log.start({});
+    handle.update({ metricsDelta: { indexBuildMs: 0, topologyBoundsMs: 1.25, temporalBoundsMs: 2.5, labelExpansionMs: 10,
+        transferResolutionMs: 30.5, resultAssemblyMs: 0,
+        topologyBoundsBuilds: 1, topologyBoundsCacheHits: 0, temporalBoundsBuilds: 1, temporalBoundsCacheHits: 0,
+        internalRoutePasses: 1, sourcePath: '/private/timetable', stationCode: 'KTH' } });
+    const first = [...log.pending.values()][0].row;
+    handle.update({ metricsDelta: { indexBuildMs: NaN, topologyBoundsMs: -1, temporalBoundsMs: Infinity,
+        labelExpansionMs: '100', transferResolutionMs: -1, resultAssemblyMs: Infinity,
+        topologyBoundsBuilds: null, topologyBoundsCacheHits: false,
+        temporalBoundsBuilds: undefined, temporalBoundsCacheHits: '<script>', internalRoutePasses: -1 } });
+    handle.finish({ status: 'fail', metricsDelta: { indexBuildMs: 0, topologyBoundsMs: 0.5, temporalBoundsMs: 1.25,
+        labelExpansionMs: 20, transferResolutionMs: 20.25, resultAssemblyMs: 0,
+        topologyBoundsBuilds: 0, topologyBoundsCacheHits: 1, temporalBoundsBuilds: 0,
+        temporalBoundsCacheHits: 1, internalRoutePasses: 1 } });
+    await log.flush();
+    const row = rowFrom(writes.at(-1));
+    assert.deepEqual(row.metrics, { indexBuildMs: 0, topologyBoundsMs: 1.75, temporalBoundsMs: 3.75, labelExpansionMs: 30,
+        transferResolutionMs: 50.75, resultAssemblyMs: 0,
+        topologyBoundsBuilds: 1, topologyBoundsCacheHits: 1, temporalBoundsBuilds: 1, temporalBoundsCacheHits: 1,
+        internalRoutePasses: 2 });
+    assert.equal(first.metrics.labelExpansionMs, 10, 'Accumulating later passes must not mutate earlier writes');
+    assert.equal(first.metrics.internalRoutePasses, 1);
+    assert.equal(first.metrics.transferResolutionMs, 30.5);
+    assert.equal(JSON.stringify(row).includes('/private/timetable'), false);
 });
 
 test('statistics cover all selected rows and p99 uses nearest rank, independent of table sorting and page size', async () => {

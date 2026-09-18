@@ -450,6 +450,9 @@ struct JourneyPlannerTests {
         let lateDeparture = try #require(formatter.date(from: "2026-09-16T22:55:00Z"))
         let nextDayArrival = try #require(formatter.date(from: "2026-09-16T23:30:00Z"))
         #expect(PlannerTime.displayRange(from: lateDeparture, to: nextDayArrival) == "Wed 16 Sep, 23:55 → Thu 17 Sep, 00:30")
+        let overnightResult = PlannerTime.journeyResultTimes(from: lateDeparture, to: nextDayArrival)
+        #expect(overnightResult.departure == "23:55")
+        #expect(overnightResult.arrival == "00:30 (Thu)")
     }
 
     @Test func legHeadingsDescribeTransportAndStationChangesAndMapPointsIncludeEndpoints() throws {

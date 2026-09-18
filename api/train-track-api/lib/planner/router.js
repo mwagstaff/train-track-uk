@@ -2,15 +2,39 @@ import { createConnectionIndex, resolveConnection, validateFixedLink, CONNECTION
 import { MAX_CHANGES, DEFAULT_WINDOW_MINUTES } from './contract.js';
 import { liveCall, liveLeg } from './live-network.js';
 import { validateTubeConnection, tubeBoardings } from './tube-routing.js';
+import { ROUTING_PROFILE_FIELDS } from './telemetry.js';
 
 const MINUTE = 60_000;
 const indexes = new WeakMap();
 export const ROUTING_POLICY_VERSION = 'scheduled-round-profile-tfl-priority-v3';
 export const DEFAULT_MODES = ['rail', 'replacementBus', 'walk', 'tubeTransfer'];
 
+function routePhaseMetrics() {
+    return Object.fromEntries(ROUTING_PROFILE_FIELDS.map(name => [name, 0]));
+}
+
+function addRoutePhaseMetrics(total, metrics) {
+    for (const name of ROUTING_PROFILE_FIELDS) total[name] += metrics?.[name] ?? 0;
+}
+
 function add(map, key, item) {
     if (!map.has(key)) map.set(key, []);
     map.get(key).push(item);
+}
+
+function unchangedTopology(service, baseline, check) {
+    const original = baseline.services.get(service.id);
+    if (!original || original.mode !== service.mode || original.calls.length !== service.calls.length) return false;
+    // Timing/platform observations can reuse an unchanged passenger topology.
+    // Removed, split or newly enabled stops/services get fresh bounds instead:
+    // weaker baseline bounds could expand extra states or disable profile bounds.
+    for (let position = 0; position < service.calls.length; position++) {
+        if (position % 128 === 0) check();
+        const call = service.calls[position], before = original.calls[position];
+        if (call.station !== before.station || Boolean(call.canBoard) !== Boolean(before.canBoard)
+            || Boolean(call.canAlight) !== Boolean(before.canAlight)) return false;
+    }
+    return true;
 }
 
 /** Index all service occurrences, not just the first train per stopping pattern:
@@ -20,6 +44,8 @@ export function prepareNetwork(network, check = () => {}) {
     if (indexes.has(network)) return indexes.get(network);
     if (network.baseNetwork && network.changedServiceIds instanceof Set) {
         const base = prepareNetwork(network.baseNetwork, check);
+        const topologyIndex = base.topologyIndex ?? base;
+        let baselineTopology = true;
         const changed = network.changedServiceIds;
         const services = new Map(base.services);
         const affected = new Set();
@@ -33,6 +59,7 @@ export function prepareNetwork(network, check = () => {}) {
         for (const service of network.services) {
             check();
             if (!changed.has(service.id) && !changed.has(service.scheduledServiceId)) continue;
+            if (baselineTopology && !unchangedTopology(service, topologyIndex, check)) baselineTopology = false;
             services.set(service.id, service);
             service.calls.forEach((call, index) => {
                 if (index % 128 === 0) check();
@@ -53,7 +80,13 @@ export function prepareNetwork(network, check = () => {}) {
             }
             return copied;
         };
+        if (services.size !== topologyIndex.services.size) baselineTopology = false;
+        if (baselineTopology) for (const id of changed) {
+            if (!services.has(id)) { baselineTopology = false; break; }
+        }
+        // Every miss also calculates against the unchanged immutable topology.
         const prepared = { connections: base.connections, services, potentials: new Map(),
+            ...(baselineTopology ? { topologyIndex } : {}),
             departures: copyEvents(base.departures, addedDepartures), arrivals: copyEvents(base.arrivals, addedArrivals) };
         indexes.set(network, prepared);
         return prepared;
@@ -90,6 +123,7 @@ export function releaseIndexCaches(network) {
     const index = indexes.get(network);
     if (!index) return;
     index.potentials.clear();
+    index.topologyIndex?.potentials.clear();
     index.temporal?.clear();
 }
 
@@ -325,9 +359,16 @@ export function scheduledCandidate(journey, network) {
 // Optimistic boarding lower bounds ignore times and interchange allowances. They
 // can only underestimate remaining work, so they safely rule out stations which
 // cannot reach the destination within the requested number of changes.
-function boardingBounds(index, target, reverse, allowedModes, maxBoardings, check, tubeAware) {
+function boardingBounds(index, target, reverse, allowedModes, maxBoardings, check, tubeAware, metrics) {
+    // Both cache hits and misses use baseline services. Computing a live-only
+    // miss into the shared cache could wrongly prune a later scheduled search.
+    index = index.topologyIndex ?? index;
     const key = `${target}|${reverse}|${[...allowedModes].sort()}|${maxBoardings}|${Boolean(tubeAware)}`;
-    if (index.potentials.has(key)) return index.potentials.get(key);
+    if (index.potentials.has(key)) {
+        metrics.topologyBoundsCacheHits++;
+        return index.potentials.get(key);
+    }
+    metrics.topologyBoundsBuilds++;
     const distances = new Map([[target, 0]]);
     const relaxLinks = () => {
         let changed = true;
@@ -488,16 +529,38 @@ function* journeySearch(request, network, options = {}) {
     const allowedModes = new Set(request.allowedModes ?? DEFAULT_MODES);
     const from = reverse ? query - window : query;
     const to = reverse ? query : query + window;
-    let operations = 0;
-    const check = () => {
-        if (options.signal?.aborted) throw failure('SEARCH_CANCELLED', 'Journey search was cancelled.');
-        if (++operations > (options.maxOperations ?? 2_000_000) || Date.now() - begun > (options.timeoutMs ?? 10_000)) {
-            throw failure('SEARCH_TIMEOUT', 'Journey search exceeded its work budget.');
-        }
+    let operations = 0, labelCount = 0;
+    const phases = routePhaseMetrics();
+    phases.internalRoutePasses = 1;
+    let expansionStarted = null, expansionSuspendedMs = 0, expansionTemporalMs = 0;
+    const expansionElapsed = () => expansionStarted === null ? phases.labelExpansionMs
+        : Math.max(0, performance.now() - expansionStarted - expansionSuspendedMs - (phases.temporalBoundsMs - expansionTemporalMs));
+    const metrics = () => ({ ...phases, labelExpansionMs: expansionElapsed(), operations, labels: labelCount,
+        elapsedMs: Date.now() - begun });
+    const measurePhase = (name, work) => {
+        const started = performance.now();
+        try { return work(); }
+        finally { phases[name] += performance.now() - started; }
     };
+    const maxOperations = options.maxOperations ?? 2_000_000;
+    const deadline = begun + (options.timeoutMs ?? 10_000);
+    const checkpoint = () => {
+        if (options.signal?.aborted) throw failure('SEARCH_CANCELLED', 'Journey search was cancelled.');
+        if (Date.now() > deadline) throw failure('SEARCH_TIMEOUT', 'Journey search exceeded its work budget.');
+    };
+    const check = () => {
+        // Count every operation, but avoid millions of clock/shared-flag reads.
+        // Poll at entry/every 256 checkpoints and after native work or I/O;
+        // the final poll prevents publishing cancelled or overdue results.
+        if ((++operations & 255) === 1) checkpoint();
+        if (operations > maxOperations) throw failure('SEARCH_TIMEOUT', 'Journey search exceeded its work budget.');
+    };
+    try {
     check();
     if (!Number.isFinite(query) || !Number.isFinite(window) || window <= 0 || !Number.isInteger(maxChanges) || maxChanges < 0 || maxChanges > MAX_CHANGES) throw failure('INVALID_REQUEST', 'Invalid journey search bounds.');
-    const index = prepareNetwork(network, check);
+    const index = indexes.has(network) ? prepareNetwork(network, check)
+        : measurePhase('indexBuildMs', () => prepareNetwork(network, check));
+    checkpoint();
     check();
     if (!index.connections.stations.has(request.origin) || !index.connections.stations.has(request.destination)
         || via.some(station => !index.connections.stations.has(station))) throw failure('INVALID_STATION', 'Unknown planner station.');
@@ -506,10 +569,11 @@ function* journeySearch(request, network, options = {}) {
         pagination: { earlierTime: new Date(reverse ? from : from - window).toISOString(), laterTime: new Date(reverse ? to + window : to).toISOString() },
         policy: { version: ROUTING_POLICY_VERSION, connectionPolicy: CONNECTION_POLICY, maxChanges, maxDurationMinutes: maxDuration / MINUTE, windowMinutes: window / MINUTE, maxConsecutiveFixedLinks: 1 }
     };
-    if (request.origin === request.destination) return { ...metadata, journeys: [], alreadyAtDestination: true, metrics: { operations, elapsedMs: Date.now() - begun } };
+    if (request.origin === request.destination) return { ...metadata, journeys: [], alreadyAtDestination: true, metrics: metrics() };
     const rounds = Array.from({ length: maxBoardings + 1 }, () => new Map());
     const target = reverse ? request.origin : request.destination;
-    const remainingBoardings = boardingBounds(index, target, reverse, allowedModes, maxBoardings, check, options.resolveTubeConnection);
+    const remainingBoardings = measurePhase('topologyBoundsMs', () =>
+        boardingBounds(index, target, reverse, allowedModes, maxBoardings, check, options.resolveTubeConnection, phases));
     const needsProfileBounds = (remainingBoardings.get(reverse ? request.destination : request.origin) ?? Infinity) > 2;
     const globalHorizon = reverse ? from - maxDuration : to + maxDuration;
     // Temporal bounds depend only on the index, target, direction, modes and
@@ -518,6 +582,22 @@ function* journeySearch(request, network, options = {}) {
     index.temporal ??= new Map();
     const temporalKey = `${target}|${reverse}|${[...allowedModes].sort()}|${maxBoardings}|${Boolean(options.resolveTubeConnection)}`;
     const timeBoundCache = index.temporal.get(temporalKey) ?? new Map();
+    const seenEnvelopes = new Set();
+    const cachedEnvelope = bounds => {
+        // Count distinct reused envelopes, not every label's cheap lookup.
+        if (!seenEnvelopes.has(bounds)) {
+            seenEnvelopes.add(bounds);
+            phases.temporalBoundsCacheHits++;
+        }
+        return bounds;
+    };
+    const buildEnvelope = horizon => {
+        phases.temporalBoundsBuilds++;
+        const bounds = measurePhase('temporalBoundsMs', () =>
+            temporalBounds(index, target, reverse, allowedModes, maxBoardings, horizon, check, options.resolveTubeConnection));
+        seenEnvelopes.add(bounds);
+        return bounds;
+    };
     index.temporal.delete(temporalKey);
     index.temporal.set(temporalKey, timeBoundCache);
     if (index.temporal.size > 4) index.temporal.delete(index.temporal.keys().next().value);
@@ -525,13 +605,13 @@ function* journeySearch(request, network, options = {}) {
         // The shared cache may already hold other searches' horizons; this
         // search's global envelope must exist before any fallback below.
         if (timeBoundCache.size >= 8) timeBoundCache.delete(timeBoundCache.keys().next().value);
-        timeBoundCache.set(globalHorizon, temporalBounds(index, target, reverse, allowedModes, maxBoardings, globalHorizon, check, options.resolveTubeConnection));
-    }
+        timeBoundCache.set(globalHorizon, buildEnvelope(globalHorizon));
+    } else cachedEnvelope(timeBoundCache.get(globalHorizon));
     // Only the bounds themselves are shared. The eligible-event and call
     // caches hang off a per-search view so they are released with the search.
     const views = new Map();
     const view = bounds => {
-        if (!views.has(bounds)) views.set(bounds, [...bounds]);
+        if (!views.has(bounds)) views.set(bounds, [...cachedEnvelope(bounds)]);
         return views.get(bounds);
     };
     const reachableTimes = horizon => {
@@ -550,7 +630,7 @@ function* journeySearch(request, network, options = {}) {
             }
             return view(timeBoundCache.get(closest));
         }
-        timeBoundCache.set(boundary, temporalBounds(index, target, reverse, allowedModes, maxBoardings, boundary, check, options.resolveTubeConnection));
+        timeBoundCache.set(boundary, buildEnvelope(boundary));
         return view(timeBoundCache.get(boundary));
     };
     const results = [];
@@ -589,7 +669,6 @@ function* journeySearch(request, network, options = {}) {
         }
         return bound;
     };
-    let labelCount = 0;
     const retain = label => {
         // A saved-board fallback already checked direct departures. Do not let
         // a scheduled direct train dominate all connecting replacement routes.
@@ -626,6 +705,8 @@ function* journeySearch(request, network, options = {}) {
             failure('SEARCH_TIMEOUT', 'Journey search exceeded its label budget.'),
             { reason: 'labelLimit', metrics: { operations, labels: labelCount } });
     };
+    expansionStarted = performance.now();
+    expansionTemporalMs = phases.temporalBoundsMs;
     retain({ station: reverse ? request.destination : request.origin, time: query, boundary: null, operator: null, boardings: 0,
         viaProgress: visit(0, reverse ? request.destination : request.origin), path: null, disruptionRank: 0 });
     const connectionFor = function* (label, stop, mode, event, initial) {
@@ -646,7 +727,17 @@ function* journeySearch(request, network, options = {}) {
             direction: initial ? 'latest' : 'earliest'
         };
         if (mode === 'tubeTransfer' && options.resolveTubeConnection) {
-            return yield { index: index.connections, query };
+            checkpoint();
+            const suspended = performance.now();
+            try {
+                const connections = yield { index: index.connections, query };
+                checkpoint();
+                return connections;
+            } finally {
+                const elapsed = performance.now() - suspended;
+                expansionSuspendedMs += elapsed;
+                phases.transferResolutionMs += elapsed;
+            }
         }
         const connection = resolveConnection(index.connections, query);
         return connection ? [connection] : [];
@@ -805,6 +896,11 @@ function* journeySearch(request, network, options = {}) {
             }
         }
     }
+    phases.labelExpansionMs = expansionElapsed();
+    expansionStarted = null;
+    const journeys = [];
+    const assemblyStarted = performance.now();
+    try {
     const unique = new Map();
     for (const label of results) {
         const departure = reverse ? label.time : label.boundary;
@@ -827,7 +923,6 @@ function* journeySearch(request, network, options = {}) {
         : a.arrival - b.arrival || a.changes - b.changes || b.departure - a.departure || signature(a.path).localeCompare(signature(b.path))));
     const offset = options.offset ?? 0;
     if (!Number.isInteger(offset) || offset < 0) throw failure('INVALID_REQUEST', 'Invalid journey page offset.');
-    const journeys = [];
     const ranked = departureProfile && options.balanceDepartures ? departureProfileOrder(useful) : useful;
     for (const candidate of ranked.slice(offset, offset + limit)) {
         check();
@@ -855,7 +950,13 @@ function* journeySearch(request, network, options = {}) {
         metadata.warnings.push('Fixed links use supplied generic durations and require the entire transfer to fit the active window.');
     }
     if (index.connections.ambiguousLinks.size) metadata.warnings.push('Overlapping fixed links with conflicting equal priorities were excluded.');
-    return { ...metadata, journeys, metrics: { operations, labels: labelCount, elapsedMs: Date.now() - begun } };
+    checkpoint();
+    } finally { phases.resultAssemblyMs += performance.now() - assemblyStarted; }
+    return { ...metadata, journeys, metrics: metrics() };
+    } catch (error) {
+        error.metrics = metrics();
+        throw error;
+    }
 }
 
 // The synchronous API remains available to timetable-only callers. Only eligible
@@ -863,7 +964,7 @@ function* journeySearch(request, network, options = {}) {
 export function findJourneys(request, network, options = {}) {
     const search = journeySearch(request, network, options);
     const result = search.next();
-    if (!result.done) throw failure('INVALID_REQUEST', 'Use asynchronous routing for TfL connections.');
+    if (!result.done) search.throw(failure('INVALID_REQUEST', 'Use asynchronous routing for TfL connections.'));
     return result.value;
 }
 
@@ -872,6 +973,11 @@ export async function findJourneysAsync(request, network, options = {}) {
     const maxOperations = options.maxOperations ?? 2_000_000;
     const timeoutMs = options.timeoutMs ?? 10_000;
     let operations = 0, labels = 0;
+    const phases = routePhaseMetrics();
+    const checkpoint = () => {
+        if (options.signal?.aborted || options.abortSignal?.aborted) throw failure('SEARCH_CANCELLED', 'Journey search was cancelled.');
+        if (operations > maxOperations || Date.now() - begun > timeoutMs) throw failure('SEARCH_TIMEOUT', 'Journey search exceeded its work budget.');
+    };
     options.resolveTubeConnection?.reserveForResults?.();
     // Verification spends reserved I/O capacity on complete candidate journeys.
     // Reroute against those observations so new durations, disruptions and
@@ -881,20 +987,47 @@ export async function findJourneysAsync(request, network, options = {}) {
     // first observations change the frontier. All passes share the same limits.
     for (let pass = 0; pass < 3; pass++) {
         const remainingMs = timeoutMs - (Date.now() - begun);
-        if (operations >= maxOperations || remainingMs <= 0) throw failure('SEARCH_TIMEOUT', 'Journey search exceeded its work budget.');
+        if (operations >= maxOperations || remainingMs <= 0) throw Object.assign(
+            failure('SEARCH_TIMEOUT', 'Journey search exceeded its work budget.'),
+            { metrics: { ...phases, operations, labels, elapsedMs: Date.now() - begun } });
         const search = journeySearch(request, network, { ...options,
             maxOperations: maxOperations - operations, timeoutMs: remainingMs });
-        let step = search.next();
-        while (!step.done) {
-            const { index, query } = step.value;
-            const connections = await options.resolveTubeConnection(index, query);
-            step = search.next(connections);
+        let result;
+        try {
+            let step = search.next();
+            while (!step.done) {
+                const { index, query } = step.value;
+                let connections;
+                try { connections = await options.resolveTubeConnection(index, query); }
+                catch (error) { search.throw(error); }
+                step = search.next(connections);
+            }
+            result = step.value;
+        } catch (error) {
+            addRoutePhaseMetrics(phases, error.metrics);
+            error.metrics = { ...phases, operations: operations + (error.metrics?.operations ?? 0),
+                labels: labels + (error.metrics?.labels ?? 0), elapsedMs: Date.now() - begun };
+            throw error;
         }
-        const result = step.value;
         operations += result.metrics?.operations ?? 0;
         labels += result.metrics?.labels ?? 0;
+        addRoutePhaseMetrics(phases, result.metrics);
         const selected = result.journeys.slice(0, Math.min(options.tubeVerificationLimit ?? request.limit ?? 5, 10));
-        if (pass < 2 && await options.resolveTubeConnection?.verifySelected?.(selected)) continue;
-        return { ...result, metrics: { ...result.metrics, operations, labels, elapsedMs: Date.now() - begun } };
+        try {
+            let changed = false;
+            if (pass < 2 && options.resolveTubeConnection?.verifySelected) {
+                const verificationStarted = performance.now();
+                try { changed = await options.resolveTubeConnection.verifySelected(selected); }
+                finally { phases.transferResolutionMs += performance.now() - verificationStarted; }
+            }
+            // Verification can exhaust a shared deadline or cancel even when
+            // it returns false. Never publish or start another pass afterward.
+            checkpoint();
+            if (changed) continue;
+        } catch (error) {
+            error.metrics = { ...phases, operations, labels, elapsedMs: Date.now() - begun };
+            throw error;
+        }
+        return { ...result, metrics: { ...result.metrics, ...phases, operations, labels, elapsedMs: Date.now() - begun } };
     }
 }

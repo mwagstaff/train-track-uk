@@ -1,0 +1,261 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "id": null,
+  "description": "Hourly S3 timetable ingestion, atomic activation, compact routing projection, and persisted validation summaries for the singleton train-track-api service. Panels automatically follow its newest API process, including across historical restarts. Unknown data displays N/A, not a fabricated zero. Coverage boundaries are supported MCA schedule ranges, not proof of whole-network completeness.",
+  "links": [],
+  "panels": [
+    {
+      "id": 1, "title": "Automatic hourly checks", "type": "stat", "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
+      "description": "Current API configuration, not the last run's saved configuration. Disabled automatic checks still permit a manual sync.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "noValue": "N/A", "mappings": [{ "type": "value", "options": { "0": { "text": "Disabled", "color": "orange" }, "1": { "text": "Enabled", "color": "green" } } }] }, "overrides": [] },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "values": false } },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_ingestion_enabled{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "instant": true }]
+    },
+    {
+      "id": 2, "title": "Active snapshot", "type": "stat", "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "noValue": "N/A", "mappings": [{ "type": "value", "options": { "0": { "text": "Unavailable", "color": "red" }, "1": { "text": "Available", "color": "green" } } }] }, "overrides": [] },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "values": false } },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_active_snapshot_available{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "instant": true }]
+    },
+    {
+      "id": 3, "title": "Last completed check", "type": "stat", "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "description": "Unchanged is successful without import/activation. A gap preserves the last known good daily state, but a valid compact monthly baseline may have activated in that same run. This is the last completed outcome; see in-progress/interrupted run status below.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "noValue": "N/A", "mappings": [{ "type": "value", "options": { "1": { "text": "Activated", "color": "green" }, "2": { "text": "Unchanged", "color": "green" }, "3": { "text": "Update gap", "color": "red" }, "4": { "text": "Error", "color": "red" }, "5": { "text": "Disabled", "color": "orange" } } }] }, "overrides": [] },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "values": false } },
+      "targets": [{ "refId": "A", "expr": "sum(max without (pid, job, instance, instance_id) (timetable_ingestion_last_result{service_name=\"train-track-api\",result=\"activated\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))) + 2 * sum(max without (pid, job, instance, instance_id) (timetable_ingestion_last_result{service_name=\"train-track-api\",result=\"unchanged\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))) + 3 * sum(max without (pid, job, instance, instance_id) (timetable_ingestion_last_result{service_name=\"train-track-api\",result=\"gap\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))) + 4 * sum(max without (pid, job, instance, instance_id) (timetable_ingestion_last_result{service_name=\"train-track-api\",result=\"error\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))) + 5 * sum(max without (pid, job, instance, instance_id) (timetable_ingestion_last_result{service_name=\"train-track-api\",result=\"disabled\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"}))))", "instant": true }]
+    },
+    {
+      "id": 4, "title": "Compact search projection", "type": "stat", "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "description": "Schema 2 removes pass-only calls and parsing-only payloads while preserving routing identities, calendar overlays, and boarding rules.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "noValue": "N/A", "mappings": [{ "type": "value", "options": { "0": { "text": "Legacy", "color": "orange" }, "1": { "text": "Optimized", "color": "green" } } }] }, "overrides": [] },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "values": false } },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_active_optimized{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "instant": true }]
+    },
+    {
+      "id": 5, "title": "Active validation", "type": "stat", "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "description": "Integrity and inventory checks plus representative-day passenger resolution. Passed does not mean all advertised services are supported; review exclusions below.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "noValue": "N/A", "mappings": [{ "type": "value", "options": { "0": { "text": "Failed", "color": "red" }, "1": { "text": "Passed", "color": "green" } } }] }, "overrides": [] },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "values": false } },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_active_validation_valid{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "instant": true }]
+    },
+    {
+      "id": 6, "title": "Missing update deliveries", "type": "stat", "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "noValue": "N/A", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }, "overrides": [] },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "values": false } },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_ingestion_pending_gap_sequences{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "instant": true }]
+    },
+    {
+      "id": 7, "title": "Active publication age", "type": "stat", "gridPos": { "x": 0, "y": 4, "w": 6, "h": 4 },
+      "description": "Age since the current applied delivery publication date at UTC midnight, not the monthly baseline. Daily feed: amber after 36 hours, red after 72 hours.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "s", "noValue": "N/A", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 129600 }, { "color": "red", "value": 259200 }] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "values": false } },
+      "targets": [{ "refId": "A", "expr": "time() - max without (pid, job, instance, instance_id) (timetable_active_publication_timestamp_seconds{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "instant": true }]
+    },
+    {
+      "id": 8, "title": "Since successful bucket check", "type": "stat", "gridPos": { "x": 6, "y": 4, "w": 6, "h": 4 },
+      "description": "An unchanged delivery counts as successful. Amber after 90 minutes; red after 3 hours.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "s", "noValue": "N/A", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 5400 }, { "color": "red", "value": 10800 }] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "values": false } },
+      "targets": [{ "refId": "A", "expr": "time() - max without (pid, job, instance, instance_id) (timetable_ingestion_last_successful_check_timestamp_seconds{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "instant": true }]
+    },
+    {
+      "id": 9, "title": "Latest S3 daily delivery age", "type": "stat", "gridPos": { "x": 12, "y": 4, "w": 6, "h": 4 },
+      "description": "Last observed S3 object modification time. Never-delivered or inaccessible objects remain N/A.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "s", "noValue": "N/A", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 129600 }, { "color": "red", "value": 259200 }] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "values": false } },
+      "targets": [{ "refId": "A", "expr": "time() - max without (pid, job, instance, instance_id) (timetable_remote_last_modified_timestamp_seconds{service_name=\"train-track-api\",feed=\"update\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "instant": true }]
+    },
+    {
+      "id": 10, "title": "Supported coverage remaining", "type": "stat", "gridPos": { "x": 18, "y": 4, "w": 6, "h": 4 },
+      "description": "Time until the final supported schedule date, inclusive. Amber below 14 days; red below 2 days. Does not establish route completeness.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "s", "noValue": "N/A", "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "orange", "value": 172800 }, { "color": "green", "value": 1209600 }] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "values": false } },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_active_coverage_timestamp_seconds{service_name=\"train-track-api\",boundary=\"end\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"}))) + 86400 - time()", "instant": true }]
+    },
+    {
+      "id": 11, "title": "Ingestion and validation timestamps", "type": "table", "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "noValue": "N/A" }, "overrides": [{ "matcher": { "id": "byName", "options": "Timestamp" }, "properties": [{ "id": "unit", "value": "dateTimeAsIso" }] }] },
+      "options": { "showHeader": true },
+      "targets": [
+        { "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_ingestion_last_check_timestamp_seconds{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"}))) * 1000", "legendFormat": "Last check started", "instant": true },
+        { "refId": "B", "expr": "max without (pid, job, instance, instance_id) (timetable_ingestion_last_successful_check_timestamp_seconds{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"}))) * 1000", "legendFormat": "Last successful check", "instant": true },
+        { "refId": "C", "expr": "max without (pid, job, instance, instance_id) (timetable_ingestion_last_successful_import_timestamp_seconds{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"}))) * 1000", "legendFormat": "Last successful import", "instant": true },
+        { "refId": "D", "expr": "max without (pid, job, instance, instance_id) (timetable_ingestion_last_activation_timestamp_seconds{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"}))) * 1000", "legendFormat": "Last activation", "instant": true },
+        { "refId": "E", "expr": "max without (pid, job, instance, instance_id) (timetable_active_validation_timestamp_seconds{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"}))) * 1000", "legendFormat": "Active validation", "instant": true },
+        { "refId": "F", "expr": "max without (pid, job, instance, instance_id) (timetable_remote_last_modified_timestamp_seconds{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"}))) * 1000", "legendFormat": "S3 {{feed}} delivery", "instant": true },
+        { "refId": "G", "expr": "max without (pid, job, instance, instance_id) (timetable_active_coverage_timestamp_seconds{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"}))) * 1000", "legendFormat": "Coverage {{boundary}}", "instant": true }
+      ],
+      "transformations": [{ "id": "seriesToRows" }, { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "Metric": "Event", "Value": "Timestamp" } } }]
+    },
+    {
+      "id": 12, "title": "Applied and pending sequences", "type": "timeseries", "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "description": "Sequence numbers roll over at the delivery format boundary. A received sequence is not active until an unbroken chain validates and activates.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "decimals": 0, "unit": "short", "custom": { "lineInterpolation": "stepAfter", "spanNulls": false } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_active_sequence{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "legendFormat": "Active {{kind}}", "range": true },
+        { "refId": "B", "expr": "max without (pid, job, instance, instance_id) (timetable_ingestion_pending_gap_sequence{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "legendFormat": "Pending {{boundary}}", "range": true }
+      ]
+    },
+    {
+      "id": 13, "title": "Active timetable inventory", "type": "timeseries", "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "description": "Variants include overlays, cancellations, and unsupported records; supported variants and resolved representative-day services are different inventories.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "custom": { "lineInterpolation": "stepAfter", "spanNulls": false } }, "overrides": [] },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_active_records{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "legendFormat": "{{kind}}", "range": true }]
+    },
+    {
+      "id": 14, "title": "Database, compact payload, and S3 sizes", "type": "timeseries", "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "bytes", "min": 0, "custom": { "lineInterpolation": "stepAfter", "spanNulls": false } }, "overrides": [] },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_active_database_bytes{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "legendFormat": "Active SQLite", "range": true },
+        { "refId": "B", "expr": "max without (pid, job, instance, instance_id) (timetable_active_routing_payload_bytes{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "legendFormat": "Compact call JSON", "range": true },
+        { "refId": "C", "expr": "max without (pid, job, instance, instance_id) (timetable_remote_size_bytes{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "legendFormat": "S3 {{feed}} archive", "range": true }
+      ]
+    },
+    {
+      "id": 15, "title": "Import exclusions and unmapped records", "type": "table", "gridPos": { "x": 0, "y": 24, "w": 12, "h": 9 },
+      "description": "Counts are diagnostic records/schedule variants, not individual calls. UNMAPPED_PASSENGER_CALLS warns of passenger calls excluded from routing. Holiday, mode, and supplementary-service exclusions are expected current capability limits; an increase merits investigation.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "Records", "desc": true }] },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_active_diagnostics{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "service_name": true, "instance_id": true, "pid": true, "job": true, "instance": true }, "renameByName": { "code": "Diagnostic", "Value": "Records" } } }]
+    },
+    {
+      "id": 16, "title": "Representative-day resolution diagnostics", "type": "table", "gridPos": { "x": 12, "y": 24, "w": 12, "h": 9 },
+      "description": "Dated overlay conflicts and DST/calendar exclusions. The bounded sample numbers identify dates in the table below. Representative validation samples are not a scan of every timetable date.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "Records", "desc": true }] },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_representative_diagnostics{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"}))) > 0", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "service_name": true, "instance_id": true, "pid": true, "job": true, "instance": true }, "renameByName": { "sample": "Sample", "code": "Diagnostic", "Value": "Records" } } }]
+    },
+    {
+      "id": 17, "title": "Validated sample dates", "type": "table", "gridPos": { "x": 0, "y": 33, "w": 6, "h": 8 },
+      "description": "Up to five representative dates from validation, ordered by date. Bounded slots prevent a new metric label every day; refer to the current dates when reading operator and service summaries.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": {}, "overrides": [{ "matcher": { "id": "byName", "options": "Date" }, "properties": [{ "id": "unit", "value": "dateTimeAsIso" }] }] },
+      "options": { "showHeader": true },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_representative_date_timestamp_seconds{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"}))) * 1000", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "service_name": true, "instance_id": true, "pid": true, "job": true, "instance": true }, "renameByName": { "sample": "Sample", "Value": "Date" } } }]
+    },
+    {
+      "id": 18, "title": "Resolved services and stations by sample", "type": "timeseries", "gridPos": { "x": 6, "y": 33, "w": 9, "h": 8 },
+      "description": "Look for sudden drops after activation. Validation/activation safeguards also compare resolved operator coverage; sample dates can change when publication changes.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "custom": { "lineInterpolation": "stepAfter", "spanNulls": false } }, "overrides": [] },
+      "options": { "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_representative_services{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "legendFormat": "Sample {{sample}} services", "range": true },
+        { "refId": "B", "expr": "max without (pid, job, instance, instance_id) (timetable_representative_stations{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "legendFormat": "Sample {{sample}} stations", "range": true }
+      ]
+    },
+    {
+      "id": 19, "title": "Resolved operator services", "type": "table", "gridPos": { "x": 15, "y": 33, "w": 9, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0 }, "overrides": [] },
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "Services", "desc": true }] },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_representative_operator_services{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "service_name": true, "instance_id": true, "pid": true, "job": true, "instance": true }, "renameByName": { "sample": "Sample", "operator": "Operator", "Value": "Services" } } }]
+    },
+    {
+      "id": 20, "title": "Last run duration", "type": "timeseries", "gridPos": { "x": 0, "y": 41, "w": 8, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "s", "min": 0 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_ingestion_last_run_duration_seconds{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "legendFormat": "Completed run", "range": true }]
+    },
+    {
+      "id": 21, "title": "Last run download bytes", "type": "timeseries", "gridPos": { "x": 8, "y": 41, "w": 8, "h": 7 },
+      "description": "Zero on an unchanged check is expected. This is the latest run size, not a cumulative download counter.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "bytes", "min": 0 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_ingestion_last_download_bytes{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "legendFormat": "Downloaded", "range": true }]
+    },
+    {
+      "id": 22, "title": "Run in progress / readable state", "type": "timeseries", "gridPos": { "x": 16, "y": 41, "w": 8, "h": 7 },
+      "description": "Readable state 0 means missing, malformed, or unsupported persisted telemetry; other missing metrics remain unknown. In-progress is observational: a confirmed dead local PID clears it, but live, remote, or unknown PIDs cannot prove useful import work.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "min": 0, "max": 1, "decimals": 0, "custom": { "lineInterpolation": "stepAfter" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_ingestion_in_progress{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "legendFormat": "Run in progress", "range": true },
+        { "refId": "B", "expr": "max without (pid, job, instance, instance_id) (timetable_ingestion_state_readable{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "legendFormat": "State readable", "range": true }
+      ]
+    },
+    {
+      "id": 23, "title": "Last ingestion error", "type": "table", "gridPos": { "x": 0, "y": 48, "w": 8, "h": 6 },
+      "description": "No rows means no error code recorded, not proof that ingestion has run. Check the last outcome and check freshness above. No credentials, object IDs, or raw error text are metric labels.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "decimals": 0 }, "overrides": [] },
+      "options": { "showHeader": true },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_ingestion_last_error{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "instant": true, "format": "table" }],
+      "transformations": [{ "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true, "service_name": true, "instance_id": true, "pid": true, "job": true, "instance": true, "Value": true }, "renameByName": { "code": "Error code" } } }]
+    },
+    {
+      "id": 24, "title": "Validation errors and warnings", "type": "timeseries", "gridPos": { "x": 8, "y": 48, "w": 8, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "min": 0, "decimals": 0, "custom": { "lineInterpolation": "stepAfter" } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_active_validation_issues{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "legendFormat": "{{severity}}", "range": true }]
+    },
+    {
+      "id": 25, "title": "Planner request duration p95", "type": "timeseries", "gridPos": { "x": 16, "y": 48, "w": 8, "h": 6 },
+      "description": "Existing planner histogram includes queue and date preparation. No observations means N/A. Compare before and after compact snapshot activation; live-provider latency remains separate from timetable routing.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "ms", "min": 0 }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "targets": [{ "refId": "A", "expr": "histogram_quantile(0.95, sum by (le, operation) (rate(planner_request_duration_ms_bucket{service_name=\"train-track-api\"}[$__rate_interval])))", "legendFormat": "{{operation}}", "range": true }]
+    },
+    {
+      "id": 26, "title": "Interrupted local run", "type": "stat", "gridPos": { "x": 0, "y": 54, "w": 8, "h": 4 },
+      "description": "Red means a persisted in-progress run's local PID is confirmed absent. The previous completed result can remain successful after a hard kill. Unknown worker ownership remains N/A; check timestamps and service logs as well.",
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "noValue": "N/A", "mappings": [{ "type": "value", "options": { "0": { "text": "Not interrupted", "color": "green" }, "1": { "text": "Worker exited early", "color": "red" } } }] }, "overrides": [] },
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "values": false } },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_ingestion_abandoned_run{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "instant": true }]
+    },
+    {
+      "id": 27, "title": "Configured check interval", "type": "stat", "gridPos": { "x": 8, "y": 54, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "s", "noValue": "N/A" }, "overrides": [] },
+      "options": { "colorMode": "none", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "values": false } },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_ingestion_check_interval_seconds{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "instant": true }]
+    },
+    {
+      "id": 28, "title": "Active snapshot schema", "type": "stat", "gridPos": { "x": 16, "y": 54, "w": 8, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "" },
+      "fieldConfig": { "defaults": { "unit": "short", "decimals": 0, "noValue": "N/A" }, "overrides": [] },
+      "options": { "colorMode": "none", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"], "values": false } },
+      "targets": [{ "refId": "A", "expr": "max without (pid, job, instance, instance_id) (timetable_active_schema_version{service_name=\"train-track-api\"} and on (service_name, instance_id, pid) topk by (service_name) (1, max by (service_name, instance_id, pid) (process_start_time_seconds{service_name=\"train-track-api\"})))", "instant": true }]
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 39,
+  "tags": ["train-track-api", "timetable", "data-quality", "journey-planner"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "browser",
+  "title": "Timetable Ingestion & Data Quality",
+  "uid": "tt-timetable-ingestion",
+  "version": 1,
+  "weekStart": "monday"
+}

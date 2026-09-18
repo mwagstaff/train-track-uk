@@ -29,6 +29,7 @@ import { resolveDelayRepayOperator } from './lib/delay-repay-config.js';
 import { getOperatorBrandingConfig } from './lib/operator-branding-config.js';
 import { registerRailwayBackgroundRoutes } from './lib/railway-backgrounds.js';
 import { registerPlannerRoutes } from './lib/planner-routes.js';
+import { startTimetableIngestion } from './lib/planner/ingestion-scheduler.js';
 import {
     deleteSubscriptionAuditEventsForDevice,
     startSubscriptionAuditLogMaintenance
@@ -1593,7 +1594,15 @@ await notificationSubscriptionManager.init();
 journeyTrackingManager.startPollingLoop();
 
 const port = process.env.PORT || 3012;
-app.listen(port, () => {
+const server = app.listen(port, () => {
     console.log(`Server running on port ${port}`);
     logLiveActivityStartup();
+});
+const timetableIngestion = startTimetableIngestion();
+// Stop the importer as well as the HTTP server on service shutdown. Leave its
+// five-second kill escalation time to run before this process exits.
+for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
+    timetableIngestion.stop();
+    server.close();
+    setTimeout(() => process.exit(signal === 'SIGINT' ? 130 : 0), 6000);
 });

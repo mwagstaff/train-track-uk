@@ -19,7 +19,7 @@ try {
         'arrive-by': { type: 'string' }, limit: { type: 'string', default: '5' },
         'max-changes': { type: 'string', default: String(MAX_CHANGES) }, version: { type: 'string' },
         cases: { type: 'string' }, explain: { type: 'boolean', default: false },
-        port: { type: 'string', default: '3013' }
+        port: { type: 'string', default: '3013' }, 'dry-run': { type: 'boolean', default: false }
     } });
     const config = plannerConfig({ ...process.env,
         ...(values['data-dir'] ? { PLANNER_DATA_DIR: values['data-dir'] } : {}),
@@ -34,8 +34,16 @@ try {
     if (command === 'inspect') {
         const { inspectSource } = await import('../lib/planner/source.js');
         output(await inspectSource(required('source'), options));
+    } else if (command === 'sync') {
+        const [{ syncTimetable }, { timetableIngestionConfig }] = await Promise.all([
+            import('../lib/planner/ingestion.js'), import('../lib/planner/ingestion-source.js')
+        ]);
+        const result = await syncTimetable({ config: { ...timetableIngestionConfig(), dataDirectory: config.dataDirectory, datasetPath: config.datasetPath },
+            dryRun: values['dry-run'], ...options });
+        output(result);
+        if (result.pendingGap) process.exitCode = 2;
     } else if (command === 'import') {
-        if (values.mode !== 'full') throw new Error('Only full imports are supported; incremental delivery is not configured.');
+        if (values.mode !== 'full') throw new Error('Use sync for managed full + daily S3 ingestion; import accepts complete full packages only.');
         const { importFullSnapshot } = await import('../lib/planner/repository.js');
         output(await importFullSnapshot(required('source'), path.resolve(required('staging')), options));
     } else if (command === 'validate') {
@@ -101,7 +109,7 @@ try {
         const server = app.listen(port, '127.0.0.1', () => console.log(`Local planner: http://127.0.0.1:${port}/api/v3/journey-planner/status`));
         await new Promise(resolve => controller.signal.addEventListener('abort', () => server.close(resolve), { once: true }));
     } else {
-        throw new Error('Usage: npm run planner -- inspect|import|validate|activate|rollback|status|query|benchmark|serve [options]');
+        throw new Error('Usage: npm run planner -- sync [--dry-run]|inspect|import|validate|activate|rollback|status|query|benchmark|serve [options]');
     }
 } catch (error) {
     console.error(JSON.stringify({ error: error.code || 'PLANNER_FAILED', message: error.message }));

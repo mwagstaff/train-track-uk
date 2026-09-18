@@ -69,6 +69,35 @@ test('transfer-only routing adds endpoint allowances once and publishes chronolo
     assert.match(journey.legs[0].localJourney.notes.join(' '), /No planned disruption/);
 });
 
+test('routing rechecks cancellation immediately after a Tube lookup', async () => {
+    const controller = new AbortController();
+    let lookedUp = false;
+    await assert.rejects(findJourneysAsync(query(), network(), {
+        signal: controller.signal,
+        resolveTubeConnection: async () => {
+            lookedUp = true;
+            controller.abort();
+            return [];
+        }
+    }), { code: 'SEARCH_CANCELLED' });
+    assert.equal(lookedUp, true);
+});
+
+test('routing rechecks its deadline immediately after a Tube lookup', async t => {
+    let clock = 0;
+    t.mock.method(Date, 'now', () => clock);
+    let lookedUp = false;
+    await assert.rejects(findJourneysAsync(query(), network(), {
+        timeoutMs: 50,
+        resolveTubeConnection: async () => {
+            lookedUp = true;
+            clock = 100;
+            return [];
+        }
+    }), { code: 'SEARCH_TIMEOUT' });
+    assert.equal(lookedUp, true);
+});
+
 test('minor-delay contingency rejects the earlier onward train and explains the later connection', async () => {
     const net = network([service('feeder', 'AAA', '11:00', 'PAD', '11:20'),
         service('missed', 'VIC', '11:48', 'BBB', '12:05'), service('catchable', 'VIC', '11:55', 'BBB', '12:15')]);

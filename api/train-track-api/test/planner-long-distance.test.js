@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { openDataset } from '../lib/planner/repository.js';
 import { PlannerService, plannerConfig } from '../lib/planner/service.js';
 import { decodeCursor, normalizeRequest } from '../lib/planner/contract.js';
@@ -7,7 +9,12 @@ import { PlannerEngine } from '../lib/planner/engine.js';
 import { TubeTrackProvider } from '../lib/planner/tube-provider.js';
 
 const datasetPath = process.env.PLANNER_FULL_DATASET;
-const VERSION = '3d9d573635ed619ac3808338176858077f4d35650846ba0a0e829ed53ad64f5c';
+const fixtureMetadata = datasetPath ? JSON.parse(await readFile(join(datasetPath, 'metadata.json'), 'utf8')) : null;
+// Pin the same source/parser fixture in both supported storage formats.
+const VERSION = {
+    1: '3d9d573635ed619ac3808338176858077f4d35650846ba0a0e829ed53ad64f5c',
+    2: 'e9a2be699c4acf8c72f08a2c7edcf19cc950770ea1c5bd9c2502bd58b2400988'
+}[fixtureMetadata?.schemaVersion ?? 1];
 const SOURCE_HASH = '75dacf80a357fe5878cead08e8b043671006ea96de29f315c6dad9d5ca440784';
 const MINUTE = 60_000;
 const DAY = 86_400_000;

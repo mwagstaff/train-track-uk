@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
 import { normalizePlannerSearchRange, plannerSearchWindow } from './planner-search-range.js';
+import { ROUTING_PROFILE_FIELDS } from './planner/telemetry.js';
 
 export const PLANNER_SEARCH_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const PLANNER_SEARCH_SOURCES = ['search', 'search-job', 'saved-route', 'saved-refresh', 'saved-replan'];
@@ -16,7 +17,7 @@ const date = value => {
 const member = (value, allowed, fallback) => allowed.includes(value) ? value : fallback;
 const code = value => typeof value === 'string' && /^[A-Z0-9_]{1,80}$/.test(value) ? value : null;
 const METRICS = ['admissionQueueMs', 'queueWaitMs', 'resumeQueueMs', 'preparationMs', 'routingMs', 'liveLookupMs',
-    'cpuMs', 'routeCalls', 'operations', 'labels', 'candidates'];
+    'cpuMs', 'routeCalls', 'operations', 'labels', 'candidates', ...ROUTING_PROFILE_FIELDS];
 const RESOURCE_PEAKS = ['heapUsedBytes', 'rssBytes'];
 
 // Search completion must never wait for Mongo. Coalesce lifecycle updates and

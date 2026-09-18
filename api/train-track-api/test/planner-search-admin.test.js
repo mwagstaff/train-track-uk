@@ -244,10 +244,44 @@ test('optional timing diagnostics separate queue, routing, live I/O, CPU and sam
     assert.match(html, /Sampled heap peak<\/dt><dd>256\.0 MiB/);
     assert.match(html, /Sampled process memory peak \(RSS\)<\/dt><dd>1024\.0 MiB/);
     assert.match(html, /Memory peaks are sampled and may miss brief spikes/);
+    assert.equal(html.includes('Topology-bound scans'), false, 'Missing profile values are not invented for older rows');
+    assert.equal(html.includes('Transfer resolution<'), false);
+    assert.equal(html.includes('Result assembly<'), false);
+    assert.equal(html.includes('Routing phase timings are wall-clock'), false);
     const malicious = render(data({ rows: [{ firstResultMs: '<img src=x>', metrics: { admissionQueueMs: -5, queueWaitMs: '<img src=x>', routeCalls: Infinity, operations: -5 }, resourcePeaks: { rssBytes: '<script>' } }] }));
     assert.equal(malicious.includes('<summary>Timing details</summary>'), false);
     assert.equal(malicious.includes('<img'), false);
     assert.equal(malicious.includes('<script>'), false);
+});
+
+test('routing profile details distinguish phase wall time, bound cache reuse and internal route passes', () => {
+    const html = render(data({ rows: [{ metrics: { indexBuildMs: 12, topologyBoundsMs: 34, temporalBoundsMs: 56,
+        labelExpansionMs: 1200, transferResolutionMs: 800, resultAssemblyMs: 0,
+        topologyBoundsBuilds: 1, topologyBoundsCacheHits: 3, temporalBoundsBuilds: 2,
+        temporalBoundsCacheHits: 4, internalRoutePasses: 5 } }] }));
+    for (const [label, value] of [['Routing index build', '12 ms'], ['Topology-bound scans', '34 ms'],
+        ['Temporal-bound scans', '56 ms'], ['Routing-state expansion', '1.2 s'],
+        ['Transfer resolution', '800 ms'], ['Result assembly', '0 ms'], ['Topology-bound builds', '1'],
+        ['Topology-bound cache hits', '3'], ['Temporal-bound builds', '2'], ['Temporal-bound cache hits', '4'],
+        ['Internal routing passes', '5']]) {
+        assert.ok(html.includes(`<dt>${label}</dt><dd>${value}</dd>`), `${label} shows its measured value`);
+    }
+    assert.match(html, /Routing phase timings are wall-clock measurements within Route calculation, not extra durations to add to it/);
+    assert.match(html, /Internal routing passes include TfL retries/);
+    assert.match(html, /Transfer resolution includes provider waits/);
+
+    const partial = render(data({ rows: [{ metrics: { temporalBoundsCacheHits: 0 } }] }));
+    assert.match(partial, /Temporal-bound cache hits<\/dt><dd>0<\/dd>/);
+    assert.equal(partial.includes('Temporal-bound scans'), false);
+    assert.equal(partial.includes('Internal routing passes<'), false);
+    assert.equal(partial.includes('Transfer resolution<'), false);
+    assert.equal(partial.includes('Result assembly<'), false);
+    const invalid = render(data({ rows: [{ metrics: { indexBuildMs: -1, topologyBoundsMs: NaN, temporalBoundsMs: Infinity,
+        labelExpansionMs: '<img src=x>', transferResolutionMs: -1, resultAssemblyMs: '<script>',
+        topologyBoundsBuilds: -1, topologyBoundsCacheHits: 1.5,
+        temporalBoundsBuilds: '5', temporalBoundsCacheHits: null, internalRoutePasses: Number.MAX_SAFE_INTEGER + 1 } }] }));
+    assert.equal(invalid.includes('<summary>Timing details</summary>'), false);
+    assert.equal(invalid.includes('<img'), false);
 });
 
 function render(input) { return renderPlannerSearchPage(input, { renderShell: shell, now }); }

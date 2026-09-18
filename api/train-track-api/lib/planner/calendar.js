@@ -1,4 +1,4 @@
-import { dateOnly, resolveCallTimes } from './time.js';
+import { dateOnly, resolveCallTimes, resolveRoutingCallTimes } from './time.js';
 
 const weekdays = new Map();
 
@@ -110,7 +110,10 @@ export function resolveServices(repository, originDate, { summaryOnly = false, s
   for (const { variant, decision } of selected) {
     check();
     try {
-      const calls = resolveCallTimes(decodeCalls(JSON.parse(storedCalls.get(variant.variantId)), repository.stationByTiploc), originDate, { compact: true });
+      const stored = JSON.parse(storedCalls.get(variant.variantId));
+      const calls = repository.metadata.schemaVersion === 2
+        ? resolveRoutingCallTimes(stored, originDate)
+        : resolveCallTimes(decodeCalls(stored, repository.stationByTiploc), originDate, { compact: true });
       if (calls.length < 2) { recordDiagnostic(diagnostics, 'INSUFFICIENT_PASSENGER_CALLS', { uid: variant.uid }); continue; }
       if (summaryOnly) {
         summary.serviceCount++;
