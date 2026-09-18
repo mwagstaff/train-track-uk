@@ -11,7 +11,7 @@ private final class HorizontalTabSwipeDisabledState {
 struct HorizontalTabSwipeTests {
     @Test
     func backgroundPhotoPrecedesFavouritesWithoutReplacingNextTab() {
-        let tabs: [TrainTrack_UK.Tab] = [.favourites, .myJourneys, .history, .profile]
+        let tabs: [TrainTrack_UK.Tab] = [.favourites, .myJourneys, .profile]
 
         #expect(HorizontalTabSwipeDestination.resolve(
             horizontalTranslation: 50,

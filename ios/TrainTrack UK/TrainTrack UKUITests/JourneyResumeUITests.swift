@@ -26,7 +26,10 @@ final class JourneyResumeUITests: XCTestCase {
         app.launchEnvironment.removeValue(forKey: "RELEASE_SCREENSHOT_SCREEN")
         app.launchEnvironment.removeValue(forKey: "UI_TEST_RESET_HISTORY")
         app.launch()
-        let history = app.tabBars.buttons["History"]
+        let profile = app.tabBars.buttons["Profile"]
+        XCTAssertTrue(profile.waitForExistence(timeout: 15))
+        profile.tap()
+        let history = app.buttons["profile.journey-history"]
         XCTAssertTrue(history.waitForExistence(timeout: 15))
         history.tap()
         let journey = app.staticTexts["Kent House → London Victoria"].firstMatch

@@ -2,6 +2,7 @@ import CoreLocation
 import SwiftUI
 
 struct AddJourneyView: View {
+    var isTabRoot = false
     @State private var fromInput = StationInput()
     @State private var stopInputs: [StationInput] = [StationInput()]
     @State private var markAsFavorite: Bool = false
@@ -21,6 +22,7 @@ struct AddJourneyView: View {
     @EnvironmentObject var activityMgr: LiveActivityManager
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
     @EnvironmentObject var historyStore: JourneyHistoryStore
+    @Environment(\.dismiss) private var dismiss
 
     @AppStorage("liveActivityDurationMinutes") private var liveActivityDurationMinutes: Int = 60
 
@@ -171,12 +173,17 @@ struct AddJourneyView: View {
                 }
             }
         }
-        .navigationTitle("Add Journey")
+        .navigationTitle(isTabRoot ? "New journey" : "Add Journey")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") { cancel() }
+            if !isTabRoot {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        clearFocus()
+                        dismiss()
+                    }
                     .disabled(isSaving || isStartingOneOff)
+                }
             }
         }
         .sheet(item: $scheduleDestination, onDismiss: finishScheduling) { destination in
@@ -197,7 +204,7 @@ struct AddJourneyView: View {
     }
 
     private func updateFocus(for selectedTab: Tab) {
-        guard selectedTab == .addJourney else {
+        guard selectedTab == .addJourney, !isTabRoot else {
             clearFocus()
             return
         }
@@ -326,22 +333,26 @@ struct AddJourneyView: View {
         leaveAddJourney(for: targetTab)
     }
 
-    private func cancel() {
-        leaveAddJourney(for: router.lastNonAddTab)
-    }
-
     private func leaveAddJourney(
         for targetTab: Tab,
         afterTransition: (() -> Void)? = nil
     ) {
         clearFocus()
 
-        // Dismissing the standalone cover also reveals the requested destination.
+        // Pop the saved-route form before switching to the requested destination.
         DispatchQueue.main.async {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) {
+                if !isTabRoot { dismiss() }
                 router.selected = targetTab
+                isSaving = false
+                if isTabRoot {
+                    fromInput = StationInput()
+                    stopInputs = [StationInput()]
+                    markAsFavorite = false
+                    options = AddJourneyOptions()
+                }
             }
             afterTransition?()
         }

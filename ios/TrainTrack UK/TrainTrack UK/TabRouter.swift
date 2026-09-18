@@ -6,7 +6,6 @@ enum Tab: Hashable, CaseIterable {
     case myJourneys
     case inProgress
     case addJourney
-    case history
     case profile
 
     var title: String {
@@ -14,8 +13,7 @@ enum Tab: Hashable, CaseIterable {
         case .favourites: "Favourites"
         case .myJourneys: "My Journeys"
         case .inProgress: "In Progress"
-        case .addJourney: "Add Journey"
-        case .history: "History"
+        case .addJourney: "New journey"
         case .profile: "Profile"
         }
     }
@@ -25,15 +23,14 @@ enum Tab: Hashable, CaseIterable {
         case .favourites: "heart.fill"
         case .myJourneys: "list.bullet"
         case .inProgress: "location.fill"
-        case .addJourney: "plus.circle"
-        case .history: "clock.arrow.circlepath"
+        case .addJourney: "plus"
         case .profile: "person.circle"
         }
     }
 }
 
 struct JourneyHistoryNavigationTarget: Hashable {
-    let recordID: UUID
+    var recordID: UUID? = nil
     private let requestID = UUID()
 }
 
@@ -41,8 +38,6 @@ final class TabRouter: ObservableObject {
     static let shared = TabRouter()
 
     @Published var selected: Tab = .favourites
-    // Track the most recent non-Add tab so we can return on cancel
-    @Published var lastNonAddTab: Tab = .favourites
     // Navigation path reset trigger - increment to pop to root
     @Published var navigationResetTrigger: Int = 0
     // One-shot preference when opening Add Journey from favourites
@@ -56,6 +51,11 @@ final class TabRouter: ObservableObject {
 
     func openHistoryRecord(id: UUID) {
         historyTarget = JourneyHistoryNavigationTarget(recordID: id)
-        selected = .history
+        selected = .profile
+    }
+
+    func openHistory() {
+        historyTarget = JourneyHistoryNavigationTarget()
+        selected = .profile
     }
 }

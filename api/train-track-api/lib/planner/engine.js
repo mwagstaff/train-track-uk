@@ -307,6 +307,7 @@ export class PlannerEngine {
                     signal, maxDurationMinutes: 1440, maxOperations: remainingOperations,
                     timeoutMs: Math.max(1, timeoutMs - (performance.now() - started)), offset,
                     measure: execution.measure, onTelemetry: execution.onTelemetry, resolveTubeConnection,
+                    tubeVerificationLimit: request.limit,
                     abortSignal: execution.abortSignal, awaitIO: execution.awaitIO,
                     timetableOnly: execution.timetableOnly,
                     ...(execution.excludeDirect ? { excludeDirect: true } : {}), ...options

@@ -75,8 +75,8 @@ enum AppStoreScreenshotFixture {
 
             switch screen {
             case "favourites": TabRouter.shared.selected = .favourites
-            case "history": TabRouter.shared.selected = .history
-            case "journey-stats": TabRouter.shared.selected = .history
+            case "history": TabRouter.shared.openHistory()
+            case "journey-stats": TabRouter.shared.openHistory()
             case "journey-ended-early":
                 let route = stations(["KTH", "VIC"])
                 if route.count == 2, let sydenhamHill = stations(["SYH"]).first {

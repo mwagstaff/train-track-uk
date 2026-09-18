@@ -66,8 +66,7 @@ final class DeepLinkRouter: ObservableObject {
 
     func openHistory() {
         routeMapDestination = nil
-        TabRouter.shared.selected = .history
-        TabRouter.shared.navigationResetTrigger += 1
+        TabRouter.shared.openHistory()
     }
 
     func openInProgress() {

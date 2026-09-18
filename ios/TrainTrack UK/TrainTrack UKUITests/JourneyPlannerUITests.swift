@@ -4,6 +4,85 @@ final class JourneyPlannerUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testNewJourneyTabAndProfileNavigation() throws {
+        for largeTextAndDarkMode in [false, true] {
+            let app = launch(plannerEnabled: true, largeText: largeTextAndDarkMode, dark: largeTextAndDarkMode)
+            XCTAssertFalse(app.tabBars.buttons["History"].exists)
+            XCTAssertFalse(app.buttons["toolbar.add-journey"].exists)
+            openAddJourney(in: app)
+            XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.tabBars.buttons["New journey"].isSelected)
+            XCTAssertTrue(app.tabBars.firstMatch.isHittable)
+            XCTAssertFalse(app.navigationBars.buttons["Cancel"].exists)
+            XCTAssertTrue(app.buttons["View background photo"].isHittable)
+            attach(largeTextAndDarkMode ? "new-journey-large-text" : "new-journey-tab", app: app)
+            if !largeTextAndDarkMode {
+                app.buttons["View background photo"].tap()
+                XCTAssertTrue(app.buttons["Close photo"].waitForExistence(timeout: 5))
+                app.buttons["Close photo"].tap()
+                XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 5))
+                app.swipeRight()
+                XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 5))
+                app.swipeLeft()
+                XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 5))
+            }
+            app.tabBars.buttons["Favourites"].tap()
+            XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
+
+            app.tabBars.buttons["My Journeys"].tap()
+            XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 5))
+            XCTAssertFalse(app.buttons["toolbar.add-journey"].exists)
+            openAddJourney(in: app)
+            XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 5))
+            app.tabBars.buttons["My Journeys"].tap()
+            XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 5))
+
+            app.tabBars.buttons["Profile"].tap()
+            let history = app.buttons["profile.journey-history"]
+            let siri = app.buttons["profile.siri-shortcuts"]
+            XCTAssertTrue(history.waitForExistence(timeout: 5))
+            XCTAssertTrue(siri.exists)
+            XCTAssertGreaterThan(siri.frame.minY, history.frame.minY)
+            scrollTo(history, in: app)
+            attach(largeTextAndDarkMode ? "profile-navigation-dark-large-text" : "profile-navigation", app: app)
+            history.tap()
+            XCTAssertTrue(app.navigationBars["Journey History"].waitForExistence(timeout: 5))
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+            XCTAssertTrue(app.navigationBars["Profile"].waitForExistence(timeout: 5))
+            scrollTo(siri, in: app)
+            for _ in 0..<8 where siri.frame.midY >= app.tabBars.firstMatch.frame.minY {
+                app.swipeUp()
+            }
+            if largeTextAndDarkMode { attach("profile-siri-dark-large-text", app: app) }
+            siri.tap()
+            XCTAssertTrue(app.navigationBars["Siri & Shortcuts"].waitForExistence(timeout: 5))
+            app.navigationBars.buttons.element(boundBy: 0).tap()
+            XCTAssertTrue(app.navigationBars["Profile"].waitForExistence(timeout: 5))
+            let preferences = app.staticTexts["Preferences"]
+            scrollTo(preferences, in: app, towardTop: true)
+            preferences.tap()
+            XCTAssertTrue(app.navigationBars["Preferences"].waitForExistence(timeout: 5))
+            XCTAssertFalse(app.buttons["preferences.siri-shortcuts"].exists)
+            XCTAssertFalse(app.staticTexts["Siri & Shortcuts"].exists)
+            app.terminate()
+        }
+    }
+
+    @MainActor
+    func testSavedRouteCancelReturnsToNewJourney() throws {
+        let app = launch(plannerEnabled: true)
+        openAddJourney(in: app)
+        let savedRoute = app.buttons["planner.saved-route"]
+        scrollTo(savedRoute, in: app)
+        savedRoute.tap()
+        XCTAssertTrue(app.navigationBars["Add Journey"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.tabBars.buttons["New journey"].isSelected)
+        XCTAssertFalse(app.navigationBars.buttons["Cancel"].exists)
+    }
+
+    @MainActor
     func testSavedRouteQueueProgressAtLargestText() throws {
         let app = launch(plannerEnabled: false, largeText: true, apiBase: "http://127.0.0.1:3014/saved-progress-large/api/v2")
         saveFixtureRoute(in: app)
@@ -126,7 +205,7 @@ final class JourneyPlannerUITests: XCTestCase {
         let favouriteEntry = app.buttons["Add favourite journey"]
         XCTAssertTrue(favouriteEntry.waitForExistence(timeout: 5))
         favouriteEntry.tap()
-        XCTAssertTrue(app.navigationBars["Find journeys"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.switches["planner.live-times"].exists)
         XCTAssertFalse(app.buttons["planner.search"].isEnabled)
         let savedRoute = app.buttons["planner.saved-route"]
@@ -151,17 +230,19 @@ final class JourneyPlannerUITests: XCTestCase {
         scrollTo(favourite, in: app)
         XCTAssertEqual(favourite.value as? String, "1")
         app.buttons["Cancel"].tap()
-        XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.tabBars.buttons["New journey"].isSelected, true)
     }
 
     @MainActor
     func testDisabledPlannerPreservesOriginalAddJourney() throws {
         let app = launch(plannerEnabled: false)
         openAddJourney(in: app)
-        XCTAssertTrue(app.navigationBars["Add Journey"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.textFields["add-journey.from"].exists)
-        XCTAssertFalse(app.navigationBars["Find journeys"].exists)
-        app.buttons["Cancel"].tap()
+        XCTAssertFalse(app.buttons["planner.origin"].exists)
+        XCTAssertFalse(app.navigationBars.buttons["Cancel"].exists)
+        app.tabBars.buttons["Favourites"].tap()
         XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
     }
 
@@ -169,7 +250,7 @@ final class JourneyPlannerUITests: XCTestCase {
     func testPlannerLargestDynamicTypeLayout() throws {
         let app = launch(plannerEnabled: true, largeText: true)
         openAddJourney(in: app)
-        XCTAssertTrue(app.navigationBars["Find journeys"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["planner.origin"].isHittable)
         XCTAssertTrue(app.buttons["planner.destination"].isHittable)
         try app.performAccessibilityAudit(for: [.textClipped, .hitRegion])
@@ -667,7 +748,7 @@ final class JourneyPlannerUITests: XCTestCase {
         XCTAssertTrue(cancel.isHittable)
         attach("planner-queued-large-text-cancel", app: app)
         cancel.tap()
-        XCTAssertTrue(app.navigationBars["Find journeys"].exists)
+        XCTAssertTrue(app.navigationBars["New journey"].exists)
         XCTAssertFalse(cancel.exists)
         XCTAssertTrue(app.buttons["planner.search"].isEnabled)
         XCTAssertFalse(app.navigationBars["Journeys"].exists)
@@ -832,12 +913,12 @@ final class JourneyPlannerUITests: XCTestCase {
         later.tap()
         XCTAssertTrue(app.navigationBars["Journeys"].exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.navigationBars["Find journeys"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 5))
         let recent = app.buttons.containing(.staticText, identifier: "Kent House → London Victoria").firstMatch
         scrollTo(recent, in: app)
         XCTAssertTrue(recent.exists)
         recent.tap()
-        XCTAssertTrue(app.navigationBars["Find journeys"].exists)
+        XCTAssertTrue(app.navigationBars["New journey"].exists)
     }
 
     @MainActor
@@ -891,7 +972,7 @@ final class JourneyPlannerUITests: XCTestCase {
     }
 
     @MainActor private func openAddJourney(in app: XCUIApplication) {
-        let add = app.buttons["toolbar.add-journey"]
+        let add = app.tabBars.buttons["New journey"]
         XCTAssertTrue(add.waitForExistence(timeout: 5))
         add.tap()
     }

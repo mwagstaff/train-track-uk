@@ -708,7 +708,7 @@ struct InProgressJourneyView: View {
 
             Button("Close") {
                 coordinator.clearRecentlyCompletedJourney()
-                router.selected = .history
+                router.openHistory()
             }
             .buttonStyle(.bordered)
             .tint(Color.primary)

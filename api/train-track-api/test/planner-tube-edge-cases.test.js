@@ -52,7 +52,7 @@ test('unknown disruption status remains uncertain even when source coverage is c
     const provider = source(({ time }) => [journey(Date.parse(time), { ...clear, status: 'unknown',
         sources: [{ source: 'plannedWorks', status: 'available' }, { source: 'realtime', status: 'notApplicable' }] })]);
     const options = await createTubeResolver(provider, { now: () => now })(index(), query);
-    assert.equal(options[0].disruptionRank, 1);
+    assert.equal(options[0].disruptionRank, 0);
     assert.match(options[0].localJourney.notes.join(' '), /cannot be confirmed/);
     assert.doesNotMatch(options[0].localJourney.notes.join(' '), /No planned disruption/);
 });

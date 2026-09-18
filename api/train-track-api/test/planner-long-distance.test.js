@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { openDataset } from '../lib/planner/repository.js';
 import { PlannerService, plannerConfig } from '../lib/planner/service.js';
-import { decodeCursor } from '../lib/planner/contract.js';
+import { decodeCursor, normalizeRequest } from '../lib/planner/contract.js';
+import { PlannerEngine } from '../lib/planner/engine.js';
+import { TubeTrackProvider } from '../lib/planner/tube-provider.js';
 
 const datasetPath = process.env.PLANNER_FULL_DATASET;
 const VERSION = '3d9d573635ed619ac3808338176858077f4d35650846ba0a0e829ed53ad64f5c';
@@ -23,6 +25,49 @@ const knownLegs = [
 ];
 const vehicles = journey => journey.legs.filter(leg => leg.kind === 'vehicle');
 const localDate = instant => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/London', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(instant));
+
+test('optional RJTTF939 Clock House earliest arrival stays on the first live page when TfL lookups are exhausted', {
+    skip: !datasetPath, timeout: 60_000, concurrency: false
+}, async t => {
+    const config = plannerConfig({});
+    const now = () => Date.parse('2026-09-18T00:28:00Z');
+    const provider = new TubeTrackProvider({ now, fetch: () => { throw new Error('No external fixture requests'); } });
+    const lookup = provider.lookup.bind(provider);
+    let tubeLookups = 0, liveLookups = 0;
+    // The deployed search spends its bounded TfL budget before reaching Victoria.
+    // Exercise the real fallback adapter with TubeTrack and live routing enabled.
+    provider.lookup = query => {
+        tubeLookups++;
+        return lookup({ ...query, budget: { limit: 0, used: 0 } });
+    };
+    const engine = new PlannerEngine({ ...config, datasetPath }, { now, tubeProvider: provider,
+        liveProvider: {
+            async fetchBoards() { liveLookups++; return { boards: [], errors: [] }; },
+            async fetchDetails() { return { details: [], errors: [] }; }
+        } });
+    t.after(() => engine.close());
+    const response = await engine.search({ request: normalizeRequest({ origin: 'CLK', destination: 'BRI',
+        time: '2026-09-18T01:28:00+01:00', timeType: 'departAfter', realtime: 'apply', limit: 5 }) },
+    undefined, { timeoutMs: config.jobTimeoutMs, maxOperations: config.jobMaxOperations });
+    assert.equal(response.dataset.version, VERSION);
+    assert.ok(tubeLookups > 0);
+    assert.ok(liveLookups > 0);
+    assert.equal(response.live.mode, 'apply');
+    assert.equal(response.journeys.length, 5);
+    const journey = response.journeys[0];
+    assert.equal(journey.departure, '2026-09-18T03:59:00.000Z');
+    assert.equal(journey.arrival, '2026-09-18T07:05:00.000Z');
+    assert.equal(journey.durationMinutes, 186);
+    assert.deepEqual(journey.legs.filter(leg => leg.mode !== 'interchange')
+        .map(leg => [leg.mode, leg.from.crs, leg.to.crs]), [
+        ['walk', 'CLK', 'KTH'], ['rail', 'KTH', 'VIC'],
+        ['tubeTransfer', 'VIC', 'PAD'], ['rail', 'PAD', 'BRI']
+    ]);
+    const transfer = journey.legs.find(leg => leg.mode === 'tubeTransfer');
+    assert.equal(transfer.localJourney.status, 'unavailable');
+    assert.match(transfer.localJourney.notes.join(' '), /National Rail transfer allowance/);
+    assert.equal(response.search.searchTruncated, true, 'Unverified TfL coverage must remain visible');
+});
 
 function assertSleeper(journey) {
     const leg = vehicles(journey).find(value => value.serviceId === sleeperId);

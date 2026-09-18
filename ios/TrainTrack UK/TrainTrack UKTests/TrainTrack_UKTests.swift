@@ -381,32 +381,41 @@ struct TrainTrack_UKTests {
     }
 
     @Test @MainActor func tabsHaveAStablePagingOrderAndPresentation() {
-        #expect(Tab.allCases == [.favourites, .myJourneys, .inProgress, .addJourney, .history, .profile])
-        #expect(Tab.allCases.map(\.title) == ["Favourites", "My Journeys", "In Progress", "Add Journey", "History", "Profile"])
-        #expect(Tab.allCases.map(\.systemImage) == ["heart.fill", "list.bullet", "location.fill", "plus.circle", "clock.arrow.circlepath", "person.circle"])
+        #expect(Tab.allCases == [.favourites, .myJourneys, .inProgress, .addJourney, .profile])
+        #expect(Tab.allCases.map(\.title) == ["Favourites", "My Journeys", "In Progress", "New journey", "Profile"])
+        #expect(Tab.allCases.map(\.systemImage) == ["heart.fill", "list.bullet", "location.fill", "plus", "person.circle"])
     }
 
-    @Test @MainActor func historyDeepLinkSelectsTheHistoryRoot() throws {
+    @Test @MainActor func historyDeepLinkOpensJourneyHistoryUnderProfile() throws {
         let tabRouter = TabRouter.shared
         let deepLinkRouter = DeepLinkRouter.shared
         let previousTab = tabRouter.selected
         let previousResetTrigger = tabRouter.navigationResetTrigger
+        let previousTarget = tabRouter.historyTarget
         let previousRouteMapDestination = deepLinkRouter.routeMapDestination
         defer {
             tabRouter.selected = previousTab
             tabRouter.navigationResetTrigger = previousResetTrigger
+            tabRouter.historyTarget = previousTarget
             deepLinkRouter.routeMapDestination = previousRouteMapDestination
         }
 
         tabRouter.selected = .myJourneys
-        let resetTrigger = tabRouter.navigationResetTrigger
+        tabRouter.openHistoryRecord(id: UUID())
+        let previousRequest = tabRouter.historyTarget
         let url = try #require(URL(string: "traintrack://history"))
 
         deepLinkRouter.handle(url: url)
 
-        #expect(tabRouter.selected == .history)
-        #expect(tabRouter.navigationResetTrigger == resetTrigger + 1)
+        #expect(tabRouter.selected == .profile)
+        #expect(tabRouter.historyTarget != nil)
+        #expect(tabRouter.historyTarget?.recordID == nil)
+        #expect(tabRouter.historyTarget != previousRequest)
         #expect(deepLinkRouter.routeMapDestination == nil)
+
+        let rootRequest = tabRouter.historyTarget
+        deepLinkRouter.handle(url: url)
+        #expect(tabRouter.historyTarget != rootRequest)
     }
 
     @Test @MainActor func inProgressDeepLinkSelectsTheInProgressRoot() throws {
@@ -444,7 +453,7 @@ struct TrainTrack_UKTests {
         let recordID = UUID()
         tabRouter.openHistoryRecord(id: recordID)
 
-        #expect(tabRouter.selected == .history)
+        #expect(tabRouter.selected == .profile)
         #expect(tabRouter.historyTarget?.recordID == recordID)
     }
 

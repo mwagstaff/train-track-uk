@@ -153,7 +153,7 @@ struct MyJourneyHistoryView: View {
         }
         .scrollContentBackground(.hidden)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle("History")
+        .navigationTitle("Journey History")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(text: $searchText, prompt: "Station, CRS, or operator")
         .toolbar {

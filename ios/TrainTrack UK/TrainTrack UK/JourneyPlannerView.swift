@@ -6,13 +6,12 @@ struct AddJourneyEntryView: View {
         if JourneyPlannerFeature.isEnabled {
             JourneyPlannerView()
         } else {
-            AddJourneyView()
+            AddJourneyView(isTabRoot: true)
         }
     }
 }
 
 struct JourneyPlannerView: View {
-    @EnvironmentObject private var router: TabRouter
     @State private var store = JourneyPlannerStore()
     @State private var stationField: StationField?
     @State private var resultsPresented = false
@@ -107,7 +106,8 @@ struct JourneyPlannerView: View {
                 .accessibilityIdentifier("planner.saved-route")
             } footer: {
                 Text("Save a route, add intermediate stops, or start journey updates.")
-                    .foregroundStyle(Color.plannerSecondaryText)
+                    .foregroundStyle(.white.opacity(0.88))
+                    .shadow(color: .black.opacity(0.55), radius: 3, y: 1)
             }
 
             Section {
@@ -137,24 +137,14 @@ struct JourneyPlannerView: View {
                     }
                 }
             } header: {
-                Text("Recent searches").foregroundStyle(Color.plannerSecondaryText)
+                RailwayBackgroundSectionHeader(title: "Recent searches")
             }
         }
         .tint(Color.plannerActionText)
-        .navigationTitle("Find journeys")
+        .navigationTitle("New journey")
         .navigationBarTitleDisplayMode(.inline)
         .environment(\.timeZone, PlannerTime.zone)
         .environment(\.calendar, PlannerTime.calendar)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") {
-                    searchTask?.cancel()
-                    store.cancelSearch()
-                    router.addJourneyPrefillFavourite = false
-                    router.selected = router.lastNonAddTab
-                }
-            }
-        }
         .sheet(item: $stationField) { field in
             NavigationStack {
                 PlannerStationPicker(title: field.title, client: store.client) { station in
@@ -190,6 +180,7 @@ struct JourneyPlannerView: View {
             searchTask?.cancel()
             store.cancelSearch()
         }
+        .railwayBackgroundPOC()
     }
 
     private func stationButton(_ title: String, station: PlannerStation?, field: StationField) -> some View {

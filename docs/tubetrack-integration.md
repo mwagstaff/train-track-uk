@@ -79,6 +79,10 @@ Disruption policy:
 - Broad partial-closure messages do not prove every section is closed. Precise
   exclusion needs a full closure or explicit leg applicability. Missing/stale
   disruption coverage is uncertainty, not confirmation of an unaffected route.
+- Missing or budget-limited TfL coverage does not demote a feasible timetable
+  connection behind later rail-only journeys. These options retain their normal
+  time ordering and an explicit transfer-estimate note. Known major disruption
+  still favours a less-disrupted alternative.
 
 The API’s disruption score is not interpreted as minutes. Validity periods and
 structured journey/leg issues are preserved, and duplicate warning text is
@@ -93,6 +97,14 @@ requests, allows up to 12 journey lookups per search and stops starting uncached
 lookups after eight seconds spent looking up routes. A final request may run up
 to its four-second deadline. Searches share their budget across routing passes;
 board refreshes have an absolute cap of 32 lookups and the same elapsed limit.
+Graph searches discard Tube links with no feasible onward train and prioritise
+useful connections before requesting directions. Speculative lookups use at most
+half the request budget and three seconds of the eight-second lookup allowance;
+the rest is reserved for transfers in the top candidate journeys. Up to two
+further routing passes revalidate onward trains, changes and closures, including
+newly preferred candidates. All passes share the original execution and lookup
+limits. Nearby feeders can reuse a confirmed TfL departure within the same search
+when its unchanged times fit; expired observations are never reused.
 Cached results remain usable within their expiry. Cancellation stops unused requests. Journey cache validity is at most 30 seconds and
 never exceeds the upstream `expiresAt`; stale responses are not fresh directions.
 The selected TfL expiry also constrains planner/board freshness. The palette is
@@ -124,6 +136,15 @@ From `api/train-track-api`:
 ```sh
 rtk proxy node --test test/planner-tube-*.test.js
 rtk npm run test:planner
+```
+
+The optional RJTTF939 regression in `planner-long-distance.test.js` also runs
+the 18 September Clock House–Bristol search with live routing and TubeTrack
+enabled but its lookup budget exhausted. It requires the 04:59–08:05 walking
+option on the first page, while preserving the incomplete-coverage notice:
+
+```sh
+rtk proxy env PLANNER_FULL_DATASET=var/planner/snapshots/RJTTF939 node --test test/planner-long-distance.test.js
 ```
 
 iOS coverage is in `JourneyPlannerTests` and the two `testTubeTrackDirections…`

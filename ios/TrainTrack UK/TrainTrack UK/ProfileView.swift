@@ -40,6 +40,26 @@ struct ProfileView: View {
                     )
                 }
 
+                NavigationLink(value: JourneyHistoryNavigationTarget()) {
+                    profileRow(
+                        title: "Journey History",
+                        subtitle: "Past journeys, statistics, and Delay Repay claims.",
+                        systemImage: "clock.arrow.circlepath"
+                    )
+                }
+                .accessibilityIdentifier("profile.journey-history")
+
+                NavigationLink {
+                    SiriShortcutsSettingsView()
+                } label: {
+                    profileRow(
+                        title: "Siri & Shortcuts",
+                        subtitle: "Choose your default route and set up voice shortcuts.",
+                        systemImage: "waveform"
+                    )
+                }
+                .accessibilityIdentifier("profile.siri-shortcuts")
+
                 if holidayMode.isEnabled || !notificationStore.subscriptions.isEmpty {
                     Button {
                         holidayMode.setEnabled(!holidayMode.isEnabled)

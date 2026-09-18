@@ -146,10 +146,7 @@ final class SiriShortcutsUITests: XCTestCase {
         let profile = app.buttons["Profile"].firstMatch
         XCTAssertTrue(profile.waitForExistence(timeout: 5))
         profile.tap()
-        let preferences = app.staticTexts["Preferences"]
-        XCTAssertTrue(preferences.waitForExistence(timeout: 5))
-        preferences.tap()
-        let siriSettings = app.buttons["preferences.siri-shortcuts"]
+        let siriSettings = app.buttons["profile.siri-shortcuts"]
         XCTAssertTrue(siriSettings.waitForExistence(timeout: 5))
         siriSettings.tap()
         XCTAssertTrue(app.navigationBars["Siri & Shortcuts"].waitForExistence(timeout: 5))

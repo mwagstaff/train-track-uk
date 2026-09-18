@@ -8,6 +8,8 @@ const walking = mode => ['walk', 'walking'].includes(mode);
 export const tubeBoardings = steps => (steps ?? []).filter(step => !walking(step.mode)).length;
 const iso = time => new Date(time).toISOString();
 const distinct = values => [...new Set(values.filter(Boolean))];
+const connectionKey = value => [value.from?.crs ?? value.from, value.to?.crs ?? value.to,
+    value.start ?? Date.parse(value.departure), value.end ?? Date.parse(value.arrival), value.ruleId].join('|');
 
 function issues(journey) {
     const found = new Map();
@@ -49,7 +51,7 @@ function assessment(journey) {
         || !['complete', 'notApplicable'].includes(value.coverage)
         || value.sources?.some(source => !['available', 'notApplicable'].includes(source.status)))
         || active.some(issue => issue.stale);
-    return { active, closed, minor, major, unknown, rank: closed ? 4 : major ? 3 : unknown ? 2 : minor ? 1 : 0 };
+    return { active, closed, minor, major, unknown, rank: closed ? 4 : major ? 3 : minor ? 1 : 0 };
 }
 
 function warningText(journey) {
@@ -77,7 +79,8 @@ function fallback(index, query, parts, response, notes) {
         ? { ...journey, departureTime: response.meta.disruptionEvidenceForTime, arrivalTime: response.meta.disruptionEvidenceForTime,
             legs: journey.legs?.map(leg => ({ ...leg, departureTime: response.meta.disruptionEvidenceForTime,
                 arrivalTime: response.meta.disruptionEvidenceForTime })) } : journey);
-    if (known.length && known.every(journey => assessment(journey).closed)) {
+    const risks = known.map(assessment);
+    if (risks.length && risks.every(risk => risk.closed)) {
         notes.add(CLOSURE_NOTE);
         return [];
     }
@@ -93,7 +96,12 @@ function fallback(index, query, parts, response, notes) {
         : response?.status === 'unmapped'
         ? 'Detailed TfL directions are not available for this station connection; the National Rail transfer allowance is shown.'
         : 'TubeTrack directions are unavailable; the National Rail transfer allowance is shown. Check TfL before travelling.';
-    return [{ ...connection, disruptionRank: 1, localJourney: { provider: 'tubetrack', status: 'unavailable',
+    // Missing live coverage is not evidence of disruption. Keep supplied
+    // timetable connections in time order unless every known usable route has
+    // reported major disruption, and explain the uncertainty either way.
+    const usableRisks = risks.filter(risk => !risk.closed);
+    const disruptionRank = usableRisks.length && usableRisks.every(risk => risk.major) ? 2 : 0;
+    return [{ ...connection, disruptionRank, localJourney: { provider: 'tubetrack', status: 'unavailable',
         contingencyMinutes: 0, notes: [note, ...(warnings.length ? ['Previously reported disruption may still affect this transfer.'] : [])],
         warnings, steps: [], ...(response?.expiresAt ? { expiresAt: response.expiresAt } : {}) } }];
 }
@@ -104,16 +112,31 @@ function fallback(index, query, parts, response, notes) {
 export function createTubeResolver(provider, { signal, check = () => {}, awaitIO = work => work(),
     budget = { limit: 12, used: 0 }, now = Date.now, lookupBudgetMs = 8000 } = {}) {
     const memo = new Map();
+    const observations = new Map();
+    const pending = new Map();
     let lookupMs = 0;
+    let reserveForResults = false;
     const state = { limited: false, expiresAt: Infinity, used: false, notes: new Set() };
     const checkpoint = () => {
         check();
         if (signal?.aborted) throw new PlannerError('SEARCH_CANCELLED', 'TubeTrack search cancelled.', 499);
     };
-    const resolve = async (index, query) => {
+    const resolve = async (index, query, priority = false) => {
         checkpoint();
         state.used = true;
         const parts = allowances(index, query, provider);
+        const useFallback = (response, window) => {
+            // A later window's outage must not resurrect a connection already
+            // rejected by a successful lookup in an earlier window.
+            const fallbackQuery = reverse
+                ? { ...query, departure: Math.min(query.departure, window.end + (parts.entryMinutes + parts.extraMinutes) * MINUTE) }
+                : { ...query, arrival: Math.max(query.arrival, window.start - parts.exitMinutes * MINUTE) };
+            const connections = fallback(index, fallbackQuery, parts, response, state.notes);
+            if (response.meta?.reason === 'requestLimit') {
+                for (const connection of connections) pending.set(connectionKey(connection), { index, query: fallbackQuery });
+            }
+            return connections;
+        };
         const reverse = query.direction === 'latest';
         const reference = reverse ? query.departure : query.arrival;
         if (!Number.isFinite(reference)) return [];
@@ -130,12 +153,47 @@ export function createTubeResolver(provider, { signal, check = () => {}, awaitIO
             if (query.departure != null && time > query.departure - (parts.entryMinutes + parts.extraMinutes) * MINUTE) continue;
             const get = async instant => {
                 const key = `${query.from}:${query.to}:${reverse}:${instant}`;
+                const pair = `${query.from}:${query.to}:${reverse}`;
+                if (priority && memo.get(key)?.meta?.reason === 'requestLimit') memo.delete(key);
+                if (!memo.has(key) || memo.get(key)?.meta?.reason === 'requestLimit') {
+                    // An earlier feeder can wait for the same confirmed Tube
+                    // departure. Reuse concrete, fresh options only; never shift
+                    // their times or infer a duration for another departure.
+                    const nearby = (observations.get(pair) ?? []).find(value =>
+                        Date.parse(value.response.expiresAt) > now() && !value.response.meta?.stale
+                        // In reverse search an unconstrained earlier Tube
+                        // departure could hide a later feasible feeder train.
+                        && (!reverse || query.arrival != null)
+                        && (reverse ? value.instant <= instant : value.instant >= instant)
+                        && Math.abs(value.instant - instant) <= 30 * MINUTE
+                        && value.response.journeys.some(option => {
+                            const risk = assessment(option);
+                            const departure = Date.parse(option.departureTime), arrival = Date.parse(option.arrivalTime);
+                            const contingency = risk.minor ? 5 * MINUTE : 0;
+                            return !risk.closed && departure >= window.start && arrival + contingency <= window.end
+                                && (reverse ? arrival + contingency <= instant : departure >= instant)
+                                && (query.arrival == null || departure >= query.arrival + parts.exitMinutes * MINUTE)
+                                && (query.departure == null || arrival + contingency
+                                    + (parts.entryMinutes + parts.extraMinutes) * MINUTE <= query.departure);
+                        }));
+                    if (nearby) memo.set(key, nearby.response);
+                }
                 if (!memo.has(key)) {
                     const began = performance.now();
+                    // Speculative graph branches cannot spend the capacity
+                    // reserved for connections in the actual result frontier.
+                    const requestLimit = reserveForResults && !priority ? Math.floor(budget.limit / 2) : budget.limit;
+                    const timeLimit = reserveForResults && !priority ? lookupBudgetMs * 0.375 : lookupBudgetMs;
                     memo.set(key, await provider.lookup({ from: query.from, to: query.to,
                         time: iso(instant), timeMode: reverse ? 'arriveBy' : 'departAt', signal,
-                        awaitIO, budget: lookupMs >= lookupBudgetMs ? { limit: 0, used: 0 } : budget }));
+                        awaitIO, budget: lookupMs >= timeLimit || budget.used >= requestLimit ? { limit: 0, used: 0 } : budget }));
                     lookupMs += performance.now() - began;
+                    const response = memo.get(key);
+                    if (response.status === 'available' && response.journeys?.length && !response.meta?.stale
+                        && Date.parse(response.expiresAt) > now()) {
+                        observations.set(pair, [...(observations.get(pair) ?? []), { instant, response }]
+                            .sort((a, b) => reverse ? b.instant - a.instant : a.instant - b.instant));
+                    }
                 }
                 checkpoint();
                 const response = memo.get(key);
@@ -146,7 +204,7 @@ export function createTubeResolver(provider, { signal, check = () => {}, awaitIO
             };
             let response = await get(time);
             if (response.status !== 'available' || response.meta?.stale || Date.parse(response.expiresAt) <= now()) {
-                return fallback(index, query, parts, response, state.notes);
+                return useFallback(response, window);
             }
             let options = response.journeys ?? [];
             // Reserve the contingency in an arrive-by query too. A second query
@@ -161,7 +219,7 @@ export function createTubeResolver(provider, { signal, check = () => {}, awaitIO
             }
             // The first response can expire while the earlier-departure request
             // is in flight; never publish its directions with a newer response.
-            if (Date.parse(response.expiresAt) <= now()) return fallback(index, query, parts, response, state.notes);
+            if (Date.parse(response.expiresAt) <= now()) return useFallback(response, window);
             const all = options.map(option => ({ option, assessment: assessment(option) }));
             const usable = all.filter(value => !value.assessment.closed);
             if (usable.length < all.length) state.notes.add(CLOSURE_NOTE);
@@ -205,7 +263,7 @@ export function createTubeResolver(provider, { signal, check = () => {}, awaitIO
                         contingencyMinutes, notes, warnings: warningText(option), steps,
                         disruption: option.disruption, updatedAt: response.meta?.updatedAt, expiresAt: response.expiresAt,
                         attribution: response.attribution ?? 'Powered by the Transport for London Journey Planner API' },
-                    disruptionRank: risk.major ? 2 : risk.unknown ? 1 : 0 });
+                    disruptionRank: risk.major ? 2 : 0 });
             }
             // The API searches beyond the requested instant. Later ALF windows
             // are useful only if this one produced no feasible option.
@@ -219,6 +277,28 @@ export function createTubeResolver(provider, { signal, check = () => {}, awaitIO
             && (other.boardings < candidate.boardings || other.disruptionRank < candidate.disruptionRank
                 || (reverse ? other.start > candidate.start : other.end < candidate.end))))
             .sort((a, b) => a.disruptionRank - b.disruptionRank || (reverse ? b.start - a.start : a.end - b.end) || a.boardings - b.boardings);
+    };
+    resolve.reserveForResults = () => { reserveForResults = true; };
+    resolve.verifySelected = async journeys => {
+        let changed = false;
+        const visited = new Set();
+        for (const journey of journeys) for (const [position, leg] of journey.legs.entries()) {
+            checkpoint();
+            const key = connectionKey(leg);
+            const candidate = pending.get(key);
+            if (!candidate || visited.has(key)) continue;
+            visited.add(key);
+            if (budget.used >= budget.limit || lookupMs >= lookupBudgetMs) return changed;
+            pending.delete(key);
+            await resolve(candidate.index, { ...candidate.query,
+                arrival: candidate.query.arrival ?? (position > 0 ? Date.parse(journey.legs[position - 1].arrival) : undefined),
+                departure: candidate.query.departure ?? (position + 1 < journey.legs.length ? Date.parse(journey.legs[position + 1].departure) : undefined)
+            }, true);
+            // Even an upstream failure changes the reason for fallback. A
+            // successful response can alter boardings, timings or feasibility.
+            changed = true;
+        }
+        return changed;
     };
     resolve.state = state;
     return resolve;

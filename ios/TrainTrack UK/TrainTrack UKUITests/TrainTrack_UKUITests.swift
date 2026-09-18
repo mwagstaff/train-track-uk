@@ -38,8 +38,8 @@ final class TrainTrack_UKUITests: XCTestCase {
 
         XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.tabBars.count, 1)
-        XCTAssertEqual(app.tabBars.buttons.count, 5)
-        XCTAssertTrue(app.tabBars.buttons["Add Journey"].exists)
+        XCTAssertEqual(app.tabBars.buttons.count, 4)
+        XCTAssertTrue(app.tabBars.buttons["New journey"].exists)
 
         app.swipeLeft()
 
@@ -108,12 +108,13 @@ final class TrainTrack_UKUITests: XCTestCase {
     @MainActor
     func testAddJourneyTabShowsDependentJourneyOptions() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["JOURNEY_PLANNER_ENABLED"] = "0"
         app.launch()
 
         XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
-        app.tabBars.buttons["Add Journey"].tap()
+        app.tabBars.buttons["New journey"].tap()
 
-        XCTAssertTrue(app.navigationBars["Add Journey"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 2))
 
         let startNow = app.switches["Start journey now"]
         let schedule = app.switches["Schedule journey"]
@@ -152,8 +153,9 @@ final class TrainTrack_UKUITests: XCTestCase {
     }
 
     @MainActor
-    func testCancellingStandaloneAddJourneyReturnsToMyJourneys() throws {
+    func testLeavingNewJourneyTabReturnsToMyJourneys() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["JOURNEY_PLANNER_ENABLED"] = "0"
         app.launch()
 
         XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
@@ -163,13 +165,14 @@ final class TrainTrack_UKUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.keyboards.firstMatch.exists)
 
-        app.buttons["toolbar.add-journey"].tap()
+        app.tabBars.buttons["New journey"].tap()
 
-        XCTAssertTrue(app.navigationBars["Add Journey"].waitForExistence(timeout: 2))
-        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 2))
-        XCTAssertFalse(app.tabBars.firstMatch.isHittable)
+        XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 2))
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        XCTAssertTrue(app.tabBars.firstMatch.isHittable)
+        XCTAssertFalse(app.navigationBars.buttons["Cancel"].exists)
 
-        app.buttons["Cancel"].tap()
+        app.tabBars.buttons["My Journeys"].tap()
 
         XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 2))
@@ -178,15 +181,16 @@ final class TrainTrack_UKUITests: XCTestCase {
     @MainActor
     func testSavingJourneyReturnsToMyJourneysWithoutCrashing() throws {
         let app = XCUIApplication()
+        app.launchEnvironment["JOURNEY_PLANNER_ENABLED"] = "0"
         app.launchEnvironment["UI_TEST_RESET_JOURNEYS"] = "1"
         app.launch()
 
         XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
 
-        app.buttons["toolbar.add-journey"].tap()
+        app.tabBars.buttons["New journey"].tap()
 
-        XCTAssertTrue(app.navigationBars["Add Journey"].waitForExistence(timeout: 2))
-        XCTAssertFalse(app.tabBars.firstMatch.isHittable)
+        XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.tabBars.firstMatch.isHittable)
 
         let fromField = app.textFields["add-journey.from"]
         XCTAssertTrue(fromField.waitForExistence(timeout: 2))
@@ -259,8 +263,9 @@ final class TrainTrack_UKUITests: XCTestCase {
         XCTAssertTrue(finalJourney.exists)
         capture("03-my-journeys-lower", in: app)
 
-        tapTab("History", in: app)
-        XCTAssertTrue(app.navigationBars["History"].waitForExistence(timeout: 10))
+        tapTab("Profile", in: app)
+        app.buttons["profile.journey-history"].tap()
+        XCTAssertTrue(app.navigationBars["Journey History"].waitForExistence(timeout: 10))
         app.buttons["Journey history actions"].tap()
         app.buttons["Generate test history to 2,000"].tap()
 

@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 
 export const API_VERSION = 3;
-export const POLICY_VERSION = 'scheduled-v5-endpoint-walk';
-export const LIVE_POLICY_VERSION = 'live-v3-endpoint-walk';
+export const POLICY_VERSION = 'scheduled-v7-tfl-priority';
+export const LIVE_POLICY_VERSION = 'live-v5-tfl-priority';
 export const LIVE_WINDOW_HOURS = 4;
 export const MAX_CHANGES = 5;
 export const DEFAULT_WINDOW_MINUTES = 360;

@@ -263,14 +263,6 @@ struct MyJourneysView: View {
                             Image(systemName: "magnifyingglass")
                         }
                         .accessibilityLabel("Search journeys")
-
-                        Button {
-                            router.selected = .addJourney
-                        } label: {
-                            Image(systemName: "plus")
-                        }
-                        .accessibilityLabel("Add journey")
-                        .accessibilityIdentifier("toolbar.add-journey")
                     }
                     if isSelecting {
                         Button("Cancel") {

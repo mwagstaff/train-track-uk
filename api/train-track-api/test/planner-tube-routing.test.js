@@ -162,6 +162,58 @@ test('partial coverage never claims a disruption-free route', async () => {
     assert.doesNotMatch(notes, /No planned disruption/);
 });
 
+for (const reason of ['requestLimit', 'upstream', 'partialCoverage']) {
+    for (const timeType of ['departAfter', 'arriveBy']) {
+        test(`${reason} Tube coverage preserves the best ${timeType} connection on the first page`, async () => {
+            const reverse = timeType === 'arriveBy';
+            const net = network([
+                service('feeder', 'AAA', reverse ? '11:10' : '11:00', 'PAD', '11:20'),
+                service('onward', 'VIC', '11:50', 'BBB', '12:10'),
+                service('direct', 'AAA', reverse ? '11:00' : '11:05', 'BBB', reverse ? '12:10' : '12:20')
+            ]);
+            const source = reason === 'partialCoverage'
+                ? provider(({ time, timeMode }) => [option(Date.parse(time) - (timeMode === 'arriveBy' ? 15 * MINUTE : 0),
+                    15, { ...clear, coverage: 'partial' })])
+                : { lookup: async () => ({ status: 'unavailable', meta: { reason } }) };
+            const request = query({ origin: 'AAA', destination: 'BBB', timeType,
+                time: iso(at(reverse ? '12:30' : '10:50')), maxChanges: 2, limit: 1 });
+            const result = await search(request, net, source);
+            assert.equal(result.journeys.length, 1);
+            const journey = result.journeys[0];
+            assert.equal(journey.legs[0].serviceId, 'feeder');
+            assert.equal(journey.arrival, iso(at('12:10')));
+            assert.equal(journey.changes, 2);
+            assert.ok(validateJourney(journey, net, request));
+            const transfer = journey.legs.find(leg => leg.mode === 'tubeTransfer');
+            assert.match(transfer.localJourney.notes.join(' '), reason === 'partialCoverage'
+                ? /incomplete/ : /National Rail transfer allowance/);
+            assert.doesNotMatch(transfer.localJourney.notes.join(' '), /No planned disruption/);
+            const restricted = await search({ ...request, maxChanges: 1 }, net, source);
+            assert.equal(restricted.journeys[0].legs[0].serviceId, 'direct');
+        });
+    }
+}
+
+test('partial TfL coverage does not push an earlier connection behind a slower clear option', async () => {
+    const source = provider(({ time }) => [option(Date.parse(time), 10, { ...clear, coverage: 'partial' }, ['central']),
+        option(Date.parse(time), 20, clear, ['elizabeth'])]);
+    const result = await search(query({ limit: 1 }), network(), source);
+    const transfer = result.journeys[0].legs[0];
+    assert.equal(transfer.localJourney.steps[0].lines[0].id, 'central');
+    assert.match(transfer.localJourney.notes.join(' '), /incomplete/);
+});
+
+test('unavailable directions retain known major disruption when ranking against a clear rail route', async () => {
+    const net = network([service('feeder', 'AAA', '11:00', 'PAD', '11:20'),
+        service('onward', 'VIC', '11:50', 'BBB', '12:10'), service('direct', 'AAA', '11:05', 'BBB', '12:20')]);
+    const source = { lookup: async ({ time, timeMode }) => ({ status: 'unavailable', meta: { reason: 'upstream' },
+        journeys: [option(Date.parse(time) - (timeMode === 'arriveBy' ? 15 * MINUTE : 0),
+            15, issue('majorIssues', 'Severe Delays'))] }) };
+    const result = await search(query({ origin: 'AAA', destination: 'BBB', time: iso(at('10:50')), limit: 1 }), net, source);
+    assert.equal(result.journeys[0].legs[0].serviceId, 'direct');
+    assert.match(result.journeys[0].warnings.join(' '), /major TfL disruption/);
+});
+
 test('public serialization preserves TfL notes and steps without replacing National Rail identities', async () => {
     const source = provider(({ time }) => [option(Date.parse(time), 15, issue('minorIssues'))]);
     const result = await search(query(), network(), source);
