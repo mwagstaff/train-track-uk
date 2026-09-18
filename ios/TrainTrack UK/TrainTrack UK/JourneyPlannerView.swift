@@ -578,12 +578,13 @@ private struct PlannerResultsView: View {
     }
 
     private func departureCard(_ journeys: [PlannedJourney]) -> some View {
-        VStack(spacing: 0) {
+        let comparison = JourneyDurationComparison(journeys: journeys)
+        return VStack(spacing: 0) {
             ForEach(Array(journeys.enumerated()), id: \.element.id) { index, journey in
                 Button {
                     selectedJourneyID = journey.id
                 } label: {
-                    PlannerJourneySummary(journey: journey, showsChevron: true)
+                    PlannerJourneySummary(journey: journey, showsChevron: true, durationTag: comparison.tag(for: journey))
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
                         .overlay(alignment: .leading) {
@@ -676,6 +677,7 @@ struct PlannerJourneySummary: View {
     let journey: PlannedJourney
     var showsChevron = false
     var liveIsStale = false
+    var durationTag: JourneyDurationTag? = nil
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
 
@@ -702,6 +704,10 @@ struct PlannerJourneySummary: View {
             return summary == "Train on time" || summary == "All trains on time"
                 ? ("On time", .plannerOnTimeText) : ("Some live times", .plannerSecondaryText)
         }
+        if journey.legs.contains(where: { $0.localJourney?.isAvailable == true }),
+           !journey.legs.contains(where: { $0.kind == "vehicle" }) {
+            return ("Estimated", .plannerSecondaryText)
+        }
         return PlannerLivePresentation.timingEvidence(for: journey).isEmpty
             ? ("Scheduled", .plannerSecondaryText) : ("Unknown", .plannerSecondaryText)
     }
@@ -709,11 +715,12 @@ struct PlannerJourneySummary: View {
     var body: some View {
         DepartureSummaryRow(timing: {
             VStack(alignment: .leading, spacing: 0) {
-                Text(PlannerTime.display(journey.departure, includeDate: includesDate))
-                    .font(.title3)
-                    .monospacedDigit()
-                    .foregroundStyle(cancelled ? Color.plannerSecondaryText : Color.primary)
-                    .strikethrough(cancelled)
+                JourneyTimesView(
+                    departure: PlannerTime.display(journey.departure, includeDate: includesDate),
+                    arrival: PlannerTime.display(journey.arrival, includeDate: includesDate),
+                    departureColor: cancelled ? .plannerSecondaryText : .primary,
+                    cancelled: cancelled
+                )
                 if !cancelled, departureLeg?.mode == "rail" {
                     TrainLengthIndicator(cars: departureLeg?.live?.length, warningThreshold: minShortTrainCars)
                 }
@@ -734,6 +741,7 @@ struct PlannerJourneySummary: View {
                             .font(.caption)
                             .foregroundStyle(Color.plannerSecondaryText)
                             .monospacedDigit()
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -759,7 +767,14 @@ struct PlannerJourneySummary: View {
         .accessibilityElement(children: .combine)
     }
 
-    @ViewBuilder private var durationAndChanges: some View {
+    private var durationAndChanges: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            durationAndChangesLabel
+            if let durationTag { JourneyDurationBadge(tag: durationTag) }
+        }
+    }
+
+    @ViewBuilder private var durationAndChangesLabel: some View {
         if journey.changes == 0 {
             Text("\(PlannerTime.minutes(journey.durationMinutes)) · Direct")
                 .font(.caption).foregroundStyle(Color.plannerSecondaryText)
@@ -783,13 +798,6 @@ struct PlannerJourneySummary: View {
 
     private var departureDetails: some View {
         VStack(alignment: .leading, spacing: 1) {
-            let destination = journey.legs.last?.to.name
-            Text(destination.map {
-                JourneyCardPresentation.arrivalLabel(
-                    time: PlannerTime.display(journey.arrival, includeDate: includesDate), destinationName: $0
-                )
-            } ?? "Arr \(PlannerTime.display(journey.arrival, includeDate: includesDate))")
-                .strikethrough(cancelled)
             let scheduledDeparture = journey.scheduledDeparture ?? departureLeg?.scheduledDeparture ?? journey.departure
             let scheduledArrival = journey.scheduledArrival ?? journey.legs.last?.scheduledArrival ?? journey.arrival
             if abs(journey.departure.timeIntervalSince(scheduledDeparture)) >= 30 || abs(journey.arrival.timeIntervalSince(scheduledArrival)) >= 30 {
@@ -798,6 +806,10 @@ struct PlannerJourneySummary: View {
             if !liveIsStale, let summary = PlannerLivePresentation.onTimeSummary(for: journey),
                summary != "Train on time", summary != "All trains on time" {
                 Text(summary)
+            }
+            let localChanges = journey.legs.reduce(0) { $0 + ($1.localJourney?.changes ?? 0) }
+            if localChanges > 0 {
+                Text("Includes \(localChanges) \(localChanges == 1 ? "change" : "changes") within London transport.")
             }
             let warnings = PlannerLivePresentation.warnings(for: journey)
             ForEach(Array(warnings.prefix(2)), id: \.self) { warning in
@@ -817,11 +829,17 @@ private struct PlannerJourneyOperators: View {
     @ObservedObject private var config = ServerConfigStore.shared
 
     static func brandings(for journey: PlannedJourney, in branding: OperatorBrandingConfig?) -> [OperatorBranding] {
-        let operators = journey.legs.filter { $0.kind == "vehicle" || $0.isTubeTransfer }.map { leg in
-            leg.isTubeTransfer
+        let operators = journey.legs.filter { $0.kind == "vehicle" || $0.isTubeTransfer }.flatMap { leg -> [OperatorBranding] in
+            if leg.localJourney?.isWalkingOnly == true {
+                return [OperatorBranding(name: "Walk", operatorCodes: [], aliases: [], colorHex: "#FFFFFF")]
+            }
+            if let local = leg.localJourney, local.isAvailable, !local.lines.isEmpty {
+                return local.lines.map { OperatorBranding(name: $0.name, operatorCodes: [], aliases: [], colorHex: $0.colour ?? "666666") }
+            }
+            return [leg.isTubeTransfer
                 ? OperatorBranding(name: "Tube", operatorCodes: [], aliases: [], colorHex: "#FFFFFF")
                 : OperatorBrandingResolver.resolve(name: leg.operator, code: leg.operator, in: branding)
-                ?? OperatorBranding(name: leg.operator ?? "Train service", operatorCodes: [], aliases: [], colorHex: "666666")
+                ?? OperatorBranding(name: leg.operator ?? "Train service", operatorCodes: [], aliases: [], colorHex: "666666")]
         }
         return operators.enumerated().filter { index, branding in
             !operators.prefix(index).contains { $0.id == branding.id }
@@ -870,11 +888,111 @@ private struct PlannerLegPill: View {
     let leg: PlannedJourney.Leg
     @ObservedObject private var config = ServerConfigStore.shared
     var body: some View {
-        let branding = leg.isTubeTransfer
-            ? OperatorBranding(name: "Tube", operatorCodes: [], aliases: [], colorHex: "#FFFFFF")
-            : OperatorBrandingResolver.resolve(name: leg.operator, code: leg.operator, in: config.operatorBranding)
-                ?? OperatorBranding(name: leg.operator ?? "Train service", operatorCodes: [], aliases: [], colorHex: "#666666")
-        PlannerTransportPill(branding: branding, showsRoundel: leg.isTubeTransfer)
+        if leg.localJourney?.isWalkingOnly == true {
+            Label("Walk", systemImage: "figure.walk").font(.caption)
+        } else if let local = leg.localJourney, local.isAvailable, !local.lines.isEmpty {
+            PlannerLocalLinePills(lines: local.lines)
+        } else {
+            let branding = leg.isTubeTransfer
+                ? OperatorBranding(name: "Tube", operatorCodes: [], aliases: [], colorHex: "#FFFFFF")
+                : OperatorBrandingResolver.resolve(name: leg.operator, code: leg.operator, in: config.operatorBranding)
+                    ?? OperatorBranding(name: leg.operator ?? "Train service", operatorCodes: [], aliases: [], colorHex: "#666666")
+            PlannerTransportPill(branding: branding, showsRoundel: leg.isTubeTransfer)
+        }
+    }
+}
+
+private struct PlannerLocalLinePills: View {
+    let lines: [PlannerLocalJourney.Line]
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+    var body: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 6) { pills }
+        } else {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) { pills }
+                VStack(alignment: .leading, spacing: 6) { pills }
+            }
+        }
+    }
+
+    private var pills: some View {
+        ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+            let background = branding(hex: line.colour)
+            let foreground = branding(hex: line.textColour)?.color
+                ?? background.map { $0.usesBlackText ? Color.black : Color.white } ?? Color.primary
+            Text(line.name)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(foreground)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(background?.color ?? Color(uiColor: .secondarySystemFill), in: Capsule())
+                .overlay(Capsule().stroke(Color.primary.opacity(0.15), lineWidth: 1))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("planner.local-line.\(line.id)")
+        }
+    }
+
+    private func branding(hex: String?) -> OperatorBranding? {
+        guard let hex, hex.trimmingCharacters(in: CharacterSet(charactersIn: "#")).count == 6,
+              UInt64(hex.trimmingCharacters(in: CharacterSet(charactersIn: "#")), radix: 16) != nil else { return nil }
+        return OperatorBranding(name: "", operatorCodes: [], aliases: [], colorHex: hex)
+    }
+}
+
+private struct PlannerLocalJourneyDetails: View {
+    let local: PlannerLocalJourney
+    let displayDate: Date
+
+    var body: some View {
+        ForEach(Array(local.travelNotes.enumerated()), id: \.offset) { index, note in
+            Label(note, systemImage: "info.circle")
+                .font(.subheadline)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("planner.local-note.\(index)")
+        }
+        if local.isAvailable {
+            ForEach(Array((local.steps ?? []).enumerated()), id: \.offset) { index, step in
+                VStack(alignment: .leading, spacing: 8) {
+                    if let change = local.changeInstruction(before: index) {
+                        Text(change).font(.subheadline.weight(.semibold))
+                    }
+                    if let lines = step.lines, !lines.isEmpty { PlannerLocalLinePills(lines: lines) }
+                    Text("\(index + 1). \(step.instruction)")
+                        .font(.subheadline.weight(.medium))
+                    Text("\(step.from.name) → \(step.to.name)")
+                        .font(.subheadline)
+                    if let platform = step.from.platform, !platform.isEmpty {
+                        Text("Platform \(platform)").font(.caption)
+                    }
+                    ForEach(PlannerLivePresentation.unique((step.lines ?? []).compactMap(\.direction)), id: \.self) { direction in
+                        Text("Towards \(direction)").font(.caption)
+                    }
+                    if let departure = step.departureTime, let arrival = step.arrivalTime {
+                        Text("\(PlannerTime.displayRange(from: departure, to: arrival)) · \(step.timing == "adjusted" ? "Adjusted" : "Estimated")")
+                            .font(.caption)
+                            .foregroundStyle(Color.plannerSecondaryText)
+                    }
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("planner.local-step.\(index)")
+            }
+        }
+        if let expires = local.expiresAt, expires <= displayDate {
+            Label("London transport information may be out of date. Search again for an update.", systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if let updated = local.updatedAt {
+            Text("London transport checked \(PlannerTime.display(updated))")
+                .font(.caption).foregroundStyle(Color.plannerSecondaryText)
+        }
+        if let attribution = local.attribution, !attribution.isEmpty {
+            Text(attribution).font(.caption).foregroundStyle(Color.plannerSecondaryText)
+        }
     }
 }
 
@@ -898,7 +1016,12 @@ struct PlannerJourneyDetailView: View {
             if let response {
                 Section {
                     Text("Summary").font(.headline)
-                    PlannerLiveContextView(live: PlannerLivePresentation.context(for: response.journey, from: response.live, at: displayDate))
+                    if response.journey.legs.contains(where: { $0.localJourney?.isAvailable == true }),
+                       !response.journey.legs.contains(where: { $0.kind == "vehicle" }) {
+                        Label("Estimated London transport times", systemImage: "clock")
+                    } else {
+                        PlannerLiveContextView(live: PlannerLivePresentation.context(for: response.journey, from: response.live, at: displayDate))
+                    }
                     PlannerJourneySummary(journey: response.journey, liveIsStale: liveIsStale)
                         .accessibilityIdentifier("planner.detail.summary")
                     ForEach(Array(PlannerLivePresentation.warnings(for: response.journey).dropFirst(2)), id: \.self) { warning in
@@ -921,6 +1044,9 @@ struct PlannerJourneyDetailView: View {
                             LabeledContent("Arrive at \(leg.to.name)") {
                                 PlannerEventTimeView(time: leg.arrival, scheduled: leg.scheduledArrival,
                                     expected: leg.live?.arrival, cancelled: leg.live?.isCancelled == true, includeDate: includeDate)
+                            }
+                            if let local = leg.localJourney {
+                                PlannerLocalJourneyDetails(local: local, displayDate: displayDate)
                             }
                             if let points = leg.callingPoints, !points.isEmpty {
                                 DisclosureGroup("Calling points") {
@@ -956,7 +1082,7 @@ struct PlannerJourneyDetailView: View {
                                 }
                                 if let extra = transfer.extraMinutes, extra > 0 { Text("Extra connection time: \(PlannerTime.minutes(extra)).") }
                                 if let waiting = transfer.waitingMinutes, waiting > 0 { Text("Waiting time: \(PlannerTime.minutes(waiting)).") }
-                                if leg.mode != "walk" && leg.mode != "interchange" {
+                                if leg.mode != "walk" && leg.mode != "interchange" && leg.localJourney?.isAvailable != true {
                                     Text("A supplied connecting transfer. Specific departures and intermediate stops are not provided.")
                                         .font(.caption).foregroundStyle(Color.plannerSecondaryText)
                                 }
@@ -970,7 +1096,8 @@ struct PlannerJourneyDetailView: View {
                             if allowsTrainTracking && leg.kind == "vehicle" && leg.mode == "rail" {
                                 PlannerTrainTrackingButton(leg: leg)
                             }
-                            ForEach(PlannerLivePresentation.visibleWarnings((leg.warnings ?? []) + (leg.live?.warnings ?? [])), id: \.self) { Text($0).font(.caption).foregroundStyle(Color.primary) }
+                            ForEach(PlannerLivePresentation.visibleWarnings((leg.warnings ?? []) + (leg.live?.warnings ?? []))
+                                .filter { !(leg.localJourney?.travelNotes ?? []).contains($0) }, id: \.self) { Text($0).font(.caption).foregroundStyle(Color.primary) }
                         }
                     } header: {
                         Text("\(index + 1). \(leg.heading)")

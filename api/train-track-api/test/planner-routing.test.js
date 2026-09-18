@@ -193,8 +193,8 @@ test('endpoint links work in both search directions, with actual departure/arriv
     for (const values of [{}, { timeType: 'arriveBy', time: iso(60) }]) {
         const result = search(net, values);
         assert.equal(result.journeys.length, 1);
-        assert.equal(result.journeys[0].departure, iso(5));
-        assert.equal(result.journeys[0].arrival, iso(55));
+        assert.equal(result.journeys[0].departure, iso(10));
+        assert.equal(result.journeys[0].arrival, iso(50));
         assert.equal(result.journeys[0].changes, 0);
     }
 });

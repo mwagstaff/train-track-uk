@@ -76,6 +76,7 @@ struct PlannedJourney: Codable, Identifiable, Equatable {
         var scheduledServiceId: String? = nil
         var live: PlannerLiveAnnotation? = nil
         var tracking: PlannerTrackingReference? = nil
+        var localJourney: PlannerLocalJourney? = nil
 
         var isTubeTransfer: Bool { mode == "tubeTransfer" || mode == "tube" }
         var isTrainChange: Bool { kind == "transfer" && mode == "interchange" }
@@ -83,7 +84,8 @@ struct PlannedJourney: Codable, Identifiable, Equatable {
         var heading: String {
             if isTrainChange { return "Change trains at \(from.name)" }
             let transport: String
-            if isTubeTransfer { transport = "Tube" }
+            if localJourney?.isWalkingOnly == true { transport = "Walk" }
+            else if isTubeTransfer { transport = localJourney?.isAvailable == true ? "London transport" : "Tube" }
             else if mode == "walk" { transport = "Walk" }
             else if mode == "replacementBus" { transport = "Replacement bus" }
             else if mode == "bus" { transport = "Bus" }
@@ -124,6 +126,120 @@ struct PlannedJourney: Codable, Identifiable, Equatable {
         let extraMinutes: Double?
         let interchangeMinutes: Double?
         let waitingMinutes: Double?
+    }
+}
+
+enum JourneyDurationTag: String {
+    case fastest = "Fastest"
+    case slower = "Slower"
+}
+
+struct JourneyDurationComparison {
+    private let fastest: Double?
+    private let average: Double?
+
+    init(durations: [Double]) {
+        let valid = durations.filter { $0.isFinite && $0 > 0 }
+        if let minimum = valid.min(), let maximum = valid.max(), minimum < maximum {
+            fastest = minimum
+            average = valid.reduce(0, +) / Double(valid.count)
+        } else {
+            fastest = nil
+            average = nil
+        }
+    }
+
+    init(journeys: [PlannedJourney]) {
+        self.init(durations: journeys.compactMap(Self.durationMinutes))
+    }
+
+    func tag(for duration: Double?) -> JourneyDurationTag? {
+        guard let duration, duration.isFinite, duration > 0,
+              let fastest, let average else { return nil }
+        if duration == fastest { return .fastest }
+        return duration > average ? .slower : nil
+    }
+
+    func tag(for journey: PlannedJourney) -> JourneyDurationTag? {
+        tag(for: Self.durationMinutes(journey))
+    }
+
+    static func durationMinutes(_ journey: PlannedJourney) -> Double? {
+        guard journey.durationMinutes.isFinite, journey.durationMinutes > 0,
+              journey.arrival > journey.departure,
+              !journey.legs.contains(where: { $0.live?.isCancelled == true }) else { return nil }
+        return journey.durationMinutes
+    }
+}
+
+// TfL identifiers stay separate from CRS codes used by rail legs and route maps.
+struct PlannerLocalJourney: Codable, Equatable {
+    let provider: String
+    let status: String
+    var departureTime: Date? = nil
+    var arrivalTime: Date? = nil
+    var durationMinutes: Double? = nil
+    var changes: Int? = nil
+    var contingencyMinutes: Double? = nil
+    var notes: [String]? = nil
+    var warnings: [String]? = nil
+    var steps: [Step]? = nil
+    var updatedAt: Date? = nil
+    var expiresAt: Date? = nil
+    var attribution: String? = nil
+
+    var isAvailable: Bool { status == "available" && !(steps ?? []).isEmpty }
+    var isWalkingOnly: Bool { isAvailable && (steps ?? []).allSatisfy { !$0.isVehicle } }
+
+    var travelNotes: [String] {
+        var values = (notes ?? []) + (warnings ?? [])
+        if status == "unavailable" && values.isEmpty {
+            values.append("Tube directions unavailable. Using the National Rail transfer allowance.")
+        }
+        var seen = Set<String>()
+        return values.filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    var lines: [Line] {
+        var seen = Set<String>()
+        return (steps ?? []).flatMap { $0.lines ?? [] }.filter { seen.insert($0.id).inserted }
+    }
+
+    func changeInstruction(before index: Int) -> String? {
+        let steps = steps ?? []
+        guard steps.indices.contains(index), steps[index].isVehicle,
+              steps.prefix(index).contains(where: \.isVehicle) else { return nil }
+        return "Change at \(steps[index].from.name)"
+    }
+
+    struct Step: Codable, Equatable, Identifiable {
+        let id: String
+        let mode: String
+        let instruction: String
+        let from: Stop
+        let to: Stop
+        var lines: [Line]? = nil
+        var departureTime: Date? = nil
+        var arrivalTime: Date? = nil
+        var timing: String? = nil
+        var durationMinutes: Double? = nil
+        var stops: [Stop]? = nil
+
+        var isVehicle: Bool { mode != "walk" && mode != "walking" && mode != "interchange" }
+    }
+
+    struct Stop: Codable, Equatable {
+        let id: String
+        let name: String
+        var platform: String? = nil
+    }
+
+    struct Line: Codable, Equatable, Identifiable {
+        let id: String
+        let name: String
+        var direction: String? = nil
+        var colour: String? = nil
+        var textColour: String? = nil
     }
 }
 

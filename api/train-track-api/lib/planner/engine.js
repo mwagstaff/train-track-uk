@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getHeapStatistics } from 'node:v8';
+import { randomUUID } from 'node:crypto';
 import { API_VERSION, POLICY_VERSION, CAPABILITIES, PlannerError, addDays,
     londonDate, encodeCursor, journeyID, normalizeRequest } from './contract.js';
 
@@ -8,12 +9,12 @@ const DAY = 86400000;
 const HOUR = 3600000;
 const MEMORY_RELIEF_RATIO = 0.7;
 const MEMORY_RESET_RATIO = 0.85;
-const scheduledWarning = 'Scheduled timetable only. Live delays and changes are not included.';
+const scheduledWarning = 'National Rail times are scheduled; live rail delays and changes are not included. TfL disruption notes are shown separately where available.';
 const coverageWarnings = [
     'Some services are omitted, including ferry connections and trains with special holiday rules.',
     'Staying aboard a train that divides or joins another service is not supported.',
     'Some overnight services and transfers may be omitted where the timetable is ambiguous.',
-    'Transfer times are timetable allowances; detailed walking or Tube directions are not included.'
+    'Walking transfers use timetable allowances. TfL directions are included where a mapped connection is available.'
 ];
 
 function remember(map, key, value, maximum) {
@@ -24,7 +25,7 @@ function remember(map, key, value, maximum) {
 }
 
 export class PlannerEngine {
-    constructor(config, { openDataset, findJourneys, now = Date.now, liveProvider, createLiveBudget } = {}) {
+    constructor(config, { openDataset, findJourneys, now = Date.now, liveProvider, createLiveBudget, tubeProvider } = {}) {
         this.config = config;
         this.openDataset = openDataset;
         this.findJourneys = findJourneys;
@@ -33,11 +34,13 @@ export class PlannerEngine {
         this.dates = new Map();
         this.networks = new Map();
         this.searches = new Map();
+        this.tubeSnapshots = new Map();
         this.journeys = new Map();
         this.stats = { searches: 0, cacheHits: 0, datePreparations: 0 };
         this.stationPresentation = new Map();
         this.liveProvider = liveProvider;
         this.createLiveBudget = createLiveBudget;
+        this.tubeProvider = tubeProvider;
     }
 
     async loadStationPresentation() {
@@ -175,6 +178,7 @@ export class PlannerEngine {
         this.searches.clear();
         const snapshots = this.livePlanner?.snapshots;
         while (snapshots?.size > 2) snapshots.delete(snapshots.keys().next().value);
+        while (this.tubeSnapshots.size > 2) this.tubeSnapshots.delete(this.tubeSnapshots.keys().next().value);
         const { releaseIndexCaches } = await import('./router.js');
         for (const network of this.networks.values()) releaseIndexCaches(network);
         if (ratio >= MEMORY_RESET_RATIO) this.networks.clear();
@@ -241,7 +245,7 @@ export class PlannerEngine {
         }, 1);
     }
 
-    async search({ request, version, offset = 0, liveSnapshotId }, signal, execution = {}) {
+    async search({ request, version, offset = 0, liveSnapshotId, tubeSnapshotId }, signal, execution = {}) {
         const started = performance.now();
         const timeoutMs = execution.timeoutMs ?? this.config.timeoutMs;
         const maxOperations = execution.maxOperations ?? this.config.maxOperations;
@@ -259,9 +263,16 @@ export class PlannerEngine {
         check();
         request = this.checkQuery(repo, request);
         this.stats.searches++;
-        const key = `${repo.version}:${POLICY_VERSION}:${JSON.stringify(request)}:${offset}${execution.excludeDirect ? ':connecting' : ''}`;
+        const snapshotKey = `${repo.version}:${JSON.stringify(request)}`;
+        for (const [id, snapshot] of this.tubeSnapshots) if (snapshot.expiresAt <= this.now()) this.tubeSnapshots.delete(id);
+        let tubeSnapshot = tubeSnapshotId ? this.tubeSnapshots.get(tubeSnapshotId) : null;
+        if (tubeSnapshotId && (!tubeSnapshot || tubeSnapshot.key !== snapshotKey)) {
+            throw new PlannerError('CURSOR_EXPIRED', 'The TfL information for this search has expired. Please search again.', 410);
+        }
+        const key = `${repo.version}:${POLICY_VERSION}:${JSON.stringify(request)}:${offset}${execution.excludeDirect ? ':connecting' : ''}${execution.timetableOnly ? ':timetable' : ''}`;
         const cached = this.searches.get(key);
-        const cacheHit = !request.realtime && cached && this.now() - cached.createdAt < 5 * 60000;
+        const cacheHit = !tubeSnapshot && !request.realtime && cached && this.now() - cached.createdAt < 5 * 60000
+            && (!cached.tubeExpiresAt || cached.tubeExpiresAt > this.now());
         execution.onTelemetry?.({ cacheStatus: cacheHit ? 'hit' : liveSnapshotId ? 'unknown' : 'miss', datasetVersion: repo.version });
         if (cacheHit) {
             this.stats.cacheHits++;
@@ -271,8 +282,13 @@ export class PlannerEngine {
                 ...cached.result.warnings.filter(warning => !cached.result.dataset.warnings.includes(warning))])] };
         }
         let result;
+        let completeTfLFrontier = Boolean(tubeSnapshot);
         const resolutionWarnings = [];
-        if (request.origin === request.destination) {
+        if (tubeSnapshot) {
+            result = tubeSnapshot.result;
+            resolutionWarnings.push(...(tubeSnapshot.resolutionWarnings ?? []));
+            execution.onTelemetry?.({ cacheStatus: 'hit', datasetVersion: repo.version });
+        } else if (request.origin === request.destination) {
             result = { journeys: [], warnings: ['You are already at the destination.'],
                 searchTruncated: false, searchWindow: { from: request.time, to: request.time }, pagination: {} };
         } else {
@@ -283,12 +299,16 @@ export class PlannerEngine {
             }
             execution.onProgress?.('searching');
             let remainingOperations = maxOperations;
+            const resolveTubeConnection = execution.timetableOnly ? null : await this.tubeResolver({ signal: execution.abortSignal ?? (signal?.addEventListener ? signal : undefined), check,
+                awaitIO: execution.awaitIO });
             const route = async (query, current, options = {}) => {
                 if (remainingOperations <= 0) throw new PlannerError('SEARCH_TIMEOUT', 'The search exceeded its work budget.', 504);
                 const routed = await this.route(query, current, {
                     signal, maxDurationMinutes: 1440, maxOperations: remainingOperations,
                     timeoutMs: Math.max(1, timeoutMs - (performance.now() - started)), offset,
-                    measure: execution.measure, onTelemetry: execution.onTelemetry,
+                    measure: execution.measure, onTelemetry: execution.onTelemetry, resolveTubeConnection,
+                    abortSignal: execution.abortSignal, awaitIO: execution.awaitIO,
+                    timetableOnly: execution.timetableOnly,
                     ...(execution.excludeDirect ? { excludeDirect: true } : {}), ...options
                 });
                 remainingOperations -= routed.metrics?.operations ?? 0;
@@ -308,7 +328,27 @@ export class PlannerEngine {
                     if (error.code === 'SEARCH_CANCELLED') throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);
                     throw error;
                 }
-            } else result = await route(request, network);
+            } else {
+                completeTfLFrontier = Boolean(resolveTubeConnection && !this.findJourneys);
+                result = completeTfLFrontier ? await route({ ...request, limit: 1001 }, network, { offset: 0 })
+                    : await route(request, network);
+            }
+        }
+        if (!request.realtime && result.tubeExpiresAt) {
+            // Every offset page uses the same ranked alternatives and disruption
+            // observations. Expiry requires a fresh search, never a silent rerank.
+            if (!tubeSnapshot) {
+                tubeSnapshotId = randomUUID();
+                tubeSnapshot = { key: snapshotKey, result, expiresAt: result.tubeExpiresAt, resolutionWarnings };
+                remember(this.tubeSnapshots, tubeSnapshotId, tubeSnapshot, 8);
+            }
+        }
+        if (completeTfLFrontier) {
+            const next = offset + request.limit;
+            result = { ...result, journeys: result.journeys.slice(offset, next),
+                searchTruncated: Boolean(result.searchTruncated || result.pagination?.nextOffset),
+                pagination: { ...result.pagination, offset,
+                    nextOffset: next < result.journeys.length && (!tubeSnapshot || tubeSnapshot.expiresAt > this.now()) ? next : null } };
         }
         check();
         const dataset = this.publicMetadata(repo, result.live);
@@ -335,9 +375,10 @@ export class PlannerEngine {
                 ...(pageLimitReached ? ['The result limit was reached. Narrow the time window to see more journeys.'] : [])])],
             pagination: { earlier: cursor(result.pagination?.earlierTime), later: cursor(result.pagination?.laterTime),
                 more: Number.isInteger(result.pagination?.nextOffset) && result.pagination.nextOffset <= 1000
-                    ? encodeCursor(request, repo.version, result.pagination.nextOffset, result.liveSnapshotId) : undefined }
+                    ? encodeCursor(request, repo.version, result.pagination.nextOffset, result.liveSnapshotId, tubeSnapshotId) : undefined }
         };
-        if (!request.realtime && !response.search.searchTruncated) remember(this.searches, key, { result: response, createdAt: this.now() }, 64);
+        if (!request.realtime && !response.search.searchTruncated) remember(this.searches, key,
+            { result: response, createdAt: this.now(), tubeExpiresAt: result.tubeExpiresAt }, 64);
         return response;
     }
 
@@ -365,6 +406,7 @@ export class PlannerEngine {
                     ...(call.live ? { live: call.live } : {})
                 })) } : {}),
                 ...(leg.transfer || leg.breakdown ? { transfer: leg.transfer || leg.breakdown } : {}),
+                ...(leg.localJourney ? { localJourney: leg.localJourney } : {}),
                 ...(leg.warnings?.length ? { warnings: leg.warnings } : {})
             }))
         };
@@ -402,12 +444,36 @@ export class PlannerEngine {
         return { journey: { ...cached.journey, legs }, dataset, ...(cached.live ? { live: cached.live } : {}) };
     }
 
-    async route(request, network, options) {
-        if (!this.findJourneys) this.findJourneys = (await import('./router.js')).findJourneys;
+    async tubeResolver(options = {}) {
+        if (!this.tubeProvider && this.config.tubeTrackEnabled !== true) return null;
+        if (!this.tubeProvider) {
+            const { TubeTrackProvider } = await import('./tube-provider.js');
+            this.tubeProvider = new TubeTrackProvider();
+        }
+        const { createTubeResolver } = await import('./tube-routing.js');
+        return createTubeResolver(this.tubeProvider, { ...options, now: this.now });
+    }
+
+    async route(request, network, options = {}) {
+        // Stored route profiles are structural timetable data, not a place to
+        // persist expiring TfL forecasts. Refresh resolves their Tube transfers.
+        const resolveTubeConnection = options.departureProfile || options.timetableOnly ? null : options.resolveTubeConnection
+            ?? await this.tubeResolver({ signal: options.abortSignal, awaitIO: options.awaitIO,
+                check: () => { if (options.signal?.aborted) throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499); } });
+        const router = await import('./router.js');
+        const find = this.findJourneys ?? (resolveTubeConnection ? router.findJourneysAsync : router.findJourneys);
         try {
             if (options?.measure) options.onTelemetry?.({ metricsDelta: { routeCalls: 1 } });
-            const work = () => this.findJourneys(request, network, options);
+            const work = () => find(request, network, { ...options, resolveTubeConnection });
             const result = await (options?.measure ? options.measure('routingMs', work) : work());
+            if (resolveTubeConnection?.state.used) {
+                result.tubeExpiresAt = Math.min(resolveTubeConnection.state.expiresAt, this.now() + 30000);
+                result.warnings = [...new Set([...(result.warnings ?? []), ...resolveTubeConnection.state.notes])];
+                if (resolveTubeConnection.state.limited) {
+                    result.searchTruncated = true;
+                    result.warnings = [...(result.warnings ?? []), 'Some TfL connections could not be checked within this search. National Rail allowances are shown where indicated.'];
+                }
+            }
             if (options?.measure) options.onTelemetry?.({ metricsDelta: {
                 operations: result.metrics?.operations ?? 0, labels: result.metrics?.labels ?? 0,
                 candidates: result.journeys.length } });
@@ -441,7 +507,7 @@ export class PlannerEngine {
                 throw new PlannerError('INVALID_STATION', 'Use canonical intermediate station codes.');
             }
         }
-        const searched = await this.search({ request, version: repo.version }, signal, { ...execution, excludeDirect: true });
+        const searched = await this.search({ request, version: repo.version }, signal, { ...execution, excludeDirect: true, timetableOnly: true });
         if (signal?.aborted) throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);
         // Keep the complete passenger pattern for the existing per-train
         // tracking verification. These dated services were resolved by search;

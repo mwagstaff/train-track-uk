@@ -14,6 +14,7 @@ export function plannerConfig(env = process.env) {
         dataDirectory: path.resolve(env.PLANNER_DATA_DIR || path.join(os.homedir(), '.local/share/train-track-api/planner')),
         datasetPath: env.PLANNER_DATASET_PATH ? path.resolve(env.PLANNER_DATASET_PATH) : null,
         enabled: env.PLANNER_ENABLED !== 'false',
+        tubeTrackEnabled: env.PLANNER_TUBETRACK_ENABLED !== 'false',
         // Prototype defaults for the agreed monthly full-feed cadence; configure before production.
         warnAgeDays: number('PLANNER_WARN_AGE_DAYS', 35, 1, 365),
         maxStaleDays: number('PLANNER_MAX_STALE_DAYS', 45, 1, 365),

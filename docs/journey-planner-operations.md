@@ -8,6 +8,13 @@ The iOS Debug build opens the planner from Add Journey. Release builds retain th
 
 The API deployment now has a project-specific Node runtime and persistent timetable storage. S3 delivery, a monthly unattended import job, incremental updates and acceptable production feed age still need the delivery agreement. The commands below accept a complete local directory or ZIP staged from that delivery. They do not fetch from unconfirmed cloud infrastructure.
 
+The [TubeTrack integration guide](tubetrack-integration.md) covers London station
+mapping, disruption-aware transfer timing, line colours, fallback, validation and
+release requirements. TubeTrack is enabled by default; the API service setting
+`PLANNER_TUBETRACK_ENABLED=false` disables it after restart. The integration
+requires an API release and rebuilt app; the implementation changes do not
+deploy either.
+
 ## Runtime and storage
 
 - The planner worker and importer require **Node 22.16 or later** with `node:sqlite` available. Tested on Node 24.21.0 and locally on Node 25.8.1. The main API imports SQLite lazily in the isolated planner worker, so an unavailable planner does not prevent existing routes from loading.
@@ -606,8 +613,39 @@ checked in the browser. These changes have not been deployed by this work.
 
 ## Interpretation limits
 
-Scheduled-only results include supported rail and timetabled replacement buses, dated cancellations/overlays in this full snapshot, ordered operator-pair interchange rules, and validated walking/Tube links. Source-backed ALF links are interpreted as station pairs and indexed in both directions. Their source identity, calendar, priority and duration remain unchanged; both endpoint allowances apply in the actual travel direction. Other directed links and ordered TSI rules are not reversed. Public times and passenger boarding/alighting rules govern feasibility. A separate validation pass checks each returned itinerary.
+Scheduled-only results include supported rail and timetabled replacement buses, dated cancellations/overlays in this full snapshot, ordered operator-pair interchange rules, and validated walking/Tube links. Source-backed ALF links are interpreted as station pairs and indexed in both directions. Their source identity, calendar, priority and duration remain unchanged; station allowances apply in the actual travel direction. A walk starting the journey omits the origin's train-exit allowance, and a walk ending the journey omits the destination's train-entry allowance. Transfers between trains retain both allowances. Other directed links and ordered TSI rules are not reversed. Public times and passenger boarding/alighting rules govern feasibility. A separate validation pass checks each returned itinerary.
 
 This ALF interpretation follows the station-pair wording and directionless layout of RSPS5046 §5.11, corroborated by the supplied FLF pair descriptions and the absence of separately reversed pairs in all 4,209 ALF rows. The specification explicitly treats TSI differently in §5.12.1.2. Bidirectionality is an interpretation of those combined sources, rather than a quoted explicit ALF statement. [RSPS5046 P-04-02](https://www.rspaccreditation.org/downloadPublic.php?did=c5VkXAQOgMj8q024cALYymTpxTFaroiwLL7mvDA0A3UB5FJKuO)
 
 Unsupported supplementary services, split/join through continuity and schedules requiring an authoritative holiday calendar are retained for audit but excluded from routing. Ambiguous clock-change origins and ambiguous midnight public fields are conservatively excluded. A transfer must fit its applicability window; unsupported fixed-link modes are disabled. Overall schedule date range is an envelope, not proof of complete coverage on every route/date. Do not market this prototype as complete national coverage or a live journey guarantee.
+
+## Nearby walking and journey comparisons — 18 September 2026
+
+Nearby-station alternatives use the timetable's supplied walking links, rather
+than estimating walkability from straight-line distance. Walking legs remain
+visible, count towards the total duration, and do not count as a train change.
+The search compares their complete departure/arrival times with other options,
+including the receiving station's boarding allowance. Walking must be included
+in `allowedModes`; the link's operating dates and times still apply. In RJTTF939,
+Clock House–Kent House is a nine-minute link that enables the 18 September
+04:59 departure from Clock House, 05:12 train from Kent House, and 08:05 arrival
+at Bristol Temple Meads via Victoria and Paddington.
+
+Planner results and saved-route cards display a bold departure followed by a
+regular, secondary-colour arrow and arrival time. Dates remain visible for
+overnight journeys, and changed live times retain their scheduled-time note.
+The duplicate arrival sentence is removed. Within each displayed list for a
+route, `Fastest` marks all tied minimum durations when durations differ, and
+`Slower` marks durations strictly above their arithmetic mean. Unknown or
+invalid durations and cancelled journeys do not affect that comparison.
+
+Local verification: 419 planner tests passed (three optional checks skipped),
+plus 40 full-timetable/live-search checks and 123 app unit tests. Six simulator
+scenarios verified the planner, saved cards, uniform durations and legacy
+fallback, including light mode and dark mode at the largest text size. The
+saved-card scenario checks each journey row's 44-point tap target directly;
+the whole-screen hit-region audit reports an unidentified SwiftUI node, and
+existing header controls still have 30-point minimum frames. Clipping checks
+remain enabled, and the planner/largest-text scenarios passed hit-region
+audits. Previews are saved in `.release-prep/journey-times-20260918/` locally.
+These changes have not been deployed.

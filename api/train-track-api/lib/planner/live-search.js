@@ -87,7 +87,7 @@ function disruption(journey, request) {
     for (const leg of journey.legs) {
         if (leg.kind !== 'vehicle') {
             const parts = leg.transfer ?? leg.breakdown ?? {};
-            allowance += ['exitMinutes', 'travelMinutes', 'entryMinutes', 'extraMinutes', 'interchangeMinutes']
+            allowance += ['exitMinutes', 'travelMinutes', 'entryMinutes', 'extraMinutes', 'interchangeMinutes', 'contingencyMinutes']
                 .reduce((sum, field) => sum + (parts[field] ?? 0), 0);
             continue;
         }
@@ -161,7 +161,7 @@ export class LivePlanner {
                 // More must keep the original frontier even if this request
                 // enters the live window before the next page is opened. This
                 // expiry belongs to the retained search, not a live observation.
-                const snapshot = { id: randomUUID(), expiresAt: this.now() + SCHEDULED_CONTEXT_TTL_MS };
+                const snapshot = { id: randomUUID(), expiresAt: Math.min(this.now() + SCHEDULED_CONTEXT_TTL_MS, scheduled.tubeExpiresAt ?? Infinity) };
                 const live = { mode: request.realtime, status: 'outsideWindow',
                     windowHours: LIVE_WINDOW_HOURS, warnings: ['Live updates apply to journeys starting within the next four hours.'] };
                 this.snapshots.set(snapshot.id, { key, snapshot, scheduled, result: scheduled, live, expiresAt: snapshot.expiresAt });
@@ -272,7 +272,7 @@ export class LivePlanner {
                 visited: [...visited], limited, pendingServiceIds: [...new Set([...pending
                     .flatMap(match => match.candidates.map(candidate => candidate.scheduledServiceId)), ...staffPending])]
                     .filter(id => !snapshot.services.some(service => service.serviceId === id)) };
-            snapshot = { ...snapshot, id: randomUUID() };
+            snapshot = { ...snapshot, id: randomUUID(), expiresAt: Math.min(snapshot.expiresAt, all.tubeExpiresAt ?? Infinity, scheduled.tubeExpiresAt ?? Infinity) };
             const annotated = applyLiveSnapshot(network, snapshot, { mode: 'ignore', check });
             const disrupted = scheduled.journeys.map(journey => annotateLiveJourney(journey, annotated))
                 .map(journey => ({ journey, warnings: disruption(journey, request) }))

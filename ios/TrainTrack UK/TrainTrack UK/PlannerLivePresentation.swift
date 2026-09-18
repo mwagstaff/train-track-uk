@@ -37,7 +37,9 @@ enum PlannerLivePresentation {
     }
 
     static func warnings(for journey: PlannedJourney) -> [String] {
-        visibleWarnings((journey.warnings ?? []) + journey.legs.flatMap { ($0.live?.warnings ?? []) + ($0.warnings ?? []) })
+        visibleWarnings((journey.warnings ?? []) + journey.legs.flatMap {
+            ($0.localJourney?.travelNotes ?? []) + ($0.live?.warnings ?? []) + ($0.warnings ?? [])
+        })
     }
 
     static func visibleWarnings(_ values: [String]) -> [String] {

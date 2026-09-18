@@ -1,10 +1,11 @@
 import { createConnectionIndex, resolveConnection, validateFixedLink, CONNECTION_POLICY } from './connections.js';
 import { MAX_CHANGES, DEFAULT_WINDOW_MINUTES } from './contract.js';
 import { liveCall, liveLeg } from './live-network.js';
+import { validateTubeConnection, tubeBoardings } from './tube-routing.js';
 
 const MINUTE = 60_000;
 const indexes = new WeakMap();
-export const ROUTING_POLICY_VERSION = 'scheduled-round-profile-v1';
+export const ROUTING_POLICY_VERSION = 'scheduled-round-profile-tfl-v2';
 export const DEFAULT_MODES = ['rail', 'replacementBus', 'walk', 'tubeTransfer'];
 
 function add(map, key, item) {
@@ -146,8 +147,10 @@ function transferLeg(index, raw) {
         departure: new Date(raw.start).toISOString(), arrival: new Date(raw.end).toISOString(),
         durationMinutes: raw.minutes, minutes: raw.minutes, breakdown: raw.breakdown,
         ruleId: raw.ruleId, sourceRef: raw.sourceRef, policy: raw.policy,
-        genericTransfer: !['walk', 'interchange'].includes(raw.mode),
-        warnings: ['walk', 'interchange'].includes(raw.mode) ? [] : ['This is a supplied generic transfer; detailed local departures and stops are not available.'],
+        genericTransfer: !raw.localJourney && !['walk', 'interchange'].includes(raw.mode),
+        ...(raw.localJourney ? { localJourney: raw.localJourney } : {}),
+        warnings: raw.localJourney ? raw.localJourney.warnings ?? []
+            : ['walk', 'interchange'].includes(raw.mode) ? [] : ['This is a supplied generic transfer; detailed local departures and stops are not available.'],
         movementDeparture: raw.movementStart == null ? null : new Date(raw.movementStart).toISOString(),
         movementArrival: raw.movementEnd == null ? null : new Date(raw.movementEnd).toISOString()
     };
@@ -205,13 +208,15 @@ export function validateJourney(journey, network, request) {
         } else if (leg.kind === 'transfer') {
             if (pendingTransfer) return false; // The prototype permits one supplied link between rides.
             if (leg.mode !== 'interchange') {
-                const valid = validateFixedLink(index.connections, {
+                const valid = (leg.localJourney ? validateTubeConnection : validateFixedLink)(index.connections, {
                     from: leg.from.crs, to: leg.to.crs, start, end,
                     movementStart: Date.parse(leg.movementDeparture), movementEnd: Date.parse(leg.movementArrival),
-                    ruleId: leg.ruleId, mode: leg.mode, breakdown: leg.breakdown
-                }, request.extraConnectionMinutes ?? 0);
+                    ruleId: leg.ruleId, mode: leg.mode, breakdown: leg.breakdown, localJourney: leg.localJourney
+                }, request.extraConnectionMinutes ?? 0, {
+                    originIsEndpoint: i === 0, destinationIsEndpoint: i === journey.legs.length - 1
+                });
                 if (!modes.has(leg.mode) || !valid || leg.minutes !== (end - start) / MINUTE) return false;
-                boardings += leg.mode === 'walk' ? 0 : 1;
+                boardings += leg.localJourney?.status === 'available' ? tubeBoardings(leg.localJourney.steps) : leg.mode === 'walk' ? 0 : 1;
             } else if (!previousVehicle || i === journey.legs.length - 1 || leg.minutes !== (end - start) / MINUTE) return false;
             pendingTransfer = leg;
             visit(leg.to.crs);
@@ -232,7 +237,7 @@ export function validateJourney(journey, network, request) {
 function signature(path) {
     return path.map(leg => leg.kind === 'vehicle'
         ? `${leg.serviceId}:${leg.boardIndex}:${leg.alightIndex}`
-        : `${leg.ruleId}:${leg.start}:${leg.end}`).join('|');
+        : `${leg.ruleId}:${leg.start}:${leg.end}:${leg.localJourney?.id ?? ''}:${leg.boardings ?? ''}`).join('|');
 }
 
 // Search labels share their preceding legs instead of copying an entire path
@@ -288,6 +293,20 @@ export function scheduledCandidate(journey, network) {
     for (let position = 0; position < legs.length; position++) {
         const leg = legs[position];
         if (leg.kind !== 'transfer') continue;
+        if (leg.localJourney) {
+            const previous = legs[position - 1], next = legs[position + 1];
+            const connection = resolveConnection(index.connections, {
+                from: leg.from.crs, to: leg.to.crs, allowedModes: new Set([leg.mode]),
+                extraConnectionMinutes: (leg.transfer ?? leg.breakdown)?.extraMinutes ?? 0,
+                ...(previous || !next ? { arrival: Date.parse(previous?.arrival ?? leg.departure), direction: 'earliest' }
+                    : { departure: Date.parse(next.departure), direction: 'latest' })
+            });
+            if (!connection) return null;
+            // Stored templates retain the supplied link, not an expiring TfL
+            // route or its contingency. Refresh resolves the connection again.
+            legs[position] = transferLeg(index, connection);
+            continue;
+        }
         if (legs.length === 1) continue;
         const duration = leg.minutes * MINUTE;
         const start = legs[position - 1] ? Date.parse(legs[position - 1].arrival)
@@ -306,8 +325,8 @@ export function scheduledCandidate(journey, network) {
 // Optimistic boarding lower bounds ignore times and interchange allowances. They
 // can only underestimate remaining work, so they safely rule out stations which
 // cannot reach the destination within the requested number of changes.
-function boardingBounds(index, target, reverse, allowedModes, maxBoardings, check) {
-    const key = `${target}|${reverse}|${[...allowedModes].sort()}|${maxBoardings}`;
+function boardingBounds(index, target, reverse, allowedModes, maxBoardings, check, tubeAware) {
+    const key = `${target}|${reverse}|${[...allowedModes].sort()}|${maxBoardings}|${Boolean(tubeAware)}`;
     if (index.potentials.has(key)) return index.potentials.get(key);
     const distances = new Map([[target, 0]]);
     const relaxLinks = () => {
@@ -318,7 +337,7 @@ function boardingBounds(index, target, reverse, allowedModes, maxBoardings, chec
                 if (!allowedModes.has(rule.mode)) continue;
                 const from = reverse ? rule.destination : rule.origin;
                 const to = reverse ? rule.origin : rule.destination;
-                const cost = (distances.get(to) ?? Infinity) + (rule.mode === 'walk' ? 0 : 1);
+                const cost = (distances.get(to) ?? Infinity) + (rule.mode === 'walk' || (tubeAware && rule.mode === 'tubeTransfer') ? 0 : 1);
                 if (cost <= maxBoardings && cost < (distances.get(from) ?? Infinity)) {
                     distances.set(from, cost);
                     changed = true;
@@ -355,7 +374,7 @@ function boardingBounds(index, target, reverse, allowedModes, maxBoardings, chec
 // the origin in reverse searches). Ignoring interchange allowances and treating
 // fixed links as instantaneous can admit extra paths, but cannot exclude a
 // feasible one. This avoids expanding trains after their final onward service.
-function temporalBounds(index, target, reverse, allowedModes, maxBoardings, horizon, check) {
+function temporalBounds(index, target, reverse, allowedModes, maxBoardings, horizon, check, tubeAware) {
     const absent = reverse ? Infinity : -Infinity;
     const improves = (a, b) => reverse ? a < b : a > b;
     const bounds = [];
@@ -387,7 +406,7 @@ function temporalBounds(index, target, reverse, allowedModes, maxBoardings, hori
                 }
             }
             for (const link of links) {
-                if (link.mode === 'walk') continue;
+                if (link.mode === 'walk' || (tubeAware && link.mode === 'tubeTransfer')) continue;
                 const from = reverse ? link.destination : link.origin;
                 const to = reverse ? link.origin : link.destination;
                 retain(from, previous.get(to) ?? absent);
@@ -398,7 +417,7 @@ function temporalBounds(index, target, reverse, allowedModes, maxBoardings, hori
             check();
             changed = false;
             for (const link of links) {
-                if (link.mode !== 'walk') continue;
+                if (link.mode !== 'walk' && !(tubeAware && link.mode === 'tubeTransfer')) continue;
                 const from = reverse ? link.destination : link.origin;
                 const to = reverse ? link.origin : link.destination;
                 changed = retain(from, current.get(to) ?? absent) || changed;
@@ -454,7 +473,7 @@ function reachableEvents(index, bounds, station, remainingBoardings, reverse, qu
  * labels retain inbound (or outbound in reverse) operator and departure/arrival
  * profile, so an earlier train cannot erase useful later departure choices.
  */
-export function findJourneys(request, network, options = {}) {
+function* journeySearch(request, network, options = {}) {
     const begun = Date.now();
     const reverse = request.timeType === 'arriveBy';
     const departureProfile = options.departureProfile === true;
@@ -490,14 +509,14 @@ export function findJourneys(request, network, options = {}) {
     if (request.origin === request.destination) return { ...metadata, journeys: [], alreadyAtDestination: true, metrics: { operations, elapsedMs: Date.now() - begun } };
     const rounds = Array.from({ length: maxBoardings + 1 }, () => new Map());
     const target = reverse ? request.origin : request.destination;
-    const remainingBoardings = boardingBounds(index, target, reverse, allowedModes, maxBoardings, check);
+    const remainingBoardings = boardingBounds(index, target, reverse, allowedModes, maxBoardings, check, options.resolveTubeConnection);
     const needsProfileBounds = (remainingBoardings.get(reverse ? request.destination : request.origin) ?? Infinity) > 2;
     const globalHorizon = reverse ? from - maxDuration : to + maxDuration;
     // Temporal bounds depend only on the index, target, direction, modes and
     // boarding budget, so repeated searches (live re-routing, paging, nearby
     // times) share them across calls instead of rescanning the national index.
     index.temporal ??= new Map();
-    const temporalKey = `${target}|${reverse}|${[...allowedModes].sort()}|${maxBoardings}`;
+    const temporalKey = `${target}|${reverse}|${[...allowedModes].sort()}|${maxBoardings}|${Boolean(options.resolveTubeConnection)}`;
     const timeBoundCache = index.temporal.get(temporalKey) ?? new Map();
     index.temporal.delete(temporalKey);
     index.temporal.set(temporalKey, timeBoundCache);
@@ -506,7 +525,7 @@ export function findJourneys(request, network, options = {}) {
         // The shared cache may already hold other searches' horizons; this
         // search's global envelope must exist before any fallback below.
         if (timeBoundCache.size >= 8) timeBoundCache.delete(timeBoundCache.keys().next().value);
-        timeBoundCache.set(globalHorizon, temporalBounds(index, target, reverse, allowedModes, maxBoardings, globalHorizon, check));
+        timeBoundCache.set(globalHorizon, temporalBounds(index, target, reverse, allowedModes, maxBoardings, globalHorizon, check, options.resolveTubeConnection));
     }
     // Only the bounds themselves are shared. The eligible-event and call
     // caches hang off a per-search view so they are released with the search.
@@ -531,17 +550,18 @@ export function findJourneys(request, network, options = {}) {
             }
             return view(timeBoundCache.get(closest));
         }
-        timeBoundCache.set(boundary, temporalBounds(index, target, reverse, allowedModes, maxBoardings, boundary, check));
+        timeBoundCache.set(boundary, temporalBounds(index, target, reverse, allowedModes, maxBoardings, boundary, check, options.resolveTubeConnection));
         return view(timeBoundCache.get(boundary));
     };
     const results = [];
     const completed = [];
     const completedProfiles = new Map();
     const absentFinish = reverse ? -Infinity : Infinity;
-    const rememberCompleted = ({ boundary, boardings, time }) => {
-        if (!departureProfile) { completed.push({ boundary, boardings, time }); return; }
-        let bounds = completedProfiles.get(boundary);
-        if (!bounds) completedProfiles.set(boundary, bounds = Array(maxBoardings + 1).fill(absentFinish));
+    const rememberCompleted = ({ boundary, boardings, time, disruptionRank = 0 }) => {
+        if (!departureProfile) { completed.push({ boundary, boardings, time, disruptionRank }); return; }
+        const key = `${boundary}:${disruptionRank}`;
+        let bounds = completedProfiles.get(key);
+        if (!bounds) completedProfiles.set(key, bounds = Array(maxBoardings + 1).fill(absentFinish));
         // Each slot represents an allowance, not an exact boarding count. A
         // faster connecting train must never prune a slower direct option.
         for (let allowance = boardings; allowance <= maxBoardings; allowance++) {
@@ -549,13 +569,20 @@ export function findJourneys(request, network, options = {}) {
         }
     };
     const boarded = new Map();
-    const finishBound = (boundary, boardings, at) => {
+    const finishBound = (boundary, boardings, at, disruptionRank = 0) => {
         if (boundary == null) return absentFinish;
         const minimumBoardings = boardings + (remainingBoardings.get(at) ?? Infinity);
-        if (departureProfile) return completedProfiles.get(boundary)?.[Math.min(maxBoardings, minimumBoardings)] ?? absentFinish;
+        if (departureProfile) {
+            let best = absentFinish;
+            for (let rank = 0; rank <= disruptionRank; rank++) {
+                const value = completedProfiles.get(`${boundary}:${rank}`)?.[Math.min(maxBoardings, minimumBoardings)] ?? absentFinish;
+                best = reverse ? Math.max(best, value) : Math.min(best, value);
+            }
+            return best;
+        }
         let bound = absentFinish;
         for (const known of completed) {
-            if (known.boardings > minimumBoardings) continue;
+            if (known.boardings > minimumBoardings || known.disruptionRank > disruptionRank) continue;
             if (reverse ? known.boundary <= boundary : known.boundary >= boundary) {
                 bound = reverse ? Math.max(bound, known.time) : Math.min(bound, known.time);
             }
@@ -571,7 +598,7 @@ export function findJourneys(request, network, options = {}) {
         if (label.boardings > maxBoardings) return;
         if (label.boardings + (remainingBoardings.get(label.station) ?? Infinity) > maxBoardings) return;
         if (label.boundary != null && Math.abs(label.time - label.boundary) > maxDuration) return;
-        const bound = finishBound(label.boundary, label.boardings, label.station);
+        const bound = finishBound(label.boundary, label.boardings, label.station, label.disruptionRank);
         const reachableTime = reachableTimes(bound)[maxBoardings - label.boardings].get(label.station) ?? (reverse ? Infinity : -Infinity);
         if (reverse ? label.time < reachableTime : label.time > reachableTime) return;
         if (label.station !== target && label.boundary != null) {
@@ -579,9 +606,9 @@ export function findJourneys(request, network, options = {}) {
         }
         const bucket = `${label.station}|${label.operator ?? ''}|${label.viaProgress}${departureProfile ? `|${label.boundary}` : ''}`;
         const labels = rounds[label.boardings].get(bucket) ?? [];
-        const dominates = (a, b) => reverse
+        const dominates = (a, b) => (a.disruptionRank ?? 0) <= (b.disruptionRank ?? 0) && (reverse
             ? a.time >= b.time && a.boundary <= b.boundary
-            : a.time <= b.time && a.boundary >= b.boundary;
+            : a.time <= b.time && a.boundary >= b.boundary);
         // A path using fewer boardings with the same operator context and a
         // better time profile also dominates this label. Keeping it in every
         // later round creates large numbers of redundant national detours.
@@ -600,31 +627,35 @@ export function findJourneys(request, network, options = {}) {
             { reason: 'labelLimit', metrics: { operations, labels: labelCount } });
     };
     retain({ station: reverse ? request.destination : request.origin, time: query, boundary: null, operator: null, boardings: 0,
-        viaProgress: visit(0, reverse ? request.destination : request.origin), path: null });
-    const connectionFor = (label, stop, mode, event, initial) => {
+        viaProgress: visit(0, reverse ? request.destination : request.origin), path: null, disruptionRank: 0 });
+    const connectionFor = function* (label, stop, mode, event, initial) {
         const common = {
             from: reverse ? stop : label.station, to: reverse ? label.station : stop,
+            originIsEndpoint: reverse ? stop === target && !event : label.path === null,
+            destinationIsEndpoint: reverse ? label.path === null : stop === target && !event,
             extraConnectionMinutes: request.extraConnectionMinutes ?? 0,
             allowedModes: mode ? new Set([mode]) : allowedModes
         };
-        if (reverse) {
-            return resolveConnection(index.connections, {
-                ...common, arrival: event?.time, departure: label.time,
-                arrivingOperator: event?.service.operator, departingOperator: label.operator,
-                direction: initial ? 'earliest' : 'latest'
-            });
-        }
-        return resolveConnection(index.connections, {
+        const query = reverse ? {
+            ...common, arrival: event?.time, departure: label.time,
+            arrivingOperator: event?.service.operator, departingOperator: label.operator,
+            direction: initial ? 'earliest' : 'latest'
+        } : {
             ...common, arrival: label.time, departure: event?.time,
             arrivingOperator: label.operator, departingOperator: event?.service.operator,
             direction: initial ? 'latest' : 'earliest'
-        });
+        };
+        if (mode === 'tubeTransfer' && options.resolveTubeConnection) {
+            return yield { index: index.connections, query };
+        }
+        const connection = resolveConnection(index.connections, query);
+        return connection ? [connection] : [];
     };
     for (let round = 0; round <= maxBoardings; round++) {
         for (const labels of rounds[round].values()) for (const label of [...labels].sort((a, b) => reverse ? a.boundary - b.boundary : b.boundary - a.boundary)) {
             check();
             if (label.station === target && label.path && label.viaProgress === via.length) { results.push(label); continue; }
-            const completionBound = finishBound(label.boundary, label.boardings, label.station);
+            const completionBound = finishBound(label.boundary, label.boardings, label.station, label.disruptionRank);
             if (label.boundary != null && (reverse ? label.time <= completionBound : label.time >= completionBound)) continue;
             const timeBounds = reachableTimes(completionBound);
             const labelBound = timeBounds[maxBoardings - round].get(label.station) ?? (reverse ? Infinity : -Infinity);
@@ -634,17 +665,18 @@ export function findJourneys(request, network, options = {}) {
                 const endpointModes = new Set((index.connections.pairs.get(reverse ? `${target}|${label.station}` : `${label.station}|${target}`) ?? []).map(rule => rule.mode));
                 for (const mode of endpointModes) {
                     if (!allowedModes.has(mode)) continue;
-                    const transfer = connectionFor(label, target, mode, null, false);
-                    if (!transfer || round + transfer.boardings > maxBoardings) continue;
-                    const time = reverse ? transfer.start : transfer.end;
-                    const boundary = label.boundary ?? (reverse ? transfer.end : transfer.start);
-                    if (Math.abs(time - boundary) > maxDuration || boundary < from || boundary > to || (reverse ? boundary === from : boundary === to)) continue;
-                    const leg = { kind: 'transfer', ...transfer };
-                    const viaProgress = visit(label.viaProgress, target);
-                    if (viaProgress !== via.length) continue;
-                    const complete = { ...label, station: target, time, boundary, viaProgress, boardings: round + transfer.boardings, path: { previous: label.path, leg } };
-                    results.push(complete);
-                    rememberCompleted(complete);
+                    for (const transfer of yield* connectionFor(label, target, mode, null, false)) {
+                        if (!transfer || round + transfer.boardings > maxBoardings) continue;
+                        const time = reverse ? transfer.start : transfer.end;
+                        const boundary = label.boundary ?? (reverse ? transfer.end : transfer.start);
+                        if (Math.abs(time - boundary) > maxDuration || boundary < from || boundary > to || (reverse ? boundary === from : boundary === to)) continue;
+                        const leg = { kind: 'transfer', ...transfer };
+                        const viaProgress = visit(label.viaProgress, target);
+                        if (viaProgress !== via.length) continue;
+                        const complete = { ...label, station: target, time, boundary, viaProgress, boardings: round + transfer.boardings, disruptionRank: Math.max(label.disruptionRank ?? 0, transfer.disruptionRank ?? 0), path: { previous: label.path, leg } };
+                        results.push(complete);
+                        rememberCompleted(complete);
+                    }
                 }
             }
             if (round === maxBoardings) continue;
@@ -657,68 +689,70 @@ export function findJourneys(request, network, options = {}) {
                     : [null];
                 for (const mode of linkModes) {
                     const initial = label.path === null;
-                    const base = cross && !initial ? connectionFor(label, stop, mode, null, false) : null;
-                    if (cross && !initial && !base) continue;
-                    const ready = base ? (reverse ? base.start : base.end) : label.time;
-                    const eventBoardings = maxBoardings - round - (cross && mode !== 'walk' ? 1 : 0);
-                    if (eventBoardings < 1) continue;
-                    const eventBound = timeBounds[eventBoardings].get(stop) ?? (reverse ? Infinity : -Infinity);
-                    const events = reachableEvents(index, timeBounds, stop, eventBoardings - 1,
-                        reverse, reverse ? to : from, check);
-                    const startIndex = reverse ? lowerBound(events, ready + 1) - 1 : lowerBound(events, ready);
-                    for (let eventIndex = startIndex; eventIndex >= 0 && eventIndex < events.length; eventIndex += reverse ? -1 : 1) {
-                        check();
-                        const event = events[eventIndex];
-                        if (reverse ? event.time < eventBound : event.time > eventBound) break;
-                        if (reverse ? event.time <= completionBound : event.time >= completionBound) break;
-                        const outerBound = label.boundary ?? (reverse ? (cross ? from : to) : (cross ? to : from));
-                        if (Math.abs(event.time - outerBound) > maxDuration) break;
-                        if (initial && !cross && (reverse ? event.time <= from : event.time >= to)) break;
-                        const service = event.service;
-                        if (!allowedModes.has(service.mode) || containsService(label.path, service.id)) continue;
-                        let transfer = null;
-                        if (cross || !initial) {
-                            transfer = base ?? connectionFor(label, stop, mode, event, initial);
-                            if (!transfer || (reverse ? event.time > transfer.start : event.time < transfer.end)) continue;
-                        }
-                        const boardings = round + 1 + (transfer?.boardings ?? 0);
-                        if (boardings > maxBoardings) continue;
-                        const boundary = label.boundary ?? (transfer ? (reverse ? transfer.end : transfer.start) : event.time);
-                        if (boundary < from || boundary > to || (reverse ? boundary === from : boundary === to)) continue;
-                        // Once aboard the same occurrence, the incoming operator
-                        // no longer matters. A better profile boarding no later
-                        // on this train can already reach every onward call.
-                        const viaProgress = cross ? visit(label.viaProgress, stop) : label.viaProgress;
-                        const boarding = { index: event.index, time: event.time, boundary, boardings };
-                        const dominatesBoarding = (a, b) => a.boardings <= b.boardings && (reverse
-                            ? a.index >= b.index && a.time >= b.time && a.boundary <= b.boundary
-                            : a.index <= b.index && a.time <= b.time && a.boundary >= b.boundary);
-                        const boardingKey = `${service.id}|${viaProgress}${departureProfile ? `|${boundary}` : ''}`;
-                        const previous = boarded.get(boardingKey) ?? [];
-                        if (previous.some(existing => dominatesBoarding(existing, boarding))) continue;
-                        boarded.set(boardingKey, [...previous.filter(existing => !dominatesBoarding(boarding, existing)), boarding]);
-                        const progressAtCall = via.length ? new Map() : null;
-                        if (via.length) {
-                            let progress = viaProgress;
-                            for (let position = event.index + (reverse ? -1 : 1); position >= 0 && position < service.calls.length; position += reverse ? -1 : 1) {
-                                check();
-                                const call = service.calls[position];
-                                if (call.canBoard || call.canAlight) progress = visit(progress, call.station);
-                                progressAtCall.set(position, progress);
-                            }
-                        }
-                        const precedingPath = transfer ? { previous: label.path, leg: { kind: 'transfer', ...transfer } } : label.path;
-                        for (const callIndex of reachableCalls(timeBounds, service, maxBoardings - boardings, reverse, check)) {
-                            if (reverse ? callIndex >= event.index : callIndex <= event.index) continue;
+                    const bases = cross && !initial ? yield* connectionFor(label, stop, mode, null, false) : [null];
+                    for (const base of bases) {
+                        const ready = base ? (reverse ? base.start : base.end) : label.time;
+                        const eventBoardings = maxBoardings - round - (base?.boardings ?? (cross && mode !== 'walk' && !(mode === 'tubeTransfer' && options.resolveTubeConnection) ? 1 : 0));
+                        if (eventBoardings < 1) continue;
+                        const eventBound = timeBounds[eventBoardings].get(stop) ?? (reverse ? Infinity : -Infinity);
+                        const events = reachableEvents(index, timeBounds, stop, eventBoardings - 1,
+                            reverse, reverse ? to : from, check);
+                        const startIndex = reverse ? lowerBound(events, ready + 1) - 1 : lowerBound(events, ready);
+                        for (let eventIndex = startIndex; eventIndex >= 0 && eventIndex < events.length; eventIndex += reverse ? -1 : 1) {
                             check();
-                            const call = service.calls[callIndex];
-                            const time = reverse ? call.departure : call.arrival;
-                            if (!call.station || !(reverse ? call.canBoard : call.canAlight) || !Number.isFinite(time)) continue;
-                            if ((reverse ? time > event.time : time < event.time) || Math.abs(time - boundary) > maxDuration) continue;
-                            const ride = { kind: 'vehicle', serviceId: service.id, boardIndex: reverse ? callIndex : event.index, alightIndex: reverse ? event.index : callIndex };
-                            const path = { previous: precedingPath, leg: ride };
-                            retain({ station: call.station, time, boundary, operator: service.operator, boardings,
-                                viaProgress: progressAtCall?.get(callIndex) ?? viaProgress, path });
+                            const event = events[eventIndex];
+                            if (reverse ? event.time < eventBound : event.time > eventBound) break;
+                            if (reverse ? event.time <= completionBound : event.time >= completionBound) break;
+                            const outerBound = label.boundary ?? (reverse ? (cross ? from : to) : (cross ? to : from));
+                            if (Math.abs(event.time - outerBound) > maxDuration) break;
+                            if (initial && !cross && (reverse ? event.time <= from : event.time >= to)) break;
+                            const service = event.service;
+                            if (!allowedModes.has(service.mode) || containsService(label.path, service.id)) continue;
+                            const transfers = cross || !initial
+                                ? base ? [base] : yield* connectionFor(label, stop, mode, event, initial) : [null];
+                            for (const transfer of transfers) {
+                                if (transfer && (reverse ? event.time > transfer.start : event.time < transfer.end)) continue;
+                                const boardings = round + 1 + (transfer?.boardings ?? 0);
+                                if (boardings > maxBoardings) continue;
+                                const boundary = label.boundary ?? (transfer ? (reverse ? transfer.end : transfer.start) : event.time);
+                                if (boundary < from || boundary > to || (reverse ? boundary === from : boundary === to)) continue;
+                                // Once aboard the same occurrence, the incoming operator
+                                // no longer matters. A better profile boarding no later
+                                // on this train can already reach every onward call.
+                                const viaProgress = cross ? visit(label.viaProgress, stop) : label.viaProgress;
+                                const disruptionRank = Math.max(label.disruptionRank ?? 0, transfer?.disruptionRank ?? 0);
+                                const boarding = { index: event.index, time: event.time, boundary, boardings, disruptionRank };
+                                const dominatesBoarding = (a, b) => a.disruptionRank <= b.disruptionRank && a.boardings <= b.boardings && (reverse
+                                    ? a.index >= b.index && a.time >= b.time && a.boundary <= b.boundary
+                                    : a.index <= b.index && a.time <= b.time && a.boundary >= b.boundary);
+                                const boardingKey = `${service.id}|${viaProgress}${departureProfile ? `|${boundary}` : ''}`;
+                                const previous = boarded.get(boardingKey) ?? [];
+                                if (previous.some(existing => dominatesBoarding(existing, boarding))) continue;
+                                boarded.set(boardingKey, [...previous.filter(existing => !dominatesBoarding(boarding, existing)), boarding]);
+                                const progressAtCall = via.length ? new Map() : null;
+                                if (via.length) {
+                                    let progress = viaProgress;
+                                    for (let position = event.index + (reverse ? -1 : 1); position >= 0 && position < service.calls.length; position += reverse ? -1 : 1) {
+                                        check();
+                                        const call = service.calls[position];
+                                        if (call.canBoard || call.canAlight) progress = visit(progress, call.station);
+                                        progressAtCall.set(position, progress);
+                                    }
+                                }
+                                const precedingPath = transfer ? { previous: label.path, leg: { kind: 'transfer', ...transfer } } : label.path;
+                                for (const callIndex of reachableCalls(timeBounds, service, maxBoardings - boardings, reverse, check)) {
+                                    if (reverse ? callIndex >= event.index : callIndex <= event.index) continue;
+                                    check();
+                                    const call = service.calls[callIndex];
+                                    const time = reverse ? call.departure : call.arrival;
+                                    if (!call.station || !(reverse ? call.canBoard : call.canAlight) || !Number.isFinite(time)) continue;
+                                    if ((reverse ? time > event.time : time < event.time) || Math.abs(time - boundary) > maxDuration) continue;
+                                    const ride = { kind: 'vehicle', serviceId: service.id, boardIndex: reverse ? callIndex : event.index, alightIndex: reverse ? event.index : callIndex };
+                                    const path = { previous: precedingPath, leg: ride };
+                                    retain({ station: call.station, time, boundary, operator: service.operator, boardings, disruptionRank,
+                                        viaProgress: progressAtCall?.get(callIndex) ?? viaProgress, path });
+                                }
+                            }
                         }
                     }
                 }
@@ -733,18 +767,18 @@ export function findJourneys(request, network, options = {}) {
         const path = pathLegs(label.path, reverse);
         const key = signature(path);
         if (unique.has(key)) continue;
-        unique.set(key, { departure, arrival, changes: Math.max(0, label.boardings - 1), path });
+        unique.set(key, { departure, arrival, changes: Math.max(0, label.boardings - 1), path, disruptionRank: label.disruptionRank ?? 0 });
     }
     const candidates = [...unique.values()];
     const useful = candidates.filter(candidate => !candidates.some(other => {
         check();
         if (departureProfile && (reverse ? other.arrival !== candidate.arrival : other.departure !== candidate.departure)) return false;
-        return other !== candidate && other.departure >= candidate.departure && other.arrival <= candidate.arrival && other.changes <= candidate.changes
-            && (other.departure > candidate.departure || other.arrival < candidate.arrival || other.changes < candidate.changes);
+        return other !== candidate && other.disruptionRank <= candidate.disruptionRank && other.departure >= candidate.departure && other.arrival <= candidate.arrival && other.changes <= candidate.changes
+            && (other.departure > candidate.departure || other.arrival < candidate.arrival || other.changes < candidate.changes || other.disruptionRank < candidate.disruptionRank);
     }));
-    useful.sort((a, b) => reverse
+    useful.sort((a, b) => a.disruptionRank - b.disruptionRank || (reverse
         ? b.departure - a.departure || a.changes - b.changes || a.arrival - b.arrival || signature(a.path).localeCompare(signature(b.path))
-        : a.arrival - b.arrival || a.changes - b.changes || b.departure - a.departure || signature(a.path).localeCompare(signature(b.path)));
+        : a.arrival - b.arrival || a.changes - b.changes || b.departure - a.departure || signature(a.path).localeCompare(signature(b.path))));
     const offset = options.offset ?? 0;
     if (!Number.isInteger(offset) || offset < 0) throw failure('INVALID_REQUEST', 'Invalid journey page offset.');
     const journeys = [];
@@ -756,6 +790,11 @@ export function findJourneys(request, network, options = {}) {
             durationMinutes: (candidate.arrival - candidate.departure) / MINUTE, changes: candidate.changes,
             status: 'scheduledOnly', legs: candidate.path.map(raw => raw.kind === 'vehicle' ? vehicleLeg(index, raw) : transferLeg(index, raw))
         };
+        const disruptedEarlier = candidates.find(other => other.disruptionRank === 2 && candidate.disruptionRank < 2
+            && (reverse ? other.departure > candidate.departure : other.arrival < candidate.arrival));
+        if (disruptedEarlier && !journey.legs.some(leg => leg.localJourney?.notes?.some(note => note.includes('avoid reported disruption')))) {
+            journey.warnings = ['This route avoids an earlier option with major TfL disruption. The journey times and connections reflect this alternative.'];
+        }
         if (!validateJourney(journey, network, request)) throw failure('INVALID_ITINERARY', 'An itinerary failed independent feasibility validation.');
         journeys.push(journey);
     }
@@ -766,9 +805,29 @@ export function findJourneys(request, network, options = {}) {
     metadata.pagination.previousOffset = offset > 0 ? Math.max(0, offset - limit) : null;
     metadata.pagination.total = useful.length;
     if (departureProfile) metadata.pagination.departureTimes = new Set(useful.map(candidate => candidate.departure)).size;
-    if (journeys.some(journey => journey.legs.some(leg => leg.kind === 'transfer' && leg.mode !== 'interchange'))) {
+    if (journeys.some(journey => journey.legs.some(leg => leg.kind === 'transfer' && leg.mode !== 'interchange' && !leg.localJourney))) {
         metadata.warnings.push('Fixed links use supplied generic durations and require the entire transfer to fit the active window.');
     }
     if (index.connections.ambiguousLinks.size) metadata.warnings.push('Overlapping fixed links with conflicting equal priorities were excluded.');
     return { ...metadata, journeys, metrics: { operations, labels: labelCount, elapsedMs: Date.now() - begun } };
+}
+
+// The synchronous API remains available to timetable-only callers. Only eligible
+// TfL connections suspend graph work; ordinary rail/walk routing stays synchronous.
+export function findJourneys(request, network, options = {}) {
+    const search = journeySearch(request, network, options);
+    const result = search.next();
+    if (!result.done) throw failure('INVALID_REQUEST', 'Use asynchronous routing for TfL connections.');
+    return result.value;
+}
+
+export async function findJourneysAsync(request, network, options = {}) {
+    const search = journeySearch(request, network, options);
+    let step = search.next();
+    while (!step.done) {
+        const { index, query } = step.value;
+        const connections = await options.resolveTubeConnection(index, query);
+        step = search.next(connections);
+    }
+    return step.value;
 }

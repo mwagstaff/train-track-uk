@@ -1,0 +1,4134 @@
+{
+  "version": 1,
+  "source": "https://api.skynolimit.dev/tube-track/api/v1/stations",
+  "scope": "Existing National Rail London stations with a supported TfL counterpart; no nearest-station guesses.",
+  "routingPolicy": "Use a multi-stop hub to preserve all supported modes; a single-stop hub uses its stopId.",
+  "auditWindow": {
+    "purpose": "Coverage review only; includes some stations outside London.",
+    "latitude": [
+      51.28,
+      51.7
+    ],
+    "longitude": [
+      -0.52,
+      0.34
+    ]
+  },
+  "stations": {
+    "ABW": {
+      "name": "Abbey Wood",
+      "tflName": "Abbey Wood",
+      "hubId": "HUBABW",
+      "stopIds": [
+        "910GABWDXR"
+      ],
+      "routingId": "910GABWDXR",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 81
+    },
+    "ACC": {
+      "name": "Acton Central",
+      "tflName": "Acton Central",
+      "hubId": null,
+      "stopIds": [
+        "910GACTNCTL"
+      ],
+      "routingId": "910GACTNCTL",
+      "lineIds": [
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 44
+    },
+    "AML": {
+      "name": "Acton Main Line",
+      "tflName": "Acton Main Line",
+      "hubId": null,
+      "stopIds": [
+        "910GACTONML"
+      ],
+      "routingId": "910GACTONML",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 69
+    },
+    "ANZ": {
+      "name": "Anerley",
+      "tflName": "Anerley",
+      "hubId": null,
+      "stopIds": [
+        "910GANERLEY"
+      ],
+      "routingId": "910GANERLEY",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 121
+    },
+    "BAL": {
+      "name": "Balham",
+      "tflName": "Balham",
+      "hubId": "HUBBAL",
+      "stopIds": [
+        "940GZZLUBLM"
+      ],
+      "routingId": "940GZZLUBLM",
+      "lineIds": [
+        "northern"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 43
+    },
+    "BCV": {
+      "name": "Bruce Grove",
+      "tflName": "Bruce Grove",
+      "hubId": null,
+      "stopIds": [
+        "910GBRUCGRV"
+      ],
+      "routingId": "910GBRUCGRV",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 116
+    },
+    "BCY": {
+      "name": "Brockley",
+      "tflName": "Brockley",
+      "hubId": null,
+      "stopIds": [
+        "910GBROCKLY"
+      ],
+      "routingId": "910GBROCKLY",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 18
+    },
+    "BDS": {
+      "name": "Bond Street",
+      "tflName": "Bond Street",
+      "hubId": "HUBBDS",
+      "stopIds": [
+        "910GBONDST",
+        "940GZZLUBND"
+      ],
+      "routingId": "HUBBDS",
+      "lineIds": [
+        "central",
+        "elizabeth",
+        "jubilee"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 39
+    },
+    "BET": {
+      "name": "Bethnal Green",
+      "tflName": "Bethnal Green",
+      "hubId": null,
+      "stopIds": [
+        "910GBTHNLGR"
+      ],
+      "routingId": "910GBTHNLGR",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "reviewed",
+      "distanceMetres": 56,
+      "note": "National Rail Bethnal Green is the Weaver station, not the separate Central line station."
+    },
+    "BFR": {
+      "name": "London Blackfriars",
+      "tflName": "Blackfriars",
+      "hubId": "HUBBFR",
+      "stopIds": [
+        "940GZZLUBKF"
+      ],
+      "routingId": "940GZZLUBKF",
+      "lineIds": [
+        "circle",
+        "district"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 94
+    },
+    "BGV": {
+      "name": "Barking Riverside",
+      "tflName": "Barking Riverside",
+      "hubId": null,
+      "stopIds": [
+        "910GBARKRIV"
+      ],
+      "routingId": "910GBARKRIV",
+      "lineIds": [
+        "suffragette"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 95
+    },
+    "BHK": {
+      "name": "Bush Hill Park",
+      "tflName": "Bush Hill Park",
+      "hubId": null,
+      "stopIds": [
+        "910GBHILLPK"
+      ],
+      "routingId": "910GBHILLPK",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 94
+    },
+    "BHO": {
+      "name": "Blackhorse Road",
+      "tflName": "Blackhorse Road",
+      "hubId": "HUBBHO",
+      "stopIds": [
+        "910GBLCHSRD",
+        "940GZZLUBLR"
+      ],
+      "routingId": "HUBBHO",
+      "lineIds": [
+        "suffragette",
+        "victoria"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 86
+    },
+    "BKG": {
+      "name": "Barking",
+      "tflName": "Barking",
+      "hubId": "HUBBKG",
+      "stopIds": [
+        "910GBARKING",
+        "940GZZLUBKG"
+      ],
+      "routingId": "HUBBKG",
+      "lineIds": [
+        "district",
+        "hammersmith-city",
+        "suffragette"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 75
+    },
+    "BRX": {
+      "name": "Brixton",
+      "tflName": "Brixton",
+      "hubId": "HUBBRX",
+      "stopIds": [
+        "940GZZLUBXN"
+      ],
+      "routingId": "940GZZLUBXN",
+      "lineIds": [
+        "victoria"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 86
+    },
+    "BSP": {
+      "name": "Brondesbury Park",
+      "tflName": "Brondesbury Park",
+      "hubId": null,
+      "stopIds": [
+        "910GBRBYPK"
+      ],
+      "routingId": "910GBRBYPK",
+      "lineIds": [
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 19
+    },
+    "BSY": {
+      "name": "Brondesbury",
+      "tflName": "Brondesbury",
+      "hubId": null,
+      "stopIds": [
+        "910GBRBY"
+      ],
+      "routingId": "910GBRBY",
+      "lineIds": [
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 69
+    },
+    "CBH": {
+      "name": "Cambridge Heath",
+      "tflName": "Cambridge Heath (London)",
+      "hubId": null,
+      "stopIds": [
+        "910GCAMHTH"
+      ],
+      "routingId": "910GCAMHTH",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 67
+    },
+    "CHI": {
+      "name": "Chingford",
+      "tflName": "Chingford",
+      "hubId": null,
+      "stopIds": [
+        "910GCHINGFD"
+      ],
+      "routingId": "910GCHINGFD",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 85
+    },
+    "CHX": {
+      "name": "London Charing Cross",
+      "tflName": "Charing Cross",
+      "hubId": "HUBCHX",
+      "stopIds": [
+        "940GZZLUCHX"
+      ],
+      "routingId": "940GZZLUCHX",
+      "lineIds": [
+        "bakerloo",
+        "northern"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 261
+    },
+    "CIR": {
+      "name": "Caledonian Road & Barnsbury",
+      "tflName": "Caledonian Road & Barnsbury",
+      "hubId": null,
+      "stopIds": [
+        "910GCLDNNRB"
+      ],
+      "routingId": "910GCLDNNRB",
+      "lineIds": [
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 111
+    },
+    "CLJ": {
+      "name": "Clapham Junction",
+      "tflName": "Clapham Junction",
+      "hubId": "HUBCLJ",
+      "stopIds": [
+        "910GCLPHMJ1",
+        "910GCLPHMJC"
+      ],
+      "routingId": "HUBCLJ",
+      "lineIds": [
+        "mildmay",
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 6
+    },
+    "CLP": {
+      "name": "Clapham High Street",
+      "tflName": "Clapham High Street",
+      "hubId": null,
+      "stopIds": [
+        "910GCLPHHS"
+      ],
+      "routingId": "910GCLPHHS",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 25
+    },
+    "CMD": {
+      "name": "Camden Road",
+      "tflName": "Camden Road",
+      "hubId": null,
+      "stopIds": [
+        "910GCMDNRD"
+      ],
+      "routingId": "910GCMDNRD",
+      "lineIds": [
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 74
+    },
+    "CNN": {
+      "name": "Canonbury",
+      "tflName": "Canonbury",
+      "hubId": null,
+      "stopIds": [
+        "910GCNNB"
+      ],
+      "routingId": "910GCNNB",
+      "lineIds": [
+        "mildmay",
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 40
+    },
+    "CPT": {
+      "name": "Clapton",
+      "tflName": "Clapton",
+      "hubId": null,
+      "stopIds": [
+        "910GCLAPTON"
+      ],
+      "routingId": "910GCLAPTON",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 59
+    },
+    "CRH": {
+      "name": "Crouch Hill",
+      "tflName": "Crouch Hill",
+      "hubId": null,
+      "stopIds": [
+        "910GCROUCHH"
+      ],
+      "routingId": "910GCROUCHH",
+      "lineIds": [
+        "suffragette"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 20
+    },
+    "CST": {
+      "name": "London Cannon Street",
+      "tflName": "Cannon Street",
+      "hubId": "HUBCST",
+      "stopIds": [
+        "940GZZLUCST"
+      ],
+      "routingId": "940GZZLUCST",
+      "lineIds": [
+        "circle",
+        "district"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 110
+    },
+    "CTH": {
+      "name": "Chadwell Heath",
+      "tflName": "Chadwell Heath",
+      "hubId": null,
+      "stopIds": [
+        "910GCHDWLHT"
+      ],
+      "routingId": "910GCHDWLHT",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 50
+    },
+    "CTK": {
+      "name": "City Thameslink",
+      "tflName": "Blackfriars",
+      "hubId": "HUBBFR",
+      "stopIds": [
+        "940GZZLUBKF"
+      ],
+      "routingId": "940GZZLUBKF",
+      "lineIds": [
+        "circle",
+        "district"
+      ],
+      "match": "reviewed",
+      "distanceMetres": 307,
+      "note": "Reviewed adjacent interchange via Blackfriars, using the National Rail ALF CTK–BFR WALK allowance of 5 minutes.",
+      "accessWalkingMinutes": 5,
+      "accessNote": "Walk between City Thameslink and Blackfriars Underground; 5 minutes of walking is included in the station transfer allowance.",
+      "source": "National Rail RJTTF939ALF.txt: M=WALK,O=CTK,D=BFR,T=5 (weekday and Sunday records)",
+      "sourceURL": "https://assets.nationalrail.co.uk/e8xgegruud3g/6AftQ0QpolLvWpTHEv46wF/d645c9b37c0338c0633b70e46ebf4c89/City_Thameslink__CTK__North.pdf"
+    },
+    "CUS": {
+      "name": "Custom House",
+      "tflName": "Custom House",
+      "hubId": "HUBCUS",
+      "stopIds": [
+        "910GCUSTMHS",
+        "940GZZDLCUS"
+      ],
+      "routingId": "HUBCUS",
+      "lineIds": [
+        "dlr",
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 60
+    },
+    "CWX": {
+      "name": "Canary Wharf",
+      "tflName": "Canary Wharf",
+      "hubId": "HUBCAW",
+      "stopIds": [
+        "910GCANWHRF",
+        "940GZZDLCAN",
+        "940GZZLUCYF"
+      ],
+      "routingId": "HUBCAW",
+      "lineIds": [
+        "dlr",
+        "elizabeth",
+        "jubilee"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 337
+    },
+    "CYP": {
+      "name": "Crystal Palace",
+      "tflName": "Crystal Palace",
+      "hubId": "HUBCYP",
+      "stopIds": [
+        "910GCRYSTLP"
+      ],
+      "routingId": "910GCRYSTLP",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 60
+    },
+    "DLJ": {
+      "name": "Dalston Junction",
+      "tflName": "Dalston Junction",
+      "hubId": null,
+      "stopIds": [
+        "910GDALS"
+      ],
+      "routingId": "910GDALS",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 21
+    },
+    "DLK": {
+      "name": "Dalston Kingsland",
+      "tflName": "Dalston Kingsland",
+      "hubId": null,
+      "stopIds": [
+        "910GDALSKLD"
+      ],
+      "routingId": "910GDALSKLD",
+      "lineIds": [
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 78
+    },
+    "DMK": {
+      "name": "Denmark Hill",
+      "tflName": "Denmark Hill",
+      "hubId": null,
+      "stopIds": [
+        "910GDENMRKH"
+      ],
+      "routingId": "910GDENMRKH",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 9
+    },
+    "EAL": {
+      "name": "Ealing Broadway",
+      "tflName": "Ealing Broadway",
+      "hubId": "HUBEAL",
+      "stopIds": [
+        "910GEALINGB",
+        "940GZZLUEBY"
+      ],
+      "routingId": "HUBEAL",
+      "lineIds": [
+        "central",
+        "district",
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 58
+    },
+    "EDR": {
+      "name": "Edmonton Green",
+      "tflName": "Edmonton Green",
+      "hubId": null,
+      "stopIds": [
+        "910GEDMNGRN"
+      ],
+      "routingId": "910GEDMNGRN",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 160
+    },
+    "EMP": {
+      "name": "Emerson Park",
+      "tflName": "Emerson Park",
+      "hubId": null,
+      "stopIds": [
+        "910GEMRSPKH"
+      ],
+      "routingId": "910GEMRSPKH",
+      "lineIds": [
+        "liberty"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 47
+    },
+    "ENF": {
+      "name": "Enfield Town",
+      "tflName": "Enfield Town",
+      "hubId": null,
+      "stopIds": [
+        "910GENFLDTN"
+      ],
+      "routingId": "910GENFLDTN",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 63
+    },
+    "EPH": {
+      "name": "Elephant & Castle",
+      "tflName": "Elephant & Castle",
+      "hubId": "HUBEPH",
+      "stopIds": [
+        "940GZZLUEAC"
+      ],
+      "routingId": "940GZZLUEAC",
+      "lineIds": [
+        "bakerloo",
+        "northern"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 149
+    },
+    "EUS": {
+      "name": "London Euston",
+      "tflName": "Euston",
+      "hubId": "HUBEUS",
+      "stopIds": [
+        "910GEUSTON",
+        "940GZZLUEUS"
+      ],
+      "routingId": "HUBEUS",
+      "lineIds": [
+        "lioness",
+        "northern",
+        "victoria"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 194
+    },
+    "FNY": {
+      "name": "Finchley Road & Frognal",
+      "tflName": "Finchley Road & Frognal",
+      "hubId": null,
+      "stopIds": [
+        "910GFNCHLYR"
+      ],
+      "routingId": "910GFNCHLYR",
+      "lineIds": [
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 15
+    },
+    "FOG": {
+      "name": "Forest Gate",
+      "tflName": "Forest Gate",
+      "hubId": null,
+      "stopIds": [
+        "910GFRSTGT"
+      ],
+      "routingId": "910GFRSTGT",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 81
+    },
+    "FOH": {
+      "name": "Forest Hill",
+      "tflName": "Forest Hill",
+      "hubId": null,
+      "stopIds": [
+        "910GFORESTH"
+      ],
+      "routingId": "910GFORESTH",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 47
+    },
+    "FPK": {
+      "name": "Finsbury Park",
+      "tflName": "Finsbury Park",
+      "hubId": "HUBFPK",
+      "stopIds": [
+        "940GZZLUFPK"
+      ],
+      "routingId": "940GZZLUFPK",
+      "lineIds": [
+        "piccadilly",
+        "victoria"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 103
+    },
+    "FST": {
+      "name": "London Fenchurch Street",
+      "tflName": "Tower Hill",
+      "hubId": null,
+      "stopIds": [
+        "940GZZLUTWH"
+      ],
+      "routingId": "940GZZLUTWH",
+      "lineIds": [
+        "circle",
+        "district"
+      ],
+      "match": "reviewed",
+      "distanceMetres": 222,
+      "note": "Reviewed adjacent interchange: c2c identifies Tower Hill as approximately 3 minutes on foot from Fenchurch Street.",
+      "accessWalkingMinutes": 3,
+      "accessNote": "Walk between Fenchurch Street and Tower Hill Underground; 3 minutes of walking is included in the station transfer allowance.",
+      "sourceURL": "https://www.c2c-online.co.uk/stations/london-fenchurch-street-station/"
+    },
+    "GDP": {
+      "name": "Gidea Park",
+      "tflName": "Gidea Park",
+      "hubId": null,
+      "stopIds": [
+        "910GGIDEAPK"
+      ],
+      "routingId": "910GGIDEAPK",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 41
+    },
+    "GFD": {
+      "name": "Greenford",
+      "tflName": "Greenford",
+      "hubId": "HUBGFD",
+      "stopIds": [
+        "940GZZLUGFD"
+      ],
+      "routingId": "940GZZLUGFD",
+      "lineIds": [
+        "central"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 19
+    },
+    "GMY": {
+      "name": "Goodmayes",
+      "tflName": "Goodmayes",
+      "hubId": null,
+      "stopIds": [
+        "910GGODMAYS"
+      ],
+      "routingId": "910GGODMAYS",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 102
+    },
+    "GNW": {
+      "name": "Greenwich",
+      "tflName": "Greenwich DLR Station",
+      "hubId": "HUBGNW",
+      "stopIds": [
+        "940GZZDLGRE"
+      ],
+      "routingId": "940GZZDLGRE",
+      "lineIds": [
+        "dlr"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 50
+    },
+    "GPO": {
+      "name": "Gospel Oak",
+      "tflName": "Gospel Oak",
+      "hubId": null,
+      "stopIds": [
+        "910GGOSPLOK"
+      ],
+      "routingId": "910GGOSPLOK",
+      "lineIds": [
+        "mildmay",
+        "suffragette"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 24
+    },
+    "GUN": {
+      "name": "Gunnersbury",
+      "tflName": "Gunnersbury",
+      "hubId": "HUBGUN",
+      "stopIds": [
+        "910GGNRSBRY",
+        "940GZZLUGBY"
+      ],
+      "routingId": "HUBGUN",
+      "lineIds": [
+        "district",
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 35
+    },
+    "HAC": {
+      "name": "Hackney Downs",
+      "tflName": "Hackney Downs",
+      "hubId": null,
+      "stopIds": [
+        "910GHAKNYNM"
+      ],
+      "routingId": "910GHAKNYNM",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 47
+    },
+    "HAF": {
+      "name": "Heathrow Terminal 4 Rail",
+      "tflName": "Heathrow Terminal 4",
+      "hubId": "HUBHX4",
+      "stopIds": [
+        "910GHTRWTM4",
+        "940GZZLUHR4"
+      ],
+      "routingId": "HUBHX4",
+      "lineIds": [
+        "elizabeth",
+        "piccadilly"
+      ],
+      "match": "reviewed",
+      "distanceMetres": 41,
+      "note": "Heathrow Terminal 4 Rail shares the Terminal 4 transport interchange."
+    },
+    "HAN": {
+      "name": "Hanwell",
+      "tflName": "Hanwell",
+      "hubId": null,
+      "stopIds": [
+        "910GHANWELL"
+      ],
+      "routingId": "910GHANWELL",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 28
+    },
+    "HAY": {
+      "name": "Hayes & Harlington",
+      "tflName": "Hayes & Harlington",
+      "hubId": null,
+      "stopIds": [
+        "910GHAYESAH"
+      ],
+      "routingId": "910GHAYESAH",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 15
+    },
+    "HDH": {
+      "name": "Hampstead Heath",
+      "tflName": "Hampstead Heath",
+      "hubId": null,
+      "stopIds": [
+        "910GHMPSTDH"
+      ],
+      "routingId": "910GHMPSTDH",
+      "lineIds": [
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 74
+    },
+    "HDL": {
+      "name": "Headstone Lane",
+      "tflName": "Headstone Lane",
+      "hubId": null,
+      "stopIds": [
+        "910GHEDSTNL"
+      ],
+      "routingId": "910GHEDSTNL",
+      "lineIds": [
+        "lioness"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 32
+    },
+    "HDN": {
+      "name": "Harlesden",
+      "tflName": "Harlesden",
+      "hubId": "HUBHDN",
+      "stopIds": [
+        "910GHARLSDN",
+        "940GZZLUHSN"
+      ],
+      "routingId": "HUBHDN",
+      "lineIds": [
+        "bakerloo",
+        "lioness"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 33
+    },
+    "HGG": {
+      "name": "Haggerston",
+      "tflName": "Haggerston",
+      "hubId": null,
+      "stopIds": [
+        "910GHAGGERS"
+      ],
+      "routingId": "910GHAGGERS",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 70
+    },
+    "HHY": {
+      "name": "Highbury & Islington",
+      "tflName": "Highbury & Islington",
+      "hubId": "HUBHHY",
+      "stopIds": [
+        "910GHGHI",
+        "940GZZLUHAI"
+      ],
+      "routingId": "HUBHHY",
+      "lineIds": [
+        "mildmay",
+        "victoria",
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 95
+    },
+    "HIP": {
+      "name": "Highams Park",
+      "tflName": "Highams Park",
+      "hubId": null,
+      "stopIds": [
+        "910GHGHMSPK"
+      ],
+      "routingId": "910GHGHMSPK",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 61
+    },
+    "HKC": {
+      "name": "Hackney Central",
+      "tflName": "Hackney Central",
+      "hubId": null,
+      "stopIds": [
+        "910GHACKNYC"
+      ],
+      "routingId": "910GHACKNYC",
+      "lineIds": [
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 33
+    },
+    "HKW": {
+      "name": "Hackney Wick",
+      "tflName": "Hackney Wick",
+      "hubId": null,
+      "stopIds": [
+        "910GHACKNYW"
+      ],
+      "routingId": "910GHACKNYW",
+      "lineIds": [
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 63
+    },
+    "HMN": {
+      "name": "Homerton",
+      "tflName": "Homerton",
+      "hubId": null,
+      "stopIds": [
+        "910GHOMRTON"
+      ],
+      "routingId": "910GHOMRTON",
+      "lineIds": [
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 265
+    },
+    "HOH": {
+      "name": "Harrow-on-the-Hill",
+      "tflName": "Harrow-on-the-Hill",
+      "hubId": "HUBHOH",
+      "stopIds": [
+        "940GZZLUHOH"
+      ],
+      "routingId": "940GZZLUHOH",
+      "lineIds": [
+        "metropolitan"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 43
+    },
+    "HOX": {
+      "name": "Hoxton",
+      "tflName": "Hoxton",
+      "hubId": null,
+      "stopIds": [
+        "910GHOXTON"
+      ],
+      "routingId": "910GHOXTON",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 86
+    },
+    "HPA": {
+      "name": "Honor Oak Park",
+      "tflName": "Honor Oak Park",
+      "hubId": null,
+      "stopIds": [
+        "910GHONROPK"
+      ],
+      "routingId": "910GHONROPK",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 49
+    },
+    "HRO": {
+      "name": "Harold Wood",
+      "tflName": "Harold Wood",
+      "hubId": null,
+      "stopIds": [
+        "910GHRLDWOD"
+      ],
+      "routingId": "910GHRLDWOD",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 118
+    },
+    "HRW": {
+      "name": "Harrow & Wealdstone",
+      "tflName": "Harrow & Wealdstone",
+      "hubId": "HUBHRW",
+      "stopIds": [
+        "910GHROW",
+        "940GZZLUHAW"
+      ],
+      "routingId": "HUBHRW",
+      "lineIds": [
+        "bakerloo",
+        "lioness"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 111
+    },
+    "HRY": {
+      "name": "Harringay Green Lanes",
+      "tflName": "Harringay Green Lanes",
+      "hubId": null,
+      "stopIds": [
+        "910GHRGYGL"
+      ],
+      "routingId": "910GHRGYGL",
+      "lineIds": [
+        "suffragette"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 17
+    },
+    "HTE": {
+      "name": "Hatch End",
+      "tflName": "Hatch End",
+      "hubId": null,
+      "stopIds": [
+        "910GHTCHEND"
+      ],
+      "routingId": "910GHTCHEND",
+      "lineIds": [
+        "lioness"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 94
+    },
+    "HWV": {
+      "name": "Heathrow Terminal 5 Rail",
+      "tflName": "Heathrow Terminal 5",
+      "hubId": "HUBHX5",
+      "stopIds": [
+        "910GHTRWTM5",
+        "940GZZLUHR5"
+      ],
+      "routingId": "HUBHX5",
+      "lineIds": [
+        "elizabeth",
+        "piccadilly"
+      ],
+      "match": "reviewed",
+      "distanceMetres": 731,
+      "note": "Heathrow Terminal 5 Rail shares the Terminal 5 transport interchange."
+    },
+    "HXX": {
+      "name": "Heathrow Terminals 1-2-3 Rail",
+      "tflName": "Heathrow Terminals 2 & 3",
+      "hubId": "HUBH13",
+      "stopIds": [
+        "910GHTRWAPT",
+        "940GZZLUHRC"
+      ],
+      "routingId": "HUBH13",
+      "lineIds": [
+        "elizabeth",
+        "piccadilly"
+      ],
+      "match": "reviewed",
+      "distanceMetres": 260,
+      "note": "The legacy National Rail Terminals 1-2-3 name identifies the current Terminals 2 & 3 interchange."
+    },
+    "IFD": {
+      "name": "Ilford",
+      "tflName": "Ilford",
+      "hubId": null,
+      "stopIds": [
+        "910GILFORD"
+      ],
+      "routingId": "910GILFORD",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 68
+    },
+    "IMW": {
+      "name": "Imperial Wharf",
+      "tflName": "Imperial Wharf",
+      "hubId": "HUBIMP",
+      "stopIds": [
+        "910GCSEAH"
+      ],
+      "routingId": "910GCSEAH",
+      "lineIds": [
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 25
+    },
+    "KBN": {
+      "name": "Kilburn High Road",
+      "tflName": "Kilburn High Road",
+      "hubId": null,
+      "stopIds": [
+        "910GKLBRNHR"
+      ],
+      "routingId": "910GKLBRNHR",
+      "lineIds": [
+        "lioness"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 26
+    },
+    "KGX": {
+      "name": "London Kings Cross",
+      "tflName": "King's Cross St. Pancras",
+      "hubId": "HUBKGX",
+      "stopIds": [
+        "940GZZLUKSX"
+      ],
+      "routingId": "940GZZLUKSX",
+      "lineIds": [
+        "circle",
+        "hammersmith-city",
+        "metropolitan",
+        "northern",
+        "piccadilly",
+        "victoria"
+      ],
+      "match": "reviewed",
+      "distanceMetres": 27,
+      "note": "King’s Cross mainline station accesses the shared King’s Cross St Pancras Underground station."
+    },
+    "KNL": {
+      "name": "Kensal Green",
+      "tflName": "Kensal Green",
+      "hubId": "HUBKNL",
+      "stopIds": [
+        "910GKENSLG",
+        "940GZZLUKSL"
+      ],
+      "routingId": "HUBKNL",
+      "lineIds": [
+        "bakerloo",
+        "lioness"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 81
+    },
+    "KNR": {
+      "name": "Kensal Rise",
+      "tflName": "Kensal Rise",
+      "hubId": null,
+      "stopIds": [
+        "910GKENR"
+      ],
+      "routingId": "910GKENR",
+      "lineIds": [
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 74
+    },
+    "KNT": {
+      "name": "Kenton",
+      "tflName": "Kenton",
+      "hubId": "HUBKNT",
+      "stopIds": [
+        "910GKTON",
+        "940GZZLUKEN"
+      ],
+      "routingId": "HUBKNT",
+      "lineIds": [
+        "bakerloo",
+        "lioness"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 39
+    },
+    "KPA": {
+      "name": "Kensington Olympia",
+      "tflName": "Kensington (Olympia)",
+      "hubId": "HUBKPA",
+      "stopIds": [
+        "910GKENOLYM",
+        "940GZZLUKOY"
+      ],
+      "routingId": "HUBKPA",
+      "lineIds": [
+        "district",
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 19
+    },
+    "KTN": {
+      "name": "Kentish Town",
+      "tflName": "Kentish Town",
+      "hubId": "HUBKTN",
+      "stopIds": [
+        "940GZZLUKSH"
+      ],
+      "routingId": "940GZZLUKSH",
+      "lineIds": [
+        "northern"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 20
+    },
+    "KTW": {
+      "name": "Kentish Town West",
+      "tflName": "Kentish Town West",
+      "hubId": null,
+      "stopIds": [
+        "910GKNTSHTW"
+      ],
+      "routingId": "910GKNTSHTW",
+      "lineIds": [
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 10
+    },
+    "KWG": {
+      "name": "Kew Gardens",
+      "tflName": "Kew Gardens",
+      "hubId": "HUBKWG",
+      "stopIds": [
+        "910GKEWGRDN",
+        "940GZZLUKWG"
+      ],
+      "routingId": "HUBKWG",
+      "lineIds": [
+        "district",
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 59
+    },
+    "LBG": {
+      "name": "London Bridge",
+      "tflName": "London Bridge",
+      "hubId": "HUBLBG",
+      "stopIds": [
+        "940GZZLULNB"
+      ],
+      "routingId": "940GZZLULNB",
+      "lineIds": [
+        "jubilee",
+        "northern"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 275
+    },
+    "LEM": {
+      "name": "Leyton Midland Road",
+      "tflName": "Leyton Midland Road",
+      "hubId": null,
+      "stopIds": [
+        "910GLEYTNMR"
+      ],
+      "routingId": "910GLEYTNMR",
+      "lineIds": [
+        "suffragette"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 63
+    },
+    "LER": {
+      "name": "Leytonstone High Road",
+      "tflName": "Leytonstone High Road",
+      "hubId": null,
+      "stopIds": [
+        "910GLYTNSHR"
+      ],
+      "routingId": "910GLYTNSHR",
+      "lineIds": [
+        "suffragette"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 21
+    },
+    "LEW": {
+      "name": "Lewisham",
+      "tflName": "Lewisham DLR Station",
+      "hubId": "HUBLEW",
+      "stopIds": [
+        "940GZZDLLEW"
+      ],
+      "routingId": "940GZZDLLEW",
+      "lineIds": [
+        "dlr"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 204
+    },
+    "LHS": {
+      "name": "Limehouse",
+      "tflName": "Limehouse DLR Station",
+      "hubId": "HUBLHS",
+      "stopIds": [
+        "940GZZDLLIM"
+      ],
+      "routingId": "940GZZDLLIM",
+      "lineIds": [
+        "dlr"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 18
+    },
+    "LOF": {
+      "name": "London Fields",
+      "tflName": "London Fields",
+      "hubId": null,
+      "stopIds": [
+        "910GLONFLDS"
+      ],
+      "routingId": "910GLONFLDS",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 36
+    },
+    "LST": {
+      "name": "London Liverpool Street",
+      "tflName": "Liverpool Street",
+      "hubId": "HUBLST",
+      "stopIds": [
+        "910GLIVST",
+        "910GLIVSTLL",
+        "940GZZLULVT"
+      ],
+      "routingId": "HUBLST",
+      "lineIds": [
+        "central",
+        "circle",
+        "elizabeth",
+        "hammersmith-city",
+        "metropolitan",
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 207
+    },
+    "MNP": {
+      "name": "Manor Park",
+      "tflName": "Manor Park",
+      "hubId": null,
+      "stopIds": [
+        "910GMANRPK"
+      ],
+      "routingId": "910GMANRPK",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 74
+    },
+    "MOG": {
+      "name": "Moorgate",
+      "tflName": "Moorgate",
+      "hubId": "HUBZMG",
+      "stopIds": [
+        "940GZZLUMGT"
+      ],
+      "routingId": "940GZZLUMGT",
+      "lineIds": [
+        "circle",
+        "hammersmith-city",
+        "metropolitan",
+        "northern"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 143
+    },
+    "MYB": {
+      "name": "London Marylebone",
+      "tflName": "Marylebone",
+      "hubId": "HUBMYB",
+      "stopIds": [
+        "940GZZLUMYB"
+      ],
+      "routingId": "940GZZLUMYB",
+      "lineIds": [
+        "bakerloo"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 33
+    },
+    "MYL": {
+      "name": "Maryland",
+      "tflName": "Maryland",
+      "hubId": null,
+      "stopIds": [
+        "910GMRYLAND"
+      ],
+      "routingId": "910GMRYLAND",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 38
+    },
+    "NWB": {
+      "name": "North Wembley",
+      "tflName": "North Wembley",
+      "hubId": "HUBNWB",
+      "stopIds": [
+        "910GNWEMBLY",
+        "940GZZLUNWY"
+      ],
+      "routingId": "HUBNWB",
+      "lineIds": [
+        "bakerloo",
+        "lioness"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 47
+    },
+    "NWD": {
+      "name": "Norwood Junction",
+      "tflName": "Norwood Junction",
+      "hubId": "HUBNWD",
+      "stopIds": [
+        "910GNORWDJ"
+      ],
+      "routingId": "910GNORWDJ",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 6
+    },
+    "NWX": {
+      "name": "New Cross",
+      "tflName": "New Cross ELL",
+      "hubId": "HUBNWX",
+      "stopIds": [
+        "910GNWCRELL"
+      ],
+      "routingId": "910GNWCRELL",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "reviewed",
+      "distanceMetres": 38,
+      "note": "New Cross ELL is the Windrush service at New Cross National Rail station."
+    },
+    "NXG": {
+      "name": "New Cross Gate",
+      "tflName": "New Cross Gate",
+      "hubId": "HUBNXG",
+      "stopIds": [
+        "910GNEWXGTE"
+      ],
+      "routingId": "910GNEWXGTE",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 99
+    },
+    "OLD": {
+      "name": "Old Street",
+      "tflName": "Old Street",
+      "hubId": "HUBOLD",
+      "stopIds": [
+        "940GZZLUODS"
+      ],
+      "routingId": "940GZZLUODS",
+      "lineIds": [
+        "northern"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 52
+    },
+    "PAD": {
+      "name": "London Paddington",
+      "tflName": "Paddington",
+      "hubId": "HUBPAD",
+      "stopIds": [
+        "910GPADTLL",
+        "910GPADTON",
+        "940GZZLUPAC",
+        "940GZZLUPAH"
+      ],
+      "routingId": "HUBPAD",
+      "lineIds": [
+        "bakerloo",
+        "circle",
+        "district",
+        "elizabeth",
+        "hammersmith-city"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 9
+    },
+    "PMR": {
+      "name": "Peckham Rye",
+      "tflName": "Peckham Rye",
+      "hubId": null,
+      "stopIds": [
+        "910GPCKHMRY"
+      ],
+      "routingId": "910GPCKHMRY",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 129
+    },
+    "PNW": {
+      "name": "Penge West",
+      "tflName": "Penge West",
+      "hubId": null,
+      "stopIds": [
+        "910GPENEW"
+      ],
+      "routingId": "910GPENEW",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 42
+    },
+    "QPW": {
+      "name": "Queens Park (London)",
+      "tflName": "Queen's Park",
+      "hubId": "HUBQPW",
+      "stopIds": [
+        "910GQPRK",
+        "940GZZLUQPS"
+      ],
+      "routingId": "HUBQPW",
+      "lineIds": [
+        "bakerloo",
+        "lioness"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 38
+    },
+    "QRP": {
+      "name": "Queens Road Peckham",
+      "tflName": "Queens Road Peckham",
+      "hubId": null,
+      "stopIds": [
+        "910GPCKHMQD"
+      ],
+      "routingId": "910GPCKHMQD",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 52
+    },
+    "REC": {
+      "name": "Rectory Road",
+      "tflName": "Rectory Road",
+      "hubId": null,
+      "stopIds": [
+        "910GRCTRYRD"
+      ],
+      "routingId": "910GRCTRYRD",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 25
+    },
+    "RMD": {
+      "name": "Richmond",
+      "tflName": "Richmond",
+      "hubId": "HUBRMD",
+      "stopIds": [
+        "910GRICHMND",
+        "940GZZLURMD"
+      ],
+      "routingId": "HUBRMD",
+      "lineIds": [
+        "district",
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 81
+    },
+    "RMF": {
+      "name": "Romford",
+      "tflName": "Romford",
+      "hubId": null,
+      "stopIds": [
+        "910GROMFORD"
+      ],
+      "routingId": "910GROMFORD",
+      "lineIds": [
+        "elizabeth",
+        "liberty"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 89
+    },
+    "ROE": {
+      "name": "Rotherhithe",
+      "tflName": "Rotherhithe",
+      "hubId": null,
+      "stopIds": [
+        "910GRTHERHI"
+      ],
+      "routingId": "910GRTHERHI",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 104
+    },
+    "SAT": {
+      "name": "South Acton",
+      "tflName": "South Acton",
+      "hubId": null,
+      "stopIds": [
+        "910GSACTON"
+      ],
+      "routingId": "910GSACTON",
+      "lineIds": [
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 34
+    },
+    "SBP": {
+      "name": "Stonebridge Park",
+      "tflName": "Stonebridge Park",
+      "hubId": "HUBSBP",
+      "stopIds": [
+        "910GSTNBGPK",
+        "940GZZLUSGP"
+      ],
+      "routingId": "HUBSBP",
+      "lineIds": [
+        "bakerloo",
+        "lioness"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 46
+    },
+    "SBU": {
+      "name": "Southbury",
+      "tflName": "Southbury",
+      "hubId": null,
+      "stopIds": [
+        "910GSBURY"
+      ],
+      "routingId": "910GSBURY",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 52
+    },
+    "SDC": {
+      "name": "Shoreditch High Street",
+      "tflName": "Shoreditch High Street",
+      "hubId": null,
+      "stopIds": [
+        "910GSHRDHST"
+      ],
+      "routingId": "910GSHRDHST",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 26
+    },
+    "SDE": {
+      "name": "Shadwell",
+      "tflName": "Shadwell",
+      "hubId": "HUBSDE",
+      "stopIds": [
+        "910GSHADWEL",
+        "940GZZDLSHA"
+      ],
+      "routingId": "HUBSDE",
+      "lineIds": [
+        "dlr",
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 52
+    },
+    "SFA": {
+      "name": "Stratford International",
+      "tflName": "Stratford International DLR Station",
+      "hubId": null,
+      "stopIds": [
+        "940GZZDLSIT"
+      ],
+      "routingId": "940GZZDLSIT",
+      "lineIds": [
+        "dlr"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 108
+    },
+    "SJS": {
+      "name": "St James Street",
+      "tflName": "St James Street (London)",
+      "hubId": null,
+      "stopIds": [
+        "910GSTJMSST"
+      ],
+      "routingId": "910GSTJMSST",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 42
+    },
+    "SKW": {
+      "name": "Stoke Newington",
+      "tflName": "Stoke Newington",
+      "hubId": null,
+      "stopIds": [
+        "910GSTKNWNG"
+      ],
+      "routingId": "910GSTKNWNG",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 35
+    },
+    "SLV": {
+      "name": "Silver Street",
+      "tflName": "Silver Street",
+      "hubId": null,
+      "stopIds": [
+        "910GSIVRST"
+      ],
+      "routingId": "910GSIVRST",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 76
+    },
+    "SMH": {
+      "name": "Stamford Hill",
+      "tflName": "Stamford Hill",
+      "hubId": null,
+      "stopIds": [
+        "910GSTMFDHL"
+      ],
+      "routingId": "910GSTMFDHL",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 67
+    },
+    "SOH": {
+      "name": "South Hampstead",
+      "tflName": "South Hampstead",
+      "hubId": null,
+      "stopIds": [
+        "910GSHMPSTD"
+      ],
+      "routingId": "910GSHMPSTD",
+      "lineIds": [
+        "lioness"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 8
+    },
+    "SOK": {
+      "name": "South Kenton",
+      "tflName": "South Kenton",
+      "hubId": "HUBSOK",
+      "stopIds": [
+        "910GSKENTON",
+        "940GZZLUSKT"
+      ],
+      "routingId": "HUBSOK",
+      "lineIds": [
+        "bakerloo",
+        "lioness"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 74
+    },
+    "SPB": {
+      "name": "Shepherds Bush",
+      "tflName": "Shepherds Bush",
+      "hubId": "HUBSPB",
+      "stopIds": [
+        "910GSHPDSB",
+        "940GZZLUSBC"
+      ],
+      "routingId": "HUBSPB",
+      "lineIds": [
+        "central",
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 189
+    },
+    "SQE": {
+      "name": "Surrey Quays",
+      "tflName": "Surrey Quays",
+      "hubId": null,
+      "stopIds": [
+        "910GSURREYQ"
+      ],
+      "routingId": "910GSURREYQ",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "reviewed",
+      "distanceMetres": 6621,
+      "note": "Exact station identity reviewed: National Rail catalogue longitude has the wrong sign; do not use it for proximity matching."
+    },
+    "SRA": {
+      "name": "Stratford (London)",
+      "tflName": "Stratford",
+      "hubId": "HUBSRA",
+      "stopIds": [
+        "910GSTFD",
+        "940GZZDLSTD",
+        "940GZZLUSTD"
+      ],
+      "routingId": "HUBSRA",
+      "lineIds": [
+        "central",
+        "dlr",
+        "elizabeth",
+        "jubilee",
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 79
+    },
+    "SRU": {
+      "name": "South Ruislip",
+      "tflName": "South Ruislip",
+      "hubId": "HUBSRU",
+      "stopIds": [
+        "940GZZLUSRP"
+      ],
+      "routingId": "940GZZLUSRP",
+      "lineIds": [
+        "central"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 14
+    },
+    "STL": {
+      "name": "Southall",
+      "tflName": "Southall",
+      "hubId": null,
+      "stopIds": [
+        "910GSTHALL"
+      ],
+      "routingId": "910GSTHALL",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 11
+    },
+    "STO": {
+      "name": "South Tottenham",
+      "tflName": "South Tottenham",
+      "hubId": null,
+      "stopIds": [
+        "910GSTOTNHM"
+      ],
+      "routingId": "910GSTOTNHM",
+      "lineIds": [
+        "suffragette"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 22
+    },
+    "STP": {
+      "name": "London St Pancras International",
+      "tflName": "King's Cross St. Pancras",
+      "hubId": "HUBKGX",
+      "stopIds": [
+        "940GZZLUKSX"
+      ],
+      "routingId": "940GZZLUKSX",
+      "lineIds": [
+        "circle",
+        "hammersmith-city",
+        "metropolitan",
+        "northern",
+        "piccadilly",
+        "victoria"
+      ],
+      "match": "reviewed",
+      "distanceMetres": 260,
+      "note": "St Pancras accesses the shared King’s Cross St Pancras Underground station. National Rail walks to King’s Cross remain walks."
+    },
+    "SVK": {
+      "name": "Seven Kings",
+      "tflName": "Seven Kings",
+      "hubId": null,
+      "stopIds": [
+        "910GSVNKNGS"
+      ],
+      "routingId": "910GSVNKNGS",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 54
+    },
+    "SVS": {
+      "name": "Seven Sisters",
+      "tflName": "Seven Sisters",
+      "hubId": "HUBSVS",
+      "stopIds": [
+        "910GSEVNSIS",
+        "940GZZLUSVS"
+      ],
+      "routingId": "HUBSVS",
+      "lineIds": [
+        "victoria",
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 154
+    },
+    "SYD": {
+      "name": "Sydenham",
+      "tflName": "Sydenham",
+      "hubId": "HUBSYD",
+      "stopIds": [
+        "910GSYDENHM"
+      ],
+      "routingId": "910GSYDENHM",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 69
+    },
+    "TCR": {
+      "name": "Tottenham Court Road",
+      "tflName": "Tottenham Court Road",
+      "hubId": "HUBTCR",
+      "stopIds": [
+        "910GTOTCTRD",
+        "940GZZLUTCR"
+      ],
+      "routingId": "HUBTCR",
+      "lineIds": [
+        "central",
+        "elizabeth",
+        "northern"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 42
+    },
+    "TOM": {
+      "name": "Tottenham Hale",
+      "tflName": "Tottenham Hale",
+      "hubId": "HUBTOM",
+      "stopIds": [
+        "940GZZLUTMH"
+      ],
+      "routingId": "940GZZLUTMH",
+      "lineIds": [
+        "victoria"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 28
+    },
+    "TUR": {
+      "name": "Turkey Street",
+      "tflName": "Turkey Street",
+      "hubId": null,
+      "stopIds": [
+        "910GTURKYST"
+      ],
+      "routingId": "910GTURKYST",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 98
+    },
+    "UHL": {
+      "name": "Upper Holloway",
+      "tflName": "Upper Holloway",
+      "hubId": null,
+      "stopIds": [
+        "910GUPRHLWY"
+      ],
+      "routingId": "910GUPRHLWY",
+      "lineIds": [
+        "suffragette"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 15
+    },
+    "UPM": {
+      "name": "Upminster",
+      "tflName": "Upminster",
+      "hubId": "HUBUPM",
+      "stopIds": [
+        "910GUPMNSTR",
+        "940GZZLUUPM"
+      ],
+      "routingId": "HUBUPM",
+      "lineIds": [
+        "district",
+        "liberty"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 78
+    },
+    "VIC": {
+      "name": "London Victoria",
+      "tflName": "Victoria",
+      "hubId": "HUBVIC",
+      "stopIds": [
+        "940GZZLUVIC"
+      ],
+      "routingId": "940GZZLUVIC",
+      "lineIds": [
+        "circle",
+        "district",
+        "victoria"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 159
+    },
+    "VXH": {
+      "name": "Vauxhall",
+      "tflName": "Vauxhall",
+      "hubId": "HUBVXH",
+      "stopIds": [
+        "940GZZLUVXL"
+      ],
+      "routingId": "940GZZLUVXL",
+      "lineIds": [
+        "victoria"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 14
+    },
+    "WAE": {
+      "name": "London Waterloo East",
+      "tflName": "Southwark",
+      "hubId": null,
+      "stopIds": [
+        "940GZZLUSWK"
+      ],
+      "routingId": "940GZZLUSWK",
+      "lineIds": [
+        "jubilee"
+      ],
+      "match": "reviewed",
+      "distanceMetres": 196,
+      "note": "Southeastern confirms a direct Waterloo East entrance from Southwark Underground; retain the station interchange allowance.",
+      "accessNote": "Use the direct interchange between Waterloo East and Southwark Underground; this route involves steps or an escalator.",
+      "sourceURL": "https://www.southeasternrailway.co.uk/travel-information/station-information/stations/london-waterloo-east"
+    },
+    "WAT": {
+      "name": "London Waterloo",
+      "tflName": "Waterloo",
+      "hubId": "HUBWAT",
+      "stopIds": [
+        "940GZZLUWLO"
+      ],
+      "routingId": "940GZZLUWLO",
+      "lineIds": [
+        "bakerloo",
+        "jubilee",
+        "northern",
+        "waterloo-city"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 299
+    },
+    "WBP": {
+      "name": "West Brompton",
+      "tflName": "West Brompton",
+      "hubId": "HUBWBP",
+      "stopIds": [
+        "910GWBRMPTN",
+        "940GZZLUWBN"
+      ],
+      "routingId": "HUBWBP",
+      "lineIds": [
+        "district",
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 23
+    },
+    "WCY": {
+      "name": "West Croydon",
+      "tflName": "West Croydon",
+      "hubId": "HUBWCY",
+      "stopIds": [
+        "910GWCROYDN",
+        "940GZZCRWCR"
+      ],
+      "routingId": "HUBWCY",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 51
+    },
+    "WDT": {
+      "name": "West Drayton",
+      "tflName": "West Drayton",
+      "hubId": null,
+      "stopIds": [
+        "910GWDRYTON"
+      ],
+      "routingId": "910GWDRYTON",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 32
+    },
+    "WEA": {
+      "name": "West Ealing",
+      "tflName": "West Ealing",
+      "hubId": null,
+      "stopIds": [
+        "910GWEALING"
+      ],
+      "routingId": "910GWEALING",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 62
+    },
+    "WEH": {
+      "name": "West Ham",
+      "tflName": "West Ham",
+      "hubId": "HUBWEH",
+      "stopIds": [
+        "940GZZDLWHM",
+        "940GZZLUWHM"
+      ],
+      "routingId": "HUBWEH",
+      "lineIds": [
+        "district",
+        "dlr",
+        "hammersmith-city",
+        "jubilee"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 66
+    },
+    "WGR": {
+      "name": "Woodgrange Park",
+      "tflName": "Woodgrange Park",
+      "hubId": null,
+      "stopIds": [
+        "910GWDGRNPK"
+      ],
+      "routingId": "910GWDGRNPK",
+      "lineIds": [
+        "suffragette"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 79
+    },
+    "WHC": {
+      "name": "Walthamstow Central",
+      "tflName": "Walthamstow Central",
+      "hubId": "HUBWHC",
+      "stopIds": [
+        "910GWLTWCEN",
+        "940GZZLUWWL"
+      ],
+      "routingId": "HUBWHC",
+      "lineIds": [
+        "victoria",
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 18
+    },
+    "WHD": {
+      "name": "West Hampstead",
+      "tflName": "West Hampstead",
+      "hubId": "HUBWHD",
+      "stopIds": [
+        "910GWHMDSTD",
+        "940GZZLUWHP"
+      ],
+      "routingId": "HUBWHD",
+      "lineIds": [
+        "jubilee",
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 53
+    },
+    "WHL": {
+      "name": "White Hart Lane",
+      "tflName": "White Hart Lane",
+      "hubId": null,
+      "stopIds": [
+        "910GWHHRTLA"
+      ],
+      "routingId": "910GWHHRTLA",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 47
+    },
+    "WIJ": {
+      "name": "Willesden Junction",
+      "tflName": "Willesden Junction",
+      "hubId": "HUBWIJ",
+      "stopIds": [
+        "910GWLSDJHL",
+        "940GZZLUWJN"
+      ],
+      "routingId": "HUBWIJ",
+      "lineIds": [
+        "bakerloo",
+        "lioness",
+        "mildmay"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 55
+    },
+    "WIM": {
+      "name": "Wimbledon",
+      "tflName": "Wimbledon",
+      "hubId": "HUBWIM",
+      "stopIds": [
+        "940GZZCRWMB",
+        "940GZZLUWIM"
+      ],
+      "routingId": "HUBWIM",
+      "lineIds": [
+        "district"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 36
+    },
+    "WMB": {
+      "name": "Wembley Central",
+      "tflName": "Wembley Central",
+      "hubId": "HUBWMB",
+      "stopIds": [
+        "910GWMBY",
+        "940GZZLUWYC"
+      ],
+      "routingId": "HUBWMB",
+      "lineIds": [
+        "bakerloo",
+        "lioness"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 95
+    },
+    "WMW": {
+      "name": "Walthamstow Queens Road",
+      "tflName": "Walthamstow Queens Road",
+      "hubId": null,
+      "stopIds": [
+        "910GWLTHQRD"
+      ],
+      "routingId": "910GWLTHQRD",
+      "lineIds": [
+        "suffragette"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 24
+    },
+    "WNP": {
+      "name": "Wanstead Park",
+      "tflName": "Wanstead Park",
+      "hubId": null,
+      "stopIds": [
+        "910GWNSTDPK"
+      ],
+      "routingId": "910GWNSTDPK",
+      "lineIds": [
+        "suffragette"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 78
+    },
+    "WPE": {
+      "name": "Wapping",
+      "tflName": "Wapping",
+      "hubId": null,
+      "stopIds": [
+        "910GWAPPING"
+      ],
+      "routingId": "910GWAPPING",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 78
+    },
+    "WRU": {
+      "name": "West Ruislip",
+      "tflName": "West Ruislip",
+      "hubId": "HUBWRU",
+      "stopIds": [
+        "940GZZLUWRP"
+      ],
+      "routingId": "940GZZLUWRP",
+      "lineIds": [
+        "central"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 6
+    },
+    "WST": {
+      "name": "Wood Street",
+      "tflName": "Wood Street",
+      "hubId": null,
+      "stopIds": [
+        "910GWDST"
+      ],
+      "routingId": "910GWDST",
+      "lineIds": [
+        "weaver"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 79
+    },
+    "WWA": {
+      "name": "Woolwich Arsenal",
+      "tflName": "Woolwich Arsenal DLR Station",
+      "hubId": "HUBWWA",
+      "stopIds": [
+        "940GZZDLWLA"
+      ],
+      "routingId": "940GZZDLWLA",
+      "lineIds": [
+        "dlr"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 57
+    },
+    "WWC": {
+      "name": "Woolwich",
+      "tflName": "Woolwich",
+      "hubId": null,
+      "stopIds": [
+        "910GWOLWXR"
+      ],
+      "routingId": "910GWOLWXR",
+      "lineIds": [
+        "elizabeth"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 107
+    },
+    "WWR": {
+      "name": "Wandsworth Road",
+      "tflName": "Wandsworth Road",
+      "hubId": null,
+      "stopIds": [
+        "910GWNDSWRD"
+      ],
+      "routingId": "910GWNDSWRD",
+      "lineIds": [
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 69
+    },
+    "ZCW": {
+      "name": "Canada Water",
+      "tflName": "Canada Water",
+      "hubId": "HUBZCW",
+      "stopIds": [
+        "910GCNDAW",
+        "940GZZLUCWR"
+      ],
+      "routingId": "HUBZCW",
+      "lineIds": [
+        "jubilee",
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 100
+    },
+    "ZFD": {
+      "name": "Farringdon",
+      "tflName": "Farringdon",
+      "hubId": "HUBZFD",
+      "stopIds": [
+        "910GFRNDXR",
+        "940GZZLUFCN"
+      ],
+      "routingId": "HUBZFD",
+      "lineIds": [
+        "circle",
+        "elizabeth",
+        "hammersmith-city",
+        "metropolitan"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 26
+    },
+    "ZLW": {
+      "name": "Whitechapel",
+      "tflName": "Whitechapel",
+      "hubId": "HUBZWL",
+      "stopIds": [
+        "910GWCHAPEL",
+        "910GWCHAPXR",
+        "940GZZLUWPL"
+      ],
+      "routingId": "HUBZWL",
+      "lineIds": [
+        "district",
+        "elizabeth",
+        "hammersmith-city",
+        "windrush"
+      ],
+      "match": "exactNameAndLocation",
+      "distanceMetres": 110
+    }
+  },
+  "unmapped": [
+    {
+      "crs": "AAP",
+      "name": "Alexandra Palace",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "AFS",
+      "name": "Ashford Surrey",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "AHD",
+      "name": "Ashtead",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "AMR",
+      "name": "Amersham",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "HUBAMR"
+      ]
+    },
+    {
+      "crs": "ASN",
+      "name": "Addlestone",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "AYP",
+      "name": "Albany Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BAD",
+      "name": "Banstead",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BAK",
+      "name": "Battersea Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BBL",
+      "name": "Bat & Ball",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BCZ",
+      "name": "Brent Cross West",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BEC",
+      "name": "Beckenham Hill",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BFD",
+      "name": "Brentford",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BFN",
+      "name": "Byfleet & New Haw",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BGM",
+      "name": "Bellingham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BIK",
+      "name": "Birkbeck",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BKA",
+      "name": "Bookham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BKH",
+      "name": "Blackheath",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BKJ",
+      "name": "Beckenham Junction",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BKL",
+      "name": "Bickley",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BLM",
+      "name": "Belmont",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BMD",
+      "name": "Brimsdown",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BMN",
+      "name": "Bromley North",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BMS",
+      "name": "Bromley South",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BNH",
+      "name": "Barnehurst",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BNI",
+      "name": "Barnes Bridge",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BNM",
+      "name": "Burnham",
+      "reason": "outsideLondon"
+    },
+    {
+      "crs": "BNS",
+      "name": "Barnes",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BOP",
+      "name": "Bowes Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BRE",
+      "name": "Brentwood",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "910GBRTWOOD"
+      ]
+    },
+    {
+      "crs": "BRG",
+      "name": "Borough Green & Wrotham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BRS",
+      "name": "Berrylands",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BSH",
+      "name": "Bushey",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "HUBBSH"
+      ]
+    },
+    {
+      "crs": "BVD",
+      "name": "Belvedere",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BXH",
+      "name": "Bexleyheath",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "BXY",
+      "name": "Bexley",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CAT",
+      "name": "Caterham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CBP",
+      "name": "Castle Bar Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CDN",
+      "name": "Coulsdon Town",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CDS",
+      "name": "Coulsdon South",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CFB",
+      "name": "Catford Bridge",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CFH",
+      "name": "Chafford Hundred",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CFO",
+      "name": "Chalfont & Latimer",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "HUBCFO"
+      ]
+    },
+    {
+      "crs": "CFT",
+      "name": "Crofton Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CHE",
+      "name": "Cheam",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CHK",
+      "name": "Chiswick",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CHN",
+      "name": "Cheshunt",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "910GCHESHNT"
+      ]
+    },
+    {
+      "crs": "CHP",
+      "name": "Chipstead",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CHY",
+      "name": "Chertsey",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CIT",
+      "name": "Chislehurst",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CLD",
+      "name": "Chelsfield",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CLG",
+      "name": "Claygate",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CLK",
+      "name": "Clock House",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CLW",
+      "name": "Chorleywood",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "HUBCLW"
+      ]
+    },
+    {
+      "crs": "CPK",
+      "name": "Carpenders Park",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "910GCRPNDPK"
+      ]
+    },
+    {
+      "crs": "CRI",
+      "name": "Cricklewood",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CRY",
+      "name": "Crayford",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CSB",
+      "name": "Carshalton Beeches",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CSD",
+      "name": "Cobham & Stoke Dabernon",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CSH",
+      "name": "Carshalton",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CSN",
+      "name": "Chessington North",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CSS",
+      "name": "Chessington South",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CTF",
+      "name": "Catford",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CTN",
+      "name": "Charlton",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "CWH",
+      "name": "Crews Hill",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "DDK",
+      "name": "Dagenham Dock",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "DEP",
+      "name": "Deptford",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "DFD",
+      "name": "Dartford",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "DGC",
+      "name": "Denham Golf Club",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "DNG",
+      "name": "Dunton Green",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "DNM",
+      "name": "Denham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "DRG",
+      "name": "Drayton Green",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "DYP",
+      "name": "Drayton Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "EAD",
+      "name": "Earlsfield",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "EBD",
+      "name": "Ebbsfleet International",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "ECR",
+      "name": "East Croydon",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "EDN",
+      "name": "Eden Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "EDW",
+      "name": "East Dulwich",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "EFF",
+      "name": "Effingham Junction",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "ELE",
+      "name": "Elmers End",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "ELS",
+      "name": "Elstree & Borehamwood",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "ELW",
+      "name": "Eltham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "ENC",
+      "name": "Enfield Chase",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "ENL",
+      "name": "Enfield Lock",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "EPD",
+      "name": "Epsom Downs",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "EPS",
+      "name": "Epsom",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "ERH",
+      "name": "Erith",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "ESD",
+      "name": "Elmstead Woods",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "ESH",
+      "name": "Esher",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "EWE",
+      "name": "Ewell East",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "EWW",
+      "name": "Ewell West",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "EXR",
+      "name": "Essex Road",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "EYN",
+      "name": "Eynsford",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "FCN",
+      "name": "Falconwood",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "FEL",
+      "name": "Feltham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "FLW",
+      "name": "Fulwell",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "FNR",
+      "name": "Farningham Road",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "GDH",
+      "name": "Gordon Hill",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "GIP",
+      "name": "Gipsy Hill",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "GNH",
+      "name": "Greenhithe for Bluewater",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "GPK",
+      "name": "Grange Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "GRP",
+      "name": "Grove Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "GRY",
+      "name": "Grays",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "GSN",
+      "name": "Garston",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "HCB",
+      "name": "Hackbridge",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "HDW",
+      "name": "Hadley Wood",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "HEN",
+      "name": "Hendon",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "HER",
+      "name": "Hersham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "HGR",
+      "name": "Hither Green",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "HGY",
+      "name": "Harringay",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "HMC",
+      "name": "Hampton Court",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "HMP",
+      "name": "Hampton",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "HMW",
+      "name": "Hampton Wick",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "HNH",
+      "name": "Herne Hill",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "HOU",
+      "name": "Hounslow",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "HRN",
+      "name": "Hornsey",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "HYR",
+      "name": "Haydons Road",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "HYS",
+      "name": "Hayes (Kent)",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "HYW",
+      "name": "Hinchley Wood",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "ISL",
+      "name": "Isleworth",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "IVR",
+      "name": "Iver",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "910GIVER"
+      ]
+    },
+    {
+      "crs": "KCK",
+      "name": "Knockholt",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "KDB",
+      "name": "Kidbrooke",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "KLY",
+      "name": "Kenley",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "KMP",
+      "name": "Kempton Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "KMS",
+      "name": "Kemsing",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "KND",
+      "name": "Kingswood",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "KNG",
+      "name": "Kingston",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "KTH",
+      "name": "Kent House",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "KWB",
+      "name": "Kew Bridge",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "LAD",
+      "name": "Ladywell",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "LEB",
+      "name": "Lea Bridge",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "LEE",
+      "name": "Lee",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "LGF",
+      "name": "Longfield",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "LGJ",
+      "name": "Loughborough Junction",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "LHD",
+      "name": "Leatherhead",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "LNY",
+      "name": "Langley",
+      "reason": "outsideLondon"
+    },
+    {
+      "crs": "LSY",
+      "name": "Lower Sydenham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "MAI",
+      "name": "Maidenhead",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "910GMDNHEAD"
+      ]
+    },
+    {
+      "crs": "MAL",
+      "name": "Malden Manor",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "MDS",
+      "name": "Morden South",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "MIJ",
+      "name": "Mitcham Junction",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "MIL",
+      "name": "Mill Hill Broadway",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "MOT",
+      "name": "Motspur Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "MRW",
+      "name": "Meridian Water",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "MTC",
+      "name": "Mitcham Eastfields",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "MTG",
+      "name": "Mottingham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "MTL",
+      "name": "Mortlake",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "MZH",
+      "name": "Maze Hill",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "NBA",
+      "name": "New Barnet",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "NBC",
+      "name": "New Beckenham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "NBT",
+      "name": "Norbiton",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "NDL",
+      "name": "North Dulwich",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "NEH",
+      "name": "New Eltham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "NEM",
+      "name": "New Malden",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "NFL",
+      "name": "Northfleet - Cooper Arms",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "NHD",
+      "name": "Nunhead",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "NLT",
+      "name": "Northolt Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "NRB",
+      "name": "Norbury",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "NSG",
+      "name": "New Southgate",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "NSH",
+      "name": "North Sheen",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "NUM",
+      "name": "Northumberland Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "OCK",
+      "name": "Ockendon",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "OKL",
+      "name": "Oakleigh Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "ORP",
+      "name": "Orpington",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "OTF",
+      "name": "Otford",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "OXS",
+      "name": "Oxshott",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "PAL",
+      "name": "Palmers Green",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "PBR",
+      "name": "Potters Bar",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "PET",
+      "name": "Petts Wood",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "PFL",
+      "name": "Purfleet",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "PLU",
+      "name": "Plumstead",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "PNE",
+      "name": "Penge East",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "PON",
+      "name": "Ponders End",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "PUO",
+      "name": "Purley Oaks",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "PUR",
+      "name": "Purley",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "PUT",
+      "name": "Putney",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "QRB",
+      "name": "Queenstown Road (Battersea)",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "RAY",
+      "name": "Raynes Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "RDB",
+      "name": "Redbridge",
+      "reason": "nameMatchLocationMismatch",
+      "candidateIds": [
+        "940GZZLURBG"
+      ]
+    },
+    {
+      "crs": "RDD",
+      "name": "Riddlesdown",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "RDG",
+      "name": "Reading",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "910GRDNGSTN"
+      ]
+    },
+    {
+      "crs": "RDT",
+      "name": "Radlett",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "RHM",
+      "name": "Reedham (London)",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "RIC",
+      "name": "Rickmansworth",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "HUBRIC"
+      ]
+    },
+    {
+      "crs": "RNM",
+      "name": "Rainham (Essex)",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "RVB",
+      "name": "Ravensbourne",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SAJ",
+      "name": "St Johns",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SAY",
+      "name": "Swanley",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SBM",
+      "name": "South Bermondsey",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SCG",
+      "name": "Stone Crossing",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SCY",
+      "name": "South Croydon",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SDH",
+      "name": "Sudbury Hill Harrow",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SEH",
+      "name": "Shoreham (Kent)",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SGN",
+      "name": "South Greenford",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SGR",
+      "name": "Slade Green",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SHP",
+      "name": "Shepperton",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SID",
+      "name": "Sidcup",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SIH",
+      "name": "St Helier",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SLO",
+      "name": "Slough",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "910GSLOUGH"
+      ]
+    },
+    {
+      "crs": "SMG",
+      "name": "St Margarets (London)",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SMO",
+      "name": "South Merton",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SMY",
+      "name": "St Mary Cray",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SNF",
+      "name": "Shenfield",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "910GSHENFLD"
+      ]
+    },
+    {
+      "crs": "SNL",
+      "name": "Stoneleigh",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SNR",
+      "name": "Sanderstead",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SNS",
+      "name": "Staines",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SRC",
+      "name": "Streatham Common",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SRH",
+      "name": "Streatham Hill",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SRS",
+      "name": "Selhurst",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SRT",
+      "name": "Shortlands",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "STE",
+      "name": "Streatham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "STW",
+      "name": "Strawberry Hill",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SUC",
+      "name": "Sutton Common",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SUD",
+      "name": "Sudbury & Harrow Road",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SUO",
+      "name": "Sutton (London)",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SUP",
+      "name": "Sundridge Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SUR",
+      "name": "Surbiton",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SUU",
+      "name": "Sunbury",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SWM",
+      "name": "Swanscombe- George & Dragon",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SYH",
+      "name": "Sydenham Hill",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "SYL",
+      "name": "Syon Lane",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "TAD",
+      "name": "Tadworth",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "TAP",
+      "name": "Taplow",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "910GTAPLOW"
+      ]
+    },
+    {
+      "crs": "TAT",
+      "name": "Tattenham Corner",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "TED",
+      "name": "Teddington",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "TEO",
+      "name": "Theobalds Grove",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "910GTHBLDSG"
+      ]
+    },
+    {
+      "crs": "THD",
+      "name": "Thames Ditton",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "TOL",
+      "name": "Tolworth",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "TOO",
+      "name": "Tooting",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "TTH",
+      "name": "Thornton Heath",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "TUH",
+      "name": "Tulse Hill",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "TWI",
+      "name": "Twickenham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "TWY",
+      "name": "Twyford",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "910GTWYFORD"
+      ]
+    },
+    {
+      "crs": "UPH",
+      "name": "Upper Halliford",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "UWL",
+      "name": "Upper Warlingham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WAL",
+      "name": "Walton-On-Thames",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WBO",
+      "name": "Wimbledon Chase",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WBY",
+      "name": "West Byfleet",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WCB",
+      "name": "Westcombe Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WCP",
+      "name": "Worcester Park",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WCX",
+      "name": "Wembley Stadium",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WDO",
+      "name": "Waddon",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WDU",
+      "name": "West Dulwich",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WFH",
+      "name": "Watford High Street",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "910GWATFDHS"
+      ]
+    },
+    {
+      "crs": "WFJ",
+      "name": "Watford Junction",
+      "reason": "outsideLondon",
+      "candidateIds": [
+        "HUBWFJ"
+      ]
+    },
+    {
+      "crs": "WFN",
+      "name": "Watford North",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WHP",
+      "name": "West Hampstead Thameslink",
+      "reason": "West Hampstead Thameslink is separate from the Underground/Overground entrances; preserve National Rail walking links."
+    },
+    {
+      "crs": "WHS",
+      "name": "Whyteleafe South",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WHY",
+      "name": "Whyteleafe",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WIH",
+      "name": "Winchmore Hill",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WLC",
+      "name": "Waltham Cross",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WLI",
+      "name": "Welling",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WLT",
+      "name": "Wallington",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WME",
+      "name": "Woodmansterne",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WNT",
+      "name": "Wandsworth Town",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WNW",
+      "name": "West Norwood",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WOH",
+      "name": "Woldingham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WSU",
+      "name": "West Sutton",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WSW",
+      "name": "Wandsworth Common",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WTN",
+      "name": "Whitton",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WWD",
+      "name": "Woolwich Dockyard",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WWI",
+      "name": "West Wickham",
+      "reason": "noSupportedCoLocatedStop"
+    },
+    {
+      "crs": "WYB",
+      "name": "Weybridge",
+      "reason": "noSupportedCoLocatedStop"
+    }
+  ],
+  "alfEndpoints": [
+    {
+      "crs": "AMR",
+      "mapped": false,
+      "reason": "outsideLondon"
+    },
+    {
+      "crs": "BDS",
+      "mapped": true
+    },
+    {
+      "crs": "BFR",
+      "mapped": true
+    },
+    {
+      "crs": "BHO",
+      "mapped": true
+    },
+    {
+      "crs": "CFO",
+      "mapped": false,
+      "reason": "outsideLondon"
+    },
+    {
+      "crs": "CHX",
+      "mapped": true
+    },
+    {
+      "crs": "CLW",
+      "mapped": false,
+      "reason": "outsideLondon"
+    },
+    {
+      "crs": "CST",
+      "mapped": true
+    },
+    {
+      "crs": "CTK",
+      "mapped": true
+    },
+    {
+      "crs": "CWX",
+      "mapped": true
+    },
+    {
+      "crs": "EPH",
+      "mapped": true
+    },
+    {
+      "crs": "EUS",
+      "mapped": true
+    },
+    {
+      "crs": "FPK",
+      "mapped": true
+    },
+    {
+      "crs": "FST",
+      "mapped": true
+    },
+    {
+      "crs": "GFD",
+      "mapped": true
+    },
+    {
+      "crs": "HHY",
+      "mapped": true
+    },
+    {
+      "crs": "HOH",
+      "mapped": true
+    },
+    {
+      "crs": "KGX",
+      "mapped": true
+    },
+    {
+      "crs": "LBG",
+      "mapped": true
+    },
+    {
+      "crs": "LHS",
+      "mapped": true
+    },
+    {
+      "crs": "LNE",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "LOE",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "LST",
+      "mapped": true
+    },
+    {
+      "crs": "MOG",
+      "mapped": true
+    },
+    {
+      "crs": "MYB",
+      "mapped": true
+    },
+    {
+      "crs": "OLD",
+      "mapped": true
+    },
+    {
+      "crs": "PAD",
+      "mapped": true
+    },
+    {
+      "crs": "QPW",
+      "mapped": true
+    },
+    {
+      "crs": "RIC",
+      "mapped": false,
+      "reason": "outsideLondon"
+    },
+    {
+      "crs": "SPX",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "SRA",
+      "mapped": true
+    },
+    {
+      "crs": "SRU",
+      "mapped": true
+    },
+    {
+      "crs": "STP",
+      "mapped": true
+    },
+    {
+      "crs": "SVS",
+      "mapped": true
+    },
+    {
+      "crs": "TCR",
+      "mapped": true
+    },
+    {
+      "crs": "TOM",
+      "mapped": true
+    },
+    {
+      "crs": "VIC",
+      "mapped": true
+    },
+    {
+      "crs": "VXH",
+      "mapped": true
+    },
+    {
+      "crs": "WAE",
+      "mapped": true
+    },
+    {
+      "crs": "WAT",
+      "mapped": true
+    },
+    {
+      "crs": "WEH",
+      "mapped": true
+    },
+    {
+      "crs": "WHC",
+      "mapped": true
+    },
+    {
+      "crs": "WRU",
+      "mapped": true
+    },
+    {
+      "crs": "ZAF",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "ZBS",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "ZCK",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "ZCM",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "ZCO",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "ZCW",
+      "mapped": true
+    },
+    {
+      "crs": "ZEH",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "ZFD",
+      "mapped": true
+    },
+    {
+      "crs": "ZHB",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "ZHD",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "ZHJ",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "ZLW",
+      "mapped": true
+    },
+    {
+      "crs": "ZND",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "ZNP",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "ZOA",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "ZTC",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "ZWT",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    },
+    {
+      "crs": "ZWY",
+      "mapped": false,
+      "reason": "notInExistingStationCatalogue"
+    }
+  ]
+}

@@ -121,6 +121,78 @@ struct JourneyPlannerTests {
         #expect(current.search.maxChanges == 5)
     }
 
+    @Test func durationTagsIncludeEveryFastestAndOnlyJourneysStrictlyAboveTheMean() {
+        let comparison = JourneyDurationComparison(durations: [30, 30, 40, 60])
+        #expect(comparison.tag(for: 30) == .fastest)
+        #expect(comparison.tag(for: 40) == nil)
+        #expect(comparison.tag(for: 60) == .slower)
+        #expect(JourneyDurationComparison(durations: [30, 30]).tag(for: 30) == nil)
+        #expect(JourneyDurationComparison(durations: [30]).tag(for: 30) == nil)
+        #expect(JourneyDurationComparison(durations: []).tag(for: 30) == nil)
+    }
+
+    @Test func durationTagsIgnoreMissingInvalidAndCancelledJourneys() {
+        let comparison = JourneyDurationComparison(durations: [30, 40, 50, 0, -5, .nan, .infinity])
+        #expect(comparison.tag(for: 30) == .fastest)
+        #expect(comparison.tag(for: 40) == nil)
+        #expect(comparison.tag(for: 50) == .slower)
+        #expect(comparison.tag(for: nil as Double?) == nil)
+        #expect(comparison.tag(for: Double.nan) == nil)
+        #expect(comparison.tag(for: -5) == nil)
+        let place = PlannedJourney.Place(crs: "KTH", name: "Kent House")
+        let cancelledLeg = PlannedJourney.Leg(kind: "vehicle", mode: "rail", from: place, to: place,
+            departure: now, arrival: now.addingTimeInterval(600), operator: nil, serviceId: nil,
+            originDate: nil, callingPoints: nil, transfer: nil, warnings: nil,
+            live: PlannerLiveAnnotation(status: "cancelled"))
+        let cancelled = PlannedJourney(id: "cancelled", departure: now, arrival: cancelledLeg.arrival,
+            durationMinutes: 10, changes: 0, legs: [cancelledLeg])
+        let first = PlannedJourney(id: "first", departure: now, arrival: now.addingTimeInterval(1_800),
+            durationMinutes: 30, changes: 0, legs: [])
+        let second = PlannedJourney(id: "second", departure: now, arrival: now.addingTimeInterval(2_400),
+            durationMinutes: 40, changes: 0, legs: [])
+        let invalid = PlannedJourney(id: "invalid", departure: now, arrival: now.addingTimeInterval(-60),
+            durationMinutes: 1, changes: 0, legs: [])
+        let journeys = JourneyDurationComparison(journeys: [cancelled, first, second, invalid])
+        #expect(journeys.tag(for: first) == .fastest)
+        #expect(journeys.tag(for: second) == .slower)
+        #expect(journeys.tag(for: cancelled) == nil)
+        #expect(journeys.tag(for: invalid) == nil)
+    }
+
+    @Test func durationTagsCompareWholeJourneysIncludingWalkingAndWaiting() {
+        let origin = PlannedJourney.Place(crs: "CLK", name: "Clock House")
+        let nearby = PlannedJourney.Place(crs: "KTH", name: "Kent House")
+        let destination = PlannedJourney.Place(crs: "VIC", name: "London Victoria")
+        let walk = PlannedJourney.Leg(kind: "transfer", mode: "walk", from: origin, to: nearby,
+            departure: now, arrival: now.addingTimeInterval(540), operator: nil, serviceId: nil,
+            originDate: nil, callingPoints: nil, transfer: nil, warnings: nil)
+        let train = PlannedJourney.Leg(kind: "vehicle", mode: "rail", from: nearby, to: destination,
+            departure: now.addingTimeInterval(780), arrival: now.addingTimeInterval(2_040), operator: nil,
+            serviceId: nil, originDate: nil, callingPoints: nil, transfer: nil, warnings: nil)
+        let walking = PlannedJourney(id: "walk", departure: now, arrival: train.arrival,
+            durationMinutes: 34, changes: 0, legs: [walk, train])
+        let direct = PlannedJourney(id: "direct", departure: now, arrival: now.addingTimeInterval(1_800),
+            durationMinutes: 30, changes: 0, legs: [])
+        let comparison = JourneyDurationComparison(journeys: [walking, direct])
+        #expect(comparison.tag(for: direct) == .fastest)
+        #expect(comparison.tag(for: walking) == .slower)
+    }
+
+    @Test func directArrivalTimesKeepOvernightDatesAndUnknownTimesOutOfComparisons() throws {
+        let departure = try #require(ISO8601DateFormatter().date(from: "2026-09-18T22:55:00Z"))
+        let arrival = try #require(JourneyCardPresentation.arrivalDate(time: "00:30", after: departure))
+        #expect(arrival.timeIntervalSince(departure) / 60 == 35)
+        #expect(JourneyCardPresentation.arrivalTimeLabel("00:30", departure: departure) == "00:30 (+1 day)")
+        #expect(JourneyCardPresentation.arrivalTimeLabel("23:59", departure: departure) == "23:59")
+        #expect(JourneyCardPresentation.arrivalDate(time: "Delayed", after: departure) == nil)
+        #expect(JourneyCardPresentation.arrivalDate(time: "25:30", after: departure) == nil)
+        #expect(JourneyCardPresentation.arrivalDate(time: nil, after: departure) == nil)
+        #expect(JourneyCardPresentation.arrivalTimeLabel(nil, departure: departure) == "TBC")
+        let clocksChangeDeparture = try #require(ISO8601DateFormatter().date(from: "2026-10-24T22:55:00Z"))
+        let clocksChangeArrival = try #require(JourneyCardPresentation.arrivalDate(time: "02:30", after: clocksChangeDeparture))
+        #expect(clocksChangeArrival.timeIntervalSince(clocksChangeDeparture) / 60 == 215)
+    }
+
     @Test func departureMetadataDecodesWhenAvailableAndRemainsOptionalForOlderServers() throws {
         let current = try PlannerTime.decoder().decode(PlannerLiveAnnotation.self, from: Data(
             #"{"status":"onTime","platform":"2","length":10}"#.utf8
@@ -305,6 +377,57 @@ struct JourneyPlannerTests {
         #expect(PlannerLivePresentation.warnings(for: journey) == ["A connection may be missed.", "The Tube station is closed."])
         #expect(PlannerLivePresentation.visibleWarnings([generic, "Some live rail updates could not be retrieved."])
             == ["Some live rail updates could not be retrieved."])
+    }
+
+    @Test func localJourneyKeepsTfLStopsSeparateAndExplainsDisruptionDecisions() throws {
+        let text = #"""
+        {"kind":"transfer","mode":"tubeTransfer","from":{"crs":"VIC","name":"London Victoria"},"to":{"crs":"EUS","name":"London Euston"},"departure":"2026-09-19T12:00:00+01:00","arrival":"2026-09-19T12:40:00+01:00","localJourney":{"provider":"tubetrack","status":"available","changes":1,"contingencyMinutes":5,"notes":["Allow 5 extra minutes because of minor delays on the Circle line.","Selected this route to avoid severe delays on the Victoria line."],"warnings":["Allow 5 extra minutes because of minor delays on the Circle line."],"disruption":{"coverage":{"futureField":true}},"steps":[{"id":"0","mode":"tube","instruction":"Take the Circle line to Embankment","from":{"id":"940GZZLUVIC","name":"Victoria"},"to":{"id":"940GZZLUEMB","name":"Embankment"},"departureTime":"2026-09-19T12:05:00+01:00","arrivalTime":"2026-09-19T12:13:00+01:00","timing":"adjusted","lines":[{"id":"circle","name":"Circle","colour":"#FFC700","textColour":"#000000"}]},{"id":"1","mode":"tube","instruction":"Take the Northern line to Euston","from":{"id":"940GZZLUEMB","name":"Embankment"},"to":{"id":"940GZZLUEUS","name":"Euston"},"lines":[{"id":"northern","name":"Northern","colour":"#000000","textColour":"#FFFFFF"}]}]}}
+        """#
+        let leg = try PlannerTime.decoder().decode(PlannedJourney.Leg.self, from: Data(text.utf8))
+        let local = try #require(leg.localJourney)
+        #expect(local.isAvailable)
+        #expect(local.contingencyMinutes == 5)
+        #expect(local.lines.map(\.id) == ["circle", "northern"])
+        #expect(local.lines.first?.textColour == "#000000")
+        #expect(local.steps?.first?.from.id == "940GZZLUVIC")
+        #expect(leg.mapCallingPoints.map(\.station.crs) == ["VIC", "EUS"])
+        #expect(local.changeInstruction(before: 0) == nil)
+        #expect(local.changeInstruction(before: 1) == "Change at Embankment")
+        #expect(PlannerTime.display(try #require(local.steps?.first?.departureTime), includeDate: false) == "12:05")
+        let journey = PlannedJourney(id: "local", departure: leg.departure, arrival: leg.arrival,
+            durationMinutes: 40, changes: 1, legs: [leg], warnings: local.notes)
+        #expect(PlannerLivePresentation.warnings(for: journey) == local.notes)
+        #expect(PlannerLivePresentation.onTimeSummary(for: journey) == nil)
+        let restored = try JSONDecoder().decode(PlannedJourney.Leg.self, from: JSONEncoder().encode(leg))
+        #expect(restored == leg)
+    }
+
+    @Test func localJourneyRetainsSameLineVehicleChangesAndWalkingInstructions() {
+        let first = PlannerLocalJourney.Stop(id: "first", name: "First")
+        let change = PlannerLocalJourney.Stop(id: "change", name: "Willesden Junction")
+        let final = PlannerLocalJourney.Stop(id: "final", name: "Richmond")
+        let mildmay = PlannerLocalJourney.Line(id: "mildmay", name: "Mildmay")
+        let steps = [
+            PlannerLocalJourney.Step(id: "walk", mode: "walk", instruction: "Walk to First", from: first, to: first),
+            PlannerLocalJourney.Step(id: "ride1", mode: "overground", instruction: "Take the Mildmay line", from: first, to: change, lines: [mildmay]),
+            PlannerLocalJourney.Step(id: "ride2", mode: "overground", instruction: "Take the Mildmay line to Richmond", from: change, to: final, lines: [mildmay]),
+        ]
+        let local = PlannerLocalJourney(provider: "tubetrack", status: "available", changes: 1, steps: steps)
+        #expect(local.lines.count == 1)
+        #expect(local.steps?.count == 3)
+        #expect(local.changeInstruction(before: 1) == nil)
+        #expect(local.changeInstruction(before: 2) == "Change at Willesden Junction")
+        #expect(!local.isWalkingOnly)
+        #expect(PlannerLocalJourney(provider: "tubetrack", status: "available", steps: [steps[0]]).isWalkingOnly)
+    }
+
+    @Test func localJourneyFallbackAndOlderResponsesRemainReadable() throws {
+        let text = #"{"kind":"transfer","mode":"tubeTransfer","from":{"crs":"VIC","name":"London Victoria"},"to":{"crs":"EUS","name":"London Euston"},"departure":"2026-09-19T11:00:00Z","arrival":"2026-09-19T11:40:00Z"}"#
+        let old = try PlannerTime.decoder().decode(PlannedJourney.Leg.self, from: Data(text.utf8))
+        #expect(old.localJourney == nil)
+        let local = try PlannerTime.decoder().decode(PlannerLocalJourney.self, from: Data(#"{"provider":"tubetrack","status":"unavailable"}"#.utf8))
+        #expect(!local.isAvailable)
+        #expect(local.travelNotes == ["Tube directions unavailable. Using the National Rail transfer allowance."])
     }
 
     @Test func railwayClockUsesLondonOffsetsAndInclusiveCoverageDates() throws {

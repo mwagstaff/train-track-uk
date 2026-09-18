@@ -92,8 +92,8 @@ function assertFeasible(response, stations, tsi) {
                 assert.ok(Date.parse(after.departure) - Date.parse(before.arrival) >= (minimum + allowance.extraMinutes) * MINUTE);
             } else {
                 if (leg.mode !== 'walk') boardings++;
-                assert.equal(allowance.exitMinutes, stations.get(leg.from.crs).minimumChangeMinutes);
-                assert.equal(allowance.entryMinutes, stations.get(leg.to.crs).minimumChangeMinutes);
+                assert.equal(allowance.exitMinutes, leg.mode === 'walk' && i === 0 ? 0 : stations.get(leg.from.crs).minimumChangeMinutes);
+                assert.equal(allowance.entryMinutes, leg.mode === 'walk' && i === journey.legs.length - 1 ? 0 : stations.get(leg.to.crs).minimumChangeMinutes);
                 assert.ok(allowance.travelMinutes > 0);
                 assert.ok(allowance.waitingMinutes >= 0);
                 assert.equal((end - start) / MINUTE, allowance.exitMinutes + allowance.travelMinutes
@@ -117,12 +117,30 @@ test('optional RJTTF939 long-distance searches retain real overnight journeys an
         generationDate = repo.metadata.source.generationDate;
     } finally { repo.close(); }
     const config = plannerConfig({});
-    // Only fixture freshness is relaxed so this historical regression remains
-    // reproducible. Production freshness tests and all search budgets are unchanged.
+    // Relax fixture freshness and use the supplied fixed links so this historical
+    // oracle stays reproducible without external TfL results. Production freshness
+    // tests and all search budgets are unchanged.
     const ageDays = Math.floor((Date.now() - Date.parse(`${generationDate}T00:00:00Z`)) / DAY);
-    const service = new PlannerService({ ...config, datasetPath, maxStaleDays: Math.max(config.maxStaleDays, ageDays + 1) });
+    const service = new PlannerService({ ...config, datasetPath, tubeTrackEnabled: false,
+        maxStaleDays: Math.max(config.maxStaleDays, ageDays + 1) });
     t.after(() => service.close());
     let broadSleeper;
+
+    await t.test('Clock House to Bristol includes the earlier arrival via the supplied Kent House walk', async () => {
+        const response = await service.search({ origin: 'CLK', destination: 'BRI',
+            time: '2026-09-18T00:43:00+01:00', timeType: 'departAfter' });
+        assertFeasible(response, stations, tsi);
+        const journey = response.journeys[0];
+        assert.equal(journey.departure, '2026-09-18T03:59:00.000Z');
+        assert.equal(journey.arrival, '2026-09-18T07:05:00.000Z');
+        assert.equal(journey.durationMinutes, 186);
+        const walk = journey.legs[0];
+        assert.equal(walk.mode, 'walk');
+        assert.equal(walk.from.crs, 'CLK');
+        assert.equal(walk.to.crs, 'KTH');
+        assert.deepEqual(walk.transfer, { exitMinutes: 0, travelMinutes: 9, entryMinutes: 4, extraMinutes: 0, waitingMinutes: 0 });
+        assert.deepEqual(vehicles(journey).map(leg => [leg.from.crs, leg.to.crs]), [['KTH', 'VIC'], ['PAD', 'BRI']]);
+    });
 
     await t.test('defaults find legitimate overnight arrivals', async () => {
         const response = await service.search(request);
@@ -191,7 +209,7 @@ test('optional RJTTF939 long-distance searches retain real overnight journeys an
         const journey = response.journeys.find(value => vehicles(value).some(leg => leg.serviceId === sleeperId));
         assert.ok(journey);
         assertSleeper(journey);
-        assert.equal(journey.departure, '2026-09-15T15:57:00.000Z');
+        assert.equal(journey.departure, '2026-09-15T15:59:00.000Z');
         assert.ok(Date.parse(journey.departure) < Date.parse(broadSleeper.departure));
         assert.equal(journey.arrival, broadSleeper.arrival);
         assert.equal(journey.legs.find(leg => leg.kind === 'transfer').transfer.travelMinutes, 9);

@@ -4,6 +4,7 @@ import { PlannerLiveProvider, createLiveRequestBudget } from './live-provider.js
 import { createConnectionIndex, resolveConnection } from './connections.js';
 import { journeyID, PlannerError } from './contract.js';
 import { presentLivePage } from './live-coverage.js';
+import { createTubeResolver, tubeBoardings } from './tube-routing.js';
 
 const MINUTE = 60000, HOUR = 60 * MINUTE, DAY = 24 * HOUR;
 const MAX_PAIRS = 12, MAX_DETAILS = 32, MAX_OPTIONS = 8, MAX_STATES = 32;
@@ -17,6 +18,10 @@ const isCancelled = value => value?.isCancelled === true || [value?.et, value?.e
 const mode = row => row.serviceType === 'bus' ? 'replacementBus' : row.serviceType === 'train' || !row.serviceType ? 'rail' : null;
 const rail = leg => leg.kind === 'vehicle' && ['rail', 'replacementBus'].includes(leg.mode);
 const pair = (from, to) => `${from}:${to}`;
+const boardings = leg => leg.kind === 'vehicle' ? 1 : leg.mode === 'tubeTransfer' && leg.localJourney?.status === 'available'
+    ? tubeBoardings(leg.localJourney.steps) : ['interchange', 'walk'].includes(leg.mode) ? 0 : 1;
+const disruptionRank = journey => Math.max(0, ...(journey.legs ?? []).map(leg => leg.disruptionRank
+    ?? (leg.localJourney?.disruption?.status === 'majorIssues' ? 2 : leg.localJourney?.disruption?.status === 'unknown' ? 1 : 0)));
 const scheduled = leg => ({ ...leg, departure: leg.scheduledDeparture ?? leg.departure, arrival: leg.scheduledArrival ?? leg.arrival,
     live: undefined, tracking: undefined, warnings: (leg.warnings ?? []).filter(value => !/live|cancel|delay/i.test(value)),
     callingPoints: leg.callingPoints?.map(call => ({ ...call, arrival: call.scheduledArrival ?? call.arrival,
@@ -142,7 +147,8 @@ export function earliestRouteJourneys(journeys) {
             ? JSON.stringify([instant(journey.departure), firstService, first.originDate,
                 instant(first.scheduledDeparture ?? first.departure), journey.changes, route]) : journey;
         const existing = best.get(key);
-        if (!existing || instant(journey.arrival) < instant(existing.arrival)) best.set(key, journey);
+        if (!existing || disruptionRank(journey) < disruptionRank(existing)
+            || disruptionRank(journey) === disruptionRank(existing) && instant(journey.arrival) < instant(existing.arrival)) best.set(key, journey);
     }
     return [...best.values()];
 }
@@ -151,9 +157,10 @@ function rank(journeys, limit = 5) {
     const seen = new Map();
     for (const journey of earliestRouteJourneys(journeys)) {
         const key = JSON.stringify(journey.legs.map(leg => [leg.kind, leg.mode, leg.serviceId, leg.from.crs, leg.to.crs, leg.departure, leg.arrival]));
-        if (!seen.has(key)) seen.set(key, journey);
+        const existing = seen.get(key);
+        if (!existing || disruptionRank(journey) < disruptionRank(existing)) seen.set(key, journey);
     }
-    return [...seen.values()].sort((a, b) => instant(a.arrival) + (a.changes ? 10 * MINUTE : 0)
+    return [...seen.values()].sort((a, b) => disruptionRank(a) - disruptionRank(b) || instant(a.arrival) + (a.changes ? 10 * MINUTE : 0)
         - instant(b.arrival) - (b.changes ? 10 * MINUTE : 0) || instant(a.departure) - instant(b.departure)).slice(0, limit);
 }
 
@@ -161,8 +168,8 @@ function rank(journeys, limit = 5) {
  * supplies route patterns and connection rules; this class never resolves a
  * national timetable or invokes its router. */
 export class SavedRouteLive {
-    constructor({ getDepartures = getTrainTimes, provider = new PlannerLiveProvider(), now = Date.now } = {}) {
-        Object.assign(this, { getDepartures, provider, now });
+    constructor({ getDepartures = getTrainTimes, provider = new PlannerLiveProvider(), tubeProvider = null, now = Date.now } = {}) {
+        Object.assign(this, { getDepartures, provider, tubeProvider, now });
     }
 
     context(signal) {
@@ -198,7 +205,9 @@ export class SavedRouteLive {
             state.oldest = Math.min(state.oldest, observed);
             return value;
         };
-        return Object.assign(state, { board, detail, check });
+        const resolveTubeConnection = this.tubeProvider ? createTubeResolver(this.tubeProvider,
+            { signal, check, now: this.now, budget: { limit: 32, used: 0 } }) : null;
+        return Object.assign(state, { board, detail, check, resolveTubeConnection });
     }
 
     async direct(request, { signal } = {}) {
@@ -251,39 +260,45 @@ export class SavedRouteLive {
         for (const original of topologies.values()) {
             context.check();
             let states = [{ legs: [], pending: [], blocked: false }];
-            for (const template of original.legs) {
+            for (const [templateIndex, template] of original.legs.entries()) {
                 if (template.kind === 'transfer') { states = states.map(state => ({ ...state, pending: [...state.pending, template] })); continue; }
                 const choices = (options.get(pair(template.from.crs, template.to.crs)) ?? [scheduled(template)])
                     .filter(leg => !request.allowedModes || request.allowedModes.includes(leg.mode));
                 const next = [];
                 for (const state of states) for (const choice of choices) {
-                    const transfers = this.transfers(state.pending, state.legs.at(-1), choice, connections, request, now);
-                    if (!transfers) continue;
+                    const alternatives = await this.transfers(state.pending, state.legs.at(-1), choice, connections, request, now, context);
                     if (!state.pending.length && state.legs.length) continue;
                     if (instant(choice.departure) < (instant(state.legs.at(-1)?.arrival) || now)) continue;
-                    next.push({ legs: [...state.legs, ...transfers, choice], pending: [],
-                        blocked: state.blocked || realtime !== 'ignore' && Boolean(choice.live?.cancelled || choice.live?.status === 'unknown') });
+                    for (const transfers of alternatives) {
+                        const legs = [...state.legs, ...transfers, choice];
+                        const remaining = original.legs.slice(templateIndex + 1)
+                            .reduce((sum, leg) => sum + (leg.mode === 'tubeTransfer' ? 0 : boardings(leg)), 0);
+                        if (legs.reduce((sum, leg) => sum + boardings(leg), remaining) > (request.maxChanges ?? 5) + 1) continue;
+                        next.push({ legs, pending: [],
+                            blocked: state.blocked || realtime !== 'ignore' && Boolean(choice.live?.cancelled || choice.live?.status === 'unknown') });
+                    }
                 }
-                next.sort((a, b) => instant(a.legs.at(-1).arrival) - instant(b.legs.at(-1).arrival));
+                next.sort((a, b) => disruptionRank(a) - disruptionRank(b) || instant(a.legs.at(-1).arrival) - instant(b.legs.at(-1).arrival));
                 truncated ||= next.length > MAX_STATES;
                 states = next.slice(0, MAX_STATES);
             }
             for (const state of states) {
-                const tail = this.transfers(state.pending, state.legs.at(-1), null, connections, request, now);
-                if (!tail) continue;
-                const legs = [...state.legs, ...tail];
-                if (!legs.length || legs[0].from.crs !== request.origin || legs.at(-1).to.crs !== request.destination) continue;
-                const visits = legs.flatMap(leg => leg.kind === 'vehicle' ? (leg.callingPoints ?? []).filter(call =>
-                    realtime === 'ignore' || !call.live?.cancelled).map(call => call.station.crs) : [leg.from.crs, leg.to.crs]);
-                if (!ordered(visits, request.via ?? [])) continue;
-                const departure = legs[0].departure, arrival = legs.at(-1).arrival;
-                if (instant(departure) < now || instant(arrival) < instant(departure) || instant(arrival) - instant(departure) > DAY) continue;
-                const warnings = unique(legs.flatMap(leg => leg.warnings ?? []));
-                const journey = { departure, arrival, durationMinutes: (instant(arrival) - instant(departure)) / MINUTE,
-                    changes: Math.max(0, legs.filter(leg => leg.kind === 'vehicle' || !['interchange', 'walk'].includes(leg.mode)).length - 1),
-                    legs, ...(warnings.length ? { warnings } : {}) };
-                if (journey.changes > (request.maxChanges ?? 5)) continue;
-                (state.blocked ? disrupted : journeys).push(journey);
+                const tails = await this.transfers(state.pending, state.legs.at(-1), null, connections, request, now, context);
+                for (const tail of tails) {
+                    const legs = [...state.legs, ...tail];
+                    if (!legs.length || legs[0].from.crs !== request.origin || legs.at(-1).to.crs !== request.destination) continue;
+                    const visits = legs.flatMap(leg => leg.kind === 'vehicle' ? (leg.callingPoints ?? []).filter(call =>
+                        realtime === 'ignore' || !call.live?.cancelled).map(call => call.station.crs) : [leg.from.crs, leg.to.crs]);
+                    if (!ordered(visits, request.via ?? [])) continue;
+                    const departure = legs[0].departure, arrival = legs.at(-1).arrival;
+                    if (instant(departure) < now || instant(arrival) < instant(departure) || instant(arrival) - instant(departure) > DAY) continue;
+                    const warnings = unique(legs.flatMap(leg => leg.warnings ?? []));
+                    const journey = { departure, arrival, durationMinutes: (instant(arrival) - instant(departure)) / MINUTE,
+                        changes: Math.max(0, legs.reduce((sum, leg) => sum + boardings(leg), 0) - 1),
+                        legs, ...(warnings.length ? { warnings } : {}) };
+                    if (journey.changes > (request.maxChanges ?? 5)) continue;
+                    (state.blocked ? disrupted : journeys).push(journey);
+                }
             }
         }
         const selected = rank(journeys), disruptedPage = rank(disrupted);
@@ -293,16 +308,21 @@ export class SavedRouteLive {
             ...(observed !== null ? { updatedAt: iso(observed), expiresAt: iso(observed + 60000) } : {}),
             warnings: realtime === 'ignore' ? ['Delays and cancellations are shown, but these routes use scheduled times.'] : [] };
         const page = presentLivePage([...selected, ...disruptedPage], live, { now });
+        const tubeExpiry = Math.min(...page.journeys.flatMap(journey => journey.legs)
+            .filter(leg => leg.localJourney?.status === 'available').map(leg => instant(leg.localJourney.expiresAt)).filter(Number.isFinite));
+        if (Number.isFinite(tubeExpiry)) page.live.expiresAt = iso(Math.min(tubeExpiry, instant(page.live.expiresAt) || Infinity));
         const identify = journey => ({ ...journey, id: journeyID(journey, source.dataset.version, page.live) });
         const includesLive = ['live', 'partial'].includes(page.live.status);
-        truncated ||= context.limited;
+        truncated ||= context.limited || context.resolveTubeConnection?.state?.limited;
         const dataset = { ...source.dataset, scheduledOnly: !includesLive,
-            warnings: (source.dataset.warnings ?? []).filter(value => !includesLive || value !== 'Scheduled timetable only. Live delays and changes are not included.') };
+            warnings: (source.dataset.warnings ?? []).filter(value => !includesLive || (!value.startsWith('National Rail times are scheduled;')
+                && value !== 'Scheduled timetable only. Live delays and changes are not included.')) };
         return { ...source, ...page, dataset, journeys: page.journeys.slice(0, selected.length).map(identify),
             disruptedJourneys: page.journeys.slice(selected.length).map(identify),
             search: { ...source.search, ...request, time: iso(now), realtime,
                 window: { from: iso(now), to: iso(now + 4 * HOUR) }, searchTruncated: truncated || source.search?.searchTruncated || false },
             warnings: unique([...dataset.warnings, ...page.live.warnings,
+                ...(context.resolveTubeConnection?.state?.notes ?? []),
                 ...(truncated ? ['More journey options may exist.'] : [])]), pagination: {} };
     }
 
@@ -377,23 +397,47 @@ export class SavedRouteLive {
             callingPoints: calls, serviceCallingPoints: completeCallingPoints(detail, path, template, times.scheduled), live, warnings };
     }
 
-    transfers(templates, before, after, connections, request, now) {
-        const values = [];
-        let arrival = before ? instant(before.arrival) : now;
+    async transfers(templates, before, after, connections, request, now, context) {
+        let states = [{ values: [], arrival: before ? instant(before.arrival) : now }];
         for (const [index, template] of templates.entries()) {
-            const value = resolveConnection(connections, { from: template.from.crs, to: template.to.crs, arrival,
-                departure: index === templates.length - 1 && after ? instant(after.departure) : undefined,
-                arrivingOperator: before?.operator, departingOperator: after?.operator,
-                extraConnectionMinutes: request.extraConnectionMinutes ?? 0, allowedModes: [template.mode] });
-            if (!value || value.mode !== template.mode) return null;
-            values.push({ ...template, departure: iso(value.start), arrival: iso(value.end), transfer: value.breakdown });
-            arrival = value.end;
+            context.check();
+            if (template.mode !== 'interchange' && request.allowedModes && !request.allowedModes.includes(template.mode)) return [];
+            const next = [];
+            for (const state of states) {
+                const query = { from: template.from.crs, to: template.to.crs, arrival: state.arrival,
+                    originIsEndpoint: !before && index === 0,
+                    destinationIsEndpoint: !after && index === templates.length - 1,
+                    departure: index === templates.length - 1 && after ? instant(after.departure) : undefined,
+                    arrivingOperator: before?.operator, departingOperator: after?.operator,
+                    direction: (template.mode === 'walk' || template.mode === 'tubeTransfer' && context.resolveTubeConnection)
+                        && !before && after && templates.length === 1 ? 'latest' : 'earliest',
+                    extraConnectionMinutes: request.extraConnectionMinutes ?? 0, allowedModes: [template.mode] };
+                const choices = template.mode === 'tubeTransfer' && context.resolveTubeConnection
+                    ? await context.resolveTubeConnection(connections, query) : [resolveConnection(connections, query)];
+                context.check();
+                for (const value of choices) {
+                    if (!value || value.mode !== template.mode) continue;
+                    const leg = { ...template, departure: iso(value.start), arrival: iso(value.end),
+                        durationMinutes: value.minutes, minutes: value.minutes, ruleId: value.ruleId,
+                        sourceRef: value.sourceRef, policy: value.policy, transfer: value.breakdown, breakdown: value.breakdown,
+                        movementDeparture: Number.isFinite(value.movementStart) ? iso(value.movementStart) : null,
+                        movementArrival: Number.isFinite(value.movementEnd) ? iso(value.movementEnd) : null,
+                        genericTransfer: !value.localJourney && !['walk', 'interchange'].includes(template.mode),
+                        warnings: value.localJourney ? value.localJourney.warnings ?? [] : template.warnings,
+                        localJourney: value.localJourney, disruptionRank: value.disruptionRank };
+                    const values = [...state.values, leg];
+                    if (values.reduce((sum, leg) => sum + boardings(leg), 0) > (request.maxChanges ?? 5) + 1) continue;
+                    next.push({ values, arrival: value.end });
+                }
+            }
+            context.limited ||= next.length > MAX_STATES;
+            states = next.slice(0, MAX_STATES);
         }
-        if (values.length && request.realtime === 'ignore' && before?.live?.arrival && after?.live?.departure
-            && !this.transfers(templates, { ...before, arrival: before.live.arrival }, { ...after, departure: after.live.departure },
-                connections, { ...request, realtime: 'apply' }, now)) {
-            values.at(-1).warnings = unique([...(values.at(-1).warnings ?? []), 'Live times no longer allow this connection.']);
+        if (templates.length && states.length && request.realtime === 'ignore' && before?.live?.arrival && after?.live?.departure
+            && !(await this.transfers(templates, { ...before, arrival: before.live.arrival }, { ...after, departure: after.live.departure },
+                connections, { ...request, realtime: 'apply' }, now, context)).length) {
+            for (const { values } of states) values.at(-1).warnings = unique([...(values.at(-1).warnings ?? []), 'Live times no longer allow this connection.']);
         }
-        return values;
+        return states.map(state => state.values);
     }
 }

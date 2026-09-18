@@ -63,16 +63,17 @@ struct SavedRouteBoardView: View {
                             .font(.subheadline).foregroundStyle(.secondary).padding(16)
                     }
                     let visible = Array(upcoming.prefix(isExpanded ? upcoming.count : departureCount))
+                    let comparison = JourneyDurationComparison(journeys: visible)
                     ForEach(visible) { journey in
                         if isInteractive {
                             Button {
                                 selectedJourney = PlannerJourneyResponse(journey: journey, dataset: result.dataset, live: result.live)
                             } label: {
-                                summary(journey, at: context.date)
+                                summary(journey, at: context.date, durationTag: comparison.tag(for: journey))
                             }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("saved-route.journey.\(journey.id)")
-                        } else { summary(journey, at: context.date) }
+                        } else { summary(journey, at: context.date, durationTag: comparison.tag(for: journey)) }
                         if journey.id != visible.last?.id { Divider().padding(.horizontal, 16) }
                     }
                     if upcoming.count > departureCount {
@@ -115,9 +116,10 @@ struct SavedRouteBoardView: View {
         }
     }
 
-    private func summary(_ journey: PlannedJourney, at date: Date) -> some View {
+    private func summary(_ journey: PlannedJourney, at date: Date, durationTag: JourneyDurationTag? = nil) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            PlannerJourneySummary(journey: journey, showsChevron: isInteractive, liveIsStale: state.liveIsStale(for: journey, at: date))
+            PlannerJourneySummary(journey: journey, showsChevron: isInteractive,
+                liveIsStale: state.liveIsStale(for: journey, at: date), durationTag: durationTag)
             let interchanges = journey.legs.filter { $0.kind == "transfer" }.map(\.heading)
             if !interchanges.isEmpty {
                 Text(interchanges.joined(separator: " · "))

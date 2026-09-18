@@ -62,6 +62,30 @@ def iso(value):
     return value.isoformat().replace("+00:00", "Z")
 
 
+def tubetrack_journey():
+    journey = detail_journey()
+    journey.update(id="fixture-tubetrack", changes=4)
+    leg = journey["legs"][1]
+    leg["transfer"] = {"exitMinutes": 5, "travelMinutes": 24, "entryMinutes": 5, "contingencyMinutes": 5}
+    stops = {code: {"id": "940GZZLU" + code, "name": name} for code, name in [
+        ("VIC", "Victoria"), ("EMB", "Embankment"), ("EUS", "Euston")]}
+    steps = []
+    for index, (line, colour, text_colour, origin, destination, depart, arrive) in enumerate([
+        ("Circle", "#FFC700", "#000000", "VIC", "EMB", 26, 34),
+        ("Northern", "#000000", "#FFFFFF", "EMB", "EUS", 37, 50),
+    ]):
+        steps.append({"id": str(index), "mode": "tube", "instruction": f"Take the {line} line to {stops[destination]['name']}",
+            "from": stops[origin], "to": stops[destination], "lines": [{"id": line.lower(), "name": line, "colour": colour, "textColour": text_colour}],
+            "departureTime": iso(START + timedelta(minutes=depart)), "arrivalTime": iso(START + timedelta(minutes=arrive)),
+            "timing": "estimated", "durationMinutes": arrive - depart})
+    leg["localJourney"] = {"provider": "tubetrack", "status": "available", "changes": 1, "contingencyMinutes": 5,
+        "notes": ["Allow 5 extra minutes because of minor delays on the Circle line.",
+                  "Selected this route to avoid severe delays on the Victoria line."],
+        "warnings": [], "steps": steps, "updatedAt": iso(datetime.now(timezone.utc)),
+        "expiresAt": iso(datetime.now(timezone.utc) + timedelta(minutes=10))}
+    return journey
+
+
 DATASET = {
     "version": "empty-window-ui-fixture", "sourceGenerationDate": START.date().isoformat(),
     "importedAt": iso(START), "coverage": {"from": f"{START.year}-01-01", "to": f"{START.year + 1}-12-31"},
@@ -83,6 +107,8 @@ def search_result(request, profile=None):
         return coverage_result()
     if profile == "departures":
         return departure_rows_result()
+    if profile == "durations":
+        return duration_comparison_result()
     offset = int(request.get("cursor", "window:0").split(":")[1])
     start = START + timedelta(hours=6 * offset)
     end = start + timedelta(hours=6)
@@ -97,12 +123,31 @@ def search_result(request, profile=None):
                      "durationMinutes": 360, "changes": 3, "legs": legs}]
     if profile in ["details", "live-details"]:
         journeys = [detail_journey(LIVE_START if profile == "live-details" else START)]
+    if profile == "tubetrack":
+        journeys = [tubetrack_journey()]
     return {
         "journeys": journeys, "dataset": DATASET,
         "search": {"origin": "KTH", "destination": "INV", "time": iso(START), "timeType": "departAfter", "maxChanges": 5, "window": {"from": iso(start), "to": iso(end)}, "searchTruncated": False},
         "warnings": ["Fixture search note"], "pagination": {"earlier": f"window:{offset - 1}", "later": f"window:{offset + 1}",
             **({"more": f"window:{offset + 1}"} if profile == "results" else {})},
     }
+
+
+def duration_comparison_result():
+    result = search_result({})
+    journeys = []
+    # Mean = 40 min: two equally fastest trains, one exactly average, one slower.
+    for index, duration in enumerate([30, 30, 40, 60]):
+        departure = START + timedelta(minutes=index * 20)
+        arrival = departure + timedelta(minutes=duration)
+        leg = {"kind": "vehicle", "mode": "rail", "operator": "SE",
+               "from": STATIONS[1], "to": STATIONS[0],
+               "departure": iso(departure), "arrival": iso(arrival)}
+        journeys.append({"id": f"duration-{index}", "departure": leg["departure"], "arrival": leg["arrival"],
+                         "durationMinutes": duration, "changes": 0, "legs": [leg]})
+    result.update(journeys=journeys, warnings=[], pagination={})
+    result["search"]["destination"] = "VIC"
+    return result
 
 
 def departure_rows_result():
@@ -249,6 +294,8 @@ class Handler(BaseHTTPRequestHandler):
             profile = url.path.split("/")[1]
             with LOCK:
                 self.respond(200, {"cancelled": sum(job["cancelled"] for job in JOBS.values() if job["profile"] == profile)})
+        elif url.path.endswith("/journeys/fixture-tubetrack"):
+            self.respond(200, {"journey": tubetrack_journey(), "dataset": DATASET})
         elif url.path.endswith("/journeys/fixture-details"):
             self.respond(200, {"journey": detail_journey(LIVE_START if url.path.startswith("/live-details/") else START), "dataset": DATASET})
         elif url.path.startswith("/live-details/") and "/departures/from/" in url.path:
@@ -310,10 +357,17 @@ class Handler(BaseHTTPRequestHandler):
                         else:
                             board["progress"].update(startedAt=iso(ROUTE_STARTED[key] + timedelta(seconds=30)), completedWindows=3, totalWindows=8)
                     if not hold_queue and ROUTE_REQUESTS[key] > (9 if progress_profile else 1):
-                        result = search_result({}, "details")
+                        duration_profile = path.startswith("/saved-durations/")
+                        result = duration_comparison_result() if duration_profile else search_result({}, "details")
                         result["search"].update(origin=route["origin"], destination=route["destination"], realtime=route.get("realtime"))
                         journey = result["journeys"][0]
-                        journey["id"] = "saved-" + route["realtime"] + "-" + route["origin"]
+                        if duration_profile:
+                            for index, candidate in enumerate(result["journeys"]):
+                                candidate["id"] = f"duration-{route['origin']}-{index}"
+                                if route["origin"] == "VIC":
+                                    candidate["legs"] = [dict(leg, **{"from": leg["to"], "to": leg["from"]}) for leg in candidate["legs"]]
+                        else:
+                            journey["id"] = "saved-" + route["realtime"] + "-" + route["origin"]
                         if route["origin"] == "INV":
                             journey["legs"] = [dict(leg, **{"from": leg["to"], "to": leg["from"]}) for leg in reversed(journey["legs"])]
                         result["live"] = {"mode": route["realtime"], "status": "outsideWindow", "windowHours": 4, "warnings": []}

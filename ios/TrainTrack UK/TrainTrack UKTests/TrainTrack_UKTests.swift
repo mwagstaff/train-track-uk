@@ -858,23 +858,14 @@ struct TrainTrack_UKTests {
         #expect(cancellation.serviceContinuesBeyondDestination)
     }
 
-    @Test func journeyCardArrivalLabelNamesTheDestination() {
-        #expect(JourneyCardPresentation.arrivalLabel(
-            time: "20:33",
-            destinationName: "London Victoria"
-        ) == "Arr 20:33 at London Victoria")
+    @Test func journeyCardArrivalLabelUsesTheTimeWithoutRepeatingTheDestination() {
+        #expect(JourneyCardPresentation.arrivalTimeLabel("20:33") == "20:33")
     }
 
     @Test func journeyCardArrivalLabelsHandleLateAndUnknownTimes() {
-        #expect(JourneyCardPresentation.arrivalLabel(
-            time: "20:49",
-            destinationName: "Three Bridges",
-            scheduledDeparture: "20:27"
-        ) == "20:27 • Arr 20:49 at Three Bridges")
-        #expect(JourneyCardPresentation.arrivalLabel(
-            time: "Delayed",
-            destinationName: "Three Bridges"
-        ) == "Arr TBC (delayed) at Three Bridges")
+        #expect(JourneyCardPresentation.arrivalTimeLabel("20:49") == "20:49")
+        #expect(JourneyCardPresentation.arrivalTimeLabel("Delayed") == "TBC (delayed)")
+        #expect(JourneyCardPresentation.arrivalTimeLabel(nil) == "TBC")
     }
 
     @Test func multiLegItinerarySelectsTheFirstServiceAfterArrival() {

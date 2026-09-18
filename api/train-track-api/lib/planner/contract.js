@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 
 export const API_VERSION = 3;
-export const POLICY_VERSION = 'scheduled-v3';
-export const LIVE_POLICY_VERSION = 'live-v1';
+export const POLICY_VERSION = 'scheduled-v5-endpoint-walk';
+export const LIVE_POLICY_VERSION = 'live-v3-endpoint-walk';
 export const LIVE_WINDOW_HOURS = 4;
 export const MAX_CHANGES = 5;
 export const DEFAULT_WINDOW_MINUTES = 360;
@@ -71,9 +71,10 @@ export function normalizeRequest(body) {
     };
 }
 
-export function encodeCursor(request, version, offset = 0, liveSnapshotId) {
+export function encodeCursor(request, version, offset = 0, liveSnapshotId, tubeSnapshotId) {
     return Buffer.from(JSON.stringify({ policy: request.realtime ? LIVE_POLICY_VERSION : POLICY_VERSION,
-        version, request, offset, ...(liveSnapshotId ? { liveSnapshotId } : {}) })).toString('base64url');
+        version, request, offset, ...(liveSnapshotId ? { liveSnapshotId } : {}),
+        ...(tubeSnapshotId ? { tubeSnapshotId } : {}) })).toString('base64url');
 }
 
 export function decodeCursor(cursor) {
@@ -86,11 +87,13 @@ export function decodeCursor(cursor) {
         const offset = integer(value.offset, 0, 0, 1000, 'offset');
         const request = normalizeRequest(value.request);
         if (Boolean(request.realtime) !== (value.policy === LIVE_POLICY_VERSION)
-            || (value.liveSnapshotId !== undefined && (!request.realtime || !/^[a-f0-9-]{36}$/.test(value.liveSnapshotId)))) {
+            || (value.liveSnapshotId !== undefined && (!request.realtime || !/^[a-f0-9-]{36}$/.test(value.liveSnapshotId)))
+            || (value.tubeSnapshotId !== undefined && (request.realtime || !/^[a-f0-9-]{36}$/.test(value.tubeSnapshotId)))) {
             throw new Error();
         }
         return { version: value.version, request, offset,
-            ...(value.liveSnapshotId ? { liveSnapshotId: value.liveSnapshotId } : {}) };
+            ...(value.liveSnapshotId ? { liveSnapshotId: value.liveSnapshotId } : {}),
+            ...(value.tubeSnapshotId ? { tubeSnapshotId: value.tubeSnapshotId } : {}) };
     } catch (error) {
         if (error instanceof PlannerError && error.code === 'CURSOR_EXPIRED') throw error;
         throw new PlannerError('INVALID_REQUEST', 'The search cursor is invalid.');

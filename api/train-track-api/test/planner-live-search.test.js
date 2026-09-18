@@ -232,10 +232,10 @@ test('ignore arrival-deadline warnings include the live inbound arrival and the 
   assert.equal(response.journeys.length, 1);
   const journey = response.journeys[0];
   assert.equal(journey.legs.at(-1).mode, 'walk');
-  assert.equal(journey.arrival, iso('12:30'));
+  assert.equal(journey.arrival, iso('12:25'));
   assert.equal(journey.legs[0].live.arrival, iso('12:35'));
   const transfer = journey.legs.at(-1).transfer;
-  assert.equal(transfer.exitMinutes + transfer.travelMinutes + transfer.entryMinutes, 15);
+  assert.equal(transfer.exitMinutes + transfer.travelMinutes + transfer.entryMinutes, 10);
   assert.ok(journey.warnings.some(warning => warning.includes('later than your requested arrival time')));
 });
 

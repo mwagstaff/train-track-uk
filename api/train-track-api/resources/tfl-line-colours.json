@@ -1,0 +1,139 @@
+{
+  "version": 1,
+  "source": "https://api.skynolimit.dev/tube-track/api/v1/line-colours",
+  "lines": [
+    {
+      "id": "bakerloo",
+      "name": "Bakerloo",
+      "mode": "tube",
+      "colour": "#8C4512",
+      "textColour": "#FFFFFF"
+    },
+    {
+      "id": "central",
+      "name": "Central",
+      "mode": "tube",
+      "colour": "#E01F24",
+      "textColour": "#FFFFFF"
+    },
+    {
+      "id": "circle",
+      "name": "Circle",
+      "mode": "tube",
+      "colour": "#FFC70D",
+      "textColour": "#000000"
+    },
+    {
+      "id": "district",
+      "name": "District",
+      "mode": "tube",
+      "colour": "#007D38",
+      "textColour": "#FFFFFF"
+    },
+    {
+      "id": "hammersmith-city",
+      "name": "Hammersmith & City",
+      "mode": "tube",
+      "colour": "#F296B3",
+      "textColour": "#000000"
+    },
+    {
+      "id": "jubilee",
+      "name": "Jubilee",
+      "mode": "tube",
+      "colour": "#7A878C",
+      "textColour": "#000000"
+    },
+    {
+      "id": "metropolitan",
+      "name": "Metropolitan",
+      "mode": "tube",
+      "colour": "#990059",
+      "textColour": "#FFFFFF"
+    },
+    {
+      "id": "northern",
+      "name": "Northern",
+      "mode": "tube",
+      "colour": "#000000",
+      "textColour": "#FFFFFF"
+    },
+    {
+      "id": "piccadilly",
+      "name": "Piccadilly",
+      "mode": "tube",
+      "colour": "#001AA6",
+      "textColour": "#FFFFFF"
+    },
+    {
+      "id": "victoria",
+      "name": "Victoria",
+      "mode": "tube",
+      "colour": "#00A1E0",
+      "textColour": "#000000"
+    },
+    {
+      "id": "waterloo-city",
+      "name": "Waterloo & City",
+      "mode": "tube",
+      "colour": "#75D1BF",
+      "textColour": "#000000"
+    },
+    {
+      "id": "dlr",
+      "name": "DLR",
+      "mode": "dlr",
+      "colour": "#00AFAD",
+      "textColour": "#000000"
+    },
+    {
+      "id": "elizabeth",
+      "name": "Elizabeth line",
+      "mode": "elizabeth-line",
+      "colour": "#60399E",
+      "textColour": "#FFFFFF"
+    },
+    {
+      "id": "liberty",
+      "name": "Liberty line",
+      "mode": "overground",
+      "colour": "#4F5D62",
+      "textColour": "#FFFFFF"
+    },
+    {
+      "id": "lioness",
+      "name": "Lioness line",
+      "mode": "overground",
+      "colour": "#F89C0E",
+      "textColour": "#000000"
+    },
+    {
+      "id": "mildmay",
+      "name": "Mildmay line",
+      "mode": "overground",
+      "colour": "#2486CB",
+      "textColour": "#000000"
+    },
+    {
+      "id": "suffragette",
+      "name": "Suffragette line",
+      "mode": "overground",
+      "colour": "#59C364",
+      "textColour": "#000000"
+    },
+    {
+      "id": "weaver",
+      "name": "Weaver line",
+      "mode": "overground",
+      "colour": "#B0237F",
+      "textColour": "#FFFFFF"
+    },
+    {
+      "id": "windrush",
+      "name": "Windrush line",
+      "mode": "overground",
+      "colour": "#ED192E",
+      "textColour": "#000000"
+    }
+  ]
+}

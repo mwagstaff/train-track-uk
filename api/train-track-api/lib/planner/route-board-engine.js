@@ -100,7 +100,7 @@ async function context(engine, payload, signal, execution) {
         let result;
         try {
             result = await engine.route({ ...query, via: request.via }, current, {
-                ...options, signal, measure: execution.measure, onTelemetry: execution.onTelemetry,
+                ...options, signal, abortSignal: execution.abortSignal, awaitIO: execution.awaitIO, measure: execution.measure, onTelemetry: execution.onTelemetry,
                 maxDurationMinutes: 1440, maxOperations: remainingOperations,
                 timeoutMs: Math.max(1, timeoutMs - (performance.now() - started))
             });
@@ -127,7 +127,7 @@ async function context(engine, payload, signal, execution) {
             if (remainingOperations <= 0) throw new PlannerError('SEARCH_TIMEOUT', 'The route search exceeded its work budget.', 504);
             const part = await engine.route({ ...query, time: new Date(from).toISOString(),
                 windowMinutes: Math.min(60, (end - from) / 60000), via: request.via, limit: ROUTE_PROFILE_LIMIT + 1 }, current, {
-                ...options, signal, measure: execution.measure, onTelemetry: execution.onTelemetry,
+                ...options, signal, abortSignal: execution.abortSignal, awaitIO: execution.awaitIO, measure: execution.measure, onTelemetry: execution.onTelemetry,
                 departureProfile: true, balanceDepartures: true, offset: 0, maxDurationMinutes: 1440,
                 maxOperations: remainingOperations, timeoutMs: Math.max(1, timeoutMs - (performance.now() - started))
             });
@@ -299,7 +299,8 @@ export async function routeBoardRefresh(engine, payload, signal, execution = {})
     const provider = await engine.livePlanner.source();
     const { refreshRouteBoard } = await import('./route-board-live.js');
     execution.onProgress?.('live');
-    const raw = await refreshRouteBoard({ profile: payload.profile, network, time: current.time, limit: current.limit,
+    const resolveTubeConnection = await engine.tubeResolver({ signal: execution.abortSignal, check, awaitIO: execution.awaitIO });
+    const raw = await refreshRouteBoard({ resolveTubeConnection, profile: payload.profile, network, time: current.time, limit: current.limit,
         realtime: payload.realtime ?? 'apply', check, abortSignal: execution.abortSignal, awaitIO: execution.awaitIO },
     { provider, now: engine.now, createBudget: engine.livePlanner.createBudget });
     check();

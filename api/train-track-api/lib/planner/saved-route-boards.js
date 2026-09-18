@@ -3,6 +3,7 @@ import { PlannerError, POLICY_VERSION, londonDate } from './contract.js';
 import { normalizeRouteBoards } from './route-boards.js';
 import { RouteBoardCache } from './route-board-cache.js';
 import { SavedRouteLive, earliestRouteJourneys } from './saved-route-live.js';
+import { TubeTrackProvider } from './tube-provider.js';
 import { getMongoCollection } from '../mongo-client.js';
 import { noOpPlannerSearchLog } from '../planner-search-log.js';
 
@@ -26,7 +27,7 @@ export function savedRoutePlanKey(request, version) {
 // V4 checks the lightweight direct board before touching timetable metadata or
 // the planner. Only a successful empty board can admit one fallback calculation.
 export class SavedRouteBoards {
-    constructor(service, { live = new SavedRouteLive(), cache = new RouteBoardCache({
+    constructor(service, { live = new SavedRouteLive({ tubeProvider: service?.config?.tubeTrackEnabled ? new TubeTrackProvider() : null }), cache = new RouteBoardCache({
         collection: () => getMongoCollection('planner_saved_route_plans_v1'), maxEntries: 64, maxBytes: 8 * 1024 * 1024
     }), now = Date.now, searchLog = noOpPlannerSearchLog, maxEntries = 64, maxLive = 4,
     maxPending = 8, maxPerClient = 2, maxPerNetwork = 4 } = {}) {

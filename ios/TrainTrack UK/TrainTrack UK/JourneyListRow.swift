@@ -34,19 +34,28 @@ enum JourneyCardPresentation {
     }
 
     static func arrivalTimeLabel(_ time: String) -> String {
-        time.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "delayed"
-            ? "TBC (delayed)"
-            : time
+        arrivalTimeLabel(time, departure: nil)
     }
 
-    static func arrivalLabel(
-        time: String,
-        destinationName: String,
-        scheduledDeparture: String? = nil
-    ) -> String {
-        let arrival = "Arr \(arrivalTimeLabel(time)) at \(destinationName)"
-        guard let scheduledDeparture else { return arrival }
-        return "\(scheduledDeparture) • \(arrival)"
+    static func arrivalTimeLabel(_ time: String?, departure: Date? = nil) -> String {
+        guard let time, !time.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "TBC" }
+        if time.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "delayed" { return "TBC (delayed)" }
+        guard let departure, let arrival = arrivalDate(time: time, after: departure),
+              !PlannerTime.calendar.isDate(departure, inSameDayAs: arrival) else { return time }
+        return "\(time) (+1 day)"
+    }
+
+    static func arrivalDate(time: String?, after departure: Date?) -> Date? {
+        guard let time, let departure else { return nil }
+        let parts = time.split(separator: ":")
+        guard parts.count == 2, let hour = Int(parts[0]), let minute = Int(parts[1]),
+              (0..<24).contains(hour), (0..<60).contains(minute) else { return nil }
+        var components = PlannerTime.calendar.dateComponents([.year, .month, .day], from: departure)
+        components.hour = hour
+        components.minute = minute
+        guard let arrival = PlannerTime.calendar.date(from: components) else { return nil }
+        return PlannerTime.calendar.compare(arrival, to: departure, toGranularity: .minute) == .orderedAscending
+            ? PlannerTime.calendar.date(byAdding: .day, value: 1, to: arrival) : arrival
     }
 
     static func serviceLabel(for departure: DepartureV2, details: ServiceDetails?) -> String? {
@@ -147,6 +156,8 @@ struct JourneyCard: View {
         let firstLeg: Journey
         let firstDeparture: DepartureV2
         let finalArrivalTime: String?
+        let departureDate: Date?
+        let durationMinutes: Double?
         let cancellation: JourneyCancellation?
 
         var id: String { firstDeparture.serviceID }
@@ -173,6 +184,10 @@ struct JourneyCard: View {
 
     private var displayedSummaries: [Summary] {
         Array(summaries.prefix(isExpanded ? summaries.count : defaultDepartureCount))
+    }
+
+    private var durationComparison: JourneyDurationComparison {
+        JourneyDurationComparison(durations: displayedSummaries.compactMap(\.durationMinutes))
     }
 
     private var canExpand: Bool {
@@ -569,18 +584,27 @@ struct JourneyCard: View {
         } footer: {
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 8) {
-                    detailedStatusView(summary)
+                    departureNotes(summary)
                     operatorLabel(for: summary.firstDeparture)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             } else {
                 HStack(alignment: .bottom, spacing: 8) {
-                    detailedStatusView(summary)
+                    departureNotes(summary)
                     Spacer(minLength: 8)
                     operatorLabel(for: summary.firstDeparture)
                 }
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
+        }
+    }
+
+    private func departureNotes(_ summary: Summary) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let tag = durationComparison.tag(for: summary.durationMinutes) {
+                JourneyDurationBadge(tag: tag)
+            }
+            detailedStatusView(summary)
         }
     }
 
@@ -651,12 +675,13 @@ struct JourneyCard: View {
 
     private func departureTiming(_ summary: Summary) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(departureDisplayTime(summary.firstDeparture))
-                .font(.title3)
-                .monospacedDigit()
-                .strikethrough(summary.cancellation != nil)
-                .foregroundStyle(summary.cancellation != nil ? (usesDirectDepartures ? Color.red : Color.secondary)
-                    : (usesDirectDepartures && isRunningLate(summary.firstDeparture) ? Color.yellow : Color.primary))
+            JourneyTimesView(
+                departure: departureDisplayTime(summary.firstDeparture),
+                arrival: JourneyCardPresentation.arrivalTimeLabel(summary.finalArrivalTime, departure: summary.departureDate),
+                departureColor: summary.cancellation != nil ? (usesDirectDepartures ? .red : .secondary)
+                    : (usesDirectDepartures && isRunningLate(summary.firstDeparture) ? .yellow : .primary),
+                cancelled: summary.cancellation != nil
+            )
             if summary.cancellation == nil {
                 TrainLengthIndicator(
                     cars: summary.firstDeparture.length,
@@ -670,23 +695,12 @@ struct JourneyCard: View {
     @ViewBuilder
     private func departureDetails(_ summary: Summary) -> some View {
         if summary.cancellation == nil {
-            Group {
-                if let arrival = summary.finalArrivalTime {
-                    Text(JourneyCardPresentation.arrivalLabel(
-                        time: arrival,
-                        destinationName: group.endStation.name,
-                        scheduledDeparture: isRunningLate(summary.firstDeparture)
-                            ? summary.firstDeparture.departureTime.scheduled
-                            : nil
-                    ))
-                } else {
-                    Text("Arrival time unavailable")
-                }
+            if isRunningLate(summary.firstDeparture) {
+                Text("Scheduled \(summary.firstDeparture.departureTime.scheduled)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 1)
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(2)
-            .padding(.top, 1)
 
             if let service = JourneyCardPresentation.serviceLabel(
                 for: summary.firstDeparture,
@@ -743,6 +757,7 @@ struct JourneyCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -759,17 +774,24 @@ struct JourneyCard: View {
             hasServicesForAllLegs: itinerary.hasServicesForAllLegs
         ) else { return nil }
 
+        let arrivalTime = usesDirectDepartures && usesLiveTimes?.wrappedValue == false
+            ? itinerary.legs.last?.scheduledArrivalDate.map { PlannerTime.display($0, includeDate: false) }
+            : itinerary.finalArrivalTime
+        let departure = departureDate(firstDeparture)
+        let cancellation = JourneyItineraryBuilder.cancellation(
+            for: firstDeparture,
+            at: firstLeg.toStation.crs,
+            serviceDetailsByID: depStore.serviceDetailsById
+        )
+        let arrival = JourneyCardPresentation.arrivalDate(time: arrivalTime, after: departure)
+        let duration = departure.flatMap { start in arrival.map { $0.timeIntervalSince(start) / 60 } }
         return Summary(
             firstLeg: firstLeg,
             firstDeparture: firstDeparture,
-            finalArrivalTime: usesDirectDepartures && usesLiveTimes?.wrappedValue == false
-                ? itinerary.legs.last?.scheduledArrivalDate.map { PlannerTime.display($0, includeDate: false) }
-                : itinerary.finalArrivalTime,
-            cancellation: JourneyItineraryBuilder.cancellation(
-                for: firstDeparture,
-                at: firstLeg.toStation.crs,
-                serviceDetailsByID: depStore.serviceDetailsById
-            )
+            finalArrivalTime: arrivalTime,
+            departureDate: departure,
+            durationMinutes: cancellation == nil ? duration : nil,
+            cancellation: cancellation
         )
     }
 
