@@ -336,16 +336,6 @@ final class JourneyPlannerUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Live times unavailable"].exists)
         XCTAssertEqual(app.switches["planner.travel-via"].value as? String, "0")
         XCTAssertEqual(app.switches["planner.save-journey"].value as? String, "0")
-        app.switches["planner.travel-via"].coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
-        XCTAssertTrue(app.buttons["planner.via-station"].waitForExistence(timeout: 5))
-        app.buttons["planner.via-station"].tap()
-        XCTAssertTrue(app.navigationBars["Travel via"].waitForExistence(timeout: 5))
-        app.buttons["Cancel"].tap()
-        app.switches["planner.save-journey"].coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
-        XCTAssertEqual(app.switches["planner.save.start-tracking"].value as? String, "1")
-        XCTAssertEqual(app.switches["planner.save.schedule"].value as? String, "0")
-        XCTAssertEqual(app.switches["planner.save.favourite"].value as? String, "0")
-        XCTAssertTrue(app.buttons["planner.save.submit"].exists)
         let journey = app.buttons["planner.journey.fixture-results"]
         XCTAssertTrue(journey.waitForExistence(timeout: 5))
         XCTAssertNotNil(journey.label.range(of: #"^\d{2}:\d{2} → \d{2}:\d{2}"#, options: .regularExpression))
@@ -374,6 +364,23 @@ final class JourneyPlannerUITests: XCTestCase {
             scrollTo(button, in: app)
             XCTAssertTrue(button.isEnabled)
         }
+    }
+
+    @MainActor
+    func testJourneyResultsOptionsExpandWithRequestedDefaults() async throws {
+        let app = try await launchQueuedFixture(profile: "results")
+        app.buttons["planner.search"].tap()
+        XCTAssertTrue(app.navigationBars["Kent House → Inverness"].waitForExistence(timeout: 10))
+        app.switches["planner.travel-via"].coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        XCTAssertTrue(app.buttons["planner.via-station"].waitForExistence(timeout: 5))
+        app.buttons["planner.via-station"].tap()
+        XCTAssertTrue(app.navigationBars["Travel via"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        app.switches["planner.save-journey"].coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        XCTAssertEqual(app.switches["planner.save.start-tracking"].value as? String, "1")
+        XCTAssertEqual(app.switches["planner.save.schedule"].value as? String, "0")
+        XCTAssertEqual(app.switches["planner.save.favourite"].value as? String, "0")
+        XCTAssertTrue(app.buttons["planner.save.submit"].exists)
     }
 
     @MainActor
