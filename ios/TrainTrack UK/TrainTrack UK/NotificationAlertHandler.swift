@@ -19,6 +19,13 @@ final class NotificationAlertHandler {
 
     private func handleAsync(response: UNNotificationResponse) async {
         let content = response.notification.request.content
+        if content.userInfo["alert_type"] as? String == "upcoming_disruption" {
+            if response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+               let monitorID = content.userInfo["monitor_id"] as? String {
+                DisruptionMonitoringStore.shared.openNotification(monitorID: monitorID)
+            }
+            return
+        }
         guard var info = NotificationLegInfo(content: content) else { return }
 
         if info.alertType == "activation_prompt" {

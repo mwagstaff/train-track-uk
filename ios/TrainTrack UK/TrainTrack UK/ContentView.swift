@@ -15,6 +15,7 @@ struct ContentView: View {
     @EnvironmentObject var deepLink: DeepLinkRouter
     @EnvironmentObject var railwayBackgroundStore: RailwayBackgroundStore
     @ObservedObject private var trackingCoordinator = JourneyTrackingCoordinator.shared
+    @State private var disruptions = DisruptionMonitoringStore.shared
 
     // Navigation paths for each tab to enable programmatic pop-to-root
     @State private var favouritesPath = NavigationPath()
@@ -74,6 +75,7 @@ struct ContentView: View {
     }
 
     var body: some View {
+        @Bindable var disruptions = disruptions
         TabView(selection: tabSelection) {
             NavigationStack(path: $favouritesPath) {
                 FavouritesView(onViewBackground: presentRailwayBackgroundViewer)
@@ -140,6 +142,12 @@ struct ContentView: View {
         }
         .fullScreenCover(item: $deepLink.routeMapDestination) { destination in
             JourneyRouteMapDeepLinkView(destination: destination)
+        }
+        .sheet(item: $disruptions.presentedGroup) { group in
+            DisruptionMonitoringView(group: group)
+        }
+        .sheet(item: $disruptions.presentedFutureGroup) { group in
+            FutureDisruptionsView(group: group)
         }
         .sensoryFeedback(.selection, trigger: tabSelectionFeedbackTrigger)
         .animation(.easeOut(duration: 0.25), value: toastStore.toast)

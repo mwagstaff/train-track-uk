@@ -588,8 +588,8 @@ export class PlannerEngine {
         }
     }
 
-    // V4 saved departures request one ordinary search only after the live board
-    // finds no direct option. Export just enough connection rules to refresh
+    // V4 saved departures request one ordinary search when the live board needs
+    // connecting alternatives. Export just enough connection rules to refresh
     // those routes without retaining or rebuilding the national train network.
     async savedRoutePlan(payload, signal, execution) {
         const via = payload.request?.via ?? [];
@@ -645,6 +645,10 @@ export class PlannerEngine {
                 links: (repo.rules?.links ?? []).filter(rule => stations.has(rule.origin) && stations.has(rule.destination))
             }
         } };
+    }
+
+    async disruptionProfile(payload, signal, execution) {
+        return (await import('./disruption-profile.js')).disruptionProfile(this, payload, signal, execution);
     }
 
     async routeBoardProfile(payload, signal, execution) {

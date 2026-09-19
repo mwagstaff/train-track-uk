@@ -230,6 +230,10 @@ struct JourneyCard: View {
                 header
                     .padding(16)
 
+                if isInteractive {
+                    DisruptionMonitoringRow(group: group)
+                }
+
                 Divider()
                     .padding(.horizontal, 16)
             }
@@ -535,6 +539,17 @@ struct JourneyCard: View {
     private var journeyMenu: some View {
         if isInteractive {
             Menu {
+                Button {
+                    DisruptionMonitoringStore.shared.presentedFutureGroup = group
+                } label: {
+                    Label("View future disruptions", systemImage: "calendar.badge.exclamationmark")
+                }
+                Button {
+                    DisruptionMonitoringStore.shared.presentedGroup = group
+                } label: {
+                    Label("Advance warning settings", systemImage: "slider.horizontal.3")
+                }
+                Divider()
                 if isLiveActive {
                     Button(role: .destructive, action: onToggleJourneyUpdates) {
                         Label("Stop journey updates", systemImage: "stop.fill")

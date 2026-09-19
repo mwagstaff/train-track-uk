@@ -8,7 +8,8 @@
     "start": "node index.js",
     "test": "node --test test/*.test.js",
     "test:planner": "node --test test/planner-*.test.js",
-    "planner": "node scripts/planner.js"
+    "planner": "node scripts/planner.js",
+    "disruptions": "node scripts/disruptions.js"
   },
   "author": "Mike Wagstaff",
   "license": "ISC",
@@ -18,6 +19,7 @@
     "axios": "^1.19.0",
     "cors": "^2.8.5",
     "express": "^4.22.2",
+    "fast-xml-parser": "^5.11.1",
     "lodash": "^4.18.1",
     "moment": "^2.30.1",
     "mongodb": "^7.2.0",

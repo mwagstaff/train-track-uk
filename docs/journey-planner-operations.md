@@ -526,7 +526,9 @@ The v4 flow is:
 1. Check the existing fresh, shared live departure lookup for the saved origin
    and destination. Available direct trains appear without starting a planner
    worker or checking timetable readiness. Required intermediate stations must
-   belong to the same ordered passenger branch before a train qualifies.
+   belong to the same ordered passenger branch before a train qualifies. When
+   the only direct options are replacement buses, keep that live board visible
+   while comparing it with connecting journeys, then show whichever departs first.
 2. When a successful fresh board returns no suitable direct train, check the
    shared route-plan cache. Provider errors, stale observations and incomplete
    empty responses remain live-data errors and do not trigger national searches.

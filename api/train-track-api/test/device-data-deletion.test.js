@@ -64,6 +64,15 @@ test('delete-all removes device data while retaining shared departures and anony
         ],
         [COLLECTIONS.plannerSearches]: [
             { _id: 'random-search-id', origin: 'KTH', destination: 'VIC', status: 'success' }
+        ],
+        [COLLECTIONS.disruptionMonitors]: [
+            { _id: deviceId, deviceId, monitors: [{ id: 'saved-route', stations: ['KTH', 'VIC'] }] }
+        ],
+        [COLLECTIONS.disruptionDeliveries]: [
+            { _id: 'notice-receipt', deviceId, monitorId: 'saved-route' }
+        ],
+        [COLLECTIONS.disruptionProfiles]: [
+            { _id: 'public-profile', stations: ['KTH', 'VIC'], date: '2026-09-21' }
         ]
     });
     const calls = [];
@@ -98,7 +107,7 @@ test('delete-all removes device data while retaining shared departures and anony
 
     const result = await service.deleteAllForDevice(deviceId);
 
-    assert.equal(result.persistedRecords, 12);
+    assert.equal(result.persistedRecords, 14);
     assert.deepEqual(result.auditLog, { deleted: 3, files: 2 });
     assert.equal(result.metricsLastSeen, true);
     assert.deepEqual(result.runtime, { subscriptions: 2, liveActivities: 1, journeyTracking: 1 });
@@ -120,6 +129,9 @@ test('delete-all removes device data while retaining shared departures and anony
     assert.equal(database.documents(COLLECTIONS.pushAuditEvents).length, 1);
     assert.equal(database.documents(COLLECTIONS.recentDepartures).length, 1);
     assert.equal(database.documents(COLLECTIONS.plannerSearches).length, 1);
+    assert.equal(database.documents(COLLECTIONS.disruptionProfiles).length, 1);
+    assert.equal(database.documents(COLLECTIONS.disruptionMonitors).length, 0);
+    assert.equal(database.documents(COLLECTIONS.disruptionDeliveries).length, 0);
 });
 
 test('delete-all rejects an empty device identifier before touching storage', async () => {
@@ -156,7 +168,7 @@ test('concurrent delete-all requests for one installation share a single sweep',
     assert.equal(finishes, 1);
     assert.equal(
         calls.filter((call) => call.startsWith('delete:')).length,
-        Object.values(COLLECTIONS).filter(name => ![COLLECTIONS.recentDepartures, COLLECTIONS.plannerSearches].includes(name)).length
+        Object.values(COLLECTIONS).filter(name => ![COLLECTIONS.recentDepartures, COLLECTIONS.plannerSearches, COLLECTIONS.disruptionProfiles].includes(name)).length
     );
 });
 
@@ -291,6 +303,7 @@ test('a notification save already in flight is removed if deletion starts before
         getCollection: async () => collection
     });
     const subscription = { id: 'subscription-1', deviceId: 'installation-race' };
+    manager.subscriptions.set(subscription.id, subscription);
 
     const save = manager._saveSubscription(subscription);
     await updateStarted;

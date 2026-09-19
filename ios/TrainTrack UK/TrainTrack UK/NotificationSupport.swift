@@ -124,6 +124,7 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
             "token_suffix": String(token.suffix(8))
         ])
         Task { @MainActor in
+            await DisruptionMonitoringStore.shared.refresh()
             DebugLogStore.shared.log(
                 """
                 Remote notification token registered
@@ -149,6 +150,11 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         Task { @MainActor in
+            if userInfo["alert_type"] as? String == "upcoming_disruption" {
+                await DisruptionMonitoringStore.shared.refresh()
+                completionHandler(.newData)
+                return
+            }
             ClientDiagnosticsLogger.log("notifications", "did_receive_remote_notification", metadata: [
                 "alert_type": userInfo["alert_type"] as? String,
                 "aps_event": (userInfo["aps"] as? [AnyHashable: Any])?["event"] as? String,
@@ -272,7 +278,7 @@ private func apsAlertValue(_ key: String, in userInfo: [AnyHashable: Any]) -> St
     return nil
 }
 
-private func notificationAPNsSandboxEnabled() -> Bool {
+func notificationAPNsSandboxEnabled() -> Bool {
     #if DEBUG
     return true
     #else

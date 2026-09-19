@@ -54,9 +54,20 @@ test('direct departures use the shared fresh pair lookup without detail requests
     assert.equal(f.calls.boards[0].options.requireFresh, true);
     assert.equal(f.calls.details.length, 0);
     assert.equal(result.expiresAt, new Date(now + 60000).toISOString());
+    assert.equal(result.departureAt, utc('12:05'));
+    assert.equal(result.compareWithConnections, false);
 });
 
-test('only successful fresh empty boards trigger fallback planning', async () => {
+test('a replacement-bus-only direct board requests a connecting-journey comparison', async () => {
+    const f = fixture();
+    f.board('ORG', 'DST', [row('BUS', '12:05', { serviceType: 'bus' })]);
+    const result = await f.helper.direct(request);
+    assert.equal(result.status, 'available');
+    assert.equal(result.departureAt, utc('12:05'));
+    assert.equal(result.compareWithConnections, true);
+});
+
+test('stale and failed boards cannot establish a safe planner fallback', async () => {
     const f = fixture();
     f.board('ORG', 'DST', []);
     assert.equal((await f.helper.direct(request)).status, 'empty');

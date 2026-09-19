@@ -176,6 +176,7 @@ export function buildDeletionPhases(deviceId, associations = {}) {
 
     return {
         dependentRecords: [
+            { collectionName: COLLECTIONS.disruptionDeliveries, filter: { deviceId } },
             {
                 collectionName: COLLECTIONS.devicePreferences,
                 filter: { $or: [{ _id: deviceId }, { device_id: deviceId }] }
@@ -191,6 +192,7 @@ export function buildDeletionPhases(deviceId, associations = {}) {
             }
         ],
         associationSources: [
+            { collectionName: COLLECTIONS.disruptionMonitors, filter: { deviceId } },
             {
                 collectionName: COLLECTIONS.notificationSubscriptions,
                 filter: { deviceId }

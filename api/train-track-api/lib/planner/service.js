@@ -35,6 +35,10 @@ export function plannerConfig(env = process.env) {
         // The routing worker is its own thread; Express is not blocked by it.
         // Throttle only when the host must reserve CPU for other services.
         jobCpuDutyCycle: number('PLANNER_JOB_CPU_DUTY_CYCLE', 1, 0.1, 1),
+        maintenanceTimeoutMs: number('PLANNER_MAINTENANCE_TIMEOUT_MS', 10000, 100, 30000),
+        maintenanceMaxOperations: number('PLANNER_MAINTENANCE_MAX_OPERATIONS', 10000000, 1000, 100000000),
+        maintenanceMinFreeMemoryMb: number('PLANNER_MAINTENANCE_MIN_FREE_MEMORY_MB', 512, 0, 65536),
+        maintenanceMaxLoadPerCpu: number('PLANNER_MAINTENANCE_MAX_LOAD_PER_CPU', 0.8, 0.1, 4),
         maxLiveWaiters: number('PLANNER_MAX_LIVE_WAITERS', 1, 0, 1),
         maxSearchJobs: number('PLANNER_MAX_SEARCH_JOBS', 8, 1, 32),
         // Resolve the current dates and build the national index before the
@@ -45,7 +49,7 @@ export function plannerConfig(env = process.env) {
 
 // One shared admission queue; CPU and SQLite work stay in bounded routing isolates.
 export class PlannerService {
-    constructor(config = plannerConfig(), { workerURL = defaultWorkerURL, metadataOnly = false } = {}) {
+    constructor(config = plannerConfig(), { workerURL = defaultWorkerURL, metadataOnly = false, maintenanceHeadroom } = {}) {
         this.config = config;
         this.workerURL = workerURL;
         this.workerCount = metadataOnly ? 1 : config.workerCount === 2 ? 2 : 1;
@@ -64,6 +68,8 @@ export class PlannerService {
         this.supportsIOYield = this.standardWorker && !metadataOnly;
         this.metadataService = null;
         this.journeys = new Map();
+        this.maintenanceHeadroom = maintenanceHeadroom ?? (() => os.freemem() >= (config.maintenanceMinFreeMemoryMb ?? 512) * 1048576
+            && os.loadavg()[0] / (os.availableParallelism?.() ?? os.cpus().length) < (config.maintenanceMaxLoadPerCpu ?? 0.8));
     }
 
     metadata() {
@@ -94,6 +100,11 @@ export class PlannerService {
         } catch (error) { return Promise.reject(error); }
     }
     clearSearchCache(options) { return this.call('clearSearchCache', {}, options); }
+    disruptionProfile(body, options = {}) {
+        return this.call('disruptionProfile', body, { ...options, priority: 'maintenance',
+            execution: { timeoutMs: this.config.maintenanceTimeoutMs ?? 10000,
+                maxOperations: this.config.maintenanceMaxOperations ?? 10000000, cpuDutyCycle: 0.25 } });
+    }
     async journey(id, options) {
         if (this.closed) throw new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is unavailable.', 503);
         if (typeof id !== 'string' || !/^[a-f0-9]{64}\.[a-f0-9]{32}$/.test(id)) {
@@ -116,19 +127,41 @@ export class PlannerService {
     get active() { return this.slots.find(slot => slot.active)?.active ?? null; }
     get parked() { return new Map(this.slots.flatMap(slot => [...slot.parked])); }
 
-    pendingCount() {
+    pendingCount({ includeMaintenance = true } = {}) {
         return new Set([...this.queue, ...this.slots.flatMap(slot =>
-            [...slot.parked.values(), ...(slot.active ? [slot.active] : [])])]).size;
+            [...slot.parked.values(), ...(slot.active ? [slot.active] : [])])]
+            .filter(job => includeMaintenance || job.priority !== 'maintenance')).size;
+    }
+
+    maintenanceAvailable() {
+        return !this.closed && !this.queue.length && this.slots.every(slot => !slot.active && !slot.parked.size && !slot.restarting)
+            && this.maintenanceHeadroom();
+    }
+
+    deferMaintenance() {
+        for (const job of new Set([...this.queue, ...this.slots.flatMap(slot =>
+            [...slot.parked.values(), ...(slot.active ? [slot.active] : [])])])) {
+            if (job.priority === 'maintenance') this.cancel(job,
+                new PlannerError('SEARCH_DEFERRED', 'Background monitoring yielded to journey searches.', 503));
+        }
     }
 
     call(method, payload = {}, options = {}, targetSlot) {
         const { signal, execution, onStart, onProgress, onTelemetry, queueTimeoutMs, priority = 'interactive' } = options;
         if (this.closed) return Promise.reject(new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is unavailable.', 503));
         if (signal?.aborted) return Promise.reject(new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499));
+        // The persistent monitor owns its backlog. Maintenance never queues up
+        // inside foreground admission, never ages, and gives way to all demand.
+        if (priority === 'maintenance') {
+            if (!this.maintenanceAvailable()) return Promise.reject(new PlannerError('SEARCH_DEFERRED', 'Background monitoring is waiting for spare capacity.', 503));
+            // Future-date graph preparation cannot evict the first worker's hot
+            // foreground index. With one worker, cooperative cancellation applies.
+            targetSlot = this.slots.at(-1);
+        } else this.deferMaintenance();
         if (this.workerCount > 1 && targetSlot === undefined && ['clearSearchCache', 'runtime'].includes(method)) {
             const slots = this.slots.filter(slot => slot.worker);
             // A cold slot has no result cache or runtime allocations to inspect.
-            if (this.pendingCount() + slots.length > this.config.maxQueue) {
+            if (this.pendingCount({ includeMaintenance: false }) + slots.length > this.config.maxQueue) {
                 return Promise.reject(new PlannerError('SEARCH_BUSY', 'Journey planning is busy. Please try again shortly.', 429));
             }
             return Promise.all(slots.map(slot => this.call(method, payload, options, slot))).then(results => {
@@ -147,7 +180,7 @@ export class PlannerService {
                     workers: results.map((result, index) => ({ slot: slots[index].id, ...result })) };
             });
         }
-        if (this.pendingCount() >= this.config.maxQueue) {
+        if (priority !== 'maintenance' && this.pendingCount({ includeMaintenance: false }) >= this.config.maxQueue) {
             return Promise.reject(new PlannerError('SEARCH_BUSY', 'Journey planning is busy. Please try again shortly.', 429));
         }
         if (method === 'search' && (payload.liveSnapshotId || payload.tubeSnapshotId)) {
@@ -160,7 +193,7 @@ export class PlannerService {
         return new Promise((resolve, reject) => {
             const job = { id: ++this.sequence, method, payload, resolve, reject, signal, slot: targetSlot,
                 cancelBuffer: new SharedArrayBuffer(4), settled: false, execution, onStart, onProgress, onTelemetry,
-                priority, enqueuedAt: Date.now(), dateKey: this.dateKey(payload), searchKey: method === 'search'
+                priority, enqueuedAt: Date.now(), dateKey: method === 'disruptionProfile' ? `monitor:${payload.date}` : this.dateKey(payload), searchKey: method === 'search'
                     ? JSON.stringify([payload, Boolean(execution?.timetableOnly), Boolean(execution?.excludeDirect)]) : null };
             job.abort = () => this.cancel(job, new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499));
             job.timer = setTimeout(() => this.cancel(job,
@@ -237,7 +270,7 @@ export class PlannerService {
             // Also bound non-cooperative work, such as a blocked SQLite call.
             job.killTimer = setTimeout(() => {
                 if (slot.active === job) this.resetWorker(error, slot);
-            }, 1000);
+            }, job.priority === 'maintenance' ? 100 : 1000);
         }
     }
 
@@ -336,7 +369,7 @@ export class PlannerService {
             // cannot block unrelated work that another isolate can execute.
             const old = this.queue.findIndex(job => eligible(job) && job.priority === 'background'
                 && Date.now() - job.enqueuedAt >= 120000);
-            const interactive = this.queue.findIndex(job => eligible(job) && job.priority !== 'background');
+            const interactive = this.queue.findIndex(job => eligible(job) && !['background', 'maintenance'].includes(job.priority));
             const index = old >= 0 ? old : interactive >= 0 ? interactive : this.queue.findIndex(eligible);
             if (!available.length || index < 0) {
                 for (const slot of available) if (!slot.parked.size) slot.worker?.unref();
@@ -346,12 +379,13 @@ export class PlannerService {
             const cached = job.searchKey && this.searchOwners.get(job.searchKey);
             const slot = job.slot ?? (cached?.slot.worker === cached?.worker && available.includes(cached?.slot) ? cached.slot : null)
                 ?? available.find(slot => job.dateKey && slot.dateKey === job.dateKey)
-                ?? available.find(slot => slot.worker) ?? available[0];
+                ?? available.find(slot => slot.worker && slot.lastPriority !== 'maintenance') ?? available[0];
             job.slot = slot;
             try {
                 if (!slot.worker) this.startWorker(slot);
                 slot.worker.ref();
                 slot.active = job;
+                slot.lastPriority = job.priority;
                 if (job.resuming) {
                     job.resuming = false;
                     slot.parked.delete(job.id);

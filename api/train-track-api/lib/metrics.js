@@ -65,6 +65,20 @@ export function recordPlannerRequest(operation, status, durationMs) {
     plannerRequestDuration.observe({ operation }, durationMs);
 }
 
+const disruptionReady = new client.Gauge({ name: 'disruption_timetable_ready', help: 'Whether timetable data can support advance comparisons', registers: [register] });
+const disruptionNotices = new client.Gauge({ name: 'disruption_notices_available', help: 'Whether official engineering notices are available', registers: [register] });
+const disruptionBacklog = new client.Gauge({ name: 'disruption_pending_profiles', help: 'Demanded profile jobs waiting or running', registers: [register] });
+const disruptionBacklogAge = new client.Gauge({ name: 'disruption_oldest_pending_seconds', help: 'Age of the oldest demanded profile job', registers: [register] });
+const disruptionChecks = new client.Counter({ name: 'disruption_checks_total', help: 'Bounded advance profile outcomes', labelNames: ['outcome'], registers: [register] });
+
+export function recordDisruptionMonitoring({ ready, noticesAvailable, outcome, pending, oldestAgeSeconds } = {}) {
+    if (typeof ready === 'boolean') disruptionReady.set(ready ? 1 : 0);
+    if (typeof noticesAvailable === 'boolean') disruptionNotices.set(noticesAvailable ? 1 : 0);
+    if (Number.isFinite(pending)) disruptionBacklog.set(pending);
+    if (Number.isFinite(oldestAgeSeconds)) disruptionBacklogAge.set(oldestAgeSeconds);
+    if (['complete', 'unknown', 'deferred', 'error'].includes(outcome)) disruptionChecks.inc({ outcome });
+}
+
 // Upstream API call metrics (Rail Data APIs etc.)
 const upstreamApiRequestsTotal = new client.Counter({
     name: 'upstream_api_requests_total',

@@ -19,7 +19,10 @@ export const COLLECTIONS = Object.freeze({
     geofenceEvents: 'geofence_events',
     holidayMode: 'holiday_mode',
     recentDepartures: 'recent_departures',
-    plannerSearches: 'planner_searches'
+    plannerSearches: 'planner_searches',
+    disruptionMonitors: 'disruption_monitors',
+    disruptionProfiles: 'disruption_profiles',
+    disruptionDeliveries: 'disruption_deliveries'
 });
 
 export const PLANNER_SEARCH_INDEXES = [
@@ -72,6 +75,19 @@ export async function ensureMongoIndexes() {
 async function createIndexes() {
     const db = await getMongoDb();
     await Promise.all([
+        db.collection(COLLECTIONS.disruptionMonitors).createIndexes([
+            { key: { deviceId: 1 }, name: 'device_id' },
+            { key: { 'monitors.enabled': 1 }, name: 'enabled_monitors' }
+        ]),
+        db.collection(COLLECTIONS.disruptionProfiles).createIndexes([
+            { key: { datasetVersion: 1, status: 1, priority: 1, date: 1, startMinutes: 1 }, name: 'pending_profiles' },
+            { key: { routeKey: 1, date: 1, status: 1, checkedAt: -1 }, name: 'historical_profiles' },
+            { key: { expiresAt: 1 }, name: 'profile_expiry', expireAfterSeconds: 0 }
+        ]),
+        db.collection(COLLECTIONS.disruptionDeliveries).createIndexes([
+            { key: { deviceId: 1 }, name: 'device_id' },
+            { key: { expiresAt: 1 }, name: 'delivery_expiry', expireAfterSeconds: 0 }
+        ]),
         db.collection(COLLECTIONS.plannerSearches).createIndexes(PLANNER_SEARCH_INDEXES),
         db.collection(COLLECTIONS.notificationSubscriptions).createIndexes([
             { key: { deviceId: 1, source: 1 }, name: 'device_source' },

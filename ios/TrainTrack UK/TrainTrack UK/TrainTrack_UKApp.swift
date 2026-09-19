@@ -33,6 +33,10 @@ struct TrainTrackUKApp: App {
                 .environmentObject(railwayBackgroundStore)
                 .environmentObject(deepLink)
                 .task { await ServerConfigStore.shared.refresh() }
+                .task {
+                    DisruptionMonitoringStore.shared.start()
+                    await DisruptionMonitoringStore.shared.refreshOnForeground()
+                }
                 #if (DEBUG || APP_STORE_CAPTURE) && targetEnvironment(simulator)
                 .task { await AppStoreScreenshotFixture.prepareIfRequested() }
                 #endif
@@ -79,6 +83,10 @@ struct TrainTrackUKApp: App {
 
                 Task {
                     await HolidayModeStore.shared.syncToServer()
+                }
+
+                Task {
+                    await DisruptionMonitoringStore.shared.refreshOnForeground()
                 }
 
                 // Re-sync subscriptions and geofences each time the app comes to the

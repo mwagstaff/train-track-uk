@@ -25,7 +25,8 @@ export function savedRoutePlanKey(request, version, { timeLocked = false } = {})
 }
 
 // V4 checks the lightweight direct board before touching timetable metadata or
-// the planner. Only a successful empty board can admit one fallback calculation.
+// the planner. A replacement-bus-only board is also compared with connecting
+// journeys so a much later through bus cannot hide the next usable departure.
 export class SavedRouteBoards {
     constructor(service, { live = new SavedRouteLive({ tubeProvider: service?.config?.tubeTrackEnabled ? new TubeTrackProvider() : null }), cache = new RouteBoardCache({
         collection: () => getMongoCollection('planner_saved_route_plans_v1'), maxEntries: 64, maxBytes: 8 * 1024 * 1024
@@ -114,7 +115,13 @@ export class SavedRouteBoards {
             this.activeLive.add(entry);
             this.update(entry, controller.signal).catch(error => {
                 if (!controller.signal.aborted) {
-                    entry.error = errorValue(error);
+                    if (entry.directCandidate) {
+                        entry.source = 'direct';
+                        entry.value = this.directValue(entry.directCandidate);
+                        entry.error = null;
+                    } else {
+                        entry.error = errorValue(error);
+                    }
                     entry.nextCheckAt = this.now() + 10000;
                 }
             }).finally(() => {
@@ -141,14 +148,23 @@ export class SavedRouteBoards {
             const direct = await this.live.direct(request, { signal });
             if (signal.aborted) return;
             entry.nextCheckAt = this.now() + LIVE_MS;
-            if (direct.status === 'available') {
+            if (direct.status === 'available' && !direct.compareWithConnections) {
                 this.detach(entry, 'superseded');
+                entry.directCandidate = null;
+                entry.plannedResult = null;
                 entry.source = 'direct';
-                entry.value = { source: 'direct', direct: direct.snapshot, expiresAt: direct.expiresAt, at: this.now() };
+                entry.value = this.directValue(direct);
                 entry.error = null;
                 return;
             }
-            if (direct.status !== 'empty') {
+            if (direct.status === 'available') {
+                entry.directCandidate = direct;
+                entry.value = this.preferredValue(entry.plannedResult, direct);
+                entry.source = entry.value.source;
+                entry.error = null;
+            } else if (direct.status === 'empty') {
+                entry.directCandidate = null;
+            } else {
                 // An outage cannot establish the absence of direct trains, and must
                 // never turn every saved route into an expensive planner request.
                 entry.error = direct.error ?? errorValue();
@@ -156,10 +172,10 @@ export class SavedRouteBoards {
                 return;
             }
         }
-        entry.source = 'planned';
+        if (!entry.directCandidate) entry.source = 'planned';
         // A successful fresh empty response replaces the old direct board;
         // those earlier departures are no longer current options.
-        if (entry.value?.source === 'direct') entry.value = null;
+        if (!entry.directCandidate && entry.value?.source === 'direct') entry.value = null;
         const metadata = await this.metadata();
         if (signal.aborted) return;
         if (!metadata.available || !metadata.dataset?.version) {
@@ -171,7 +187,10 @@ export class SavedRouteBoards {
         // Polls can check for the return of direct trains while this shared job
         // runs, but must not race its cache write or replace its final result.
         if (entry.job?.key === key) return;
-        if (entry.plan?.key !== key || entry.plan.expiresAt <= this.now()) entry.plan = null;
+        if (entry.plan?.key !== key || entry.plan.expiresAt <= this.now()) {
+            entry.plan = null;
+            entry.plannedResult = null;
+        }
         let observation;
         if (!entry.plan) {
             const stored = await this.cache.get(key);
@@ -195,7 +214,9 @@ export class SavedRouteBoards {
                 return;
             }
             this.service.retainResult?.(result);
-            entry.value = { source: 'planned', result, at: this.now() };
+            entry.plannedResult = result;
+            entry.value = this.preferredValue(result, entry.directCandidate);
+            entry.source = entry.value.source;
             entry.error = null;
             observation?.finish({ status: 'success', outcome: result.journeys.length ? 'completed' : 'empty',
                 resultCount: result.journeys.length, firstResultAt: new Date(this.now()), finishedAt: new Date(this.now()) });
@@ -209,6 +230,23 @@ export class SavedRouteBoards {
     validPlan(profile, version) {
         return Array.isArray(profile?.result?.journeys) && profile.result.dataset?.version === version
             && Buffer.byteLength(JSON.stringify(profile)) <= MAX_PLAN_BYTES;
+    }
+
+    directValue(direct) {
+        return { source: 'direct', direct: direct.snapshot, expiresAt: direct.expiresAt, at: this.now() };
+    }
+
+    preferredValue(result, direct) {
+        if (!result) return this.directValue(direct);
+        const now = this.now();
+        const plannedAt = Math.min(...(result.journeys ?? [])
+            .map(journey => Date.parse(journey.departure))
+            .filter(value => Number.isFinite(value) && value >= now));
+        const directAt = Date.parse(direct?.departureAt);
+        if (direct && (!Number.isFinite(plannedAt) || Number.isFinite(directAt) && directAt <= plannedAt)) {
+            return this.directValue(direct);
+        }
+        return { source: 'planned', result, at: now };
     }
 
     plan(entry, request, version, key) {
@@ -271,7 +309,9 @@ export class SavedRouteBoards {
                     warnings: [...new Set([...(profile.result.warnings ?? []), warning])],
                     live: { mode: entry.mode, status: 'unavailable', windowHours: 4, warnings: [warning] } };
                 this.service.retainResult?.(result);
-                entry.value = { source: 'planned', result, at: this.now() };
+                entry.plannedResult = result;
+                entry.value = this.preferredValue(result, entry.directCandidate);
+                entry.source = entry.value.source;
                 entry.nextCheckAt = 0;
             }
             job.observation.finish({ status: 'success', outcome: profile.result.journeys.length ? 'completed' : 'empty',
@@ -279,7 +319,13 @@ export class SavedRouteBoards {
         }).catch(error => {
             if (job.controller.signal.aborted) return;
             for (const entry of job.entries) {
-                entry.error = errorValue(error);
+                if (entry.directCandidate) {
+                    entry.source = 'direct';
+                    entry.value = this.directValue(entry.directCandidate);
+                    entry.error = null;
+                } else {
+                    entry.error = errorValue(error);
+                }
                 entry.nextCheckAt = this.now() + 20000;
             }
             job.observation.finish({ status: 'fail', outcome: 'failed', errorCode: error.code || 'DATASET_UNAVAILABLE',

@@ -20,6 +20,12 @@ class NotificationService: UNNotificationServiceExtension {
         NotificationServiceDiagnosticsLogger.log("did_receive", metadata: diagnosticMetadata(for: request.content, identifier: request.identifier))
 
         if let bestAttemptContent = bestAttemptContent {
+            // Future disruption warnings are independent of today's journey arrival,
+            // mute state and Live Activity. Never apply those filters to this category.
+            if bestAttemptContent.userInfo["alert_type"] as? String == "upcoming_disruption" {
+                finish(with: bestAttemptContent)
+                return
+            }
             ensureCategoriesRegistered()
             enhanceNotificationIfNeeded(content: bestAttemptContent)
             if shouldSuppressScheduledSummaryOutsideWindow(content: bestAttemptContent) {

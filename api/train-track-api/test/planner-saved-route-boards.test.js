@@ -72,6 +72,41 @@ test('direct departures use no timetable metadata, planner, cache or search logs
     assert.equal(f.records.size, 0);
 });
 
+test('a later direct replacement bus cannot suppress an earlier connecting journey', async t => {
+    const directDeparture = new Date(start + 176 * 60000).toISOString();
+    const f = fixture(t, { direct: () => ({ status: 'available', compareWithConnections: true,
+        departureAt: directDeparture, snapshot: { departures: [{ serviceID: 'late-bus', serviceType: 'bus' }] } }) });
+    await f.manager.get(body); await idle(f.manager);
+    const board = (await f.manager.get(body)).boards[0];
+    assert.equal(board.source, 'planned');
+    assert.equal(board.result.journeys[0].departure, new Date(start + 60000).toISOString());
+    assert.equal(f.calls.length, 1);
+});
+
+test('an earlier direct replacement bus remains selected after connecting journeys are compared', async t => {
+    const directDeparture = new Date(start + 30000).toISOString();
+    const snapshot = { departures: [{ serviceID: 'early-bus', serviceType: 'bus' }] };
+    const f = fixture(t, { direct: () => ({ status: 'available', compareWithConnections: true,
+        departureAt: directDeparture, snapshot }) });
+    await f.manager.get(body); await idle(f.manager);
+    const board = (await f.manager.get(body)).boards[0];
+    assert.equal(board.source, 'direct');
+    assert.deepEqual(board.direct, snapshot);
+    assert.equal(f.calls.length, 1);
+});
+
+test('a direct replacement bus remains available when its comparison plan fails', async t => {
+    const snapshot = { departures: [{ serviceID: 'fallback-bus', serviceType: 'bus' }] };
+    const f = fixture(t, { direct: () => ({ status: 'available', compareWithConnections: true,
+        departureAt: new Date(start + 176 * 60000).toISOString(), snapshot }),
+    call: async () => { throw new PlannerError('SEARCH_TIMEOUT', 'Planning exceeded its budget.'); } });
+    await f.manager.get(body); await idle(f.manager);
+    const board = (await f.manager.get(body)).boards[0];
+    assert.equal(board.source, 'direct');
+    assert.deepEqual(board.direct, snapshot);
+    assert.equal(board.error, undefined);
+});
+
 test('time-locked later searches preserve their window and bypass current direct departures', async t => {
     const later = new Date(start + 6 * 60 * 60 * 1000).toISOString();
     const future = { routes: [{ ...body.routes[0], id: 'later', time: later }] };

@@ -232,9 +232,16 @@ export class SavedRouteLive {
             }));
             rows = checked.filter(Boolean);
         }
-        const available = rows.some(row => request.realtime === 'ignore' || !row.isCancelled && text(row.departure_time?.estimated) !== 'cancelled');
+        const availableRows = rows.filter(row => request.realtime === 'ignore'
+            || !row.isCancelled && text(row.departure_time?.estimated) !== 'cancelled');
+        const first = availableRows[0], firstTimes = first ? rowTime(first, now) : null;
+        const departureAt = firstTimes && (request.realtime === 'ignore'
+            ? firstTimes.scheduled : firstTimes.expected ?? firstTimes.scheduled);
+        const available = availableRows.length > 0;
         return { status: available ? 'available' : board.dataStatus === 'live' && !uncertain ? 'empty' : 'unknown',
-            snapshot: publicSnapshot(board, rows), expiresAt: iso(context.oldest + 60000) };
+            snapshot: publicSnapshot(board, rows), expiresAt: iso(context.oldest + 60000),
+            ...(Number.isFinite(departureAt) ? { departureAt: iso(departureAt) } : {}),
+            compareWithConnections: available && availableRows.every(row => mode(row) === 'replacementBus') };
     }
 
     async refresh(plan, request, { signal } = {}) {

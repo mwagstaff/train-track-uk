@@ -72,7 +72,7 @@ async function fixture(t, overrides = {}, source) {
                 });
             } finally { if (acquired) release(); }
         };
-        for (const method of ['routeBoardProfileChunk', 'routeBoardPreview']) {
+        for (const method of ['routeBoardProfileChunk', 'routeBoardPreview', 'disruptionProfile']) {
             PlannerEngine.prototype[method] = async (payload, signal, execution) => {
                 execution.onTelemetry({ datasetVersion: 'fixture' });
                 return execution.measure('routingMs', () => ({ method, tag: payload.tag }));
@@ -253,7 +253,7 @@ test('prewarm shares the serial operation queue and profile methods receive tele
     assert.deepEqual(state.trace, ['enter:search', 'leave:search', 'enter:prewarm', 'leave:prewarm']);
     assert.equal(state.owner, null);
     assert.equal(state.raptorIndexes, 1, 'Idle prewarming prepares the RAPTOR index before the first RAPTOR search');
-    for (const method of ['routeBoardProfileChunk', 'routeBoardPreview']) {
+    for (const method of ['routeBoardProfileChunk', 'routeBoardPreview', 'disruptionProfile']) {
         const measurements = [];
         assert.deepEqual(await service.call(method, { tag: method }, { onTelemetry: value => measurements.push(value) }), { method, tag: method });
         assert.ok(measurements.some(value => value.metricsDelta?.routingMs >= 0));

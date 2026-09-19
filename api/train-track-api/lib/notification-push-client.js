@@ -122,7 +122,9 @@ export class NotificationPushClient {
                 host,
                 deviceToken,
                 payload: markedPayload,
-                jwt: this.buildJwt()
+                jwt: this.buildJwt(),
+                collapseId: options.collapseId,
+                expiration: options.expiration
             });
 
             recordPushNotification({
@@ -193,7 +195,7 @@ export class NotificationPushClient {
         throw new Error('APNS notification retry loop exited unexpectedly');
     }
 
-    async sendSingleRequest({ host, deviceToken, payload, jwt }) {
+    async sendSingleRequest({ host, deviceToken, payload, jwt, collapseId, expiration }) {
         const session = http2.connect(`https://${host}`);
         const body = JSON.stringify(payload);
         const pushType = payload?.aps?.alert ? 'alert' : 'background';
@@ -207,6 +209,8 @@ export class NotificationPushClient {
             authorization: `bearer ${jwt}`,
             'content-type': 'application/json'
         };
+        if (typeof collapseId === 'string' && Buffer.byteLength(collapseId) <= 64) headers['apns-collapse-id'] = collapseId;
+        if (Number.isSafeInteger(expiration) && expiration >= 0) headers['apns-expiration'] = String(expiration);
 
         const startedAt = Date.now();
 

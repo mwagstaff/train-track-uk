@@ -11,6 +11,7 @@ import {
     forgetDeviceLastSeen,
     recordJourneyEvent,
     recordPlannerRequest,
+    recordDisruptionMonitoring,
     recordPushTokenRegistration,
     updateJourneyGauges,
     updateNotificationSubscriptionGauges,
@@ -30,6 +31,10 @@ import { getOperatorBrandingConfig } from './lib/operator-branding-config.js';
 import { registerRailwayBackgroundRoutes } from './lib/railway-backgrounds.js';
 import { registerPlannerRoutes } from './lib/planner-routes.js';
 import { startTimetableIngestion } from './lib/planner/ingestion-scheduler.js';
+import { DisruptionMonitor } from './lib/disruptions/manager.js';
+import { disruptionConfig } from './lib/disruptions/model.js';
+import { createPlannedEngineeringProvider } from './lib/disruptions/notices.js';
+import { registerDisruptionRoutes } from './lib/disruptions/routes.js';
 import {
     deleteSubscriptionAuditEventsForDevice,
     startSubscriptionAuditLogMaintenance
@@ -208,6 +213,18 @@ app.use(cors());
 // Parse planner searches before the legacy 1 MB parser so their stricter limit
 // is effective. Existing namespaces keep their established parser and metrics.
 const plannerService = registerPlannerRoutes(app, { recordRequest: recordPlannerRequest, requestMiddleware: metricsMiddleware });
+const monitorConfig = disruptionConfig();
+const disruptionMonitor = registerDisruptionRoutes(app, new DisruptionMonitor({
+    planner: plannerService,
+    config: monitorConfig,
+    notices: createPlannedEngineeringProvider({ endpoint: monitorConfig.noticeEndpoint,
+        authorization: monitorConfig.noticeAuthorization, username: monitorConfig.noticeUsername,
+        password: monitorConfig.noticePassword, headers: monitorConfig.noticeHeaders,
+        stationDefinitions: JSON.parse(fs.readFileSync(new URL('./resources/stations.json', import.meta.url), 'utf8')) }),
+    pushClient: notificationSubscriptionManager.pushClient,
+    isHolidayMode: deviceId => notificationSubscriptionManager.isHolidayModeEnabled(deviceId),
+    observe: recordDisruptionMonitoring
+}), { requestMiddleware: metricsMiddleware });
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
@@ -242,11 +259,13 @@ app.use(metricsMiddleware);
 
 const deviceDataDeletionService = new DeviceDataDeletionService({
     purgeRuntimeState: async (deviceId) => {
+        const disruptionMonitoring = await disruptionMonitor.purgeDevice(deviceId);
         const notification = await notificationSubscriptionManager.purgeDeviceRuntimeState(deviceId);
         const liveActivities = await liveActivityManager.purgeDeviceRuntimeState(deviceId);
         const journeyTracking = await journeyTrackingManager.purgeDeviceRuntimeState(deviceId);
         return {
             notificationSubscriptions: notification.subscriptions,
+            disruptionMonitoring,
             holidayMode: notification.holidayMode ? 1 : 0,
             liveActivitySessions: liveActivities,
             journeyTrackingSessions: journeyTracking
@@ -1599,10 +1618,12 @@ const server = app.listen(port, () => {
     logLiveActivityStartup();
 });
 const timetableIngestion = startTimetableIngestion();
+disruptionMonitor.start();
 // Stop the importer as well as the HTTP server on service shutdown. Leave its
 // five-second kill escalation time to run before this process exits.
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
     timetableIngestion.stop();
+    disruptionMonitor.stop();
     server.close();
     setTimeout(() => process.exit(signal === 'SIGINT' ? 130 : 0), 6000);
 });
