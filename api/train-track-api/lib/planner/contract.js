@@ -60,10 +60,18 @@ export function normalizeRequest(body) {
     if (body.realtime !== undefined && !['apply', 'ignore', 'off'].includes(body.realtime)) {
         throw new PlannerError('INVALID_REQUEST', 'Choose apply, ignore or off for realtime.');
     }
-    if (body.algorithm === 'raptor' && (body.timeType !== 'departAfter'
-        || (body.realtime !== undefined && body.realtime !== 'off')
-        || (body.via !== undefined && (!Array.isArray(body.via) || body.via.length > 0)))) {
-        throw new PlannerError('UNSUPPORTED_REQUEST', 'RAPTOR supports scheduled depart-after searches without via stations.');
+    const suppliedVia = body.via === undefined ? [] : body.via;
+    if (!Array.isArray(suppliedVia) || suppliedVia.length > 8
+        || suppliedVia.some(code => typeof code !== 'string' || !/^[A-Z0-9]{3}$/.test(code.trim().toUpperCase()))) {
+        throw new PlannerError('INVALID_STATION', 'Supply at most eight intermediate stations in travel order.');
+    }
+    const via = suppliedVia.map(code => code.trim().toUpperCase());
+    if (body.algorithm === 'raptor' && (new Set(via).size !== via.length
+        || via.includes(origin) || via.includes(destination) || via.length && origin === destination)) {
+        throw new PlannerError('INVALID_STATION', 'Choose different stations along the journey.');
+    }
+    if (body.algorithm === 'raptor' && body.timeType !== 'departAfter') {
+        throw new PlannerError('UNSUPPORTED_REQUEST', 'RAPTOR supports depart-after searches.');
     }
     const allowedModes = body.allowedModes === undefined ? MODES : body.allowedModes;
     if (!Array.isArray(allowedModes) || !allowedModes.length || allowedModes.length > MODES.length
@@ -77,14 +85,15 @@ export function normalizeRequest(body) {
         allowedModes: [...new Set(allowedModes)].sort(),
         limit: integer(body.limit, 5, 1, 10, 'limit'),
         windowMinutes: integer(body.windowMinutes, DEFAULT_WINDOW_MINUTES, 15, 360, 'windowMinutes'),
+        ...(via.length ? { via } : {}),
         ...(body.algorithm === 'raptor' ? { algorithm: 'raptor' } : {}),
         ...(body.realtime && body.realtime !== 'off' ? { realtime: body.realtime } : {})
     };
 }
 
 export function encodeCursor(request, version, offset = 0, liveSnapshotId, tubeSnapshotId) {
-    if (request.algorithm === 'raptor' && (liveSnapshotId !== undefined || tubeSnapshotId !== undefined)) {
-        throw new PlannerError('INVALID_REQUEST', 'RAPTOR cursors cannot reference live snapshots.');
+    if (request.algorithm === 'raptor' && (tubeSnapshotId !== undefined || liveSnapshotId !== undefined && !request.realtime)) {
+        throw new PlannerError('INVALID_REQUEST', 'RAPTOR cursors cannot reference TfL snapshots.');
     }
     return Buffer.from(JSON.stringify({ policy: request.algorithm === 'raptor' ? RAPTOR_POLICY_VERSION
         : request.realtime ? LIVE_POLICY_VERSION : POLICY_VERSION,
@@ -101,9 +110,10 @@ export function decodeCursor(cursor) {
         }
         const offset = integer(value.offset, 0, 0, 1000, 'offset');
         const request = normalizeRequest(value.request);
-        if ((request.algorithm === 'raptor') !== (value.policy === RAPTOR_POLICY_VERSION)
-            || Boolean(request.realtime) !== (value.policy === LIVE_POLICY_VERSION)
-            || (request.algorithm === 'raptor' && (value.liveSnapshotId !== undefined || value.tubeSnapshotId !== undefined))
+        const expectedPolicy = request.algorithm === 'raptor' ? RAPTOR_POLICY_VERSION
+            : request.realtime ? LIVE_POLICY_VERSION : POLICY_VERSION;
+        if (value.policy !== expectedPolicy
+            || (request.algorithm === 'raptor' && value.tubeSnapshotId !== undefined)
             || (value.liveSnapshotId !== undefined && (!request.realtime || !/^[a-f0-9-]{36}$/.test(value.liveSnapshotId)))
             || (value.tubeSnapshotId !== undefined && (request.realtime || !/^[a-f0-9-]{36}$/.test(value.tubeSnapshotId)))) {
             throw new Error();

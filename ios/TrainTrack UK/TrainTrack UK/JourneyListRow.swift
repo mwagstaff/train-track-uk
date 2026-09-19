@@ -315,7 +315,8 @@ struct JourneyCard: View {
                 isExpanded: isExpanded,
                 onToggleExpanded: onToggleExpanded,
                 progressTitle: "Searching for later departures…",
-                onRetry: onRetryLater
+                onRetry: onRetryLater,
+                showsProgressWithResults: false
             )
         } else {
             Button(action: { onSearchLater?() }) {

@@ -493,9 +493,9 @@ test('RAPTOR POC pagination and balanced departure profiles do not change the cr
     assert.deepEqual(frontier(full, true), exhaustive(net, query(), options));
 });
 
-test('RAPTOR POC rejects unsupported arrival, via and live-resolver semantics instead of silently ignoring them', () => {
+test('RAPTOR POC rejects unsupported arrival and live-resolver semantics instead of silently ignoring them', () => {
     const index = compileRaptorNetwork(network([train('direct', [['AAA', null, 0], ['DDD', 30, null]])]));
-    for (const [request, options] of [[query({ timeType: 'arriveBy' }), {}], [query({ via: ['BBB'] }), {}],
+    for (const [request, options] of [[query({ timeType: 'arriveBy' }), {}],
         [query(), { resolveTubeConnection: async () => null }], [query(), { excludeDirect: new Set(['AAA|DDD']) }]]) {
         assert.throws(() => findRaptorJourneys(request, index, options), { code: 'UNSUPPORTED_REQUEST' });
     }
@@ -507,6 +507,10 @@ test('RAPTOR POC rejects invalid bounds/stations and recognizes already-at-desti
         assert.throws(() => findRaptorJourneys(request, index), { code: 'INVALID_REQUEST' });
     }
     assert.throws(() => findRaptorJourneys(query({ destination: 'XXX' }), index), { code: 'INVALID_STATION' });
+    for (const via of [null, 'BBB', ['XXX'], ['BBB', 'BBB'], ['AAA'], ['DDD']]) {
+        assert.throws(() => findRaptorJourneys(query({ via }), index), { code: 'INVALID_STATION' });
+    }
+    assert.throws(() => findRaptorJourneys(query({ destination: 'AAA', via: ['BBB'] }), index), { code: 'INVALID_STATION' });
     const result = findRaptorJourneys(query({ destination: 'AAA' }), index);
     assert.equal(result.alreadyAtDestination, true);
     assert.deepEqual(result.journeys, []);

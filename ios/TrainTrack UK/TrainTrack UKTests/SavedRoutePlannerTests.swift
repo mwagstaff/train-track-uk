@@ -190,6 +190,11 @@ struct SavedRoutePlannerTests {
     }
 
     @Test func queuedProgressIsDecodedAndBusyWarningsDoNotHideItsSpinner() async throws {
+        var justRequested = SavedRouteBoardState()
+        justRequested.requestedAt = now
+        justRequested.waitingForCapacity = true
+        #expect(justRequested.progressPresentation(at: now)?.details.isEmpty == true)
+
         let data = Data("""
         {"id":"r","status":"queued","progress":{"phase":"queued","queuePosition":2,"queuedAt":"2027-01-15T08:00:00Z"}}
         """.utf8)

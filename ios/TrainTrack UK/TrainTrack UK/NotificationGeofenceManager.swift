@@ -2664,6 +2664,15 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     }
 }
 
+enum NotificationMuteRequestRetryPolicy {
+    static func shouldRetry(statusCode: Int) -> Bool {
+        statusCode == 408
+            || statusCode == 425
+            || statusCode == 429
+            || (500...599).contains(statusCode)
+    }
+}
+
 final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSessionTaskDelegate, URLSessionDataDelegate {
     static let shared = NotificationMuteRequestSender()
 
@@ -3070,14 +3079,14 @@ final class NotificationMuteRequestSender: NSObject, URLSessionDelegate, URLSess
                     }
                 }
             } else if let pendingRequestId = context?.pendingRequestId {
-                if response.statusCode == 400 {
-                    NotificationMuteStorage.removePendingMuteRequest(id: pendingRequestId)
-                } else {
+                if NotificationMuteRequestRetryPolicy.shouldRetry(statusCode: response.statusCode) {
                     NotificationMuteStorage.markPendingMuteRequestFailure(
                         id: pendingRequestId,
                         error: "HTTP \(response.statusCode)"
                     )
                     schedulePendingRetry(reason: "terminate-http-\(response.statusCode)")
+                } else {
+                    NotificationMuteStorage.removePendingMuteRequest(id: pendingRequestId)
                 }
             }
         } else {

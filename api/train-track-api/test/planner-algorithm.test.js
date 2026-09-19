@@ -51,18 +51,30 @@ test('algorithm selection defaults to original without changing established norm
     }
 });
 
-test('RAPTOR rejects unsupported modes before via stations or realtime can be normalized away', () => {
-    for (const change of [{ timeType: 'arriveBy' }, { realtime: 'apply' }, { realtime: 'ignore' },
-        { via: ['BBB'] }, { via: 'BBB' }, { via: null }]) {
-        assert.throws(() => normalizeRequest({ ...body, algorithm: 'raptor', ...change }), { code: 'UNSUPPORTED_REQUEST' });
+test('RAPTOR accepts live departure searches and normalizes ordered via stations', () => {
+    for (const realtime of ['apply', 'ignore']) {
+        assert.equal(normalizeRequest({ ...body, algorithm: 'raptor', realtime }).realtime, realtime);
     }
+    assert.deepEqual(normalizeRequest({ ...body, algorithm: 'raptor', via: [' bbb '] }).via, ['BBB']);
+    assert.throws(() => normalizeRequest({ ...body, algorithm: 'raptor', timeType: 'arriveBy' }), { code: 'UNSUPPORTED_REQUEST' });
+    for (const via of ['BBB', null, ['BB'], Array(9).fill('BBB')]) {
+        assert.throws(() => normalizeRequest({ ...body, algorithm: 'raptor', via }), { code: 'INVALID_STATION' });
+    }
+    for (const via of [['BBB', 'BBB'], ['AAA'], ['CCC']]) {
+        assert.throws(() => normalizeRequest({ ...body, algorithm: 'raptor', via }), { code: 'INVALID_STATION' });
+    }
+    assert.throws(() => normalizeRequest({ ...body, algorithm: 'raptor', destination: 'AAA', via: ['BBB'] }),
+        { code: 'INVALID_STATION' });
     assert.equal(normalizeRequest({ ...body, algorithm: 'original', timeType: 'arriveBy', realtime: 'apply' }).realtime, 'apply');
 });
 
 test('RAPTOR pagination cursors pin their algorithm and policy while legacy cursors remain compatible', () => {
     const original = normalizeRequest(body), raptor = normalizeRequest({ ...body, algorithm: 'raptor' });
+    const raptorVia = normalizeRequest({ ...body, algorithm: 'raptor', via: ['BBB'] });
     assert.deepEqual(decodeCursor(encodeCursor(original, version, 2)), { version, request: original, offset: 2 });
     assert.deepEqual(decodeCursor(encodeCursor(raptor, version, 4)), { version, request: raptor, offset: 4 });
+    assert.deepEqual(decodeCursor(encodeCursor(raptorVia, version, 6)), { version, request: raptorVia, offset: 6 });
+    assert.notEqual(encodeCursor(raptorVia, version), encodeCursor(raptor, version));
     assert.equal(JSON.parse(Buffer.from(encodeCursor(raptor, version), 'base64url').toString()).policy, RAPTOR_POLICY_VERSION);
     for (const value of [
         { policy: POLICY_VERSION, version, request: raptor },
@@ -70,14 +82,15 @@ test('RAPTOR pagination cursors pin their algorithm and policy while legacy curs
         { policy: RAPTOR_POLICY_VERSION, version, request: original },
         { policy: RAPTOR_POLICY_VERSION, version, request: { ...raptor, algorithm: 'original' } },
         { policy: RAPTOR_POLICY_VERSION, version, request: raptor, liveSnapshotId: snapshot },
-        { policy: RAPTOR_POLICY_VERSION, version, request: raptor, tubeSnapshotId: snapshot },
-        { policy: RAPTOR_POLICY_VERSION, version, request: { ...raptor, realtime: 'apply' } }
+        { policy: RAPTOR_POLICY_VERSION, version, request: raptor, tubeSnapshotId: snapshot }
     ]) assert.throws(() => decodeCursor(cursorValue(value)), { code: 'INVALID_REQUEST' });
     assert.throws(() => encodeCursor(raptor, version, 0, snapshot), { code: 'INVALID_REQUEST' });
     assert.throws(() => encodeCursor(raptor, version, 0, undefined, snapshot), { code: 'INVALID_REQUEST' });
     assert.throws(() => decodeCursor(cursorValue({ policy: 'raptor-poc-v0', version, request: raptor })), { code: 'CURSOR_EXPIRED' });
     const live = normalizeRequest({ ...body, realtime: 'apply' });
     assert.equal(decodeCursor(encodeCursor(live, version, 0, snapshot)).liveSnapshotId, snapshot);
+    const liveRaptor = normalizeRequest({ ...body, algorithm: 'raptor', realtime: 'apply' });
+    assert.equal(decodeCursor(encodeCursor(liveRaptor, version, 0, snapshot)).liveSnapshotId, snapshot);
     assert.equal(decodeCursor(encodeCursor(original, version, 0, undefined, snapshot)).tubeSnapshotId, snapshot);
 });
 
@@ -89,19 +102,24 @@ test('the actual selected router is reported and result caches are isolated by a
     const raptor = await engine.search({ request: normalizeRequest({ ...body, algorithm: 'raptor' }) }, undefined, execution);
     const explicitOriginal = await engine.search({ request: normalizeRequest({ ...body, algorithm: 'original' }) }, undefined, execution);
     const repeatedRaptor = await engine.search({ request: normalizeRequest({ ...body, algorithm: 'raptor' }) }, undefined, execution);
+    const viaRaptor = await engine.search({ request: normalizeRequest({ ...body, algorithm: 'raptor', via: ['BBB'] }) }, undefined, execution);
+    const repeatedViaRaptor = await engine.search({ request: normalizeRequest({ ...body, algorithm: 'raptor', via: ['BBB'] }) }, undefined, execution);
     assert.equal(original.search.algorithm, 'original');
     assert.equal(raptor.search.algorithm, 'raptor');
     assert.deepEqual(explicitOriginal, original);
     assert.deepEqual(repeatedRaptor, raptor);
+    assert.deepEqual(repeatedViaRaptor, viaRaptor);
+    assert.deepEqual(viaRaptor.search.via, ['BBB']);
+    assert.deepEqual(viaRaptor.journeys, []);
     assert.equal(originalCalls(), 1, 'Selecting RAPTOR must run its router rather than silently call the original');
-    assert.equal(engine.searches.size, 2);
-    assert.deepEqual(telemetry.filter(value => value.cacheStatus).map(value => value.cacheStatus), ['miss', 'miss', 'hit', 'hit']);
+    assert.equal(engine.searches.size, 3);
+    assert.deepEqual(telemetry.filter(value => value.cacheStatus).map(value => value.cacheStatus), ['miss', 'miss', 'hit', 'hit', 'miss', 'hit']);
     assert.ok(telemetry.some(value => value.algorithm === 'raptor'));
     assert.ok(telemetry.some(value => value.algorithm === 'original'));
     assert.equal(raptor.search.window.from, normalizeRequest(body).time);
     assert.equal(raptor.search.window.to, new Date(Date.parse(body.time) + body.windowMinutes * 60000).toISOString());
     assert.equal(raptor.search.searchTruncated, false);
-    assert.ok(raptor.warnings.some(warning => /RAPTOR/.test(warning)), 'Experimental scheduled-only semantics must be visible');
+    assert.ok(raptor.warnings.includes('Detailed TfL routing is not included.'));
 });
 
 test('RAPTOR more, earlier and later pages preserve the algorithm and complete journey frontier', async t => {
@@ -131,7 +149,7 @@ test('RAPTOR more, earlier and later pages preserve the algorithm and complete j
     assert.equal((await engine.journey(raptor.journeys[0].id)).journey.legs[0].serviceCallingPoints.length, 2);
 });
 
-test('RAPTOR executes scheduled-only without touching live or TfL providers, including direct engine calls', async t => {
+test('RAPTOR supports live rail overlays without constructing a TfL resolver', async t => {
     const { engine } = fixture(t, { liveProvider: { collect: () => assert.fail('Live provider must not run') },
         tubeProvider: { journey: () => assert.fail('TfL provider must not run') } });
     engine.tubeResolver = async () => assert.fail('RAPTOR must not construct a TfL resolver');
@@ -139,13 +157,69 @@ test('RAPTOR executes scheduled-only without touching live or TfL providers, inc
     const response = await engine.search({ request });
     assert.equal(response.live, undefined);
     assert.equal(response.search.algorithm, 'raptor');
-    for (const change of [{ realtime: 'apply' }, { realtime: 'ignore' }, { timeType: 'arriveBy' }, { via: ['BBB'] }]) {
-        await assert.rejects(engine.search({ request: { ...request, ...change } }), { code: 'UNSUPPORTED_REQUEST' });
-    }
+    await assert.rejects(engine.search({ request: { ...request, timeType: 'arriveBy' } }), { code: 'UNSUPPORTED_REQUEST' });
+    const viaResponse = await engine.search({ request: { ...request, via: ['BBB'] } });
+    assert.deepEqual(viaResponse.search.via, ['BBB']);
+    assert.deepEqual(viaResponse.journeys, []);
     await assert.rejects(engine.search({ request, liveSnapshotId: snapshot }), { code: 'UNSUPPORTED_REQUEST' });
     await assert.rejects(engine.search({ request, tubeSnapshotId: snapshot }), { code: 'UNSUPPORTED_REQUEST' });
     await assert.rejects(engine.search({ request }, undefined, { excludeDirect: true }), { code: 'UNSUPPORTED_REQUEST' });
     await assert.rejects(engine.search({ request }, { aborted: true }), { code: 'SEARCH_CANCELLED' });
+
+    const liveFixture = fixture(t, { liveProvider: {
+        fetchBoards: async () => ({ boards: [], errors: [] }),
+        fetchDetails: async () => ({ details: [], errors: [] })
+    }, createLiveBudget: limit => ({ limit, used: 0 }) });
+    liveFixture.engine.tubeResolver = async () => assert.fail('RAPTOR must not construct a TfL resolver');
+    const liveRequest = normalizeRequest({ ...body, algorithm: 'raptor', realtime: 'apply' });
+    const liveResponse = await liveFixture.engine.search({ request: liveRequest });
+    assert.equal(liveResponse.search.algorithm, 'raptor');
+    assert.equal(liveResponse.search.realtime, 'apply');
+    assert.equal(liveResponse.live.mode, 'apply');
+    assert.equal(liveResponse.live.status, 'unavailable');
+});
+
+test('RAPTOR enforces ordered via stations across vehicle calls and fixed transfers', async t => {
+    const base = Date.parse(body.time);
+    const at = minutes => base + minutes * 60000;
+    const service = (id, calls) => ({ id, uid: id, originDate: '2026-09-18', operator: 'OP', mode: 'rail',
+        calls: calls.map(([station, arrival, departure]) => ({ station,
+            arrival: arrival == null ? null : at(arrival), departure: departure == null ? null : at(departure),
+            canBoard: departure != null, canAlight: arrival != null })) });
+    const repository = (services, links = []) => ({ version,
+        stations: ['AAA', 'BBB', 'CCC', 'DDD'].map(crs => ({ crs, name: `Station ${crs}`, minimumChangeMinutes: 0 })),
+        rules: { tsi: [], links },
+        metadata: { source: { generationDate: '2026-09-18' }, importedAt: '2026-09-18T05:00:00Z', maxEventDayOffset: 1,
+            coverage: { startDate: '2026-09-01', endDate: '2026-10-01', basis: 'Synthetic fixtures' }, limitations: [] },
+        resolveServices: date => ({ services: date === '2026-09-18' ? services : [], diagnostics: { counts: {} } }), close() {} });
+
+    const through = service('through-vias', [['AAA', null, 2], ['BBB', 5, 6], ['DDD', 9, 10], ['CCC', 20, null]]);
+    const skipped = service('skips-vias', [['AAA', null, 1], ['CCC', 12, null]]);
+    const vehicleFixture = fixture(t, { openDataset: async () => repository([skipped, through]) });
+    const orderedRequest = normalizeRequest({ ...body, algorithm: 'raptor', allowedModes: ['rail'], via: ['BBB', 'DDD'] });
+    const ordered = await vehicleFixture.engine.search({ request: orderedRequest });
+    assert.equal(ordered.journeys.length, 1);
+    assert.equal(ordered.journeys[0].legs[0].serviceId, 'through-vias');
+    assert.deepEqual(ordered.search.via, ['BBB', 'DDD']);
+    assert.deepEqual(decodeCursor(ordered.pagination.later).request.via, ['BBB', 'DDD']);
+    const reversed = await vehicleFixture.engine.search({ request: normalizeRequest({ ...body, algorithm: 'raptor',
+        allowedModes: ['rail'], via: ['DDD', 'BBB'] }) });
+    assert.deepEqual(reversed.journeys, []);
+    const valid = normalizeRequest({ ...body, algorithm: 'raptor' });
+    for (const request of [{ ...valid, via: ['BBB', 'BBB'] }, { ...valid, via: ['AAA'] },
+        { ...valid, via: ['CCC'] }, { ...valid, destination: 'AAA', via: ['BBB'] }]) {
+        await assert.rejects(vehicleFixture.engine.search({ request }), { code: 'INVALID_STATION' });
+    }
+
+    const onward = service('after-link', [['BBB', null, 10], ['CCC', 20, null]]);
+    const walk = { id: 'ALF:via', origin: 'AAA', destination: 'BBB', mode: 'walk', minutes: 5,
+        startTime: '0000', endTime: '2359', days: '1111111', priority: 1 };
+    const transferFixture = fixture(t, { openDataset: async () => repository([skipped, onward], [walk]) });
+    const linked = await transferFixture.engine.search({ request: normalizeRequest({ ...body, algorithm: 'raptor',
+        allowedModes: ['rail', 'walk'], via: ['BBB'] }) });
+    assert.equal(linked.journeys.length, 1);
+    assert.deepEqual(linked.journeys[0].legs.map(leg => [leg.kind, leg.from.crs, leg.to.crs]),
+        [['transfer', 'AAA', 'BBB'], ['vehicle', 'BBB', 'CCC']]);
 });
 
 test('RAPTOR index compilation obeys the shared work budget and a failed compile never falls back or poisons the cache', async t => {
@@ -177,6 +251,18 @@ test('RAPTOR indexing is lazy, reuses an immutable dated graph and releases it w
     await engine.search({ request: normalizeRequest({ ...body, algorithm: 'raptor', time: '2026-09-19T07:00:00Z' }) });
     assert.notEqual(engine.raptorIndex.network, first.network);
     assert.equal(engine.networks.size, 1);
+});
+
+test('time-locked saved-route work can include direct RAPTOR journeys', async t => {
+    const { engine, originalCalls } = fixture(t);
+    const profile = await engine.savedRoutePlan({
+        request: { ...body, algorithm: 'raptor', via: [] },
+        version,
+        includeDirect: true
+    });
+    assert.equal(profile.result.search.algorithm, 'raptor');
+    assert.ok(profile.result.journeys.length > 0);
+    assert.equal(originalCalls(), 0);
 });
 
 test('queued work coalesces default and explicit original but never coalesces RAPTOR, and cancellation stays independent', async t => {
@@ -245,7 +331,7 @@ test('service and HTTP searches retain RAPTOR through queued polling and reject 
     assert.equal(completed.result.search.algorithm, 'raptor');
     assert.equal(completed.result.live, undefined);
     for (const route of ['/search', '/search-jobs']) {
-        const rejected = await post(route, { ...body, algorithm: 'raptor', realtime: 'apply' });
+        const rejected = await post(route, { ...body, algorithm: 'raptor', timeType: 'arriveBy' });
         assert.equal(rejected.status, 400);
         assert.equal((await rejected.json()).error.code, 'UNSUPPORTED_REQUEST');
     }

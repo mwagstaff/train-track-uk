@@ -171,12 +171,16 @@ export class PlannerEngine {
         };
         const origin = canonical(request.origin);
         const destination = canonical(request.destination);
-        if (!origin || !destination) throw new PlannerError('INVALID_STATION', 'A selected station is not available in this timetable. Please select it again.');
+        const via = (request.via ?? []).map(canonical);
+        if (!origin || !destination || via.some(station => !station)) {
+            throw new PlannerError('INVALID_STATION', 'A selected station is not available in this timetable. Please select it again.');
+        }
         const date = londonDate(request.time);
         if (date < metadata.coverage.from || date > metadata.coverage.to) {
             throw new PlannerError('UNSUPPORTED_DATE', `Choose a date between ${metadata.coverage.from} and ${metadata.coverage.to}.`, 422);
         }
-        return { ...request, origin: origin.crs, destination: destination.crs };
+        return { ...request, origin: origin.crs, destination: destination.crs,
+            ...(request.via !== undefined ? { via: via.map(station => station.crs) } : {}) };
     }
 
     /** Shed derived caches before the worker's heap limit terminates it. Results
@@ -262,14 +266,13 @@ export class PlannerEngine {
         const cacheGeneration = this.searchCacheGeneration;
         const algorithm = request.algorithm ?? 'original';
         if (!['original', 'raptor'].includes(algorithm)) throw new PlannerError('INVALID_REQUEST', 'Choose original or raptor.');
-        if (algorithm === 'raptor' && (request.timeType !== 'departAfter'
-            || request.via !== undefined && (!Array.isArray(request.via) || request.via.length)
-            || request.realtime && request.realtime !== 'off' || liveSnapshotId || tubeSnapshotId || execution.excludeDirect)) {
-            throw new PlannerError('UNSUPPORTED_REQUEST', 'RAPTOR currently supports timetable-only departure searches without via stations.');
+        if (request.via !== undefined && (!Array.isArray(request.via) || request.via.length > 8
+            || request.via.some(code => typeof code !== 'string' || !/^[A-Z0-9]{3}$/.test(code)))) {
+            throw new PlannerError('INVALID_STATION', 'Supply at most eight intermediate stations in travel order.');
         }
-        if (algorithm === 'raptor' && request.realtime === 'off') {
-            request = { ...request };
-            delete request.realtime;
+        if (algorithm === 'raptor' && (request.timeType !== 'departAfter'
+            || tubeSnapshotId || liveSnapshotId && !request.realtime || execution.excludeDirect)) {
+            throw new PlannerError('UNSUPPORTED_REQUEST', 'RAPTOR supports departure searches without dynamic TfL routing or direct-route exclusions.');
         }
         execution.onTelemetry?.({ algorithm });
         const timeoutMs = execution.timeoutMs ?? this.config.timeoutMs;
@@ -287,6 +290,11 @@ export class PlannerEngine {
         const repo = await measure('preparationMs', () => this.dataset(version));
         check();
         request = this.checkQuery(repo, request);
+        const via = request.via ?? [];
+        if (new Set(via).size !== via.length || via.includes(request.origin) || via.includes(request.destination)
+            || via.length && request.origin === request.destination) {
+            throw new PlannerError('INVALID_STATION', 'Choose different stations along the journey.');
+        }
         this.stats.searches++;
         const snapshotKey = `${repo.version}:${JSON.stringify(request)}`;
         for (const [id, snapshot] of this.tubeSnapshots) if (snapshot.expiresAt <= this.now()) this.tubeSnapshots.delete(id);
@@ -526,8 +534,8 @@ export class PlannerEngine {
         }
     }
 
-    // Explicit experimental opt-in only. Keep one index alongside the engine's
-    // one dated network; it is released on date/version changes or heap pressure.
+    // Keep one RAPTOR index alongside the engine's one dated network; it is
+    // released on date/version changes or heap pressure.
     async routeRaptor(request, network, options, router) {
         const started = performance.now();
         const timeoutMs = options.timeoutMs ?? this.config.timeoutMs;
@@ -543,10 +551,8 @@ export class PlannerEngine {
         };
         try {
             checkpoint();
-            if (request.timeType !== 'departAfter' || request.via !== undefined && (!Array.isArray(request.via) || request.via.length)
-                || request.realtime && request.realtime !== 'off'
-                || options.excludeDirect || options.resolveTubeConnection) {
-                throw new PlannerError('UNSUPPORTED_REQUEST', 'RAPTOR currently supports timetable-only departure searches without via stations.');
+            if (request.timeType !== 'departAfter' || options.excludeDirect || options.resolveTubeConnection) {
+                throw new PlannerError('UNSUPPORTED_REQUEST', 'RAPTOR supports departure searches without dynamic TfL routing or direct-route exclusions.');
             }
             const { compileRaptorNetwork, findRaptorJourneys } = await import('./raptor-poc.js');
             checkpoint();
@@ -574,7 +580,7 @@ export class PlannerEngine {
             return { ...result,
                 searchWindow: { from: request.time, to: new Date(from + window).toISOString(), fromInclusive: true, toInclusive: false },
                 pagination: { ...result.pagination, earlierTime: new Date(from - window).toISOString(), laterTime: new Date(from + window).toISOString() },
-                warnings: ['Experimental RAPTOR timetable-only search: live rail changes and detailed TfL routing are not included. Equal-time alternatives may differ from the original planner.'] };
+                warnings: ['Detailed TfL routing is not included.'] };
         } catch (error) {
             const metrics = error.metrics ?? queryMetrics;
             error.metrics = { ...metrics, operations: preparationOperations + (metrics?.operations ?? 0), indexBuildMs };
@@ -600,7 +606,8 @@ export class PlannerEngine {
                 throw new PlannerError('INVALID_STATION', 'Use canonical intermediate station codes.');
             }
         }
-        const searched = await this.search({ request, version: repo.version }, signal, { ...execution, excludeDirect: true, timetableOnly: true });
+        const searched = await this.search({ request, version: repo.version }, signal,
+            { ...execution, excludeDirect: payload.includeDirect !== true, timetableOnly: true });
         if (signal?.aborted) throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);
         // Keep the complete passenger pattern for the existing per-train
         // tracking verification. These dated services were resolved by search;

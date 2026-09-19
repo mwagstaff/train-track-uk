@@ -55,8 +55,7 @@ function strictlyProgresses(service, check) {
     return true;
 }
 
-/** Experimental index, used only by an explicit RAPTOR request, never by default.
- * A FIFO chain is a RAPTOR route. Overtaking trains are put in separate chains,
+/** A FIFO chain is a RAPTOR route. Overtaking trains are put in separate chains,
  * allowing binary earliest-trip searches without assuming UK trains are FIFO.
  * Compile a new index after applying a live overlay; no cross-network caches.
  */
@@ -255,9 +254,9 @@ export function findRaptorJourneys(request, index, options = {}) {
             || !Number.isSafeInteger(maxLabels) || maxLabels < 0) {
             throw failure('INVALID_REQUEST', 'Invalid RAPTOR POC work budgets.');
         }
-        if (request.timeType && request.timeType !== 'departAfter' || request.via?.length
+        if (request.timeType && request.timeType !== 'departAfter'
             || options.resolveTubeConnection || options.excludeDirect) {
-            throw failure('UNSUPPORTED_REQUEST', 'This scheduled RAPTOR POC supports departAfter without via stations, dynamic TfL resolution or direct-route exclusions.');
+            throw failure('UNSUPPORTED_REQUEST', 'This scheduled RAPTOR POC supports departAfter without dynamic TfL resolution or direct-route exclusions.');
         }
         const query = Date.parse(request.time), window = (request.windowMinutes ?? DEFAULT_WINDOW_MINUTES) * MINUTE;
         const maxDuration = (options.maxDurationMinutes ?? 1440) * MINUTE;
@@ -271,9 +270,26 @@ export function findRaptorJourneys(request, index, options = {}) {
             || !Number.isFinite(extra) || extra < 0) {
             throw failure('INVALID_REQUEST', 'Invalid RAPTOR POC search bounds.');
         }
-        if (!index.connections.stations.has(request.origin) || !index.connections.stations.has(request.destination)) {
+        const via = request.via === undefined ? [] : request.via;
+        if (!Array.isArray(via) || via.length > 8
+            || via.some(code => typeof code !== 'string' || !/^[A-Z0-9]{3}$/.test(code))
+            || new Set(via).size !== via.length || via.includes(request.origin) || via.includes(request.destination)
+            || via.length && request.origin === request.destination) {
+            throw failure('INVALID_STATION', 'Supply distinct intermediate stations in travel order.');
+        }
+        if (!index.connections.stations.has(request.origin) || !index.connections.stations.has(request.destination)
+            || via.some(code => !index.connections.stations.has(code))) {
             throw failure('INVALID_STATION', 'Unknown planner station.');
         }
+        const visit = (progress, stop) => stop === via[progress] ? progress + 1 : progress;
+        const visitCalls = (progress, calls, first, last) => {
+            for (let position = first; position <= last; position++) {
+                check();
+                const call = calls[position];
+                if (call.canBoard || call.canAlight) progress = visit(progress, call.station);
+            }
+            return progress;
+        };
         const modes = new Set(request.allowedModes ?? MODES), profile = options.departureProfile === true;
         const boundsStarted = performance.now();
         const remainingBoardings = boardingBounds(index, request.destination, modes, maxBoardings, check);
@@ -299,7 +315,8 @@ export function findRaptorJourneys(request, index, options = {}) {
         // keeping only active labels in each bag. Round lists retain their refs.
         const dominatesContinuation = (a, b) => dominates(a, b) && subset(a.unsafeUsed, b.unsafeUsed);
         const dominatesBoard = (a, b) => a.position <= b.position && a.boardings <= b.boardings
-            && a.boundary >= b.boundary && (!profile || a.boundary === b.boundary) && subset(a.unsafeUsed, b.unsafeUsed);
+            && a.boundary >= b.boundary && a.viaProgress === b.viaProgress
+            && (!profile || a.boundary === b.boundary) && subset(a.unsafeUsed, b.unsafeUsed);
         const countLabel = () => {
             if (++metrics.labels > maxLabels) throw failure('SEARCH_TIMEOUT', 'RAPTOR POC exceeded its label budget.');
         };
@@ -325,9 +342,10 @@ export function findRaptorJourneys(request, index, options = {}) {
                 metrics.topologyPruned++;
                 return;
             }
-            if (label.station === request.destination && (label.path || boarding)) { complete(label, boarding, alightIndex); return; }
+            if (label.station === request.destination && label.viaProgress === via.length
+                && (label.path || boarding)) { complete(label, boarding, alightIndex); return; }
             if (label.boundary != null && completed.some(previous => dominates(previous, label))) return;
-            const key = `${label.station}|${label.operator ?? ''}|${label.lastKind}`;
+            const key = `${label.station}|${label.operator ?? ''}|${label.lastKind}|${label.viaProgress}`;
             const values = bags.get(key) ?? [];
             // For strictly chronological, positive-duration rides, a future
             // reboarding of a used occurrence is dominated by staying aboard
@@ -351,9 +369,10 @@ export function findRaptorJourneys(request, index, options = {}) {
             countLabel();
         };
         const source = { station: request.origin, time: query, boundary: null, operator: null,
-            boardings: 0, path: null, lastKind: 'initial', active: true, used: new Set(), unsafeUsed: new Set() };
+            boardings: 0, viaProgress: visit(0, request.origin), path: null, lastKind: 'initial', active: true,
+            used: new Set(), unsafeUsed: new Set() };
         const arrival = { station: null, time: 0, boundary: null, operator: null, boardings: 0,
-            path: null, lastKind: 'vehicle', used: null, unsafeUsed: null };
+            viaProgress: 0, path: null, lastKind: 'vehicle', used: null, unsafeUsed: null };
         if (request.origin !== request.destination) retain(source);
         const transfer = (label, destination, mode, event, initial, endpoint = false) => resolveConnection(index.connections, {
             from: label.station, to: destination, arrival: label.time, departure: event?.calls?.departure,
@@ -386,6 +405,7 @@ export function findRaptorJourneys(request, index, options = {}) {
                         const path = { previous: label.path, leg: { kind: 'transfer', ...connection } };
                         retain({ station: destination, time: connection.end, boundary: label.boundary ?? connection.start,
                             operator: null, boardings: round + connection.boardings, path, lastKind: 'fixed',
+                            viaProgress: visit(label.viaProgress, destination),
                             used: label.used, unsafeUsed: label.unsafeUsed });
                     }
                 }
@@ -417,6 +437,7 @@ export function findRaptorJourneys(request, index, options = {}) {
                     if (boardings + onwardBounds[position + 1] > maxBoardings) { metrics.topologyPruned++; return; }
                     const values = aboard.get(service.id) ?? [];
                     const boarding = { service, position, boundary, boardings,
+                        viaProgress: connection ? visit(label.viaProgress, connection.to) : label.viaProgress,
                         unsafeUsed: index.unsafeServices.has(service.id) ? new Set(label.unsafeUsed).add(service.id) : label.unsafeUsed };
                     if (values.some(previous => dominatesBoard(previous, boarding))) return;
                     let kept = 0;
@@ -441,6 +462,8 @@ export function findRaptorJourneys(request, index, options = {}) {
                             arrival.boundary = boarding.boundary;
                             arrival.operator = pattern.operator;
                             arrival.boardings = boarding.boardings;
+                            arrival.viaProgress = visitCalls(boarding.viaProgress, boarding.service.calls,
+                                boarding.position + 1, position);
                             arrival.used = boarding.used;
                             arrival.unsafeUsed = boarding.unsafeUsed;
                             retain(arrival, boarding, position);

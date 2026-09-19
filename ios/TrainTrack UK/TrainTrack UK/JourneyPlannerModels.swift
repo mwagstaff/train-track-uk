@@ -269,6 +269,7 @@ struct PlannerSearchResponse: Decodable {
     struct Search: Decodable {
         let origin: String
         let destination: String
+        var via: [String]? = nil
         let time: Date
         let timeType: String
         let window: Window
@@ -360,28 +361,20 @@ struct PlannerSearchRequest: Encodable, Equatable {
     let destination: String
     let time: String
     let timeType: String
+    var via: [String]? = nil
     var maxChanges: Int? = nil
     var extraConnectionMinutes = 0
     var allowedModes = ["rail", "replacementBus", "walk", "tubeTransfer", "genericTransfer"]
     var limit = 5
     var cursor: String?
-    var realtime: String? = nil
-    #if DEBUG
-    var algorithm: String? = nil
-    #endif
+    var realtime: String? = "apply"
+    var algorithm: String? = "raptor"
 
-    var requestedAlgorithm: String {
-        #if DEBUG
-        return algorithm ?? "original"
-        #else
-        return "original"
-        #endif
-    }
+    var requestedAlgorithm: String { algorithm ?? "raptor" }
 
     func validateAlgorithm() throws {
-        guard requestedAlgorithm == "raptor" else { return }
-        guard timeType == "departAfter", realtime == "off" else {
-            throw PlannerError(code: "INVALID_REQUEST", message: "RAPTOR testing supports Depart now or Depart at, using timetable times only.")
+        guard requestedAlgorithm == "raptor", timeType == "departAfter", realtime == "apply" else {
+            throw PlannerError(code: "INVALID_REQUEST", message: "Journey planning supports Depart now or Depart at with live times enabled.")
         }
     }
 }
@@ -397,6 +390,7 @@ enum PlannerTimeMode: String, Codable, CaseIterable, Identifiable {
         }
     }
     var apiValue: String { self == .arriveBy ? "arriveBy" : "departAfter" }
+    static let searchCases: [Self] = [.now, .departAt]
 }
 
 struct PlannerSearchIntent: Codable, Equatable {
@@ -404,10 +398,7 @@ struct PlannerSearchIntent: Codable, Equatable {
     let destination: PlannerStation
     let timeMode: PlannerTimeMode
     let explicitTime: Date?
-    var realtime: String? = nil
-    #if DEBUG
-    var algorithm: String? = nil
-    #endif
+    var via: PlannerStation? = nil
 
     func request(now: Date) throws -> PlannerSearchRequest {
         let time: Date
@@ -419,26 +410,19 @@ struct PlannerSearchIntent: Codable, Equatable {
             }
             time = explicitTime
         }
-        var request = PlannerSearchRequest(
+        let request = PlannerSearchRequest(
             origin: origin.crs, destination: destination.crs,
             time: PlannerTime.iso8601(time), timeType: timeMode.apiValue,
-            realtime: realtime == "off" ? "apply" : realtime ?? "apply"
+            via: via.map { [$0.crs] },
+            realtime: "apply", algorithm: "raptor"
         )
-        #if DEBUG
-        if algorithm == "raptor" {
-            request.algorithm = "raptor"
-            request.realtime = "off"
-        }
-        #endif
         try request.validateAlgorithm()
         return request
     }
 
     func matches(_ other: Self) -> Bool {
-        #if DEBUG
-        guard (algorithm ?? "original") == (other.algorithm ?? "original") else { return false }
-        #endif
         return origin.crs == other.origin.crs && destination.crs == other.destination.crs
+            && via?.crs == other.via?.crs
             && timeMode == other.timeMode
             && (timeMode == .now || explicitTime == other.explicitTime)
     }

@@ -49,7 +49,7 @@ struct JourneyPlannerView: View {
                     }
                     store.timeMode = mode
                 })) {
-                    ForEach(PlannerTimeMode.allCases) { mode in Text(mode.title).tag(mode) }
+                    ForEach(PlannerTimeMode.searchCases) { mode in Text(mode.title).tag(mode) }
                 }
                 .accessibilityIdentifier("planner.when")
                 if store.timeMode != .now {
@@ -75,21 +75,7 @@ struct JourneyPlannerView: View {
                 }
             }
 
-            #if DEBUG
-            Section("Debug routing") {
-                Toggle("Use RAPTOR", isOn: Binding(get: { store.useRaptor }, set: { enabled in
-                    searchTask?.cancel()
-                    store.useRaptor = enabled
-                }))
-                .accessibilityIdentifier("planner.raptor")
-                Text(store.useRaptor
-                     ? "RAPTOR is experimental: Depart now or Depart at, timetable times only. Live times and live Tube directions are not used."
-                     : "Original routing algorithm. Switch on RAPTOR to compare searches.")
-                    .font(.caption).foregroundStyle(Color.plannerSecondaryText)
-            }
-            #endif
-
-            timetableSection
+            plannerAvailabilitySection
 
             Section {
                 if let error = store.searchError {
@@ -111,17 +97,6 @@ struct JourneyPlannerView: View {
                     }
                     .accessibilityIdentifier("planner.cancel-search")
                 }
-            }
-
-            Section {
-                NavigationLink { AddJourneyView() } label: {
-                    Label("Add a saved route", systemImage: "plus.circle")
-                }
-                .accessibilityIdentifier("planner.saved-route")
-            } footer: {
-                Text("Save a route, add intermediate stops, or start journey updates.")
-                    .foregroundStyle(.white.opacity(0.88))
-                    .shadow(color: .black.opacity(0.55), radius: 3, y: 1)
             }
 
             Section {
@@ -170,10 +145,7 @@ struct JourneyPlannerView: View {
             PlannerResultsView(store: store, loadPage: { startSearch(cursor: $0) }, cancelSearch: {
                 searchTask?.cancel()
                 store.cancelSearch()
-            }, changeLiveTimes: { enabled in
-                store.useLiveTimes = enabled
-                startSearch(repeatingLastSearch: true)
-            })
+            }, rerunSearch: { startSearch() })
         }
         .onChange(of: resultsPresented) { _, presented in
             if !presented {
@@ -182,7 +154,6 @@ struct JourneyPlannerView: View {
             }
         }
         .onChange(of: store.intent) { previous, current in
-            // The live-times toggle owns its rerun; route/date edits cancel the old query.
             if let previous, let current, previous.matches(current) { return }
             if store.isSearching {
                 searchTask?.cancel()
@@ -210,27 +181,17 @@ struct JourneyPlannerView: View {
         .accessibilityLabel("\(title), \(station?.name ?? "select station")")
     }
 
-    @ViewBuilder private var timetableSection: some View {
-        Section {
-            if !store.usesRaptor {
-                Toggle("Use live times", isOn: Binding(get: { store.useLiveTimes }, set: { enabled in
-                    store.useLiveTimes = enabled
-                    if store.isSearching { startSearch() }
-                }))
-                .accessibilityIdentifier("planner.live-times")
-                Text("Live times cover journeys in the next 4 hours. Turn off to use scheduled times; live disruption warnings will still be shown.")
-                    .font(.caption).foregroundStyle(Color.plannerSecondaryText)
+    @ViewBuilder private var plannerAvailabilitySection: some View {
+        if store.isLoadingStatus {
+            Section { ProgressView("Checking journey planner…") }
+        } else if let status = store.status, !status.available {
+            Section {
+                Text(status.reason ?? "The journey planner is unavailable.")
+                    .foregroundStyle(Color.primary)
+                Button("Retry") { Task { await store.loadStatus() } }
             }
-            if store.isLoadingStatus {
-                ProgressView("Checking timetable…")
-            } else if let status = store.status {
-                if let dataset = status.dataset { PlannerDatasetView(dataset: dataset) }
-                if !status.available {
-                    Text(status.reason ?? "The journey planner is unavailable. Saved routes are still available.")
-                        .foregroundStyle(Color.primary)
-                    Button("Retry") { Task { await store.loadStatus() } }
-                }
-            } else if let error = store.statusError {
+        } else if let error = store.statusError {
+            Section {
                 Text(error).foregroundStyle(Color.primary)
                 Button("Retry") { Task { await store.loadStatus() } }
             }
@@ -250,20 +211,16 @@ struct JourneyPlannerView: View {
     }
 
     private func recentDescription(_ recent: PlannerRecentSearch) -> String {
-        #if DEBUG
-        let algorithm = recent.intent.algorithm == "raptor" ? " · RAPTOR" : " · Original"
-        #else
-        let algorithm = ""
-        #endif
-        guard let date = recent.intent.explicitTime, recent.intent.timeMode != .now else { return "Depart now\(algorithm)" }
+        guard let date = recent.intent.explicitTime, recent.intent.timeMode != .now else { return "Depart now" }
         let suffix = date < Date() ? " · Choose a new time" : ""
-        return "\(recent.intent.timeMode.title) \(PlannerTime.display(date))\(suffix)\(algorithm)"
+        return "\(recent.intent.timeMode.title) \(PlannerTime.display(date))\(suffix)"
     }
 }
 
 private struct PlannerStationPicker: View {
     let title: String
     let client: any JourneyPlannerServing
+    var excludedStationCodes: Set<String> = []
     let select: (PlannerStation) -> Void
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var historyStore: JourneyHistoryStore
@@ -300,7 +257,7 @@ private struct PlannerStationPicker: View {
                     Text("No matching stations in the available timetable.")
                         .foregroundStyle(Color.plannerSecondaryText)
                 }
-                ForEach(stations) { station in
+                ForEach(stations.filter { !excludedStationCodes.contains($0.crs.uppercased()) }) { station in
                     stationButton(station)
                 }
             }
@@ -352,7 +309,7 @@ private struct PlannerStationPicker: View {
                 Text("No nearby stations available.")
                     .foregroundStyle(Color.plannerSecondaryText)
             } else {
-                ForEach(nearbyStations.prefix(
+                ForEach(nearbyStations.filter { !excludedStationCodes.contains($0.station.crs.uppercased()) }.prefix(
                     showsMoreNearby
                         ? StationSuggestionPolicy.expandedNearbyCount
                         : StationSuggestionPolicy.defaultNearbyCount
@@ -380,7 +337,7 @@ private struct PlannerStationPicker: View {
                 Text("Stations from completed journeys will appear here.")
                     .foregroundStyle(Color.plannerSecondaryText)
             } else {
-                ForEach(recentStations.prefix(
+                ForEach(recentStations.filter { !excludedStationCodes.contains($0.crs.uppercased()) }.prefix(
                     showsAllRecent ? recentStations.count : StationSuggestionPolicy.defaultRecentCount
                 )) { station in
                     stationButton(plannerStation(from: station))
@@ -455,64 +412,43 @@ private struct PlannerStationPicker: View {
     }
 }
 
-private struct PlannerDatasetView: View {
-    let dataset: PlannerDataset
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Timetable published \(dataset.sourceGenerationDate)")
-            Text("Available dates: \(dataset.coverage.from) to \(dataset.coverage.to)")
-            if let warnings = dataset.warnings, !warnings.isEmpty {
-                DisclosureGroup("Timetable limitations") {
-                    ForEach(warnings, id: \.self) { Text($0).foregroundStyle(Color.primary) }
-                }
-            }
-            if dataset.freshness != "fresh" {
-                Label("This timetable is out of date. Check current travel information before travelling.", systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(Color.primary)
-            }
-        }
-        .font(.caption).foregroundStyle(Color.plannerSecondaryText)
-    }
-}
-
 private struct PlannerResultsView: View {
     let store: JourneyPlannerStore
     let loadPage: (String) -> Void
     let cancelSearch: () -> Void
-    let changeLiveTimes: (Bool) -> Void
+    let rerunSearch: () -> Void
     @State private var loadingButtonTitle: String?
     @State private var selectedJourneyID: String?
+    @State private var travelVia = false
+    @State private var selectingVia = false
+    @State private var saveJourney = false
+    @State private var startTrackingNow = true
+    @State private var scheduleJourney = false
+    @State private var saveAsFavourite = false
+    @State private var isSaving = false
+    @State private var saveMessage: String?
+    @State private var scheduleDestination: NotificationScheduleDestination?
+    @State private var postScheduleTab: Tab?
+    @State private var stationCatalogue = StationsService.shared.stations
     @ObservedObject private var config = ServerConfigStore.shared
+    @EnvironmentObject private var router: TabRouter
+    @EnvironmentObject private var depStore: DeparturesStore
+    @EnvironmentObject private var activityMgr: LiveActivityManager
+    @EnvironmentObject private var notificationStore: NotificationSubscriptionStore
+    @AppStorage("liveActivityDurationMinutes") private var liveActivityDurationMinutes: Int = 60
 
     var body: some View {
         List {
+            journeyOptionsSection
+            if let error = store.searchError {
+                Text(error.message).foregroundStyle(Color.primary)
+            }
+            if store.isSearching {
+                ProgressView(store.searchProgress.title)
+                Button("Cancel search", role: .cancel, action: cancelSearch)
+                    .accessibilityIdentifier("planner.cancel-search")
+            }
             if let response = store.response {
-                Section {
-                    Text("\(stationName(response.search.origin)) → \(stationName(response.search.destination))")
-                        .font(.headline)
-                    #if DEBUG
-                    Text(response.search.algorithm == "raptor" ? "Routing: RAPTOR · timetable-only" : "Routing: Original")
-                        .font(.caption).foregroundStyle(Color.plannerSecondaryText)
-                        .accessibilityIdentifier("planner.result.algorithm")
-                    #endif
-                    if response.search.algorithm != "raptor" {
-                        Toggle("Use live times", isOn: Binding(get: { store.useLiveTimes }, set: changeLiveTimes))
-                            .accessibilityIdentifier("planner.live-times")
-                        PlannerLiveContextView(live: response.live)
-                    }
-                    Text(PlannerTime.displayRange(from: response.search.window.from, to: response.search.window.to, separator: " – "))
-                        .font(.caption)
-                    if response.search.searchTruncated {
-                        Text("Some journeys may be missing.").foregroundStyle(Color.primary)
-                    }
-                    automaticSearchNotice
-                }
-                if let error = store.searchError { Text(error.message).foregroundStyle(Color.primary) }
-                if store.isSearching {
-                    ProgressView(store.searchProgress.title)
-                    Button("Cancel search", role: .cancel, action: cancelSearch)
-                        .accessibilityIdentifier("planner.cancel-search")
-                }
                 if response.journeys.isEmpty {
                     Section {
                         Label(store.automaticSearchState == .noJourneysInNext24Hours ? "No journeys in the next 24 hours" : "No journeys in this window", systemImage: "tram")
@@ -594,30 +530,179 @@ private struct PlannerResultsView: View {
                 }
             }
         }
-        .navigationTitle("Journeys")
+        .navigationTitle(routeTitle)
         .navigationBarTitleDisplayMode(.inline)
         .railwayBackgroundPOC(showsInfoButton: false)
+        .task {
+            try? await StationsService.shared.loadStations()
+            stationCatalogue = StationsService.shared.stations
+            if store.via != nil { travelVia = true }
+        }
+        .sheet(isPresented: $selectingVia) {
+            NavigationStack {
+                PlannerStationPicker(
+                    title: "Travel via",
+                    client: store.client,
+                    excludedStationCodes: Set([store.origin?.crs, store.destination?.crs].compactMap { $0?.uppercased() })
+                ) { station in
+                    store.via = station
+                    rerunSearch()
+                }
+            }
+        }
+        .sheet(item: $scheduleDestination, onDismiss: finishScheduling) { destination in
+            NotificationScheduleView(
+                group: destination.group,
+                reverseGroup: destination.reverseGroup,
+                existingSubscription: destination.existingSubscription
+            )
+        }
         .navigationDestination(item: $selectedJourneyID) { id in
             PlannerJourneyDetailView(id: id, client: store.client)
         }
     }
 
-    @ViewBuilder private var automaticSearchNotice: some View {
-        switch store.automaticSearchState {
-        case .searchingLater:
-            Label("No journeys in the first time window. Looking for later trains…", systemImage: "magnifyingglass")
-                .foregroundStyle(Color.plannerSecondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("planner.automatic-search.progress")
-            ProgressView("Searching up to the next 24 hours…")
-        case .foundLater:
-            Label("No journeys in the first time window. Showing the next available trains.", systemImage: "train.side.front.car")
-                .foregroundStyle(Color.plannerSecondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("planner.automatic-search.found")
-        case .noJourneysInNext24Hours, nil:
-            EmptyView()
+    private var routeTitle: String {
+        "\(store.origin?.name ?? "Journey") → \(store.destination?.name ?? "Journey")"
+    }
+
+    @ViewBuilder private var journeyOptionsSection: some View {
+        Section {
+            Toggle("Travel via", isOn: Binding(
+                get: { travelVia },
+                set: { enabled in
+                    travelVia = enabled
+                    saveMessage = nil
+                    if !enabled, store.via != nil {
+                        store.via = nil
+                        rerunSearch()
+                    }
+                }
+            ))
+            .accessibilityIdentifier("planner.travel-via")
+
+            if travelVia {
+                Button { selectingVia = true } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Intermediate station")
+                            .font(.caption)
+                            .foregroundStyle(Color.plannerSecondaryText)
+                        Text(store.via.map { "\($0.name) (\($0.crs))" } ?? "Select station")
+                            .foregroundStyle(store.via == nil ? Color.plannerActionText : Color.primary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .accessibilityIdentifier("planner.via-station")
+            }
+
+            Toggle("Save journey", isOn: $saveJourney)
+                .accessibilityIdentifier("planner.save-journey")
+
+            if saveJourney {
+                Toggle("Start tracking journey now", isOn: $startTrackingNow)
+                    .accessibilityIdentifier("planner.save.start-tracking")
+                Toggle("Schedule journey", isOn: $scheduleJourney)
+                    .accessibilityIdentifier("planner.save.schedule")
+                Toggle("Save as favourite", isOn: $saveAsFavourite)
+                    .accessibilityIdentifier("planner.save.favourite")
+                if let saveMessage {
+                    Label(saveMessage, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(Color.primary)
+                }
+                Button(action: saveSelectedJourney) {
+                    if isSaving {
+                        ProgressView().frame(maxWidth: .infinity)
+                    } else {
+                        Label("Save", systemImage: "tray.and.arrow.down")
+                    }
+                }
+                .disabled(!canSaveJourney)
+                .accessibilityIdentifier("planner.save.submit")
+            }
         }
+    }
+
+    private var selectedStations: [Station]? {
+        guard let origin = store.origin, let destination = store.destination else { return nil }
+        var stations = [station(from: origin)]
+        if travelVia {
+            guard let via = store.via else { return nil }
+            stations.append(station(from: via))
+        }
+        stations.append(station(from: destination))
+        return stations
+    }
+
+    private var canSaveJourney: Bool { selectedStations != nil && !isSaving }
+
+    private func station(from value: PlannerStation) -> Station {
+        if let station = stationCatalogue.first(where: { $0.crs.caseInsensitiveCompare(value.crs) == .orderedSame }) {
+            return station
+        }
+        return Station(
+            crs: value.crs,
+            name: value.name,
+            longitude: value.longitude.map { String($0) } ?? "0",
+            latitude: value.latitude.map { String($0) } ?? "0"
+        )
+    }
+
+    private func saveSelectedJourney() {
+        guard let stations = selectedStations else { return }
+        isSaving = true
+        saveMessage = nil
+        let store = JourneyStore.shared
+        if !store.groupExists(for: stations) {
+            store.addJourneyGroup(stations: stations, favorite: saveAsFavourite, saveReturn: true)
+        }
+        guard let group = store.journeyGroups().first(where: {
+            $0.stationSequence.map { $0.crs.uppercased() } == stations.map { $0.crs.uppercased() }
+        }) else {
+            saveMessage = "This journey could not be saved."
+            isSaving = false
+            return
+        }
+        if saveAsFavourite && !group.favorite {
+            store.setFavorite(group: group, includeReturn: true, value: true)
+        }
+        if startTrackingNow {
+            Task {
+                _ = await JourneyUpdateActions.start(
+                    group: group,
+                    scheduledSubscription: nil,
+                    liveSession: nil,
+                    liveActivityDurationMinutes: liveActivityDurationMinutes,
+                    notificationStore: notificationStore,
+                    activityManager: activityMgr,
+                    departuresStore: depStore
+                )
+            }
+        }
+        let destinationTab: Tab = saveAsFavourite ? .favourites : .myJourneys
+        if scheduleJourney {
+            postScheduleTab = destinationTab
+            scheduleDestination = NotificationScheduleDestination(
+                group: group,
+                reverseGroup: store.reverseGroup(for: group),
+                existingSubscription: nil
+            )
+        } else {
+            finishSave(on: destinationTab)
+        }
+    }
+
+    private func finishScheduling() {
+        guard let tab = postScheduleTab else {
+            isSaving = false
+            return
+        }
+        postScheduleTab = nil
+        finishSave(on: tab)
+    }
+
+    private func finishSave(on tab: Tab) {
+        isSaving = false
+        router.selected = tab
     }
 
     private func departureCard(_ journeys: [PlannedJourney]) -> some View {
@@ -657,12 +742,6 @@ private struct PlannerResultsView: View {
         .listRowBackground(Color.clear)
         .listRowSeparator(.hidden)
         .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
-    }
-
-    private func stationName(_ crs: String) -> String {
-        if store.origin?.crs == crs { return store.origin?.name ?? crs }
-        if store.destination?.crs == crs { return store.destination?.name ?? crs }
-        return crs
     }
 
     private func pageButton(_ title: String, cursor: String, systemImage: String? = nil) -> some View {

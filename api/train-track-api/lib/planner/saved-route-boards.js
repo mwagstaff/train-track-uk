@@ -19,9 +19,9 @@ const identity = request => ({ origin: request.origin, destination: request.dest
 const errorValue = error => ({ code: error?.code ?? 'LIVE_UNAVAILABLE',
     message: error instanceof PlannerError ? error.message : 'Live departures are temporarily unavailable. Please try again.' });
 
-export function savedRoutePlanKey(request, version) {
-    return digest({ policy: POLICY, routing: POLICY_VERSION, excludeDirect: true, version,
-        date: londonDate(request.time), request: identity(request) });
+export function savedRoutePlanKey(request, version, { timeLocked = false } = {}) {
+    return digest({ policy: POLICY, routing: POLICY_VERSION, excludeDirect: !timeLocked, version,
+        date: londonDate(request.time), ...(timeLocked ? { time: request.time } : {}), request: identity(request) });
 }
 
 // V4 checks the lightweight direct board before touching timetable metadata or
@@ -49,14 +49,15 @@ export class SavedRouteBoards {
         if (this.closed) throw new PlannerError('DATASET_UNAVAILABLE', 'Saved journeys are unavailable.', 503);
         this.prune();
         const boards = routes.map(route => {
-            const key = digest({ date: londonDate(route.request.time), request: identity(route.request), mode: route.realtime });
+            const key = digest({ date: londonDate(route.request.time),
+                ...(route.timeLocked ? { time: route.request.time } : {}), request: identity(route.request), mode: route.realtime });
             let entry = this.entries.get(key);
             if (!entry) {
                 if (this.entries.size >= this.maxEntries) {
                     return { id: route.id, source: 'direct', status: 'queued', pollAfterMs: 5000,
                         progress: { phase: 'queued', queuedAt: new Date(now).toISOString() } };
                 }
-                entry = { key, request: route.request, mode: route.realtime, source: 'direct', callers: new Map(),
+                entry = { key, request: route.request, timeLocked: route.timeLocked, mode: route.realtime, source: 'direct', callers: new Map(),
                     lastRequested: now, nextCheckAt: 0, owner: { client, network } };
                 this.entries.set(key, entry);
             }
@@ -134,23 +135,26 @@ export class SavedRouteBoards {
     }
 
     async update(entry, signal) {
-        const request = { ...entry.request, time: new Date(this.now()).toISOString(), realtime: entry.mode };
-        const direct = await this.live.direct(request, { signal });
-        if (signal.aborted) return;
-        entry.nextCheckAt = this.now() + LIVE_MS;
-        if (direct.status === 'available') {
-            this.detach(entry, 'superseded');
-            entry.source = 'direct';
-            entry.value = { source: 'direct', direct: direct.snapshot, expiresAt: direct.expiresAt, at: this.now() };
-            entry.error = null;
-            return;
-        }
-        if (direct.status !== 'empty') {
-            // An outage cannot establish the absence of direct trains, and must
-            // never turn every saved route into an expensive planner request.
-            entry.error = direct.error ?? errorValue();
-            entry.nextCheckAt = this.now() + 10000;
-            return;
+        const request = { ...entry.request,
+            time: entry.timeLocked ? entry.request.time : new Date(this.now()).toISOString(), realtime: entry.mode };
+        if (!entry.timeLocked) {
+            const direct = await this.live.direct(request, { signal });
+            if (signal.aborted) return;
+            entry.nextCheckAt = this.now() + LIVE_MS;
+            if (direct.status === 'available') {
+                this.detach(entry, 'superseded');
+                entry.source = 'direct';
+                entry.value = { source: 'direct', direct: direct.snapshot, expiresAt: direct.expiresAt, at: this.now() };
+                entry.error = null;
+                return;
+            }
+            if (direct.status !== 'empty') {
+                // An outage cannot establish the absence of direct trains, and must
+                // never turn every saved route into an expensive planner request.
+                entry.error = direct.error ?? errorValue();
+                entry.nextCheckAt = this.now() + 10000;
+                return;
+            }
         }
         entry.source = 'planned';
         // A successful fresh empty response replaces the old direct board;
@@ -162,7 +166,7 @@ export class SavedRouteBoards {
             throw new PlannerError('DATASET_UNAVAILABLE', metadata.reason || 'The timetable is temporarily unavailable.', 503);
         }
         const version = metadata.dataset.version;
-        const key = savedRoutePlanKey(request, version);
+        const key = savedRoutePlanKey(request, version, { timeLocked: entry.timeLocked });
         if (entry.job && entry.job.key !== key) this.detach(entry, 'superseded');
         // Polls can check for the return of direct trains while this shared job
         // runs, but must not race its cache write or replace its final result.
@@ -179,7 +183,8 @@ export class SavedRouteBoards {
             }
         }
         if (!entry.plan) {
-            this.plan(entry, { ...request, realtime: 'off' }, version, key);
+            this.plan(entry, { ...request, realtime: 'off',
+                ...(entry.timeLocked && !request.via.length ? { algorithm: 'raptor' } : {}) }, version, key);
             return;
         }
         this.detach(entry, 'superseded');
@@ -237,7 +242,8 @@ export class SavedRouteBoards {
         this.active = job;
         const config = this.service.config ?? {};
         job.observation.update({ metricsDelta: { admissionQueueMs: Math.max(0, this.now() - job.queuedAt) } });
-        Promise.resolve().then(() => this.service.call('savedRoutePlan', { request: job.request, version: job.version }, {
+        Promise.resolve().then(() => this.service.call('savedRoutePlan', { request: job.request, version: job.version,
+            includeDirect: job.entries.values().next().value?.timeLocked === true }, {
             priority: 'background', signal: job.controller.signal, queueTimeoutMs: config.jobQueueTimeoutMs ?? 480000,
             execution: { timeoutMs: config.jobTimeoutMs ?? 600000, maxOperations: config.jobMaxOperations ?? 1000000000,
                 cpuDutyCycle: config.jobCpuDutyCycle ?? 0.5 },

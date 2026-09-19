@@ -71,21 +71,9 @@ final class PlannerRecentSearchStore {
 final class JourneyPlannerStore {
     var origin: PlannerStation?
     var destination: PlannerStation?
+    var via: PlannerStation?
     var timeMode: PlannerTimeMode = .now
     var explicitTime = Date()
-    var useLiveTimes = true
-    #if DEBUG
-    var useRaptor = false {
-        didSet {
-            guard useRaptor != oldValue else { return }
-            cancelSearch()
-            response = nil
-            searchError = nil
-            lastRequest = nil
-            lastIntent = nil
-        }
-    }
-    #endif
     private(set) var status: PlannerStatus?
     private(set) var statusError: String?
     private(set) var isLoadingStatus = false
@@ -106,34 +94,21 @@ final class JourneyPlannerStore {
         self.recents = recents ?? PlannerRecentSearchStore()
     }
 
-    var usesRaptor: Bool {
-        #if DEBUG
-        return useRaptor
-        #else
-        return false
-        #endif
-    }
-
-    private var requestedRealtime: String { usesRaptor ? "off" : useLiveTimes ? "apply" : "ignore" }
-
     var intent: PlannerSearchIntent? {
         guard let origin, let destination else { return nil }
-        var value = PlannerSearchIntent(origin: origin, destination: destination, timeMode: timeMode,
-                                        explicitTime: timeMode == .now ? nil : explicitTime, realtime: requestedRealtime)
-        #if DEBUG
-        if useRaptor { value.algorithm = "raptor" }
-        #endif
-        return value
+        return PlannerSearchIntent(origin: origin, destination: destination, timeMode: timeMode,
+                                   explicitTime: timeMode == .now ? nil : explicitTime, via: via)
     }
 
     func validationMessage(now: Date = Date()) -> String? {
         guard let origin, let destination else { return "Select an origin and a destination." }
         guard origin.crs != destination.crs else { return "You are already at your destination. Select a different station." }
-        if usesRaptor {
-            guard timeMode != .arriveBy else { return "RAPTOR testing supports Depart now or Depart at only. Switch off RAPTOR to search Arrive by." }
-            if let status, status.capabilities.algorithms?.contains("raptor") != true {
-                return "This API has not enabled RAPTOR testing. Switch off RAPTOR or update the API."
-            }
+        if let via, via.crs == origin.crs || via.crs == destination.crs {
+            return "Choose an intermediate station different from the origin and destination."
+        }
+        guard timeMode != .arriveBy else { return "Choose Depart now or Depart at." }
+        if let status, status.capabilities.algorithms?.contains("raptor") != true {
+            return "This API does not support the current journey planner."
         }
         if timeMode != .now && explicitTime < now {
             return "This time has passed. Choose a new date and time, or switch to Depart now."
@@ -167,18 +142,14 @@ final class JourneyPlannerStore {
         cancelSearch()
         origin = recent.intent.origin
         destination = recent.intent.destination
+        via = recent.intent.via
         timeMode = recent.intent.timeMode
-        #if DEBUG
-        useRaptor = recent.intent.algorithm == "raptor"
-        #endif
-        if recent.intent.realtime != "off" { useLiveTimes = recent.intent.realtime != "ignore" }
         if let date = recent.intent.explicitTime { explicitTime = date }
         response = nil
         searchError = nil
     }
 
     func cancelSearch() {
-        if isSearching { restoreDisplayedLiveMode() }
         generation = UUID()
         automaticSearchGeneration = UUID()
         isSearching = false
@@ -237,26 +208,21 @@ final class JourneyPlannerStore {
         searchError = nil
         if cursor == nil && !repeatingLastSearch { response = nil }
         let request: PlannerSearchRequest
-        var submittedIntent = repeatingLastSearch ? lastIntent : intent
-        submittedIntent?.realtime = requestedRealtime
+        let submittedIntent = repeatingLastSearch ? lastIntent : intent
         do {
             if repeatingLastSearch, var original = lastRequest {
                 if original.cursor != nil, let displayed = response?.search {
                     original = PlannerSearchRequest(origin: displayed.origin, destination: displayed.destination,
                         time: PlannerTime.iso8601(displayed.time), timeType: displayed.timeType,
+                        via: original.via,
                         maxChanges: original.maxChanges, extraConnectionMinutes: original.extraConnectionMinutes,
                         allowedModes: original.allowedModes, limit: original.limit)
-                    #if DEBUG
-                    original.algorithm = lastRequest?.algorithm
-                    #endif
                 }
                 original.cursor = nil
-                original.realtime = requestedRealtime
                 request = original
             } else if let cursor {
-                guard var page = lastRequest, response != nil,
-                      page.requestedAlgorithm == (usesRaptor ? "raptor" : "original") else {
-                    throw PlannerError(code: "CURSOR_EXPIRED", message: "The routing algorithm has changed. Search again before loading more journeys.")
+                guard var page = lastRequest, response != nil else {
+                    throw PlannerError(code: "CURSOR_EXPIRED", message: "Search again before loading more journeys.")
                 }
                 page.cursor = cursor
                 request = page
@@ -310,26 +276,29 @@ final class JourneyPlannerStore {
             guard generation == token, !Task.isCancelled, !(error is CancellationError) else { return }
             let failure = (error as? PlannerError) ?? PlannerError(code: "NETWORK", message: error.localizedDescription)
             searchError = failure
-            if repeatingLastSearch { restoreDisplayedLiveMode() }
             if failure.code == "INVALID_STATION" {
                 await revalidateStations(token: token)
             }
         }
     }
 
-    private func restoreDisplayedLiveMode() {
-        guard let response,
-              let mode = response.live?.mode ?? response.search.realtime ?? lastRequest?.realtime else { return }
-        if mode != "off" { useLiveTimes = mode != "ignore" }
-    }
-
     private func revalidateStations(token: UUID) async {
-        for isOrigin in [true, false] {
-            guard let selected = isOrigin ? origin : destination else { continue }
+        enum Selection { case origin, via, destination }
+        for selection in [Selection.origin, .via, .destination] {
+            let selected = switch selection {
+            case .origin: origin
+            case .via: via
+            case .destination: destination
+            }
+            guard let selected else { continue }
             guard let values = try? await client.stations(query: selected.crs),
                   generation == token, !Task.isCancelled else { continue }
             if !values.contains(where: { $0.crs == selected.crs }) {
-                if isOrigin { origin = nil } else { destination = nil }
+                switch selection {
+                case .origin: origin = nil
+                case .via: via = nil
+                case .destination: destination = nil
+                }
             }
         }
     }

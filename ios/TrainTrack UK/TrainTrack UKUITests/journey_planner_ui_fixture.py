@@ -136,7 +136,9 @@ def search_result(request, profile=None):
         journeys = [tubetrack_journey()]
     return {
         "journeys": journeys, "dataset": DATASET,
-        "search": {"origin": "KTH", "destination": "INV", "time": iso(START), "timeType": "departAfter", "maxChanges": 5, "window": {"from": iso(start), "to": iso(end)}, "searchTruncated": False},
+        "search": {"origin": "KTH", "destination": "INV", "time": iso(START), "timeType": "departAfter",
+                   "algorithm": "raptor", "realtime": request.get("realtime", "apply"), "maxChanges": 5,
+                   "window": {"from": iso(start), "to": iso(end)}, "searchTruncated": False},
         "warnings": ["Fixture search note"], "pagination": {"earlier": f"window:{offset - 1}", "later": f"window:{offset + 1}",
             **({"more": f"window:{offset + 1}"} if profile == "results" else {})},
     }
@@ -216,7 +218,7 @@ def live_result(mode):
         "live": {"mode": mode, "status": "live", "updatedAt": iso(checked),
                  "expiresAt": iso(checked + timedelta(minutes=2)), "windowHours": 4, "warnings": []},
         "search": {"origin": "KTH", "destination": "VIC", "time": iso(PLANNER_LIVE_START), "timeType": "departAfter",
-                   "realtime": mode, "maxChanges": 5,
+                   "algorithm": "raptor", "realtime": mode, "maxChanges": 5,
                    "window": {"from": iso(PLANNER_LIVE_START), "to": iso(PLANNER_LIVE_START + timedelta(hours=4))}, "searchTruncated": False},
         "warnings": [], "pagination": {},
     }
@@ -333,7 +335,9 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path.startswith(("/saved/", "/saved-legacy/")) and "/departures/from/" in url.path:
             self.respond(200, {})
         elif url.path.endswith("/status"):
-            self.respond(200, {"available": True, "apiVersion": 3, "capabilities": {"timeTypes": ["departAfter", "arriveBy"], "maxChanges": 5}, "dataset": DATASET})
+            self.respond(200, {"available": True, "apiVersion": 3,
+                               "capabilities": {"timeTypes": ["departAfter"], "maxChanges": 5,
+                                                "algorithms": ["raptor"]}, "dataset": DATASET})
         elif url.path.endswith("/api/v2/stations"):
             self.respond(200, MAP_STATIONS)
         elif url.path.endswith("/stations"):

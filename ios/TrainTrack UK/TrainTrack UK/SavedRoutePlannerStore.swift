@@ -148,8 +148,10 @@ struct SavedRouteBoardState {
         }
         if let began = progress?.queuedAt ?? requestedAt, began <= now {
             let seconds = Int(now.timeIntervalSince(began))
-            let elapsed = seconds < 60 ? "\(seconds) sec" : "\(seconds / 60) min \(seconds % 60) sec"
-            details.append("\(phase == "queued" || phase == "retrying" ? "Waiting" : "Elapsed"): \(elapsed)")
+            if seconds > 0 {
+                let elapsed = seconds < 60 ? "\(seconds) sec" : "\(seconds / 60) min \(seconds % 60) sec"
+                details.append("\(phase == "queued" || phase == "retrying" ? "Waiting" : "Elapsed"): \(elapsed)")
+            }
         }
         return SavedRouteProgressPresentation(title: title, details: details)
     }

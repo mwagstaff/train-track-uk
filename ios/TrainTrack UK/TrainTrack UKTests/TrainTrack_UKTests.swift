@@ -13,6 +13,16 @@ import JourneyActivityShared
 
 struct TrainTrack_UKTests {
 
+    @Test func muteRequestsOnlyRetryTransientHTTPFailures() {
+        #expect(NotificationMuteRequestRetryPolicy.shouldRetry(statusCode: 400) == false)
+        #expect(NotificationMuteRequestRetryPolicy.shouldRetry(statusCode: 404) == false)
+        #expect(NotificationMuteRequestRetryPolicy.shouldRetry(statusCode: 408))
+        #expect(NotificationMuteRequestRetryPolicy.shouldRetry(statusCode: 425))
+        #expect(NotificationMuteRequestRetryPolicy.shouldRetry(statusCode: 429))
+        #expect(NotificationMuteRequestRetryPolicy.shouldRetry(statusCode: 500))
+        #expect(NotificationMuteRequestRetryPolicy.shouldRetry(statusCode: 503))
+    }
+
     @Test func journeyCompletionCanReplaceAPendingBoardingMuteRequest() {
         let subscriptionID = "test-\(UUID().uuidString)"
         let dateKey = NotificationMuteStorage.currentDateKey()

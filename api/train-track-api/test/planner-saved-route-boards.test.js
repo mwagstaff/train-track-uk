@@ -72,6 +72,24 @@ test('direct departures use no timetable metadata, planner, cache or search logs
     assert.equal(f.records.size, 0);
 });
 
+test('time-locked later searches preserve their window and bypass current direct departures', async t => {
+    const later = new Date(start + 6 * 60 * 60 * 1000).toISOString();
+    const future = { routes: [{ ...body.routes[0], id: 'later', time: later }] };
+    const f = fixture(t, { direct: () => ({ status: 'available', snapshot: { departures: [{ serviceID: 'current' }] } }) });
+    await f.manager.get(future);
+    await idle(f.manager);
+    const board = (await f.manager.get(future)).boards[0];
+    assert.equal(f.directCalls.length, 0, 'a future planner window must not be replaced by the current live board');
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls[0].method, 'savedRoutePlan');
+    assert.equal(f.calls[0].payload.request.time, later);
+    assert.equal(f.calls[0].payload.request.algorithm, 'raptor');
+    assert.equal(f.calls[0].payload.includeDirect, true);
+    assert.equal(board.source, 'planned');
+    assert.ok(board.result);
+    assert.equal(board.direct, undefined);
+});
+
 test('unknown, stale, partial and failed direct lookups cannot start a planner fallback', async t => {
     for (const reason of ['unknown', 'stale', 'partial', 'unavailable', 'details-failed']) {
         const f = fixture(t, { direct: () => ({ status: 'unknown', error: { code: 'LIVE_UNAVAILABLE', message: reason } }) });

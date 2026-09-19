@@ -3,31 +3,17 @@ import XCTest
 final class JourneyPlannerUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
-    #if DEBUG
     @MainActor
-    func testDebugRaptorToggleDefaultsToOriginalAndHidesLiveTimes() throws {
+    func testPlannerHasNoRoutingOrLiveTimesSwitches() throws {
         for largeTextAndDarkMode in [false, true] {
             let app = launch(plannerEnabled: true, largeText: largeTextAndDarkMode, dark: largeTextAndDarkMode)
             openAddJourney(in: app)
-            let raptor = app.switches["planner.raptor"]
-            scrollTo(raptor, in: app)
-            XCTAssertTrue(raptor.exists)
-            XCTAssertEqual(raptor.value as? String, "0")
-            raptor.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
-            XCTAssertEqual(raptor.value as? String, "1")
+            XCTAssertFalse(app.switches["planner.raptor"].exists)
             XCTAssertFalse(app.switches["planner.live-times"].exists)
-            XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "RAPTOR is experimental")).firstMatch.exists)
-            attach(largeTextAndDarkMode ? "planner-raptor-dark-large-text" : "planner-raptor", app: app)
-            raptor.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
-            XCTAssertEqual(raptor.value as? String, "0")
-            let live = app.switches["planner.live-times"]
-            scrollTo(live, in: app)
-            XCTAssertTrue(live.exists)
-            XCTAssertEqual(live.value as? String, "1")
+            attach(largeTextAndDarkMode ? "planner-defaults-dark-large-text" : "planner-defaults", app: app)
             app.terminate()
         }
     }
-    #endif
 
     @MainActor
     func testNewJourneyTabAndProfileNavigation() throws {
@@ -95,17 +81,11 @@ final class JourneyPlannerUITests: XCTestCase {
     }
 
     @MainActor
-    func testSavedRouteCancelReturnsToNewJourney() throws {
+    func testNewJourneyDoesNotOfferSeparateSavedRouteForm() throws {
         let app = launch(plannerEnabled: true)
         openAddJourney(in: app)
-        let savedRoute = app.buttons["planner.saved-route"]
-        scrollTo(savedRoute, in: app)
-        savedRoute.tap()
-        XCTAssertTrue(app.navigationBars["Add Journey"].waitForExistence(timeout: 5))
-        app.buttons["Cancel"].tap()
-        XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.tabBars.buttons["New journey"].isSelected)
-        XCTAssertFalse(app.navigationBars.buttons["Cancel"].exists)
+        XCTAssertFalse(app.buttons["planner.saved-route"].exists)
+        XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Timetable published'")).firstMatch.exists)
     }
 
     @MainActor
@@ -169,6 +149,15 @@ final class JourneyPlannerUITests: XCTestCase {
         scrollTo(later, in: app)
         XCTAssertTrue(later.isHittable)
         XCTAssertFalse(app.staticTexts["Route updates"].exists)
+        later.tap()
+        let laterJourney = app.buttons.matching(identifier: "saved-route.journey.saved-apply-KTH").element(boundBy: 1)
+        XCTAssertTrue(laterJourney.waitForExistence(timeout: 15))
+        let laterProgress = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "saved-route.progress.later-")
+        ).firstMatch
+        XCTAssertFalse(laterProgress.exists)
+        XCTAssertFalse(app.staticTexts["Showing earlier journey options. Check for updates before travelling."].exists)
+        XCTAssertFalse(app.buttons["Journey notes"].exists)
     }
 
     @MainActor
@@ -224,22 +213,18 @@ final class JourneyPlannerUITests: XCTestCase {
     }
 
     @MainActor
-    func testUnavailablePlannerKeepsSavedRouteAndFavouritePrefill() throws {
+    func testUnavailablePlannerExplainsDisabledSearchWithoutSavedRouteLink() throws {
         let app = launch(plannerEnabled: true)
         let favouriteEntry = app.buttons["Add favourite journey"]
         XCTAssertTrue(favouriteEntry.waitForExistence(timeout: 5))
         favouriteEntry.tap()
         XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 5))
-        let liveTimes = app.switches["planner.live-times"]
-        scrollTo(liveTimes, in: app)
-        XCTAssertTrue(liveTimes.exists)
+        XCTAssertFalse(app.switches["planner.live-times"].exists)
         let search = app.buttons["planner.search"]
         scrollTo(search, in: app)
         XCTAssertTrue(search.exists)
         XCTAssertFalse(search.isEnabled)
-        let savedRoute = app.buttons["planner.saved-route"]
-        scrollTo(savedRoute, in: app)
-        XCTAssertTrue(savedRoute.exists)
+        XCTAssertFalse(app.buttons["planner.saved-route"].exists)
         var accessibilityIssues: [String] = []
         try app.performAccessibilityAudit(for: [.contrast, .textClipped, .hitRegion]) { issue in
             // Native disabled controls are exempt from contrast requirements.
@@ -249,18 +234,6 @@ final class JourneyPlannerUITests: XCTestCase {
         }
         XCTAssertTrue(accessibilityIssues.isEmpty, accessibilityIssues.joined(separator: "\n"))
         attach("planner-unavailable", app: app)
-        savedRoute.tap()
-        XCTAssertTrue(app.navigationBars["Add Journey"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.textFields["add-journey.from"].exists)
-        XCTAssertTrue(app.textFields["add-journey.destination"].exists)
-        app.swipeUp()
-        XCTAssertTrue(app.buttons["Add intermediate stop"].exists)
-        let favourite = app.switches["Mark as favourite"]
-        scrollTo(favourite, in: app)
-        XCTAssertEqual(favourite.value as? String, "1")
-        app.buttons["Cancel"].tap()
-        XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 5))
-        XCTAssertEqual(app.tabBars.buttons["New journey"].isSelected, true)
     }
 
     @MainActor
@@ -284,9 +257,7 @@ final class JourneyPlannerUITests: XCTestCase {
         XCTAssertTrue(app.buttons["planner.destination"].isHittable)
         try app.performAccessibilityAudit(for: [.textClipped, .hitRegion])
         attach("planner-large-text", app: app)
-        scrollTo(app.buttons["planner.saved-route"], in: app)
-        XCTAssertTrue(app.buttons["planner.saved-route"].isHittable)
-        attach("planner-large-text-saved-route", app: app)
+        XCTAssertFalse(app.buttons["planner.saved-route"].exists)
     }
 
     @MainActor
@@ -309,10 +280,7 @@ final class JourneyPlannerUITests: XCTestCase {
         let app = try await launchEmptyWindowAtLargestTextSize()
         let journey = app.buttons["planner.journey.fixture-later-journey"]
         XCTAssertTrue(journey.waitForExistence(timeout: 10))
-        let notice = app.staticTexts["planner.automatic-search.found"]
-        scrollTo(notice, in: app, towardTop: true)
-        XCTAssertTrue(notice.exists)
-        XCTAssertTrue(notice.label.contains("next available trains"))
+        XCTAssertFalse(app.staticTexts["planner.automatic-search.found"].exists)
         attach("planner-empty-window-automatic-later", app: app)
     }
 
@@ -321,9 +289,7 @@ final class JourneyPlannerUITests: XCTestCase {
         let app = try await launchEmptyWindowAtLargestTextSize()
         let journey = app.buttons["planner.journey.fixture-later-journey"]
         XCTAssertTrue(journey.waitForExistence(timeout: 10))
-        let notice = app.staticTexts["planner.automatic-search.found"]
-        scrollTo(notice, in: app, towardTop: true)
-        XCTAssertTrue(notice.exists)
+        XCTAssertFalse(app.staticTexts["planner.automatic-search.found"].exists)
         attach("planner-empty-window-automatic-accessibility", app: app)
         // Keep the audit isolated: its scan can invalidate the iOS 26 collection snapshot.
         try app.performAccessibilityAudit(for: [.textClipped, .hitRegion])
@@ -340,7 +306,7 @@ final class JourneyPlannerUITests: XCTestCase {
         let running = expectation(for: NSPredicate(format: "label == %@", "Finding journeys…"), evaluatedWith: search)
         await fulfillment(of: [running], timeout: 10)
         attach("planner-running", app: app)
-        XCTAssertTrue(app.navigationBars["Journeys"].waitForExistence(timeout: 15))
+        XCTAssertTrue(journeyResultsNavigationBar(in: app).waitForExistence(timeout: 15))
         let later = app.buttons["planner.empty.later"]
         scrollTo(later, in: app)
         XCTAssertTrue(later.isEnabled)
@@ -356,7 +322,7 @@ final class JourneyPlannerUITests: XCTestCase {
         attach("planner-pagination-cancel", app: app)
         cancel.tap()
         XCTAssertFalse(cancel.exists)
-        XCTAssertTrue(app.navigationBars["Journeys"].exists)
+        XCTAssertTrue(journeyResultsNavigationBar(in: app).exists)
         scrollTo(later, in: app)
         XCTAssertTrue(later.isEnabled)
         try await assertFixtureCancelled(profile: "queued", after: before)
@@ -366,7 +332,20 @@ final class JourneyPlannerUITests: XCTestCase {
     func testJourneyResultsPillsAndAllPaginationButtonsShowLoading() async throws {
         let app = try await launchQueuedFixture(profile: "results")
         app.buttons["planner.search"].tap()
-        XCTAssertTrue(app.navigationBars["Journeys"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.navigationBars["Kent House → Inverness"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["Live times unavailable"].exists)
+        XCTAssertEqual(app.switches["planner.travel-via"].value as? String, "0")
+        XCTAssertEqual(app.switches["planner.save-journey"].value as? String, "0")
+        app.switches["planner.travel-via"].coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        XCTAssertTrue(app.buttons["planner.via-station"].waitForExistence(timeout: 5))
+        app.buttons["planner.via-station"].tap()
+        XCTAssertTrue(app.navigationBars["Travel via"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        app.switches["planner.save-journey"].coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        XCTAssertEqual(app.switches["planner.save.start-tracking"].value as? String, "1")
+        XCTAssertEqual(app.switches["planner.save.schedule"].value as? String, "0")
+        XCTAssertEqual(app.switches["planner.save.favourite"].value as? String, "0")
+        XCTAssertTrue(app.buttons["planner.save.submit"].exists)
         let journey = app.buttons["planner.journey.fixture-results"]
         XCTAssertTrue(journey.waitForExistence(timeout: 5))
         XCTAssertNotNil(journey.label.range(of: #"^\d{2}:\d{2} → \d{2}:\d{2}"#, options: .regularExpression))
@@ -401,7 +380,7 @@ final class JourneyPlannerUITests: XCTestCase {
     func testJourneyResultPillsAtLargestTextSize() async throws {
         let app = try await launchQueuedFixture(profile: "results", largeText: true)
         app.buttons["planner.search"].tap()
-        XCTAssertTrue(app.navigationBars["Journeys"].waitForExistence(timeout: 10))
+        XCTAssertTrue(journeyResultsNavigationBar(in: app).waitForExistence(timeout: 10))
         let journey = app.buttons["planner.journey.fixture-results"]
         scrollTo(journey, in: app)
         XCTAssertTrue(journey.isHittable)
@@ -415,7 +394,7 @@ final class JourneyPlannerUITests: XCTestCase {
     func testTimetableDepartureRowsUseSavedJourneyFormatting() async throws {
         let app = try await launchQueuedFixture(profile: "departures", destination: "VIC")
         app.buttons["planner.search"].tap()
-        XCTAssertTrue(app.navigationBars["Journeys"].waitForExistence(timeout: 10))
+        XCTAssertTrue(journeyResultsNavigationBar(in: app).waitForExistence(timeout: 10))
         let onTime = app.buttons["planner.journey.departure-row-onTime"]
         XCTAssertTrue(onTime.waitForExistence(timeout: 10))
         XCTAssertTrue(onTime.label.contains("On time"))
@@ -453,7 +432,7 @@ final class JourneyPlannerUITests: XCTestCase {
         onTime.tap()
         XCTAssertTrue(app.navigationBars["Journey details"].waitForExistence(timeout: 10))
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        XCTAssertTrue(app.navigationBars["Journeys"].waitForExistence(timeout: 10))
+        XCTAssertTrue(journeyResultsNavigationBar(in: app).waitForExistence(timeout: 10))
         try app.performAccessibilityAudit(for: [.contrast, .textClipped, .hitRegion])
     }
 
@@ -461,7 +440,7 @@ final class JourneyPlannerUITests: XCTestCase {
     func testPlannerArrivalTimesAndDurationTags() async throws {
         let app = try await launchQueuedFixture(profile: "durations", destination: "VIC")
         app.buttons["planner.search"].tap()
-        XCTAssertTrue(app.navigationBars["Journeys"].waitForExistence(timeout: 10))
+        XCTAssertTrue(journeyResultsNavigationBar(in: app).waitForExistence(timeout: 10))
         assertDurationComparison(in: app, rowPrefix: "planner.journey.duration-", screenshotName: "planner-duration-tags")
         try app.performAccessibilityAudit(for: [.textClipped, .hitRegion])
     }
@@ -470,7 +449,7 @@ final class JourneyPlannerUITests: XCTestCase {
     func testPlannerArrivalTimesAndDurationTagsAtLargestTextInDarkMode() async throws {
         let app = try await launchQueuedFixture(profile: "durations", largeText: true, destination: "VIC", dark: true)
         app.buttons["planner.search"].tap()
-        XCTAssertTrue(app.navigationBars["Journeys"].waitForExistence(timeout: 10))
+        XCTAssertTrue(journeyResultsNavigationBar(in: app).waitForExistence(timeout: 10))
         assertDurationComparison(in: app, rowPrefix: "planner.journey.duration-", screenshotName: "planner-duration-tags-dark-largest-text")
         try app.performAccessibilityAudit(for: [.textClipped, .hitRegion])
     }
@@ -700,7 +679,7 @@ final class JourneyPlannerUITests: XCTestCase {
             let app = try await launchQueuedFixture(profile: profile)
             defer { app.terminate() }
             app.buttons["planner.search"].tap()
-            guard app.navigationBars["Journeys"].waitForExistence(timeout: 10) else {
+            guard journeyResultsNavigationBar(in: app).waitForExistence(timeout: 10) else {
                 XCTFail("\(profile) search did not open results.")
                 return
             }
@@ -732,7 +711,7 @@ final class JourneyPlannerUITests: XCTestCase {
         let app = try await launchQueuedFixture(profile: "generic-transfer", largeText: largeTextAndDarkMode,
             dark: largeTextAndDarkMode)
         app.buttons["planner.search"].tap()
-        guard app.navigationBars["Journeys"].waitForExistence(timeout: 10) else {
+        guard journeyResultsNavigationBar(in: app).waitForExistence(timeout: 10) else {
             XCTFail("Generic-transfer search did not open results.")
             return
         }
@@ -844,7 +823,7 @@ final class JourneyPlannerUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["New journey"].exists)
         XCTAssertFalse(cancel.exists)
         XCTAssertTrue(app.buttons["planner.search"].isEnabled)
-        XCTAssertFalse(app.navigationBars["Journeys"].exists)
+        XCTAssertFalse(journeyResultsNavigationBar(in: app).exists)
         try await assertFixtureCancelled(profile: "cancel", after: before)
     }
 
@@ -857,6 +836,10 @@ final class JourneyPlannerUITests: XCTestCase {
         selectStations(origin: "KTH", destination: destination, in: app)
         scrollTo(app.buttons["planner.search"], in: app)
         return app
+    }
+
+    private func journeyResultsNavigationBar(in app: XCUIApplication) -> XCUIElement {
+        app.navigationBars.matching(NSPredicate(format: "identifier CONTAINS %@", " → ")).firstMatch
     }
 
     private func fixtureCancellationCount(profile: String) async throws -> Int {
@@ -882,7 +865,7 @@ final class JourneyPlannerUITests: XCTestCase {
     func testLongJourneyShowsPartialOnTimeCoverageAndNeutralTubeDetails() async throws {
         let app = try await launchQueuedFixture(profile: "coverage")
         app.buttons["planner.search"].tap()
-        XCTAssertTrue(app.navigationBars["Journeys"].waitForExistence(timeout: 10))
+        XCTAssertTrue(journeyResultsNavigationBar(in: app).waitForExistence(timeout: 10))
         let journey = app.buttons["planner.journey.coverage-journey"]
         XCTAssertTrue(journey.waitForExistence(timeout: 10))
         XCTAssertTrue(journey.label.contains("1 of 2 trains confirmed on time"))
@@ -899,11 +882,11 @@ final class JourneyPlannerUITests: XCTestCase {
     }
 
     @MainActor
-    func testLiveTimesOverrideRerunsAndKeepsCancellationWarnings() async throws {
+    func testLiveTimesRemainEnabledAndKeepCancellationWarnings() async throws {
         continueAfterFailure = false
         let app = try await launchQueuedFixture(profile: "live", destination: "VIC")
         app.buttons["planner.search"].tap()
-        XCTAssertTrue(app.navigationBars["Journeys"].waitForExistence(timeout: 10))
+        XCTAssertTrue(journeyResultsNavigationBar(in: app).waitForExistence(timeout: 10))
         let applied = app.buttons["planner.journey.live-journey-apply"]
         XCTAssertTrue(applied.waitForExistence(timeout: 10))
         XCTAssertTrue(applied.label.contains("Delayed"))
@@ -912,22 +895,9 @@ final class JourneyPlannerUITests: XCTestCase {
         scrollTo(unavailable, in: app)
         XCTAssertTrue(unavailable.exists)
         attach("planner-live-results", app: app)
-        let toggle = app.switches["planner.live-times"]
-        scrollTo(toggle, in: app, towardTop: true)
-        XCTAssertEqual(toggle.value as? String, "1")
-        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
-        XCTAssertEqual(toggle.value as? String, "0")
-        let scheduled = app.buttons["planner.journey.live-journey-ignore"]
-        XCTAssertTrue(scheduled.waitForExistence(timeout: 10))
-        XCTAssertEqual(toggle.value as? String, "0")
-        XCTAssertTrue(scheduled.label.contains("Delayed"))
-        XCTAssertTrue(scheduled.label.contains("Another section of this train is cancelled."))
-        let cancelled = app.buttons["planner.journey.live-cancelled-ignore"]
-        scrollTo(cancelled, in: app)
-        XCTAssertTrue(cancelled.label.contains("Cancelled"))
-        attach("planner-live-scheduled-override", app: app)
-        scrollTo(scheduled, in: app, towardTop: true)
-        scheduled.tap()
+        XCTAssertFalse(app.switches["planner.live-times"].exists)
+        scrollTo(applied, in: app, towardTop: true)
+        applied.tap()
         XCTAssertTrue(app.navigationBars["Journey details"].waitForExistence(timeout: 5))
         let points = app.buttons["planner.calling-points.0"]
         scrollTo(points, in: app)
@@ -944,7 +914,7 @@ final class JourneyPlannerUITests: XCTestCase {
         continueAfterFailure = false
         let app = try await launchQueuedFixture(profile: "live", largeText: true, destination: "VIC")
         app.buttons["planner.search"].tap()
-        XCTAssertTrue(app.navigationBars["Journeys"].waitForExistence(timeout: 10))
+        XCTAssertTrue(journeyResultsNavigationBar(in: app).waitForExistence(timeout: 10))
         let journey = app.buttons["planner.journey.live-journey-apply"]
         scrollTo(journey, in: app)
         XCTAssertTrue(journey.label.contains("Delayed"))
@@ -985,7 +955,7 @@ final class JourneyPlannerUITests: XCTestCase {
         scrollTo(search, in: app)
         XCTAssertTrue(search.isEnabled)
         search.tap()
-        guard app.navigationBars["Journeys"].waitForExistence(timeout: 35) else { XCTFail("Planner search did not open results"); return }
+        guard journeyResultsNavigationBar(in: app).waitForExistence(timeout: 35) else { XCTFail("Planner search did not open results"); return }
         let journey = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'planner.journey.'")).firstMatch
         XCTAssertTrue(journey.waitForExistence(timeout: 10))
         attach("planner-results", app: app)
@@ -1004,7 +974,7 @@ final class JourneyPlannerUITests: XCTestCase {
         scrollTo(later, in: app)
         XCTAssertTrue(later.exists)
         later.tap()
-        XCTAssertTrue(app.navigationBars["Journeys"].exists)
+        XCTAssertTrue(journeyResultsNavigationBar(in: app).exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 5))
         let recent = app.buttons.containing(.staticText, identifier: "Kent House → London Victoria").firstMatch
@@ -1029,7 +999,7 @@ final class JourneyPlannerUITests: XCTestCase {
         selectStations(origin: "KTH", destination: "INV", in: app)
         scrollTo(app.buttons["planner.search"], in: app)
         app.buttons["planner.search"].tap()
-        XCTAssertTrue(app.navigationBars["Journeys"].waitForExistence(timeout: 10))
+        XCTAssertTrue(journeyResultsNavigationBar(in: app).waitForExistence(timeout: 10))
         return app
     }
 

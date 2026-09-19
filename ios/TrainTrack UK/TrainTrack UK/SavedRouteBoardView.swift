@@ -23,12 +23,14 @@ struct SavedRouteBoardView: View {
     let onToggleExpanded: () -> Void
     let progressTitle: String?
     let onRetry: (() -> Void)?
+    var showsProgressWithResults = true
     @State private var selectedJourney: PlannerJourneyResponse?
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: state.isPending ? 1 : 20)) { context in
             VStack(alignment: .leading, spacing: 0) {
-                if let progress = state.progressPresentation(at: context.date) {
+                if (state.result == nil || showsProgressWithResults),
+                   let progress = state.progressPresentation(at: context.date) {
                     HStack(alignment: .top, spacing: 10) {
                         ProgressView().controlSize(.small).accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 4) {
@@ -44,10 +46,6 @@ struct SavedRouteBoardView: View {
                         .font(.caption).padding(16)
                 }
                 if let result = state.result {
-                    if state.isStale || state.liveIsStale(at: context.date) {
-                        Text("Showing earlier journey options. Check for updates before travelling.")
-                            .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.bottom, 10)
-                    }
                     let upcoming = state.upcomingJourneys(at: context.date)
                     if upcoming.isEmpty && state.board?.status == "ready" && state.message == nil {
                         Text("No journeys found in this time window.")
@@ -86,12 +84,6 @@ struct SavedRouteBoardView: View {
                                 }.buttonStyle(.plain).disabled(!isInteractive)
                             }
                         }.font(.subheadline).padding(16).disabled(!isInteractive)
-                    }
-                    let notes = PlannerLivePresentation.visibleWarnings(result.warnings + (result.live?.warnings ?? []))
-                    if !notes.isEmpty {
-                        DisclosureGroup("Journey notes") {
-                            ForEach(notes, id: \.self) { Text($0).font(.caption) }
-                        }.font(.caption).padding(16)
                     }
                 } else if !state.isPending {
                     if state.message == nil {
