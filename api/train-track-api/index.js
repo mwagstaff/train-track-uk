@@ -207,11 +207,11 @@ const app = express();
 app.use(cors());
 // Parse planner searches before the legacy 1 MB parser so their stricter limit
 // is effective. Existing namespaces keep their established parser and metrics.
-registerPlannerRoutes(app, { recordRequest: recordPlannerRequest, requestMiddleware: metricsMiddleware });
+const plannerService = registerPlannerRoutes(app, { recordRequest: recordPlannerRequest, requestMiddleware: metricsMiddleware });
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
-registerAdminRoutes(app);
+registerAdminRoutes(app, { plannerService });
 registerRailwayBackgroundRoutes(app);
 
 // Live activity request logging middleware (only logs when DEBUG_CONSOLE_LOGGING_APNS=true)

@@ -23,7 +23,7 @@ deploy either.
 - Full data is private local input and excluded from Git. Snapshots contain licensed timetable content too.
 - Use an absolute `PLANNER_DATA_DIR` **outside deployed source**. The existing deployment uses deletion during synchronisation; source-tree snapshots would not be durable.
 - The supplied package needs about 676.5 MB of source files. Its existing schema v1 SQLite snapshot is 1.07 GB; new compact schema v2 imports measured 275.7 MB with the same supported routing data. Existing v1 snapshots remain readable. See [search optimisation and measurements](planner-search-optimisation.md). Budget space for source, staging, active and rollback snapshots, validation and future growth. Activation does not delete old snapshots.
-- One worker runs routing sequentially; a separate small worker handles station lookups and timetable metadata while a search is running. Queue admission, elapsed time, operation count and V8 heap are bounded. SQLite native memory and total process RSS are not capped by the V8 heap setting; measure on the deployment host before release.
+- Up to two workers run independent searches concurrently, each with its own read-only connection to the same immutable SQLite snapshot. A separate small worker handles station lookups and timetable metadata. Workers start lazily; queue admission stays global, and elapsed time, operation count and per-worker V8 heap are bounded. SQLite native memory and total process RSS are not capped by the V8 heap setting; measure on the deployment host before release. Set `PLANNER_WORKERS=1` for the previous single-worker capacity.
 
 ## Production deployment on `sky`
 
@@ -140,7 +140,7 @@ The full API automatically registers the v3 router. Set its `PLANNER_DATA_DIR` t
   "timeType": "departAfter",
   "maxChanges": 2,
   "extraConnectionMinutes": 0,
-  "allowedModes": ["rail", "replacementBus", "walk", "tubeTransfer"],
+  "allowedModes": ["rail", "replacementBus", "walk", "tubeTransfer", "genericTransfer"],
   "limit": 5,
   "windowMinutes": 120,
   "realtime": "apply"
@@ -150,6 +150,8 @@ The full API automatically registers the v3 router. Set its `PLANNER_DATA_DIR` t
 `time` requires seconds, an explicit offset and at most three optional fractional digits (millisecond precision). `timeType` is `departAfter` or `arriveBy`. Bounds: changes 0–5 (default 5), extra connection minutes 0–60, results per page 1–10, window 15–360 minutes (default 360). Explicit lower limits, such as the example above, remain exact. The window bounds first departures for depart-after and final arrivals for arrive-by; total journey duration is capped at 24 hours. A train departing later can connect to an earlier feeder within the requested window, including a wait overnight. All public journey times include an offset (currently UTC ISO strings). The app presents Europe/London time. A window crossing a coverage boundary reports partial results and suppresses pagination into unsupported dates.
 
 Responses contain `journeys`, `dataset`, normalised `search`, `warnings` and `pagination`. `more` continues the same time window without discarding useful alternatives; `earlier` and `later` move to adjacent windows. Cursors are opaque to callers, validate every embedded parameter, and pin the exact timestamp, modes, options, dataset and routing policy. They are not credentials. A bounded search reports truncation or a timeout rather than claiming complete results. Vehicle legs include scheduled calling points, operator code and source service identity. Transfer legs include the allowance and wait breakdown; they are not detailed Tube or street directions.
+
+`genericTransfer` permits timetable-supplied ALF `TRANSFER` links whose transport service is unspecified, including early-morning cross-London connections. It is included in the default modes alongside rail, replacement bus, walking and Tube; an explicit mode list still controls eligibility. Link operating windows and station allowances remain enforced. iOS marks affected journeys and the specific transfer section with a warning and advises checking taxi/night-bus options if the Tube is closed. Deploy API support before the updated client, which explicitly requests this additional mode. Existing cursors retain their original mode lists; no timetable reimport is required.
 
 Errors use `{ "error": { "code": "…", "message": "…" } }`: invalid input/station/cursor 400, oversized JSON 413, unsupported content type/encoding 415, unsupported date 422, busy 429 with Retry-After, missing/stale data 503, work timeout 504, expired cursor/detail 410. Planner JSON bodies are limited to 16 KiB. No raw records or filesystem paths are exposed.
 
@@ -171,7 +173,7 @@ The planner applies observations to a separate view of the timetable before rero
 - Three-second upstream deadlines, no internal retry storm, a 30-second cache capped at 256 entries, and cancellation of pending lookups when the search is cancelled. Existing search queue, worker CPU duty cycle, total routing-operation allowance, execution deadline and heap guard still apply.
 - Only provider timestamps within 90 seconds and no more than five seconds ahead are accepted. Snapshot expiry follows the oldest evidence used. More-results cursors pin the snapshot and mode; Earlier/Later requests fetch fresh observations. Outside-window searches also retain their scheduled result context for 90 seconds, so More cannot reorder results when the request enters the live window. An expired snapshot returns 410 for continuation; results that aged while computing show a warning and do not offer an immediately expired More cursor.
 - Known cancelled boarding/alighting stops are unusable; an intermediate skipped stop does not by itself prohibit through travel. A proven non-operating section cannot be crossed. Unknown downstream disruption is conservatively excluded from the affected onward portion while safe earlier sections remain usable. The override restores scheduled routing but keeps these warnings visible.
-- Changed services reuse unchanged timetable indexes, so applying updates does not create another complete national event index. The two-call limit is specific to the computing worker; legacy live requests retain their existing separate throttling.
+- Changed services reuse unchanged timetable indexes, so applying updates does not create another complete national event index. The two-call limit is shared across routing workers by the parent broker, which also coalesces identical pending requests with independent cancellation; legacy live requests retain their existing throttling and shared host spacing.
 
 Responses optionally add `live` with `mode`, `status` (`live`, `partial`, `unavailable` or `outsideWindow`), observation/expiry timestamps, `windowHours` and `warnings`. Optional `live.coverage` counts unique `nearTermRailLegs`, `confirmedRailLegs` and `scheduledLaterRailLegs` on the visible page. `live` status means that page's near-term rail legs have confirmed endpoint forecasts or known cancellation; it does not promise exhaustive live network coverage. Genuine match/retrieval/lookup-budget gaps are explained on the affected rail leg. Unrequested unrelated board services cannot produce blanket warnings. `disruptedJourneys` contains up to five affected scheduled alternatives, clearly separated from usable results in the app. Existing journey times are effective routing times in `apply` mode. Optional `scheduledDeparture`, `scheduledArrival` and `scheduledServiceId` preserve timetable identity; leg/calling-point `live` annotations describe expected times, delay minutes, cancellation extent and warnings. Cancelled calls can have null effective times; their scheduled times remain available for a labelled struck-through display. Journey-level warnings include unconfirmed or missed connections and late expected arrivals.
 
@@ -208,8 +210,9 @@ Rebuild the app to enable this flow. The existing `/search` endpoint, v1/v2 rout
 | `PLANNER_WARN_AGE_DAYS` | 35 |
 | `PLANNER_MAX_STALE_DAYS` | 45 |
 | `PLANNER_TIMEOUT_MS` | 30000 including queue time, synchronous requests |
-| `PLANNER_MAX_QUEUE` | 8 worker requests including active work |
-| `PLANNER_HEAP_MB` | 1024 |
+| `PLANNER_MAX_QUEUE` | 8 requests across the whole routing pool, including active and suspended work |
+| `PLANNER_WORKERS` | 2; accepts 1 or 2, starts workers lazily |
+| `PLANNER_HEAP_MB` | 1024 per routing worker; not a process RSS limit |
 | `PLANNER_DATE_CACHE_SIZE` | 6 |
 | `PLANNER_MAX_OPERATIONS` | 10000000, synchronous searches |
 | `PLANNER_MAX_SEARCH_JOBS` | 8 distinct queued/running searches |
@@ -217,8 +220,8 @@ Rebuild the app to enable this flow. The existing `/search` endpoint, v1/v2 rout
 | `PLANNER_JOB_TIMEOUT_MS` | 600000 processing time |
 | `PLANNER_JOB_MAX_OPERATIONS` | 1000000000 |
 | `PLANNER_JOB_CPU_DUTY_CYCLE` | 1 (no throttling) |
-| `PLANNER_MAX_LIVE_WAITERS` | 1 suspended live-lookup task; 0 disables I/O overlap |
-| `PLANNER_PREWARM` | `true`: a low-priority idle task resolves today's dates and builds the national index after worker start and after each London date or timetable change |
+| `PLANNER_MAX_LIVE_WAITERS` | 1 suspended live-lookup task across the pool; 0 disables I/O overlap |
+| `PLANNER_PREWARM` | `true`: each started worker uses a low-priority idle task to resolve today's dates and build original/RAPTOR indexes after worker start and after each London date or timetable change |
 
 The source generation date determines freshness; reimporting old data does not make it fresh. The 35/45-day thresholds are explicit prototype assumptions for the proposed monthly feed and need an operational decision before production. Search/cache keys include the exact instant, options, policy and version. Public metadata is refreshed even for cached results.
 
@@ -451,7 +454,7 @@ a failed calculation retains its real error while waiting to retry.
   into the two-hour scheduled cache.
 - At most eight saved-board tasks are admitted, with two per requesting client
   and four per network. Identical work shares a single admission. Calculations use the existing
-  single worker, heap and cooperative CPU budget. Interactive work takes priority
+  routing pool, per-worker heap and cooperative CPU budgets. Interactive work takes priority
   over queued warming; waiting refreshes age into service. Foreground admission
   does not interrupt a calculation already running.
 - Waiting routes retain their place across polling and advance automatically as
@@ -472,13 +475,14 @@ a failed calculation retains its real error while waiting to retry.
   at most two active planner lookups, and the same main-process upstream request
   spacing used by legacy departure calls. On-time observations and scheduled
   overrides annotate existing routes without recalculating unchanged routing.
-  The search-job manager admits at most two operations to support this overlap;
-  only one runs routing CPU work at a time.
-- Keep the current single worker and 1,024 MiB heap initially. Runtime call
-  compaction and shared path nodes reduce memory, but the worker's limit is not
-  a process RSS cap. Measure phase timings and host headroom before increasing
-  worker count or heap. A worker failure discards its active/suspended work;
-  unstarted queued work survives one restart with its original deadline.
+  The search-job manager admits one operation per routing worker plus one I/O
+  waiter when enabled. At most two operations run routing CPU work concurrently.
+- The pool defaults to two workers with 1,024 MiB heaps; use `PLANNER_WORKERS=1`
+  on constrained hosts. Runtime call compaction and shared path nodes reduce
+  memory, but these limits are not process RSS caps. Measure phase timings and
+  host headroom before deployment. A worker failure discards only its own
+  active/suspended work; the other worker continues. Unstarted assigned work
+  survives one restart with its original deadline.
 - Refreshing is demand-driven. Polling renews interest; two minutes without any
   interested client cancels pending work. Closing one client does not cancel
   work still requested by another. Both app tabs share their requests and poll

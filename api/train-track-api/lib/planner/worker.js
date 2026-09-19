@@ -6,6 +6,7 @@ import { createCooperativeSignal } from './execution.js';
 import { PlannerLiveProvider, createLiveRequestBudget } from './live-provider.js';
 import { createPlannerTelemetry } from './telemetry.js';
 import { londonDate } from './time.js';
+import { compileRaptorNetwork } from './raptor-poc.js';
 
 const PREWARM_MIN_HEAP_HEADROOM = 300 * 1024 * 1024;
 
@@ -97,6 +98,7 @@ async function run({ id, method, payload, cancelBuffer, execution }) {
         else if (method === 'metadata') result = engine.publicMetadata(await engine.dataset(payload.version), payload.live);
         else if (method === 'stations') result = await engine.stationList(payload.query);
         else if (method === 'search') result = await engine.search(payload, signal, context);
+        else if (method === 'clearSearchCache') result = engine.clearSearchCache();
         else if (method === 'savedRoutePlan') result = await engine.savedRoutePlan(payload, signal, context);
         else if (['routeBoardProfile', 'routeBoardProfileChunk', 'routeBoardPreview', 'routeBoardRefresh', 'routeBoardReplan'].includes(method)) {
             result = await engine[method](payload, signal, context);
@@ -137,9 +139,15 @@ async function prewarm(signal) {
     // A daytime search's range (yesterday to tomorrow) covers most searches;
     // later ranges resolve their extra date on demand to bound worker memory.
     const network = await engine.network(repo, query(Date.parse(`${today}T12:00:00Z`)), signal);
-    (await import('./router.js')).prepareNetwork(network, () => {
+    const check = () => {
         if (signal.aborted) throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);
-    });
+    };
+    (await import('./router.js')).prepareNetwork(network, check);
+    if (engine.raptorIndex?.network !== network) {
+        const index = compileRaptorNetwork(network, { check });
+        check();
+        engine.raptorIndex = { network, index };
+    }
     warmed = { date: today, version: repo.version };
     return { warmed: true };
 }

@@ -97,7 +97,7 @@ test('a blocked active worker times out, is terminated, and a later request reco
             parentPort.postMessage({ id: message.id, result: { recovered: true } });
         });
     `);
-    const service = new PlannerService({ ...plannerConfig({}), timeoutMs: 500 }, { workerURL: pathToFileURL(filename) });
+    const service = new PlannerService({ ...plannerConfig({}), workerCount: 1, timeoutMs: 500 }, { workerURL: pathToFileURL(filename) });
     t.after(() => service.close());
     await assert.rejects(service.status(), { code: 'SEARCH_TIMEOUT' });
     const deadline = Date.now() + 4000;

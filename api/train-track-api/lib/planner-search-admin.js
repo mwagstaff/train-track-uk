@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { createAdminUrl } from './admin-url.js';
+import { PlannerError } from './planner/contract.js';
 import { ROUTING_PROFILE_FIELDS } from './planner/telemetry.js';
 
 const ROUTE = '/admin/journey-planner';
@@ -16,6 +18,7 @@ const RANGES = [['-5m', 'Last 5 minutes'], ['-15m', 'Last 15 minutes'], ['-1h', 
 const COLUMNS = [
     ['origin', 'From'], ['destination', 'To'], ['startedAt', 'Search started'],
     ['finishedAt', 'Results returned'], ['status', 'Status'], ['cacheStatus', 'Cache'],
+    ['algorithm', 'Algorithm', false],
     ['durationMs', 'Duration'], ['source', 'Source']
 ];
 const stationNames = loadStationNames();
@@ -26,13 +29,35 @@ const timeFormatter = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
 });
 
-export function registerPlannerSearchAdminRoutes(app, { listSearches, renderShell, logger = console }) {
+export function registerPlannerSearchAdminRoutes(app, { listSearches, renderShell, clearSearchCache, logger = console }) {
+    const cacheClearToken = typeof clearSearchCache === 'function' ? randomBytes(32).toString('hex') : null;
+    if (cacheClearToken) app.post(`${ROUTE}/cache/clear`, async (req, res) => {
+        res.set('Cache-Control', 'no-store');
+        // CORS is enabled for the public API; a custom header alone does not
+        // stop cross-origin requests. This action is for the same-origin UI.
+        if (!req.is('application/json') || req.get('X-TrainTrack-Admin-CSRF') !== cacheClearToken
+            || req.get('Sec-Fetch-Site') !== 'same-origin') {
+            res.status(403).json({ error: { code: 'INVALID_ADMIN_REQUEST',
+                message: 'Refresh this admin page before clearing the cache.' } });
+            return;
+        }
+        try { res.json(await clearSearchCache()); }
+        catch (error) {
+            logger.error('[admin] Failed to clear journey planner search cache:', error?.message || error);
+            const known = error instanceof PlannerError;
+            res.status(known ? error.status : 503).json({ error: {
+                code: known ? error.code : 'DATASET_UNAVAILABLE',
+                message: known && error.status === 429 ? 'The planner is busy. Wait for searches to finish, then try again.'
+                    : 'The search cache could not be cleared. Try again shortly.'
+            } });
+        }
+    });
     app.get(ROUTE, async (req, res) => {
         res.set('Cache-Control', 'no-store');
         const requestPath = req.path || ROUTE;
         try {
             const data = await listSearches(req.query || {});
-            res.type('html').send(renderPlannerSearchPage(data, { renderShell, requestPath }));
+            res.type('html').send(renderPlannerSearchPage(data, { renderShell, requestPath, cacheClearToken }));
         } catch (error) {
             const invalid = error?.code === 'INVALID_SEARCH_RANGE';
             if (!invalid) logger.error('[admin] Failed to load journey planner searches:', error?.message || error);
@@ -51,7 +76,7 @@ export function registerPlannerSearchAdminRoutes(app, { listSearches, renderShel
     });
 }
 
-export function renderPlannerSearchPage(data, { renderShell, now = new Date(), requestPath = ROUTE }) {
+export function renderPlannerSearchPage(data, { renderShell, now = new Date(), requestPath = ROUTE, cacheClearToken }) {
     const url = createAdminUrl(requestPath);
     const { rows, total, page, pageSize, totalPages, sort, direction, range, stats } = data;
     const selectedPeriod = data.q ?? `-${range}`;
@@ -67,7 +92,8 @@ export function renderPlannerSearchPage(data, { renderShell, now = new Date(), r
         ['Average duration', duration(stats.averageDurationMs), 'Successful and failed searches'],
         ['Cache hit rate', cacheRate, `${number(stats.cacheHits)} hits · ${number(stats.cacheMisses)} misses`]
     ];
-    const tableHead = COLUMNS.map(([key, label]) => {
+    const tableHead = COLUMNS.map(([key, label, sortable = true]) => {
+        if (!sortable) return `<th scope="col">${label}</th>`;
         const active = sort === key;
         const nextDirection = active && direction === 'asc' ? 'desc' : 'asc';
         const arrow = active ? (direction === 'asc' ? '↑' : '↓') : '↕';
@@ -85,8 +111,18 @@ export function renderPlannerSearchPage(data, { renderShell, now = new Date(), r
             <header class="planner-heading"><div><p class="planner-eyebrow">Train Track Admin</p>
                 <h1>Journey planner searches</h1>
                 <p class="meta">Seven days of search history · Table times Europe/London</p></div>
-                <a class="planner-button secondary" href="${href(url, data)}">Refresh</a>
+                <div class="planner-heading-actions">
+                    <a class="planner-button secondary" href="${href(url, data)}">Refresh</a>
+                    ${cacheClearToken ? `<button type="button" id="planner-cache-clear" class="planner-button secondary" disabled
+                        data-clear-url="${escapeHtml(url(`${ROUTE}/cache/clear`))}" data-csrf-token="${escapeHtml(cacheClearToken)}"
+                        aria-describedby="planner-cache-help">Clear search cache</button>` : ''}
+                </div>
             </header>
+            ${cacheClearToken ? `<div class="planner-cache-tools">
+                <p id="planner-cache-help">Clears cached RAPTOR and Original search results on this API. Timetable indexes stay warm; journey details and search history are kept. Wait for running searches to finish, then clear and start a new app search rather than retrying an existing job.</p>
+                <p id="planner-cache-status" role="status" aria-live="polite" aria-atomic="true"></p>
+                <noscript>Enable JavaScript to clear the search cache.</noscript>
+            </div><script data-planner-cache-controls>(${initializePlannerCacheClear.toString()})();</script>` : ''}
             ${filters(data, url, now)}
             <section aria-labelledby="planner-summary-title">
                 <h2 id="planner-summary-title" class="planner-section-title">${escapeHtml(filteredLabel)}<span>All matching searches, across every page</span></h2>
@@ -100,9 +136,9 @@ export function renderPlannerSearchPage(data, { renderShell, now = new Date(), r
             <section class="panel planner-results" aria-labelledby="planner-table-title">
                 <div class="planner-table-heading"><h2 id="planner-table-title">Search history</h2><span>${number(first)}–${number(last)} of ${number(total)}</span></div>
                 <div class="table-wrap" role="region" aria-label="Journey planner search history, scroll horizontally for all columns" tabindex="0">
-                    <table><caption class="sr-only">Journey planner searches. Select a column heading to sort. All dates are in Europe/London.</caption>
+                    <table><caption class="sr-only">Journey planner searches. Select a linked column heading to sort. All dates are in Europe/London.</caption>
                     <thead><tr>${tableHead}</tr></thead>
-                    <tbody>${rows.length ? rows.map(renderRow).join('') : `<tr><td colspan="8" class="empty"><strong>No searches in this period</strong><p>New journey planner searches will appear here. Try a longer period or another source.</p></td></tr>`}</tbody></table>
+                    <tbody>${rows.length ? rows.map(renderRow).join('') : `<tr><td colspan="${COLUMNS.length}" class="empty"><strong>No searches in this period</strong><p>New journey planner searches will appear here. Try a longer period or another source.</p></td></tr>`}</tbody></table>
                 </div>
             </section>
             <nav class="pager planner-pager" aria-label="Search history pages">
@@ -122,6 +158,8 @@ function renderRow(row) {
     const resultDetail = status === 'success' && Number.isFinite(row.resultCount)
         ? `${number(row.resultCount)} ${row.resultCount === 1 ? 'journey' : 'journeys'}` : null;
     const sourceLabel = SOURCES.find(([value]) => value === row.source)?.[1] || row.source || 'Unknown';
+    const algorithmLabel = row.algorithm === 'raptor' ? 'RAPTOR'
+        : row.algorithm == null || row.algorithm === 'original' ? 'Original' : 'Unknown';
     return `<tr>
         <td class="planner-station">${station(row.origin)}${Array.isArray(row.via) && row.via.length ? `<small>via ${escapeHtml(row.via.join(' → '))}</small>` : ''}</td>
         <td class="planner-station">${station(row.destination)}</td>
@@ -129,6 +167,7 @@ function renderRow(row) {
         <td class="planner-date">${row.finishedAt ? formatTime(row.finishedAt) : '<span class="planner-muted">—</span>'}</td>
         <td><span class="planner-status status-${status}">${statusLabel}</span>${detail && !['success', 'fail'].includes(detail) ? `<small class="planner-outcome">${escapeHtml(humanize(detail))}</small>` : ''}${resultDetail ? `<small>${resultDetail}</small>` : ''}</td>
         <td><span class="planner-cache cache-${cache}">${cache === 'unknown' ? 'Unknown' : cache === 'hit' ? 'Hit' : 'Miss'}</span>${row.coalesced ? '<small>Shared work</small>' : ''}</td>
+        <td>${algorithmLabel}</td>
         <td class="planner-duration">${duration(row.durationMs)}${diagnostics(row)}</td>
         <td>${escapeHtml(sourceLabel)}</td>
     </tr>`;
@@ -237,6 +276,38 @@ function filters(data, url, now = new Date()) {
     </form><script data-planner-filter-controls>(${initializePlannerFilters.toString()})();</script>`;
 }
 
+function initializePlannerCacheClear() {
+    const button = document.querySelector('#planner-cache-clear');
+    const status = document.querySelector('#planner-cache-status');
+    button.disabled = false;
+    button.addEventListener('click', async () => {
+        if (button.disabled) return;
+        button.disabled = true;
+        button.textContent = 'Clearing search cache…';
+        button.setAttribute('aria-busy', 'true');
+        status.textContent = 'Waiting for the routing worker to clear cached search results…';
+        status.dataset.state = 'pending';
+        try {
+            const response = await fetch(button.dataset.clearUrl, { method: 'POST', credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json', 'X-TrainTrack-Admin-CSRF': button.dataset.csrfToken }, body: '{}' });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error?.message || 'The cache could not be cleared. Refresh this page and try again.');
+            if (!Number.isSafeInteger(result.clearedSearches) || result.clearedSearches < 0) {
+                throw new Error('The server did not confirm cache clearing. Refresh this page and try again.');
+            }
+            status.dataset.state = 'success';
+            status.textContent = `Search cache cleared (${result.clearedSearches} entries). Submit a new app search to run the selected algorithm again. Other searches can warm the cache again.`;
+        } catch (error) {
+            status.dataset.state = 'error';
+            status.textContent = `Cache clearing was not confirmed. ${error instanceof Error && error.message ? error.message : 'Check your connection, then refresh this page and try again.'}`;
+        } finally {
+            button.disabled = false;
+            button.textContent = 'Clear search cache';
+            button.removeAttribute('aria-busy');
+        }
+    });
+}
+
 function initializePlannerFilters() {
     const form = document.querySelector('.planner-filters');
     const period = form.elements.namedItem('q');
@@ -302,6 +373,14 @@ const styles = `
     .planner-admin { max-width: 1500px; }
     .planner-admin :is(a,button,input,select,summary,[tabindex]):focus-visible { outline: 3px solid #0057b8; outline-offset: 3px; }
     .planner-heading { display:flex; align-items:center; justify-content:space-between; gap:20px; }
+    .planner-heading-actions { display:flex; flex-wrap:wrap; gap:8px; flex-shrink:0; }
+    .planner-heading-actions .planner-button { min-height:44px; box-sizing:border-box; font:inherit; font-size:14px; display:inline-flex; align-items:center; }
+    .planner-heading-actions .planner-button:hover:not(:disabled) { border-color:var(--accent); }
+    .planner-heading-actions button:disabled { opacity:.65; cursor:wait; }
+    .planner-cache-tools { margin-top:16px; max-width:1000px; font-size:12px; line-height:1.6; color:var(--muted); }
+    .planner-cache-tools p { margin:0; }
+    #planner-cache-status:not(:empty) { margin-top:8px; color:var(--text); font-weight:600; }
+    #planner-cache-status[data-state="error"] { color:#a22b27; }
     .planner-eyebrow { margin:0 0 8px; color:var(--muted); font-size:12px; letter-spacing:.08em; text-transform:uppercase; font-weight:600; }
     .planner-heading h1 { margin:0 0 8px; font-size:clamp(25px,3vw,34px); letter-spacing:-.025em; }
     .planner-heading .meta { margin:0; font-size:14px; line-height:1.5; }
@@ -371,5 +450,5 @@ const styles = `
     .planner-error p { color:var(--muted); line-height:1.5; }
     .sr-only { position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
     @media(max-width:1150px) { .planner-stats { grid-template-columns:repeat(3,minmax(0,1fr)); } .planner-stats dd { font-size:27px; } .planner-stats div:nth-child(2) dd { font-size:25px; } }
-    @media(max-width:640px) { .planner-stats { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; } .planner-stats div { padding:14px 12px; } .planner-stats dd { font-size:25px; } .planner-stats div:nth-child(2) dd { font-size:20px; } .planner-heading { align-items:start; gap:12px; } .planner-heading .meta { font-size:12px; } .planner-section-title span { display:block; margin:7px 0 0; } .planner-updated { width:100%; margin:0; padding:0; } .planner-filters { gap:12px 10px; } .planner-pager { gap:5px; } .planner-pager a,.planner-pager span { padding:10px; font-size:12px; } }
+    @media(max-width:640px) { .planner-stats { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; } .planner-stats div { padding:14px 12px; } .planner-stats dd { font-size:25px; } .planner-stats div:nth-child(2) dd { font-size:20px; } .planner-heading { align-items:start; flex-wrap:wrap; gap:12px; } .planner-heading .meta { font-size:12px; } .planner-section-title span { display:block; margin:7px 0 0; } .planner-updated { width:100%; margin:0; padding:0; } .planner-filters { gap:12px 10px; } .planner-pager { gap:5px; } .planner-pager a,.planner-pager span { padding:10px; font-size:12px; } }
 `;

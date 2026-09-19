@@ -1,6 +1,12 @@
 import Foundation
 import Observation
 
+enum PlannerAutomaticSearchState: Equatable {
+    case searchingLater
+    case foundLater
+    case noJourneysInNext24Hours
+}
+
 enum JourneyPlannerFeature {
     static var isEnabled: Bool {
         #if DEBUG
@@ -68,6 +74,18 @@ final class JourneyPlannerStore {
     var timeMode: PlannerTimeMode = .now
     var explicitTime = Date()
     var useLiveTimes = true
+    #if DEBUG
+    var useRaptor = false {
+        didSet {
+            guard useRaptor != oldValue else { return }
+            cancelSearch()
+            response = nil
+            searchError = nil
+            lastRequest = nil
+            lastIntent = nil
+        }
+    }
+    #endif
     private(set) var status: PlannerStatus?
     private(set) var statusError: String?
     private(set) var isLoadingStatus = false
@@ -75,9 +93,11 @@ final class JourneyPlannerStore {
     private(set) var searchProgress: PlannerSearchProgress = .queued(position: nil)
     private(set) var response: PlannerSearchResponse?
     private(set) var searchError: PlannerError?
+    private(set) var automaticSearchState: PlannerAutomaticSearchState?
     let recents: PlannerRecentSearchStore
     @ObservationIgnored let client: any JourneyPlannerServing
     @ObservationIgnored private var generation = UUID()
+    @ObservationIgnored private var automaticSearchGeneration = UUID()
     @ObservationIgnored private var lastRequest: PlannerSearchRequest?
     @ObservationIgnored private var lastIntent: PlannerSearchIntent?
 
@@ -86,15 +106,35 @@ final class JourneyPlannerStore {
         self.recents = recents ?? PlannerRecentSearchStore()
     }
 
+    var usesRaptor: Bool {
+        #if DEBUG
+        return useRaptor
+        #else
+        return false
+        #endif
+    }
+
+    private var requestedRealtime: String { usesRaptor ? "off" : useLiveTimes ? "apply" : "ignore" }
+
     var intent: PlannerSearchIntent? {
         guard let origin, let destination else { return nil }
-        return PlannerSearchIntent(origin: origin, destination: destination, timeMode: timeMode,
-                                   explicitTime: timeMode == .now ? nil : explicitTime, realtime: useLiveTimes ? "apply" : "ignore")
+        var value = PlannerSearchIntent(origin: origin, destination: destination, timeMode: timeMode,
+                                        explicitTime: timeMode == .now ? nil : explicitTime, realtime: requestedRealtime)
+        #if DEBUG
+        if useRaptor { value.algorithm = "raptor" }
+        #endif
+        return value
     }
 
     func validationMessage(now: Date = Date()) -> String? {
         guard let origin, let destination else { return "Select an origin and a destination." }
         guard origin.crs != destination.crs else { return "You are already at your destination. Select a different station." }
+        if usesRaptor {
+            guard timeMode != .arriveBy else { return "RAPTOR testing supports Depart now or Depart at only. Switch off RAPTOR to search Arrive by." }
+            if let status, status.capabilities.algorithms?.contains("raptor") != true {
+                return "This API has not enabled RAPTOR testing. Switch off RAPTOR or update the API."
+            }
+        }
         if timeMode != .now && explicitTime < now {
             return "This time has passed. Choose a new date and time, or switch to Depart now."
         }
@@ -128,7 +168,10 @@ final class JourneyPlannerStore {
         origin = recent.intent.origin
         destination = recent.intent.destination
         timeMode = recent.intent.timeMode
-        useLiveTimes = recent.intent.realtime != "ignore"
+        #if DEBUG
+        useRaptor = recent.intent.algorithm == "raptor"
+        #endif
+        if recent.intent.realtime != "off" { useLiveTimes = recent.intent.realtime != "ignore" }
         if let date = recent.intent.explicitTime { explicitTime = date }
         response = nil
         searchError = nil
@@ -137,10 +180,56 @@ final class JourneyPlannerStore {
     func cancelSearch() {
         if isSearching { restoreDisplayedLiveMode() }
         generation = UUID()
+        automaticSearchGeneration = UUID()
         isSearching = false
+        automaticSearchState = nil
     }
 
-    func search(cursor: String? = nil, repeatingLastSearch: Bool = false, now: Date = Date()) async {
+    /// Searches each following timetable window after an empty initial result, stopping once
+    /// the first journey is found or the first 24 hours have been searched.
+    func searchForLaterTrainsWhenInitialWindowIsEmpty() async {
+        guard let initial = response,
+              initial.journeys.isEmpty,
+              searchError == nil,
+              lastRequest?.cursor == nil else { return }
+
+        let token = UUID()
+        automaticSearchGeneration = token
+        let searchUntil = initial.search.window.from.addingTimeInterval(24 * 60 * 60)
+        automaticSearchState = .searchingLater
+        var current = initial
+
+        while current.journeys.isEmpty,
+              current.search.window.to < searchUntil,
+              let later = current.pagination.later,
+              !Task.isCancelled,
+              automaticSearchGeneration == token {
+            let previousWindowEnd = current.search.window.to
+            await search(cursor: later, isAutomaticSearch: true, now: Date())
+
+            guard !Task.isCancelled,
+                  automaticSearchGeneration == token,
+                  searchError == nil,
+                  let next = response else {
+                automaticSearchState = nil
+                return
+            }
+            guard next.search.window.to > previousWindowEnd else {
+                automaticSearchState = nil
+                return
+            }
+            current = next
+        }
+
+        guard automaticSearchGeneration == token, !Task.isCancelled else { return }
+        automaticSearchState = current.journeys.isEmpty ? .noJourneysInNext24Hours : .foundLater
+    }
+
+    func search(cursor: String? = nil, repeatingLastSearch: Bool = false, isAutomaticSearch: Bool = false, now: Date = Date()) async {
+        if !isAutomaticSearch {
+            automaticSearchGeneration = UUID()
+            automaticSearchState = nil
+        }
         let appendResults = cursor != nil && cursor == response?.pagination.more
         let token = UUID()
         generation = token
@@ -149,7 +238,7 @@ final class JourneyPlannerStore {
         if cursor == nil && !repeatingLastSearch { response = nil }
         let request: PlannerSearchRequest
         var submittedIntent = repeatingLastSearch ? lastIntent : intent
-        submittedIntent?.realtime = useLiveTimes ? "apply" : "ignore"
+        submittedIntent?.realtime = requestedRealtime
         do {
             if repeatingLastSearch, var original = lastRequest {
                 if original.cursor != nil, let displayed = response?.search {
@@ -157,11 +246,18 @@ final class JourneyPlannerStore {
                         time: PlannerTime.iso8601(displayed.time), timeType: displayed.timeType,
                         maxChanges: original.maxChanges, extraConnectionMinutes: original.extraConnectionMinutes,
                         allowedModes: original.allowedModes, limit: original.limit)
+                    #if DEBUG
+                    original.algorithm = lastRequest?.algorithm
+                    #endif
                 }
                 original.cursor = nil
-                original.realtime = useLiveTimes ? "apply" : "ignore"
+                original.realtime = requestedRealtime
                 request = original
-            } else if let cursor, var page = lastRequest {
+            } else if let cursor {
+                guard var page = lastRequest, response != nil,
+                      page.requestedAlgorithm == (usesRaptor ? "raptor" : "original") else {
+                    throw PlannerError(code: "CURSOR_EXPIRED", message: "The routing algorithm has changed. Search again before loading more journeys.")
+                }
                 page.cursor = cursor
                 request = page
             } else {
@@ -173,6 +269,7 @@ final class JourneyPlannerStore {
                 }
                 request = try submittedIntent.request(now: now)
             }
+            try request.validateAlgorithm()
         } catch {
             searchError = error as? PlannerError
             return
@@ -181,14 +278,16 @@ final class JourneyPlannerStore {
         isSearching = true
         defer { if token == generation { isSearching = false } }
         do {
-            let result = try await client.search(request) { [weak self] progress in
+            let returned = try await client.search(request) { [weak self] progress in
                 guard let self, self.generation == token, !Task.isCancelled else { return }
                 self.searchProgress = progress
             }
             try Task.checkCancellation()
             guard generation == token else { return }
+            let result = try returned.verifiedAlgorithm(for: request)
             if appendResults, let previous = response {
-                guard previous.dataset.version == result.dataset.version else {
+                guard previous.dataset.version == result.dataset.version,
+                      (previous.search.algorithm ?? "original") == (result.search.algorithm ?? "original") else {
                     throw PlannerError(code: "CURSOR_EXPIRED", message: "The timetable has changed. Search again for current journeys.")
                 }
                 var ids = Set(previous.journeys.map(\.id))
@@ -221,7 +320,7 @@ final class JourneyPlannerStore {
     private func restoreDisplayedLiveMode() {
         guard let response,
               let mode = response.live?.mode ?? response.search.realtime ?? lastRequest?.realtime else { return }
-        useLiveTimes = mode != "ignore"
+        if mode != "off" { useLiveTimes = mode != "ignore" }
     }
 
     private func revalidateStations(token: UUID) async {

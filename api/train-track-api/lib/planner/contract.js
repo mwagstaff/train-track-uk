@@ -3,11 +3,13 @@ import { createHash } from 'node:crypto';
 export const API_VERSION = 3;
 export const POLICY_VERSION = 'scheduled-v7-tfl-priority';
 export const LIVE_POLICY_VERSION = 'live-v5-tfl-priority';
+export const RAPTOR_POLICY_VERSION = 'raptor-poc-v1';
 export const LIVE_WINDOW_HOURS = 4;
 export const MAX_CHANGES = 5;
 export const DEFAULT_WINDOW_MINUTES = 360;
-export const MODES = ['rail', 'replacementBus', 'walk', 'tubeTransfer'];
+export const MODES = ['rail', 'replacementBus', 'walk', 'tubeTransfer', 'genericTransfer'];
 export const CAPABILITIES = Object.freeze({
+    algorithms: ['original', 'raptor'],
     timeTypes: ['departAfter', 'arriveBy'], maxChanges: MAX_CHANGES,
     allowedModes: MODES, scheduledOnly: false, throughServices: false,
     liveUpdates: true, liveWindowHours: LIVE_WINDOW_HOURS, realtimeModes: ['apply', 'ignore', 'off']
@@ -34,6 +36,9 @@ export function normalizeRequest(body) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) {
         throw new PlannerError('INVALID_REQUEST', 'Supply a journey search.');
     }
+    if (body.algorithm !== undefined && !CAPABILITIES.algorithms.includes(body.algorithm)) {
+        throw new PlannerError('INVALID_REQUEST', 'Choose original or raptor for algorithm.');
+    }
     const origin = typeof body.origin === 'string' ? body.origin.trim().toUpperCase() : '';
     const destination = typeof body.destination === 'string' ? body.destination.trim().toUpperCase() : '';
     if (!/^[A-Z0-9]{3}$/.test(origin) || !/^[A-Z0-9]{3}$/.test(destination)) {
@@ -55,6 +60,11 @@ export function normalizeRequest(body) {
     if (body.realtime !== undefined && !['apply', 'ignore', 'off'].includes(body.realtime)) {
         throw new PlannerError('INVALID_REQUEST', 'Choose apply, ignore or off for realtime.');
     }
+    if (body.algorithm === 'raptor' && (body.timeType !== 'departAfter'
+        || (body.realtime !== undefined && body.realtime !== 'off')
+        || (body.via !== undefined && (!Array.isArray(body.via) || body.via.length > 0)))) {
+        throw new PlannerError('UNSUPPORTED_REQUEST', 'RAPTOR supports scheduled depart-after searches without via stations.');
+    }
     const allowedModes = body.allowedModes === undefined ? MODES : body.allowedModes;
     if (!Array.isArray(allowedModes) || !allowedModes.length || allowedModes.length > MODES.length
         || allowedModes.some(mode => !MODES.includes(mode))) {
@@ -67,12 +77,17 @@ export function normalizeRequest(body) {
         allowedModes: [...new Set(allowedModes)].sort(),
         limit: integer(body.limit, 5, 1, 10, 'limit'),
         windowMinutes: integer(body.windowMinutes, DEFAULT_WINDOW_MINUTES, 15, 360, 'windowMinutes'),
+        ...(body.algorithm === 'raptor' ? { algorithm: 'raptor' } : {}),
         ...(body.realtime && body.realtime !== 'off' ? { realtime: body.realtime } : {})
     };
 }
 
 export function encodeCursor(request, version, offset = 0, liveSnapshotId, tubeSnapshotId) {
-    return Buffer.from(JSON.stringify({ policy: request.realtime ? LIVE_POLICY_VERSION : POLICY_VERSION,
+    if (request.algorithm === 'raptor' && (liveSnapshotId !== undefined || tubeSnapshotId !== undefined)) {
+        throw new PlannerError('INVALID_REQUEST', 'RAPTOR cursors cannot reference live snapshots.');
+    }
+    return Buffer.from(JSON.stringify({ policy: request.algorithm === 'raptor' ? RAPTOR_POLICY_VERSION
+        : request.realtime ? LIVE_POLICY_VERSION : POLICY_VERSION,
         version, request, offset, ...(liveSnapshotId ? { liveSnapshotId } : {}),
         ...(tubeSnapshotId ? { tubeSnapshotId } : {}) })).toString('base64url');
 }
@@ -81,12 +96,14 @@ export function decodeCursor(cursor) {
     try {
         if (typeof cursor !== 'string' || cursor.length > 4096 || !/^[\w-]+$/.test(cursor)) throw new Error();
         const value = JSON.parse(Buffer.from(cursor, 'base64url').toString());
-        if (![POLICY_VERSION, LIVE_POLICY_VERSION].includes(value.policy) || !/^[a-f0-9]{64}$/.test(value.version)) {
+        if (![POLICY_VERSION, LIVE_POLICY_VERSION, RAPTOR_POLICY_VERSION].includes(value.policy) || !/^[a-f0-9]{64}$/.test(value.version)) {
             throw new PlannerError('CURSOR_EXPIRED', 'This search has expired. Please search again.', 410);
         }
         const offset = integer(value.offset, 0, 0, 1000, 'offset');
         const request = normalizeRequest(value.request);
-        if (Boolean(request.realtime) !== (value.policy === LIVE_POLICY_VERSION)
+        if ((request.algorithm === 'raptor') !== (value.policy === RAPTOR_POLICY_VERSION)
+            || Boolean(request.realtime) !== (value.policy === LIVE_POLICY_VERSION)
+            || (request.algorithm === 'raptor' && (value.liveSnapshotId !== undefined || value.tubeSnapshotId !== undefined))
             || (value.liveSnapshotId !== undefined && (!request.realtime || !/^[a-f0-9-]{36}$/.test(value.liveSnapshotId)))
             || (value.tubeSnapshotId !== undefined && (request.realtime || !/^[a-f0-9-]{36}$/.test(value.tubeSnapshotId)))) {
             throw new Error();

@@ -17,6 +17,7 @@ protocol JourneyPlannerServing {
 
 extension JourneyPlannerServing {
     func search(_ request: PlannerSearchRequest, progress: @escaping @MainActor (PlannerSearchProgress) -> Void) async throws -> PlannerSearchResponse {
+        try request.validateAlgorithm()
         progress(.running)
         return try await search(request)
     }
@@ -134,6 +135,7 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
     }
 
     func search(_ request: PlannerSearchRequest, progress: @escaping @MainActor (PlannerSearchProgress) -> Void) async throws -> PlannerSearchResponse {
+        try request.validateAlgorithm()
         let base = try Self.plannerBaseURL(from: selectedBaseURL())
         let body: Data
         if let cursor = request.cursor {
@@ -154,7 +156,8 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
                                            idempotencyKey: idempotencyKey, deadline: deadline)
             } catch let failure as HTTPFailure where failure.status == 404 {
                 progress(.running)
-                return try await send(path: ["search"], body: body, base: base)
+                let result: PlannerSearchResponse = try await send(path: ["search"], body: body, base: base)
+                return try result.verifiedAlgorithm(for: request)
             }
             guard !job.id.isEmpty else { throw invalidJobResponse() }
             jobID = job.id
@@ -165,7 +168,7 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
                 case .completed:
                     guard let result = job.result else { throw invalidJobResponse() }
                     terminal = true
-                    return result
+                    return try result.verifiedAlgorithm(for: request)
                 case .failed:
                     terminal = true
                     throw job.error ?? PlannerError(code: "SEARCH_FAILED", message: "This search could not be completed. Please try again.")

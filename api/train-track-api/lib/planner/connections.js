@@ -1,3 +1,5 @@
+import { MODES } from './contract.js';
+
 // RSPS5046 5.11 describes ALF links between endpoint pairs; its layout has no
 // direction field. The supplied feed contains no separately reversed pairs.
 // Interpret source-backed ALF rows in both directions, retaining their source
@@ -16,6 +18,17 @@ const DAY = 86_400_000;
 const summerTime = new Map();
 const dayNames = new Map();
 
+function calendarDay(day) {
+    let value = dayNames.get(day);
+    if (!value) {
+        const date = new Date(day * DAY);
+        value = { date: date.toISOString().slice(0, 10), weekday: (date.getUTCDay() + 6) % 7 };
+        if (dayNames.size >= 128) dayNames.clear();
+        dayNames.set(day, value);
+    }
+    return value;
+}
+
 function summerTimeBounds(year) {
     let bounds = summerTime.get(year);
     if (!bounds) {
@@ -33,17 +46,10 @@ function localParts(time) {
     const [start, end] = summerTimeBounds(new Date(time).getUTCFullYear());
     const local = time + (time >= start && time < end ? 3_600_000 : 0);
     const day = Math.floor(local / DAY);
-    let date = dayNames.get(day);
-    if (!date) {
-        date = new Date(day * DAY).toISOString().slice(0, 10);
-        dayNames.set(day, date);
-    }
+    const date = calendarDay(day);
     const ofDay = local - day * DAY;
-    return { date, minute: Math.floor(ofDay / MINUTE), second: Math.floor((ofDay % MINUTE) / 1000) };
-}
-
-function dateShift(date, days) {
-    return new Date(Date.parse(`${date}T12:00:00Z`) + days * DAY).toISOString().slice(0, 10);
+    return { date: date.date, weekday: date.weekday, day,
+        minute: Math.floor(ofDay / MINUTE), second: Math.floor((ofDay % MINUTE) / 1000) };
 }
 
 function minutes(value) {
@@ -62,19 +68,27 @@ function localInstants(date, minute) {
     });
 }
 
-function applicable(rule, time) {
+function ruleClock(index, rule) {
+    let clock = index.ruleClocks.get(rule);
+    if (!clock || clock.startTime !== rule.startTime || clock.endTime !== rule.endTime) {
+        clock = { startTime: rule.startTime, endTime: rule.endTime,
+            start: minutes(rule.startTime ?? '0000'), end: minutes(rule.endTime ?? '2359') };
+        index.ruleClocks.set(rule, clock);
+    }
+    return clock;
+}
+
+function applicable(index, rule, time) {
     const parts = localParts(time);
-    const start = minutes(rule.startTime ?? '0000');
-    const end = minutes(rule.endTime ?? '2359');
-    let date = parts.date;
+    const { start, end } = ruleClock(index, rule);
+    let { date, weekday } = parts;
     const minute = parts.minute + parts.second / 60;
     if (end < start) {
-        if (minute <= end) date = dateShift(date, -1);
+        if (minute <= end) ({ date, weekday } = calendarDay(parts.day - 1));
         else if (minute < start) return false;
     } else if (minute < start || minute > end) return false;
     if (rule.startDate && date < rule.startDate) return false;
     if (rule.endDate && date > rule.endDate) return false;
-    const weekday = (new Date(`${date}T12:00:00Z`).getUTCDay() + 6) % 7;
     return !rule.days || rule.days[weekday] === '1';
 }
 
@@ -89,8 +103,17 @@ export function createConnectionIndex(network) {
     const outgoing = new Map();
     const incoming = new Map();
     const tsi = new Map();
+    const tsiStations = new Set(), interchanges = new Map();
     for (const rule of network.rules?.tsi ?? []) {
         addTo(tsi, `${rule.station}|${rule.arrivingOperator}|${rule.departingOperator}`, rule);
+        tsiStations.add(rule.station);
+    }
+    for (const [key, overrides] of tsi) {
+        // These source rules belong to this immutable network. Resolve conflicts
+        // once, rather than allocating a Set on every possible train transfer.
+        const first = overrides[0];
+        interchanges.set(key, new Set(overrides.map(rule => rule.minutes)).size === 1
+            ? { minutes: first.minutes, ruleId: first.id, sourceRef: first.sourceRef } : null);
     }
     function indexLink(rule) {
         const pair = `${rule.origin}|${rule.destination}`;
@@ -110,7 +133,8 @@ export function createConnectionIndex(network) {
             indexLink({ ...rule, origin: rule.destination, destination: rule.origin });
         }
     }
-    return { stations, pairs, outgoing, incoming, tsi, windows: new Map(), ambiguousLinks: new Set() };
+    return { stations, pairs, outgoing, incoming, tsi, tsiStations, interchanges,
+        stationRules: new Map(), ruleClocks: new WeakMap(), windows: new Map(), ambiguousLinks: new Set() };
 }
 
 export function stationAllowance(index, station) {
@@ -128,14 +152,23 @@ function linkAllowances(index, from, to, mode, { originIsEndpoint = false, desti
 }
 
 function sameStationRule(index, from, arrivingOperator, departingOperator) {
-    const overrides = index.tsi.get(`${from}|${arrivingOperator}|${departingOperator}`) ?? [];
-    if (overrides.length) {
-        // Conflicting source rules cannot safely be resolved by their file order.
-        if (new Set(overrides.map(rule => rule.minutes)).size !== 1) return null;
-        return { minutes: overrides[0].minutes, ruleId: overrides[0].id, sourceRef: overrides[0].sourceRef };
+    if (index.tsiStations.has(from)) {
+        const override = index.interchanges.get(`${from}|${arrivingOperator}|${departingOperator}`);
+        if (override !== undefined) return override;
     }
-    const value = allowance(index, from);
-    return value === null ? null : { minutes: value, ruleId: `MSN:${from}`, sourceRef: index.stations.get(from)?.sourceRef };
+    const station = index.stations.get(from);
+    if (!station) return null;
+    const value = station.minimumChangeMinutes, sourceRef = station.sourceRef;
+    let cached = index.stationRules.get(from);
+    // TfL fallback shares the rule index with a small replacement station map.
+    // Cache by the current station value as well as identity so overlays cannot
+    // reuse an allowance from the base network or mutate an earlier result.
+    if (!cached || cached.station !== station || cached.value !== value || cached.sourceRef !== sourceRef) {
+        cached = { station, value, sourceRef, rule: Number.isFinite(value) && value >= 0
+            ? { minutes: value, ruleId: `MSN:${from}`, sourceRef } : null };
+        index.stationRules.set(from, cached);
+    }
+    return cached.rule;
 }
 
 export function effectiveWindows(index, from, to, time) {
@@ -147,9 +180,10 @@ export function effectiveWindows(index, from, to, time) {
     const upper = day + 3 * DAY;
     const boundaries = new Set([lower, upper]);
     for (const rule of rules) {
+        const clock = ruleClock(index, rule);
         for (let offset = -2; offset <= 4; offset++) {
             const date = new Date(day + offset * DAY).toISOString().slice(0, 10);
-            for (const minute of [minutes(rule.startTime ?? '0000'), minutes(rule.endTime ?? '2359')]) {
+            for (const minute of [clock.start, clock.end]) {
                 for (const instant of localInstants(date, minute)) if (instant > lower && instant < upper) boundaries.add(instant);
             }
             for (const instant of localInstants(date, 0)) if (instant > lower && instant < upper) boundaries.add(instant);
@@ -167,7 +201,7 @@ export function effectiveWindows(index, from, to, time) {
     for (let i = 0; i < times.length - 1; i++) {
         const start = times[i];
         const end = times[i + 1];
-        const active = rules.filter(rule => applicable(rule, (start + end) / 2));
+        const active = rules.filter(rule => applicable(index, rule, (start + end) / 2));
         if (!active.length) continue;
         const priority = Math.max(...active.map(rule => rule.priority ?? 1));
         const winners = active.filter(rule => (rule.priority ?? 1) === priority);
@@ -213,7 +247,7 @@ export function resolveConnection(index, {
     }
     const reference = direction === 'latest' ? departure : arrival;
     if (!Number.isFinite(reference)) return null;
-    const modeSet = allowedModes instanceof Set ? allowedModes : new Set(allowedModes ?? ['rail', 'replacementBus', 'walk', 'tubeTransfer']);
+    const modeSet = allowedModes instanceof Set ? allowedModes : new Set(allowedModes ?? MODES);
     let best = null;
     for (const window of effectiveWindows(index, from, to, reference)) {
         const rule = window.rule;
@@ -228,7 +262,7 @@ export function resolveConnection(index, {
             : Math.max(window.start, arrival + exit);
         if (movementStart < window.start || movementStart + travel > window.end) continue;
         // At a priority boundary the interval starting there governs departure.
-        if (!applicable(rule, movementStart)) continue;
+        if (!applicable(index, rule, movementStart)) continue;
         const start = direction === 'latest' ? movementStart - exit : arrival;
         const end = movementStart + travel + entry;
         if ((arrival != null && start < arrival) || (departure != null && end > departure)) continue;
@@ -252,7 +286,7 @@ export function validateFixedLink(index, connection, extraConnectionMinutes = 0,
     if (exitMinutes === null || entryMinutes === null) return false;
     const window = effectiveWindows(index, from, to, movementStart).find(window =>
         window.rule.id === ruleId && window.rule.mode === mode && movementStart >= window.start && movementEnd <= window.end);
-    if (!window || !applicable(window.rule, movementStart)) return false;
+    if (!window || !applicable(index, window.rule, movementStart)) return false;
     return movementEnd - movementStart === window.rule.minutes * MINUTE
         && movementStart >= start + exitMinutes * MINUTE
         && end === movementEnd + (entryMinutes + extraConnectionMinutes) * MINUTE

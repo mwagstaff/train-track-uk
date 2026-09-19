@@ -3,6 +3,32 @@ import XCTest
 final class JourneyPlannerUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
+    #if DEBUG
+    @MainActor
+    func testDebugRaptorToggleDefaultsToOriginalAndHidesLiveTimes() throws {
+        for largeTextAndDarkMode in [false, true] {
+            let app = launch(plannerEnabled: true, largeText: largeTextAndDarkMode, dark: largeTextAndDarkMode)
+            openAddJourney(in: app)
+            let raptor = app.switches["planner.raptor"]
+            scrollTo(raptor, in: app)
+            XCTAssertTrue(raptor.exists)
+            XCTAssertEqual(raptor.value as? String, "0")
+            raptor.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+            XCTAssertEqual(raptor.value as? String, "1")
+            XCTAssertFalse(app.switches["planner.live-times"].exists)
+            XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "RAPTOR is experimental")).firstMatch.exists)
+            attach(largeTextAndDarkMode ? "planner-raptor-dark-large-text" : "planner-raptor", app: app)
+            raptor.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+            XCTAssertEqual(raptor.value as? String, "0")
+            let live = app.switches["planner.live-times"]
+            scrollTo(live, in: app)
+            XCTAssertTrue(live.exists)
+            XCTAssertEqual(live.value as? String, "1")
+            app.terminate()
+        }
+    }
+    #endif
+
     @MainActor
     func testNewJourneyTabAndProfileNavigation() throws {
         for largeTextAndDarkMode in [false, true] {
@@ -138,13 +164,11 @@ final class JourneyPlannerUITests: XCTestCase {
         XCTAssertTrue(failure.waitForExistence(timeout: 10))
         attach("saved-route-per-train-verification", app: app)
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        let options = app.buttons["saved-route.options.KTH-INV"]
         XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 5))
-        scrollTo(options, in: app)
-        options.tap()
-        let toggle = app.switches["Use live times"].firstMatch
-        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
-        XCTAssertTrue(app.buttons["saved-route.journey.saved-ignore-KTH"].firstMatch.waitForExistence(timeout: 10))
+        let later = app.buttons["saved-route.search-later"].firstMatch
+        scrollTo(later, in: app)
+        XCTAssertTrue(later.isHittable)
+        XCTAssertFalse(app.staticTexts["Route updates"].exists)
     }
 
     @MainActor
@@ -206,8 +230,13 @@ final class JourneyPlannerUITests: XCTestCase {
         XCTAssertTrue(favouriteEntry.waitForExistence(timeout: 5))
         favouriteEntry.tap()
         XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.switches["planner.live-times"].exists)
-        XCTAssertFalse(app.buttons["planner.search"].isEnabled)
+        let liveTimes = app.switches["planner.live-times"]
+        scrollTo(liveTimes, in: app)
+        XCTAssertTrue(liveTimes.exists)
+        let search = app.buttons["planner.search"]
+        scrollTo(search, in: app)
+        XCTAssertTrue(search.exists)
+        XCTAssertFalse(search.isEnabled)
         let savedRoute = app.buttons["planner.saved-route"]
         scrollTo(savedRoute, in: app)
         XCTAssertTrue(savedRoute.exists)
@@ -276,45 +305,26 @@ final class JourneyPlannerUITests: XCTestCase {
     }
 
     @MainActor
-    func testEmptyWindowExplainsScopeAndCanSearchEarlierAndLaterAtLargestTextSize() async throws {
+    func testEmptyWindowAutomaticallyFindsLaterTrainsAtLargestTextSize() async throws {
         let app = try await launchEmptyWindowAtLargestTextSize()
-        let interval = app.staticTexts["planner.empty.interval"]
-        scrollTo(interval, in: app)
-        XCTAssertTrue(interval.label.hasPrefix("Departures searched:"))
-        let originalInterval = interval.label
-        XCTAssertEqual(app.staticTexts["planner.empty.change-limit"].label, "Up to 5 changes.")
-        attach("planner-empty-window-context", app: app)
-        let earlier = app.buttons["planner.empty.earlier"]
-        let later = app.buttons["planner.empty.later"]
-        scrollTo(earlier, in: app)
-        XCTAssertTrue(earlier.isHittable)
-        XCTAssertTrue(later.isHittable)
-        attach("planner-empty-window-large-text", app: app)
-        earlier.tap()
-        scrollTo(interval, in: app, towardTop: true)
-        let earlierLoaded = expectation(for: NSPredicate(format: "label != %@", originalInterval), evaluatedWith: interval)
-        await fulfillment(of: [earlierLoaded], timeout: 10)
-        XCTAssertTrue(interval.label.hasPrefix("Departures searched:"))
-        scrollTo(later, in: app)
-        later.tap()
-        scrollTo(interval, in: app, towardTop: true)
-        let originalLoaded = expectation(for: NSPredicate(format: "label == %@", originalInterval), evaluatedWith: interval)
-        await fulfillment(of: [originalLoaded], timeout: 10)
-        scrollTo(later, in: app)
-        later.tap()
         let journey = app.buttons["planner.journey.fixture-later-journey"]
         XCTAssertTrue(journey.waitForExistence(timeout: 10))
-        XCTAssertFalse(app.buttons["planner.empty.later"].exists)
+        let notice = app.staticTexts["planner.automatic-search.found"]
+        scrollTo(notice, in: app, towardTop: true)
+        XCTAssertTrue(notice.exists)
+        XCTAssertTrue(notice.label.contains("next available trains"))
+        attach("planner-empty-window-automatic-later", app: app)
     }
 
     @MainActor
-    func testEmptyWindowAccessibilityAtLargestTextSize() async throws {
+    func testAutomaticEmptyWindowSearchAccessibilityAtLargestTextSize() async throws {
         let app = try await launchEmptyWindowAtLargestTextSize()
-        let earlier = app.buttons["planner.empty.earlier"]
-        scrollTo(earlier, in: app)
-        XCTAssertTrue(earlier.isHittable)
-        XCTAssertTrue(app.buttons["planner.empty.later"].isHittable)
-        attach("planner-empty-window-accessibility", app: app)
+        let journey = app.buttons["planner.journey.fixture-later-journey"]
+        XCTAssertTrue(journey.waitForExistence(timeout: 10))
+        let notice = app.staticTexts["planner.automatic-search.found"]
+        scrollTo(notice, in: app, towardTop: true)
+        XCTAssertTrue(notice.exists)
+        attach("planner-empty-window-automatic-accessibility", app: app)
         // Keep the audit isolated: its scan can invalidate the iOS 26 collection snapshot.
         try app.performAccessibilityAudit(for: [.textClipped, .hitRegion])
     }
@@ -671,6 +681,89 @@ final class JourneyPlannerUITests: XCTestCase {
         app.swipeDown()
         attach("planner-detail-tube-large-text", app: app)
         try app.performAccessibilityAudit(for: [.textClipped, .hitRegion])
+    }
+
+    @MainActor
+    func testGenericTransferWarningAppearsInResultsAndAffectedLeg() async throws {
+        try await assertGenericTransferWarning(largeTextAndDarkMode: false)
+    }
+
+    @MainActor
+    func testGenericTransferWarningAtLargestTextInDarkMode() async throws {
+        try await assertGenericTransferWarning(largeTextAndDarkMode: true)
+    }
+
+    @MainActor
+    func testKnownTubeTransfersDoNotShowGenericWarning() async throws {
+        for (profile, journeyID, transport) in [("details", "fixture-details", "Tube"),
+                                               ("tubetrack", "fixture-tubetrack", "London transport")] {
+            let app = try await launchQueuedFixture(profile: profile)
+            defer { app.terminate() }
+            app.buttons["planner.search"].tap()
+            guard app.navigationBars["Journeys"].waitForExistence(timeout: 10) else {
+                XCTFail("\(profile) search did not open results.")
+                return
+            }
+            let journey = app.buttons["planner.journey.\(journeyID)"]
+            scrollTo(journey, in: app)
+            guard journey.exists && journey.isHittable else {
+                XCTFail("\(profile) journey did not become visible in results.")
+                return
+            }
+            XCTAssertFalse(journey.label.contains("Warning: check transfer options"))
+            journey.tap()
+            guard app.navigationBars["Journey details"].waitForExistence(timeout: 10) else {
+                XCTFail("\(profile) journey details did not open.")
+                return
+            }
+            let transfer = app.staticTexts["2. \(transport) from London Victoria to London Euston"]
+            scrollTo(transfer, in: app)
+            guard transfer.isHittable else {
+                XCTFail("\(profile) transfer did not become visible in journey details.")
+                return
+            }
+            XCTAssertFalse(app.descendants(matching: .any)["planner.transfer-warning.1"].firstMatch.exists)
+            attach("planner-\(profile)-without-generic-warning", app: app)
+        }
+    }
+
+    @MainActor
+    private func assertGenericTransferWarning(largeTextAndDarkMode: Bool) async throws {
+        let app = try await launchQueuedFixture(profile: "generic-transfer", largeText: largeTextAndDarkMode,
+            dark: largeTextAndDarkMode)
+        app.buttons["planner.search"].tap()
+        guard app.navigationBars["Journeys"].waitForExistence(timeout: 10) else {
+            XCTFail("Generic-transfer search did not open results.")
+            return
+        }
+        let journey = app.buttons["planner.journey.fixture-generic-transfer"]
+        scrollTo(journey, in: app)
+        guard journey.exists && journey.isHittable else {
+            XCTFail("Generic-transfer journey did not become visible in results.")
+            return
+        }
+        XCTAssertTrue(journey.label.contains("Warning: check transfer options"))
+        attach(largeTextAndDarkMode ? "planner-generic-transfer-results-dark-large-text" : "planner-generic-transfer-results", app: app)
+        journey.tap()
+        guard app.navigationBars["Journey details"].waitForExistence(timeout: 10) else {
+            XCTFail("Generic-transfer journey details did not open.")
+            return
+        }
+        let warning = app.descendants(matching: .any)["planner.transfer-warning.1"].firstMatch
+        scrollTo(warning, in: app)
+        guard warning.exists else {
+            XCTFail("Generic-transfer warning did not appear in journey details.")
+            return
+        }
+        XCTAssertTrue(warning.isHittable)
+        XCTAssertTrue(warning.label.contains("Warning: check transfer options"))
+        XCTAssertTrue(warning.label.contains("No specific transport service is listed for this transfer."))
+        XCTAssertTrue(warning.label.contains("Check your options before travelling. In London, you may need a taxi or night bus when the Tube is closed."))
+        XCTAssertTrue(app.staticTexts["2. Transfer from London Victoria to London Euston"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["planner.transfer-warning.0"].firstMatch.exists)
+        XCTAssertFalse(app.descendants(matching: .any)["planner.transfer-warning.3"].firstMatch.exists)
+        attach(largeTextAndDarkMode ? "planner-generic-transfer-details-dark-large-text" : "planner-generic-transfer-details", app: app)
+        try app.performAccessibilityAudit(for: [.hitRegion])
     }
 
     @MainActor

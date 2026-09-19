@@ -275,17 +275,35 @@ struct SavedRoutePlannerTests {
         #expect(state.progressPresentation(at: now)?.title == "Waiting to retry…")
     }
 
-    @Test func modeOverrideUsesSeparateCacheWithoutChangingSavedStops() async {
+    @Test func laterSearchUsesTheFollowingSixHourWindowWithoutChangingSavedStops() async throws {
         let client = RouteBoardStub()
+        client.result = try result()
         let store = SavedRoutePlannerStore(client: client, now: { now })
         let route = group(["KTH", "VIC", "INV"])
-        await store.refresh(groups: [route])
-        store.setLiveTimes(false, for: route)
-        #expect(store.state(for: route).board == nil)
-        await store.refresh(groups: [route])
-        #expect(client.requests.map { $0[0].realtime } == ["apply", "ignore"])
-        #expect(client.requests.allSatisfy { $0[0].via == ["VIC"] })
+        await store.searchLater(for: route)
+        let query = try #require(client.requests.first?.first)
+        #expect(query.realtime == "apply")
+        #expect(query.time == PlannerTime.iso8601(now.addingTimeInterval(6 * 60 * 60)))
+        #expect(query.via == ["VIC"])
+        #expect(store.laterState(for: route)?.isPending == false)
         #expect(route.stationSequence.map(\.crs) == ["KTH", "VIC", "INV"])
+    }
+
+    @Test func laterSearchRetriesAutomaticallyAndCanBeRetriedManually() async throws {
+        let client = RouteBoardStub()
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "VIC"])
+        client.failure = PlannerError(code: "NETWORK", message: "Offline")
+
+        await store.searchLater(for: route)
+        #expect(client.requests.count == 2)
+        #expect(store.laterState(for: route)?.message == "Offline")
+
+        client.failure = nil
+        client.result = try result()
+        await store.retryLater(for: route)
+        #expect(client.requests.count == 3)
+        #expect(store.laterState(for: route)?.result != nil)
     }
 
     @Test func earlierDeparturesDisappearFromCachedReadyRows() throws {

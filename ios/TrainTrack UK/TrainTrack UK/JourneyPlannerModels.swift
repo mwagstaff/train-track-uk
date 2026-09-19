@@ -42,6 +42,7 @@ struct PlannerStatus: Decodable {
     struct Capabilities: Decodable {
         let timeTypes: [String]
         let maxChanges: Int
+        var algorithms: [String]? = nil
     }
 }
 
@@ -55,6 +56,8 @@ struct PlannedJourney: Codable, Identifiable, Equatable {
     var scheduledDeparture: Date? = nil
     var scheduledArrival: Date? = nil
     var warnings: [String]? = nil
+
+    var requiresTransferCheck: Bool { legs.contains(where: \.requiresTransferCheck) }
 
     struct Leg: Codable, Equatable {
         let kind: String
@@ -80,6 +83,9 @@ struct PlannedJourney: Codable, Identifiable, Equatable {
 
         var isTubeTransfer: Bool { mode == "tubeTransfer" || mode == "tube" }
         var isTrainChange: Bool { kind == "transfer" && mode == "interchange" }
+        var requiresTransferCheck: Bool {
+            kind == "transfer" && mode == "genericTransfer" && localJourney?.isAvailable != true
+        }
 
         var heading: String {
             if isTrainChange { return "Change trains at \(from.name)" }
@@ -269,6 +275,15 @@ struct PlannerSearchResponse: Decodable {
         let searchTruncated: Bool
         var maxChanges: Int? = nil
         var realtime: String? = nil
+        var algorithm: String? = nil
+    }
+
+    func verifiedAlgorithm(for request: PlannerSearchRequest) throws -> Self {
+        let actual = search.algorithm ?? "original"
+        guard actual == request.requestedAlgorithm else {
+            throw PlannerError(code: "ALGORITHM_MISMATCH", message: "The server did not use the selected routing algorithm. Check that the API supports RAPTOR, then search again.")
+        }
+        return self
     }
 
     struct Window: Decodable {
@@ -347,10 +362,28 @@ struct PlannerSearchRequest: Encodable, Equatable {
     let timeType: String
     var maxChanges: Int? = nil
     var extraConnectionMinutes = 0
-    var allowedModes = ["rail", "replacementBus", "walk", "tubeTransfer"]
+    var allowedModes = ["rail", "replacementBus", "walk", "tubeTransfer", "genericTransfer"]
     var limit = 5
     var cursor: String?
     var realtime: String? = nil
+    #if DEBUG
+    var algorithm: String? = nil
+    #endif
+
+    var requestedAlgorithm: String {
+        #if DEBUG
+        return algorithm ?? "original"
+        #else
+        return "original"
+        #endif
+    }
+
+    func validateAlgorithm() throws {
+        guard requestedAlgorithm == "raptor" else { return }
+        guard timeType == "departAfter", realtime == "off" else {
+            throw PlannerError(code: "INVALID_REQUEST", message: "RAPTOR testing supports Depart now or Depart at, using timetable times only.")
+        }
+    }
 }
 
 enum PlannerTimeMode: String, Codable, CaseIterable, Identifiable {
@@ -372,6 +405,9 @@ struct PlannerSearchIntent: Codable, Equatable {
     let timeMode: PlannerTimeMode
     let explicitTime: Date?
     var realtime: String? = nil
+    #if DEBUG
+    var algorithm: String? = nil
+    #endif
 
     func request(now: Date) throws -> PlannerSearchRequest {
         let time: Date
@@ -383,14 +419,26 @@ struct PlannerSearchIntent: Codable, Equatable {
             }
             time = explicitTime
         }
-        return PlannerSearchRequest(
+        var request = PlannerSearchRequest(
             origin: origin.crs, destination: destination.crs,
-            time: PlannerTime.iso8601(time), timeType: timeMode.apiValue, realtime: realtime ?? "apply"
+            time: PlannerTime.iso8601(time), timeType: timeMode.apiValue,
+            realtime: realtime == "off" ? "apply" : realtime ?? "apply"
         )
+        #if DEBUG
+        if algorithm == "raptor" {
+            request.algorithm = "raptor"
+            request.realtime = "off"
+        }
+        #endif
+        try request.validateAlgorithm()
+        return request
     }
 
     func matches(_ other: Self) -> Bool {
-        origin.crs == other.origin.crs && destination.crs == other.destination.crs
+        #if DEBUG
+        guard (algorithm ?? "original") == (other.algorithm ?? "original") else { return false }
+        #endif
+        return origin.crs == other.origin.crs && destination.crs == other.destination.crs
             && timeMode == other.timeMode
             && (timeMode == .now || explicitTime == other.explicitTime)
     }

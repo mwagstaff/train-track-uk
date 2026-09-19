@@ -177,7 +177,8 @@ test('cache keys distinguish exact times and page offsets; repeated result retai
     const execution = { onTelemetry: value => telemetry.push(value) };
     const first = await instance.search({ request: normalized }, undefined, execution);
     const repeated = await instance.search({ request: normalized }, undefined, execution);
-    assert.deepEqual(telemetry, [{ cacheStatus: 'miss', datasetVersion: version }, { cacheStatus: 'hit', datasetVersion: version }]);
+    assert.deepEqual(telemetry, [{ algorithm: 'original' }, { cacheStatus: 'miss', datasetVersion: version },
+        { algorithm: 'original' }, { cacheStatus: 'hit', datasetVersion: version }]);
     assert.equal(first.cacheStatus, undefined, 'Internal cache observations must not change the public response');
     assert.equal(calls, 1);
     assert.equal(first.journeys[0].id, repeated.journeys[0].id);
@@ -356,7 +357,7 @@ test('bounded queue rejects overload and an aborted queued request does not exec
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
     const filename = path.join(directory, 'slow-worker.mjs');
     await fs.writeFile(filename, "import {parentPort} from 'node:worker_threads'; parentPort.on('message',m=>setTimeout(()=>parentPort.postMessage({id:m.id,result:{ok:true}}),200));");
-    const service = new PlannerService({ ...config, maxQueue: 2, timeoutMs: 2000 }, { workerURL: new URL(`file://${filename}`) });
+    const service = new PlannerService({ ...config, workerCount: 1, maxQueue: 2, timeoutMs: 2000 }, { workerURL: new URL(`file://${filename}`) });
     t.after(() => service.close());
     const first = service.status();
     const controller = new AbortController();

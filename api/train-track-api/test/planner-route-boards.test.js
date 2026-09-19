@@ -200,6 +200,17 @@ test('new contract validates bounded batches, ordered required vias and stable c
     }
 });
 
+test('a time-locked route board preserves its requested six-hour departure window', () => {
+    const later = new Date(start + 6 * 60 * 60 * 1000).toISOString();
+    const [route] = normalizeRouteBoards({ routes: [{ id: 'later', origin: 'KTH', destination: 'VIC', time: later }] }, start);
+    const key = routeBoardKey(route.request, version, start, { timeLocked: route.timeLocked });
+    assert.equal(route.timeLocked, true);
+    assert.equal(route.request.time, later);
+    assert.equal(key.request.time, later);
+    assert.equal(key.request.windowMinutes, 360);
+    assert.notEqual(key.key, routeBoardKey(route.request, version, start).key);
+});
+
 test('clients and polling share one profile; 20-second app polls do not recalculate routes', async t => {
     const f = fixture(t);
     const first = await f.manager.get(body, { client: 'one', network: 'network' });
@@ -561,7 +572,7 @@ test('interactive searches take the next worker slot ahead of queued route warmi
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'route-board-priority-'));
     const filename = path.join(directory, 'worker.mjs');
     await fs.writeFile(filename, "import {parentPort} from 'node:worker_threads'; parentPort.on('message',m=>setTimeout(()=>parentPort.postMessage({id:m.id,result:m.payload}),40));");
-    const service = new PlannerService({ ...plannerConfig({}), timeoutMs: 3000 }, { workerURL: pathToFileURL(filename) });
+    const service = new PlannerService({ ...plannerConfig({}), workerCount: 1, timeoutMs: 3000 }, { workerURL: pathToFileURL(filename) });
     t.after(async () => { service.close(); await fs.rm(directory, { recursive: true, force: true }); });
     const order = [];
     const run = (label, priority) => service.call('search', { label }, { priority }).then(() => { order.push(label); });

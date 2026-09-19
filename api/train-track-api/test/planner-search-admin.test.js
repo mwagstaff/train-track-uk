@@ -26,13 +26,15 @@ test('admin search page delegates sorting, filters and pagination to the reposit
     assert.match(res.html, /26–50 of 65/);
 });
 
-test('every displayed heading is sortable and latest searches sort first by default', () => {
+test('linked headings are sortable, Algorithm is a plain heading and latest searches sort first by default', () => {
     const html = render(data());
     for (const field of ['origin', 'destination', 'startedAt', 'finishedAt', 'status', 'cacheStatus', 'durationMs', 'source']) {
         assert.match(html, new RegExp(`sort=${field}&amp;direction=asc&amp;page=1`));
     }
     assert.match(html, /aria-sort="descending"[^>]*>\s*<a[^>]*sort=startedAt/);
     assert.match(html, /Sort From by station code, ascending/);
+    assert.match(html, /<th scope="col">Algorithm<\/th>/);
+    assert.equal(html.includes('sort=algorithm'), false);
     assert.match(html, /role="region" aria-label="Journey planner search history, scroll horizontally for all columns" tabindex="0"/);
 });
 
@@ -58,6 +60,23 @@ test('rows show station names, UK completion times and distinguish zero results 
     assert.match(html, /<small>0 journeys<\/small>/);
     assert.match(html, /cache-hit">Hit/);
     assert.match(html, /1\.2 s/);
+});
+
+test('algorithm column distinguishes RAPTOR, original and legacy records without reflecting unknown values', () => {
+    const html = render(data({ rows: [
+        { algorithm: 'raptor' },
+        { algorithm: 'original' },
+        {},
+        { algorithm: 'RAPTOR' },
+        { algorithm: '<script>private-algorithm</script>' }
+    ].map(row => ({ source: 'search', ...row })) }));
+    const body = html.match(/<tbody>([\s\S]*?)<\/tbody>/)[1];
+    assert.equal((body.match(/<td>RAPTOR<\/td>/g) || []).length, 1);
+    assert.equal((body.match(/<td>Original<\/td>/g) || []).length, 2, 'Historical rows used the original engine');
+    assert.equal((body.match(/<td>Unknown<\/td>/g) || []).length, 2);
+    assert.equal(html.includes('private-algorithm'), false);
+    assert.equal(html.includes('<script>'), false);
+    for (const row of body.matchAll(/<tr>([\s\S]*?)<\/tr>/g)) assert.equal((row[1].match(/<td(?:\s|>)/g) || []).length, 9);
 });
 
 test('pending, cancelled, expired and failed records have truthful status and missing durations', () => {
@@ -86,6 +105,7 @@ test('empty samples show unavailable statistics rather than misleading zero late
     const stats = { total: 0, pending: 0, other: 0, completed: 0, success: 0, fail: 0, cacheHits: 0, cacheMisses: 0, cacheUnknown: 0, p99DurationMs: null, maxDurationMs: null, averageDurationMs: null };
     const html = render(data({ rows: [], stats, total: 0 }));
     assert.match(html, /No searches in this period/);
+    assert.match(html, /<td colspan="9" class="empty">/);
     assert.match(html, /<dd>— \/ —<\/dd>/);
     assert.match(html, /<dt>99th percentile<\/dt><dd>—<\/dd>/);
     assert.match(html, /0–0 of 0/);

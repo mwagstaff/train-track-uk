@@ -1,5 +1,5 @@
 import { createConnectionIndex, resolveConnection, validateFixedLink, CONNECTION_POLICY } from './connections.js';
-import { MAX_CHANGES, DEFAULT_WINDOW_MINUTES } from './contract.js';
+import { MAX_CHANGES, DEFAULT_WINDOW_MINUTES, MODES } from './contract.js';
 import { liveCall, liveLeg } from './live-network.js';
 import { validateTubeConnection, tubeBoardings } from './tube-routing.js';
 import { ROUTING_PROFILE_FIELDS } from './telemetry.js';
@@ -7,7 +7,7 @@ import { ROUTING_PROFILE_FIELDS } from './telemetry.js';
 const MINUTE = 60_000;
 const indexes = new WeakMap();
 export const ROUTING_POLICY_VERSION = 'scheduled-round-profile-tfl-priority-v3';
-export const DEFAULT_MODES = ['rail', 'replacementBus', 'walk', 'tubeTransfer'];
+export const DEFAULT_MODES = MODES;
 
 function routePhaseMetrics() {
     return Object.fromEntries(ROUTING_PROFILE_FIELDS.map(name => [name, 0]));

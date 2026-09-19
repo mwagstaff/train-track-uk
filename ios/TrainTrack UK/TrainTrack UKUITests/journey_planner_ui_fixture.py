@@ -62,6 +62,13 @@ def iso(value):
     return value.isoformat().replace("+00:00", "Z")
 
 
+def generic_transfer_journey():
+    journey = detail_journey()
+    journey["id"] = "fixture-generic-transfer"
+    journey["legs"][1]["mode"] = "genericTransfer"
+    return journey
+
+
 def tubetrack_journey():
     journey = detail_journey()
     journey.update(id="fixture-tubetrack", changes=4)
@@ -123,6 +130,8 @@ def search_result(request, profile=None):
                      "durationMinutes": 360, "changes": 3, "legs": legs}]
     if profile in ["details", "live-details"]:
         journeys = [detail_journey(LIVE_START if profile == "live-details" else START)]
+    if profile == "generic-transfer":
+        journeys = [generic_transfer_journey()]
     if profile == "tubetrack":
         journeys = [tubetrack_journey()]
     return {
@@ -296,6 +305,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(200, {"cancelled": sum(job["cancelled"] for job in JOBS.values() if job["profile"] == profile)})
         elif url.path.endswith("/journeys/fixture-tubetrack"):
             self.respond(200, {"journey": tubetrack_journey(), "dataset": DATASET})
+        elif url.path.endswith("/journeys/fixture-generic-transfer"):
+            self.respond(200, {"journey": generic_transfer_journey(), "dataset": DATASET})
         elif url.path.endswith("/journeys/fixture-details"):
             self.respond(200, {"journey": detail_journey(LIVE_START if url.path.startswith("/live-details/") else START), "dataset": DATASET})
         elif url.path.startswith("/live-details/") and "/departures/from/" in url.path:
@@ -392,6 +403,9 @@ class Handler(BaseHTTPRequestHandler):
         # Fail if the app reintroduces its old cap or sends extra paging fields.
         if "maxChanges" in request or ("cursor" in request and set(request) != {"cursor"}):
             self.respond(400, {"error": {"code": "INVALID_REQUEST", "message": "Expected server defaults or cursor-only paging."}})
+            return
+        if path.startswith("/generic-transfer/") and "cursor" not in request and "genericTransfer" not in request.get("allowedModes", []):
+            self.respond(400, {"error": {"code": "INVALID_REQUEST", "message": "The app must explicitly request generic transfers."}})
             return
         if path.endswith("/search"):
             self.respond(200, search_result(request))

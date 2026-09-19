@@ -21,27 +21,18 @@ struct SavedRouteBoardView: View {
     let isInteractive: Bool
     let isExpanded: Bool
     let onToggleExpanded: () -> Void
-    let usesLiveTimes: Binding<Bool>?
+    let progressTitle: String?
+    let onRetry: (() -> Void)?
     @State private var selectedJourney: PlannerJourneyResponse?
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: state.isPending ? 1 : 20)) { context in
             VStack(alignment: .leading, spacing: 0) {
-                if let usesLiveTimes {
-                    DisclosureGroup("Journey options") {
-                        Toggle("Use live times", isOn: usesLiveTimes)
-                            .accessibilityIdentifier("saved-route.live-times")
-                        Text("When off, journeys use scheduled times and keep live disruption warnings.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }.font(.subheadline).padding(16)
-                        .accessibilityIdentifier("saved-route.options.\(routeKey)")
-                        .disabled(!isInteractive)
-                }
                 if let progress = state.progressPresentation(at: context.date) {
                     HStack(alignment: .top, spacing: 10) {
                         ProgressView().controlSize(.small).accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(progress.title).font(.subheadline)
+                            Text(progressTitle ?? progress.title).font(.subheadline)
                             ForEach(progress.details, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
                         }.fixedSize(horizontal: false, vertical: true)
                     }.padding(16)
@@ -103,8 +94,21 @@ struct SavedRouteBoardView: View {
                         }.font(.caption).padding(16)
                     }
                 } else if !state.isPending {
-                    Text("Journey options are temporarily unavailable.")
-                        .font(.subheadline).foregroundStyle(.secondary).padding(16)
+                    if state.message == nil {
+                        Text("Journey options are temporarily unavailable.")
+                            .font(.subheadline).foregroundStyle(.secondary).padding(16)
+                    }
+                    if let onRetry, isInteractive {
+                        Button(action: onRetry) {
+                            Label("Try again", systemImage: "arrow.clockwise")
+                                .font(.subheadline.weight(.medium))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 13)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                        .accessibilityIdentifier("saved-route.retry.\(routeKey)")
+                    }
                 }
             }
         }

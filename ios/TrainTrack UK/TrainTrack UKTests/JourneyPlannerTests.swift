@@ -110,6 +110,230 @@ struct JourneyPlannerTests {
         #expect(json["maxChanges"] as? Int == 2)
     }
 
+    @Test func defaultSearchRequestsIncludeGenericTransfers() throws {
+        let request = try intent(mode: .now).request(now: now)
+        let body = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+        #expect(body["allowedModes"] as? [String] == ["rail", "replacementBus", "walk", "tubeTransfer", "genericTransfer"])
+    }
+
+    @Test func algorithmMetadataRemainsCompatibleWithOlderOriginalServers() throws {
+        let request = try intent(mode: .now).request(now: now)
+        let old = try result(ids: [])
+        #expect(old.search.algorithm == nil)
+        #expect(try old.verifiedAlgorithm(for: request).journeys.isEmpty)
+        #expect(try result(ids: [], algorithm: "original").verifiedAlgorithm(for: request).search.algorithm == "original")
+        #expect(throws: PlannerError.self) { try result(ids: [], algorithm: "raptor").verifiedAlgorithm(for: request) }
+        let json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+        #expect(json["algorithm"] == nil)
+        #expect(json["realtime"] as? String == "apply")
+    }
+
+    @Test func algorithmCapabilitiesAreOptionalForOlderServers() throws {
+        let old = try JSONDecoder().decode(PlannerStatus.Capabilities.self, from: Data(#"{"timeTypes":["departAfter","arriveBy"],"maxChanges":5}"#.utf8))
+        #expect(old.algorithms == nil)
+        let current = try JSONDecoder().decode(PlannerStatus.Capabilities.self, from: Data(#"{"timeTypes":["departAfter","arriveBy"],"maxChanges":5,"algorithms":["original","raptor"]}"#.utf8))
+        #expect(current.algorithms == ["original", "raptor"])
+    }
+
+    #if DEBUG
+    @Test func raptorIntentIsExplicitScheduledOnlyAndRejectsArriveBy() throws {
+        var selected = intent(mode: .now)
+        selected.algorithm = "raptor"
+        selected.realtime = "apply"
+        let request = try selected.request(now: now)
+        let json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+        #expect(json["algorithm"] as? String == "raptor")
+        #expect(json["realtime"] as? String == "off")
+        #expect(json["timeType"] as? String == "departAfter")
+        #expect(!selected.matches(intent(mode: .now)))
+        var arriveBy = intent(mode: .arriveBy, date: now.addingTimeInterval(3600))
+        arriveBy.algorithm = "raptor"
+        #expect(throws: PlannerError.self) { try arriveBy.request(now: now) }
+        var live = request
+        live.realtime = "apply"
+        #expect(throws: PlannerError.self) { try live.validateAlgorithm() }
+    }
+
+    @Test func raptorStorePinsPaginationAndKeepsSeparateRecentAlgorithms() async throws {
+        let service = PlannerStubService()
+        service.results = [try result(ids: ["raptor"], more: "raptor-page", algorithm: "raptor"),
+                           try result(ids: ["second"], algorithm: "raptor"), try result(ids: ["original"], algorithm: "original")]
+        let store = makeStore(client: service)
+        store.origin = origin
+        store.destination = destination
+        #expect(!store.useRaptor)
+        store.useRaptor = true
+        await store.search(now: now)
+        await store.search(cursor: "raptor-page", now: now.addingTimeInterval(60))
+        #expect(service.requests.map(\.algorithm) == ["raptor", "raptor"])
+        #expect(service.requests.map(\.realtime) == ["off", "off"])
+        #expect(service.requests[1].time == PlannerTime.iso8601(now))
+        #expect(service.requests[1].cursor == "raptor-page")
+        #expect(store.response?.journeys.map(\.id) == ["raptor", "second"])
+        store.useRaptor = false
+        #expect(store.response == nil)
+        await store.search(cursor: "raptor-page", now: now)
+        #expect(service.requests.count == 2)
+        #expect(store.searchError?.code == "CURSOR_EXPIRED")
+        await store.search(now: now)
+        #expect(service.requests.last?.algorithm == nil)
+        #expect(service.requests.last?.realtime == "apply")
+        #expect(store.recents.searches.count == 2)
+        let savedRaptor = try #require(store.recents.searches.first { $0.intent.algorithm == "raptor" })
+        store.restore(savedRaptor)
+        #expect(store.useRaptor)
+        #expect(store.intent?.algorithm == "raptor")
+        #expect(store.response == nil)
+    }
+
+    @Test func switchingAlgorithmIgnoresAnOldCompletionAndRejectsUnsupportedTime() async throws {
+        let service = PlannerStubService()
+        service.holdSearches = true
+        let store = makeStore(client: service)
+        store.origin = origin
+        store.destination = destination
+        let pending = Task { await store.search(now: now) }
+        for _ in 0..<100 where service.pending.isEmpty { await Task.yield() }
+        #expect(service.pending.count == 1)
+        store.useRaptor = true
+        service.pending[0].resume(returning: try result(ids: ["stale-original"]))
+        await pending.value
+        #expect(!store.isSearching)
+        #expect(store.response == nil)
+        #expect(store.recents.searches.isEmpty)
+        store.timeMode = .arriveBy
+        store.explicitTime = now.addingTimeInterval(3600)
+        #expect(store.validationMessage(now: now)?.contains("Depart now or Depart at") == true)
+        await store.search(now: now)
+        #expect(service.requests.count == 1)
+        #expect(store.searchError?.code == "INVALID_REQUEST")
+    }
+
+    @Test func raptorStoreRejectsMissingOrMismatchedActualAlgorithm() async throws {
+        let service = PlannerStubService()
+        service.results = [try result(ids: ["unknown"]), try result(ids: ["original"], algorithm: "original")]
+        let store = makeStore(client: service)
+        store.origin = origin
+        store.destination = destination
+        store.useRaptor = true
+        for _ in 0..<2 {
+            await store.search(now: now)
+            #expect(store.searchError?.code == "ALGORITHM_MISMATCH")
+            #expect(store.response == nil)
+            #expect(store.recents.searches.isEmpty)
+        }
+    }
+
+    @Test func raptorRequiresExplicitServerCapability() async throws {
+        let service = PlannerStubService()
+        let store = makeStore(client: service)
+        store.origin = origin
+        store.destination = destination
+        store.useRaptor = true
+        for algorithms in [nil, ["original"], ["original", "raptor"]] as [[String]?] {
+            var capabilities: [String: Any] = ["timeTypes": ["departAfter", "arriveBy"], "maxChanges": 5]
+            if let algorithms { capabilities["algorithms"] = algorithms }
+            let status: [String: Any] = ["available": true, "apiVersion": 3, "capabilities": capabilities]
+            service.statusValue = try PlannerTime.decoder().decode(PlannerStatus.self, from: JSONSerialization.data(withJSONObject: status))
+            await store.loadStatus()
+            if algorithms?.contains("raptor") == true {
+                #expect(store.validationMessage(now: now) == nil)
+            } else {
+                #expect(store.validationMessage(now: now)?.contains("has not enabled RAPTOR") == true)
+                await store.search(now: now)
+                #expect(service.requests.isEmpty)
+            }
+        }
+    }
+
+    @Test func raptorClientVerifiesBothQueuedAndLegacyResponsesWithoutFallback() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); PlannerStubProtocol.handler = nil }
+        let client = JourneyPlannerClient(session: session, selectedBaseURL: { "https://example.test/api/v2" })
+        var selected = intent(mode: .now)
+        selected.algorithm = "raptor"
+        let request = try selected.request(now: now)
+        var json = try #require(JSONSerialization.jsonObject(with: Data(Self.emptyResult.utf8)) as? [String: Any])
+        var search = try #require(json["search"] as? [String: Any])
+        search["algorithm"] = "raptor"
+        json["search"] = search
+        let good = try JSONSerialization.data(withJSONObject: json)
+        for queued in [true, false] {
+            for responseData in [Data(Self.emptyResult.utf8), good] {
+                var paths: [String] = []
+                PlannerStubProtocol.handler = { submitted in
+                    paths.append(submitted.url!.path)
+                    if queued {
+                        let body = try #require(JSONSerialization.jsonObject(with: PlannerStubProtocol.body(submitted)) as? [String: Any])
+                        #expect(body["algorithm"] as? String == "raptor")
+                        #expect(body["realtime"] as? String == "off")
+                        let envelope: [String: Any] = ["id": "job-1", "status": "completed", "result": try JSONSerialization.jsonObject(with: responseData)]
+                        return (202, try JSONSerialization.data(withJSONObject: envelope))
+                    }
+                    if submitted.url?.path.hasSuffix("search-jobs") == true { return (404, Data()) }
+                    return (200, responseData)
+                }
+                if responseData == good {
+                    #expect(try await client.search(request).search.algorithm == "raptor")
+                } else {
+                    do {
+                        _ = try await client.search(request)
+                        Issue.record("An older original-only API must not appear to return RAPTOR results.")
+                    } catch let error as PlannerError { #expect(error.code == "ALGORITHM_MISMATCH") }
+                }
+                #expect(paths.count == (queued ? 1 : 2))
+            }
+        }
+        var page = request
+        page.cursor = "raptor-cursor"
+        PlannerStubProtocol.handler = { submitted in
+            let body = try #require(JSONSerialization.jsonObject(with: PlannerStubProtocol.body(submitted)) as? [String: String])
+            #expect(body == ["cursor": "raptor-cursor"])
+            let envelope: [String: Any] = ["id": "job-1", "status": "completed", "result": try JSONSerialization.jsonObject(with: good)]
+            return (202, try JSONSerialization.data(withJSONObject: envelope))
+        }
+        #expect(try await client.search(page).search.algorithm == "raptor")
+    }
+
+    @Test func raptorClientRejectsUnsupportedRequestsBeforeNetworkAdmission() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); PlannerStubProtocol.handler = nil }
+        let client = JourneyPlannerClient(session: session, selectedBaseURL: { "https://example.test/api/v2" })
+        var selected = intent(mode: .now)
+        selected.algorithm = "raptor"
+        let valid = try selected.request(now: now)
+        var live = valid
+        live.realtime = "apply"
+        let arriveBy = PlannerSearchRequest(origin: origin.crs, destination: destination.crs,
+            time: PlannerTime.iso8601(now), timeType: "arriveBy", realtime: "off", algorithm: "raptor")
+        var requests = 0
+        PlannerStubProtocol.handler = { _ in
+            requests += 1
+            return (200, Self.job("completed"))
+        }
+        for request in [live, arriveBy] {
+            do {
+                _ = try await client.search(request)
+                Issue.record("Unsupported RAPTOR options must fail before starting a job.")
+            } catch let error as PlannerError { #expect(error.code == "INVALID_REQUEST") }
+        }
+        #expect(requests == 0)
+    }
+    #else
+    @Test func releaseIgnoresPersistedDebugAlgorithmAndDoesNotEncodeIt() throws {
+        let saved: [String: Any] = ["origin": ["crs": "KTH", "name": "Kent House", "aliases": []],
+                                  "destination": ["crs": "VIC", "name": "Victoria", "aliases": []],
+                                  "timeMode": "now", "realtime": "off", "algorithm": "raptor"]
+        let selected = try JSONDecoder().decode(PlannerSearchIntent.self, from: JSONSerialization.data(withJSONObject: saved))
+        let request = try selected.request(now: now)
+        let body = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
+        #expect(body["algorithm"] == nil)
+        #expect(body["realtime"] as? String == "apply")
+        #expect(request.requestedAlgorithm == "original")
+        #expect(!makeStore().usesRaptor)
+    }
+    #endif
+
     @Test func responseChangeLimitIsOptionalForOlderServers() throws {
         let old = try PlannerTime.decoder().decode(PlannerSearchResponse.self, from: Data(Self.emptyResult.utf8))
         #expect(old.search.maxChanges == nil)
@@ -379,6 +603,54 @@ struct JourneyPlannerTests {
             == ["Some live rail updates could not be retrieved."])
     }
 
+    @Test func genericTransferWarningsDecodeWithoutAssumingATubeService() throws {
+        let text = #"{"kind":"transfer","mode":"genericTransfer","from":{"crs":"VIC","name":"London Victoria"},"to":{"crs":"EUS","name":"London Euston"},"departure":"2026-09-19T04:18:00Z","arrival":"2026-09-19T05:07:00Z"}"#
+        let leg = try PlannerTime.decoder().decode(PlannedJourney.Leg.self, from: Data(text.utf8))
+        #expect(leg.requiresTransferCheck)
+        #expect(!leg.isTubeTransfer)
+        #expect(leg.heading == "Transfer from London Victoria to London Euston")
+        let journey = PlannedJourney(id: "generic", departure: leg.departure, arrival: leg.arrival,
+            durationMinutes: 49, changes: 0, legs: [leg])
+        #expect(journey.requiresTransferCheck)
+        let restored = try JSONDecoder().decode(PlannedJourney.self, from: JSONEncoder().encode(journey))
+        #expect(restored.requiresTransferCheck)
+        #expect(restored == journey)
+    }
+
+    @Test func genericTransferWarningsRequireAnUnresolvedGenericLeg() {
+        let place = PlannedJourney.Place(crs: "VIC", name: "London Victoria")
+        func leg(_ kind: String, _ mode: String, local: PlannerLocalJourney? = nil) -> PlannedJourney.Leg {
+            .init(kind: kind, mode: mode, from: place, to: place, departure: now,
+                arrival: now.addingTimeInterval(600), operator: nil, serviceId: nil, originDate: nil,
+                callingPoints: nil, transfer: nil, warnings: nil, localJourney: local)
+        }
+        func journey(_ legs: [PlannedJourney.Leg]) -> PlannedJourney {
+            .init(id: "transfer-check", departure: now, arrival: now.addingTimeInterval(600),
+                durationMinutes: 10, changes: 0, legs: legs)
+        }
+        for (kind, mode) in [("vehicle", "rail"), ("vehicle", "replacementBus"),
+                             ("transfer", "walk"), ("transfer", "tubeTransfer"),
+                             ("transfer", "interchange"), ("vehicle", "genericTransfer")] {
+            let ordinary = leg(kind, mode)
+            #expect(!ordinary.requiresTransferCheck)
+            #expect(!journey([ordinary]).requiresTransferCheck)
+        }
+        #expect(!journey([]).requiresTransferCheck)
+        let generic = leg("transfer", "genericTransfer")
+        #expect(journey([leg("vehicle", "rail"), generic, leg("vehicle", "rail")]).requiresTransferCheck)
+        for local in [PlannerLocalJourney(provider: "tubetrack", status: "unavailable"),
+                      PlannerLocalJourney(provider: "tubetrack", status: "available", steps: [])] {
+            #expect(leg("transfer", "genericTransfer", local: local).requiresTransferCheck)
+        }
+        let stop = PlannerLocalJourney.Stop(id: "940GZZLUVIC", name: "Victoria")
+        let detailed = PlannerLocalJourney(provider: "tubetrack", status: "available", steps: [
+            .init(id: "ride", mode: "tube", instruction: "Take the Victoria line", from: stop, to: stop)
+        ])
+        let resolved = leg("transfer", "genericTransfer", local: detailed)
+        #expect(!resolved.requiresTransferCheck)
+        #expect(!journey([leg("vehicle", "rail"), resolved]).requiresTransferCheck)
+    }
+
     @Test func localJourneyKeepsTfLStopsSeparateAndExplainsDisruptionDecisions() throws {
         let text = #"""
         {"kind":"transfer","mode":"tubeTransfer","from":{"crs":"VIC","name":"London Victoria"},"to":{"crs":"EUS","name":"London Euston"},"departure":"2026-09-19T12:00:00+01:00","arrival":"2026-09-19T12:40:00+01:00","localJourney":{"provider":"tubetrack","status":"available","changes":1,"contingencyMinutes":5,"notes":["Allow 5 extra minutes because of minor delays on the Circle line.","Selected this route to avoid severe delays on the Victoria line."],"warnings":["Allow 5 extra minutes because of minor delays on the Circle line."],"disruption":{"coverage":{"futureField":true}},"steps":[{"id":"0","mode":"tube","instruction":"Take the Circle line to Embankment","from":{"id":"940GZZLUVIC","name":"Victoria"},"to":{"id":"940GZZLUEMB","name":"Embankment"},"departureTime":"2026-09-19T12:05:00+01:00","arrivalTime":"2026-09-19T12:13:00+01:00","timing":"adjusted","lines":[{"id":"circle","name":"Circle","colour":"#FFC700","textColour":"#000000"}]},{"id":"1","mode":"tube","instruction":"Take the Northern line to Euston","from":{"id":"940GZZLUEMB","name":"Embankment"},"to":{"id":"940GZZLUEUS","name":"Euston"},"lines":[{"id":"northern","name":"Northern","colour":"#000000","textColour":"#FFFFFF"}]}]}}
@@ -642,6 +914,73 @@ struct JourneyPlannerTests {
         #expect(store.intent?.timeMode == .now)
         #expect(!store.isSearching)
         #expect(store.searchError == nil)
+    }
+
+    @Test func emptyDefaultWindowAutomaticallyFindsLaterTrains() async throws {
+        let service = PlannerStubService()
+        service.results = [
+            try result(ids: [], windowStart: now),
+            try result(ids: [], windowStart: now.addingTimeInterval(6 * 60 * 60)),
+            try result(ids: ["later-journey"], windowStart: now.addingTimeInterval(12 * 60 * 60))
+        ]
+        let store = makeStore(client: service)
+        store.origin = origin
+        store.destination = destination
+
+        await store.search(now: now)
+        await store.searchForLaterTrainsWhenInitialWindowIsEmpty()
+
+        #expect(service.requests.map(\.cursor) == [nil, "later", "later"])
+        #expect(store.response?.journeys.map(\.id) == ["later-journey"])
+        #expect(store.automaticSearchState == .foundLater)
+        #expect(store.recents.searches.count == 1)
+    }
+
+    #if DEBUG
+    @Test func raptorEmptyDefaultWindowAutomaticallyFindsLaterTrains() async throws {
+        let service = PlannerStubService()
+        service.results = [
+            try result(ids: [], algorithm: "raptor", windowStart: now),
+            try result(ids: ["raptor-later-journey"], algorithm: "raptor", windowStart: now.addingTimeInterval(6 * 60 * 60))
+        ]
+        let store = makeStore(client: service)
+        store.origin = origin
+        store.destination = destination
+        store.useRaptor = true
+
+        await store.search(now: now)
+        await store.searchForLaterTrainsWhenInitialWindowIsEmpty()
+
+        #expect(service.requests.map(\.cursor) == [nil, "later"])
+        #expect(service.requests.allSatisfy { $0.algorithm == "raptor" && $0.realtime == "off" })
+        #expect(store.response?.journeys.map(\.id) == ["raptor-later-journey"])
+        #expect(store.automaticSearchState == .foundLater)
+    }
+    #endif
+
+    @Test func emptyDefaultWindowStopsAutomaticSearchAfter24HoursButAllowsManualPaging() async throws {
+        let service = PlannerStubService()
+        service.results = [
+            try result(ids: [], windowStart: now),
+            try result(ids: [], windowStart: now.addingTimeInterval(6 * 60 * 60)),
+            try result(ids: [], windowStart: now.addingTimeInterval(12 * 60 * 60)),
+            try result(ids: [], windowStart: now.addingTimeInterval(18 * 60 * 60)),
+            try result(ids: ["manual-later-journey"], windowStart: now.addingTimeInterval(24 * 60 * 60))
+        ]
+        let store = makeStore(client: service)
+        store.origin = origin
+        store.destination = destination
+
+        await store.search(now: now)
+        await store.searchForLaterTrainsWhenInitialWindowIsEmpty()
+
+        #expect(service.requests.count == 4)
+        #expect(store.response?.journeys.isEmpty == true)
+        #expect(store.automaticSearchState == .noJourneysInNext24Hours)
+        let later = try #require(store.response?.pagination.later)
+        await store.search(cursor: later, now: now)
+        #expect(store.response?.journeys.map(\.id) == ["manual-later-journey"])
+        #expect(store.automaticSearchState == nil)
     }
 
     @Test func invalidStationRequestsReselectionWithoutLosingOtherIntent() async {
@@ -942,7 +1281,7 @@ struct JourneyPlannerTests {
 
     private func isolatedDefaults() -> UserDefaults { UserDefaults(suiteName: "PlannerTests.\(UUID())")! }
 
-    private func result(ids: [String], more: String? = nil) throws -> PlannerSearchResponse {
+    private func result(ids: [String], more: String? = nil, algorithm: String? = nil, windowStart: Date? = nil) throws -> PlannerSearchResponse {
         var json = try #require(JSONSerialization.jsonObject(with: Data(Self.emptyResult.utf8)) as? [String: Any])
         json["journeys"] = ids.map { id in
             ["id": id, "departure": "2026-09-15T12:00:00Z", "arrival": "2026-09-15T12:21:00Z",
@@ -951,6 +1290,20 @@ struct JourneyPlannerTests {
         var pagination = ["earlier": "earlier", "later": "later"]
         if let more { pagination["more"] = more }
         json["pagination"] = pagination
+        if let algorithm {
+            var search = try #require(json["search"] as? [String: Any])
+            search["algorithm"] = algorithm
+            json["search"] = search
+        }
+        if let windowStart {
+            var search = try #require(json["search"] as? [String: Any])
+            search["time"] = PlannerTime.iso8601(windowStart)
+            search["window"] = [
+                "from": PlannerTime.iso8601(windowStart),
+                "to": PlannerTime.iso8601(windowStart.addingTimeInterval(6 * 60 * 60))
+            ]
+            json["search"] = search
+        }
         return try PlannerTime.decoder().decode(PlannerSearchResponse.self, from: JSONSerialization.data(withJSONObject: json))
     }
 
@@ -969,7 +1322,11 @@ private final class PlannerStubService: JourneyPlannerServing {
     var results: [PlannerSearchResponse] = []
     var holdSearches = false
     var pending: [CheckedContinuation<PlannerSearchResponse, Error>] = []
-    func status() async throws -> PlannerStatus { throw PlannerError(code: "TEST", message: "Unused") }
+    var statusValue: PlannerStatus?
+    func status() async throws -> PlannerStatus {
+        if let statusValue { return statusValue }
+        throw PlannerError(code: "TEST", message: "Unused")
+    }
     func stations(query: String) async throws -> [PlannerStation] { validStations.filter { $0.crs == query } }
     func journey(id: String) async throws -> PlannerJourneyResponse { throw PlannerError(code: "TEST", message: "Unused") }
     func search(_ request: PlannerSearchRequest) async throws -> PlannerSearchResponse {

@@ -20,9 +20,9 @@ export class PlannerSearchJobs {
         this.idempotency = new Map();
         this.queue = [];
         this.inFlight = new Set();
-        // A second admitted operation lets the service use a slot released for
-        // live I/O. CPU execution is still exclusive in the routing worker.
-        this.maxInFlight = service.supportsIOYield && this.config.maxLiveWaiters > 0 ? 2 : 1;
+        // Admit one operation per CPU slot plus the globally bounded live-I/O waiter.
+        this.maxInFlight = (service.workerCount ?? 1)
+            + (service.supportsIOYield && this.config.maxLiveWaiters > 0 ? 1 : 0);
         this.closed = false;
         this.retryTimer = null;
         this.sweep = setInterval(() => this.prune(), Math.min(10000, leaseMs));

@@ -2,6 +2,8 @@ import { Worker } from 'node:worker_threads';
 import os from 'node:os';
 import path from 'node:path';
 import { PlannerError, normalizeRequest, decodeCursor } from './contract.js';
+import { londonDate } from './time.js';
+import { PlannerUpstreamBroker } from './upstream-broker.js';
 
 const defaultWorkerURL = new URL('./worker.js', import.meta.url);
 
@@ -20,6 +22,8 @@ export function plannerConfig(env = process.env) {
         maxStaleDays: number('PLANNER_MAX_STALE_DAYS', 45, 1, 365),
         timeoutMs: number('PLANNER_TIMEOUT_MS', 30000, 100, 120000),
         maxQueue: number('PLANNER_MAX_QUEUE', 8, 1, 100),
+        // Two independently bounded routing isolates share the immutable SQLite snapshot.
+        workerCount: [1, 2].includes(Number(env.PLANNER_WORKERS)) ? Number(env.PLANNER_WORKERS) : 2,
         maxOldGenerationSizeMb: number('PLANNER_HEAP_MB', 1024, 128, 8192),
         dateCacheSize: number('PLANNER_DATE_CACHE_SIZE', 6, 1, 14),
         // Broader long-distance searches need more graph work; elapsed time and
@@ -39,16 +43,19 @@ export function plannerConfig(env = process.env) {
     };
 }
 
-// One long-lived worker: bounded admission, no CPU work or SQLite dependency on Express's event loop.
+// One shared admission queue; CPU and SQLite work stay in bounded routing isolates.
 export class PlannerService {
     constructor(config = plannerConfig(), { workerURL = defaultWorkerURL, metadataOnly = false } = {}) {
         this.config = config;
         this.workerURL = workerURL;
-        this.worker = null;
+        this.workerCount = metadataOnly ? 1 : config.workerCount === 2 ? 2 : 1;
+        this.slots = Array.from({ length: this.workerCount }, (_, id) => ({ id,
+            worker: null, active: null, parked: new Map(), restarting: false, dateKey: null }));
         this.queue = [];
-        this.active = null;
-        this.parked = new Map();
+        this.snapshotOwners = new Map();
+        this.searchOwners = new Map();
         this.upstream = new Map();
+        this.upstreamBroker = new PlannerUpstreamBroker();
         this.sequence = 0;
         this.closed = false;
         this.metadataOnly = metadataOnly;
@@ -86,6 +93,7 @@ export class PlannerService {
             return this.call('search', payload, options);
         } catch (error) { return Promise.reject(error); }
     }
+    clearSearchCache(options) { return this.call('clearSearchCache', {}, options); }
     async journey(id, options) {
         if (this.closed) throw new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is unavailable.', 503);
         if (typeof id !== 'string' || !/^[a-f0-9]{64}\.[a-f0-9]{32}$/.test(id)) {
@@ -103,19 +111,60 @@ export class PlannerService {
         return { journey: cached.journey, dataset, ...(live ? { live } : {}) };
     }
 
-    call(method, payload, { signal, execution, onStart, onProgress, onTelemetry, queueTimeoutMs, priority = 'interactive' } = {}) {
+    // Single-worker diagnostics remain available to scheduling tests and tooling.
+    get worker() { return this.slots[0].worker; }
+    get active() { return this.slots.find(slot => slot.active)?.active ?? null; }
+    get parked() { return new Map(this.slots.flatMap(slot => [...slot.parked])); }
+
+    pendingCount() {
+        return new Set([...this.queue, ...this.slots.flatMap(slot =>
+            [...slot.parked.values(), ...(slot.active ? [slot.active] : [])])]).size;
+    }
+
+    call(method, payload = {}, options = {}, targetSlot) {
+        const { signal, execution, onStart, onProgress, onTelemetry, queueTimeoutMs, priority = 'interactive' } = options;
         if (this.closed) return Promise.reject(new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is unavailable.', 503));
         if (signal?.aborted) return Promise.reject(new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499));
-        if (new Set([...this.queue, ...this.parked.values(), ...(this.active ? [this.active] : [])]).size >= this.config.maxQueue) {
+        if (this.workerCount > 1 && targetSlot === undefined && ['clearSearchCache', 'runtime'].includes(method)) {
+            const slots = this.slots.filter(slot => slot.worker);
+            // A cold slot has no result cache or runtime allocations to inspect.
+            if (this.pendingCount() + slots.length > this.config.maxQueue) {
+                return Promise.reject(new PlannerError('SEARCH_BUSY', 'Journey planning is busy. Please try again shortly.', 429));
+            }
+            return Promise.all(slots.map(slot => this.call(method, payload, options, slot))).then(results => {
+                if (method === 'clearSearchCache') return { clearedSearches: results.reduce((sum, result) => sum + result.clearedSearches, 0) };
+                const caches = {}, memoryBytes = { rss: process.memoryUsage().rss };
+                for (const result of results) {
+                    for (const [key, value] of Object.entries(result.caches ?? {})) caches[key] = (caches[key] ?? 0) + value;
+                    for (const [key, value] of Object.entries(result.memoryBytes ?? {})) {
+                        if (key !== 'rss') memoryBytes[key] = (memoryBytes[key] ?? 0) + value;
+                    }
+                }
+                return { searches: results.reduce((sum, result) => sum + (result.searches ?? 0), 0),
+                    cacheHits: results.reduce((sum, result) => sum + (result.cacheHits ?? 0), 0),
+                    datePreparations: results.reduce((sum, result) => sum + (result.datePreparations ?? 0), 0),
+                    caches, memoryBytes, workerCount: this.workerCount,
+                    workers: results.map((result, index) => ({ slot: slots[index].id, ...result })) };
+            });
+        }
+        if (this.pendingCount() >= this.config.maxQueue) {
             return Promise.reject(new PlannerError('SEARCH_BUSY', 'Journey planning is busy. Please try again shortly.', 429));
         }
+        if (method === 'search' && (payload.liveSnapshotId || payload.tubeSnapshotId)) {
+            const owner = this.snapshotOwners.get(this.snapshotKey(payload));
+            if (this.workerCount > 1 && (!owner || owner.slot.worker !== owner.worker)) {
+                return Promise.reject(new PlannerError('CURSOR_EXPIRED', 'The information for this search has expired. Please search again.', 410));
+            }
+            targetSlot = owner?.slot ?? this.slots[0];
+        }
         return new Promise((resolve, reject) => {
-            const job = { id: ++this.sequence, method, payload, resolve, reject, signal,
+            const job = { id: ++this.sequence, method, payload, resolve, reject, signal, slot: targetSlot,
                 cancelBuffer: new SharedArrayBuffer(4), settled: false, execution, onStart, onProgress, onTelemetry,
-                priority, enqueuedAt: Date.now() };
+                priority, enqueuedAt: Date.now(), dateKey: this.dateKey(payload), searchKey: method === 'search'
+                    ? JSON.stringify([payload, Boolean(execution?.timetableOnly), Boolean(execution?.excludeDirect)]) : null };
             job.abort = () => this.cancel(job, new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499));
             job.timer = setTimeout(() => this.cancel(job,
-                new PlannerError('SEARCH_TIMEOUT', 'The search took too long. Please try again.', 504)),
+                new PlannerError('SEARCH_TIMEOUT', 'The search took too long. Please try again shortly.', 504)),
             execution ? (queueTimeoutMs ?? this.config.jobQueueTimeoutMs) : this.config.timeoutMs);
             signal?.addEventListener('abort', job.abort, { once: true });
             this.queue.push(job);
@@ -123,14 +172,46 @@ export class PlannerService {
         });
     }
 
+    dateKey(payload) {
+        const request = payload.request ?? payload.profile?.request;
+        if (!request || !Number.isFinite(Date.parse(request.time))) return null;
+        const time = Date.parse(request.time), window = (request.windowMinutes ?? 360) * 60000;
+        const lower = request.timeType === 'arriveBy' ? time - window - 86400000 : time;
+        const upper = request.timeType === 'arriveBy' ? time : time + window + 86400000;
+        // Timetable lookback is constant within a version, so these endpoints
+        // identify matching graph ranges without loading metadata on Express.
+        return `${payload.version ?? payload.profile?.version ?? 'active'}:${londonDate(lower)}:${londonDate(upper)}`;
+    }
+
+    snapshotKey(payload) {
+        return `${payload.version}:${payload.liveSnapshotId ? 'live:' + payload.liveSnapshotId : 'tube:' + payload.tubeSnapshotId}`;
+    }
+
+    rememberOwner(map, key, slot, maximum) {
+        map.delete(key);
+        map.set(key, { slot, worker: slot.worker });
+        while (map.size > maximum) map.delete(map.keys().next().value);
+    }
+
     settle(job, error, result) {
         if (job.settled) return;
         job.settled = true;
         clearTimeout(job.timer);
         job.signal?.removeEventListener('abort', job.abort);
+        if (!error && job.method === 'prewarm' && result?.warmed) job.slot.dateKey = null;
         const presented = ['routeBoardProfileChunk', 'savedRoutePlan'].includes(job.method) ? result?.result : result;
         if (!error && ['search', 'routeBoardRefresh', 'routeBoardReplan', 'routeBoardPreview', 'routeBoardProfileChunk', 'savedRoutePlan'].includes(job.method)) {
             this.retainResult(presented);
+            if (job.searchKey) this.rememberOwner(this.searchOwners, job.searchKey, job.slot, 256);
+            for (const cursor of Object.values(presented?.pagination ?? {})) {
+                if (typeof cursor !== 'string') continue;
+                try {
+                    const payload = decodeCursor(cursor);
+                    if (payload.liveSnapshotId || payload.tubeSnapshotId) {
+                        this.rememberOwner(this.snapshotOwners, this.snapshotKey(payload), job.slot, 128);
+                    }
+                } catch { /* Pagination may also contain non-cursor values. */ }
+            }
         }
         error ? job.reject(error) : job.resolve(result);
     }
@@ -151,41 +232,47 @@ export class PlannerService {
         Atomics.notify(cancelled, 0);
         this.settle(job, error);
         this.queue = this.queue.filter(item => item !== job || job.resuming);
-        if (this.active === job) {
+        const slot = job.slot;
+        if (slot?.active === job) {
             // Also bound non-cooperative work, such as a blocked SQLite call.
             job.killTimer = setTimeout(() => {
-                if (this.active === job) this.resetWorker(error);
+                if (slot.active === job) this.resetWorker(error, slot);
             }, 1000);
         }
     }
 
-    startWorker() {
+    startWorker(slot) {
         const worker = new Worker(this.workerURL, {
             workerData: this.config,
             resourceLimits: { maxOldGenerationSizeMb: this.config.maxOldGenerationSizeMb }
         });
-        this.worker = worker;
+        slot.worker = worker;
         worker.on('message', message => {
-            if (worker !== this.worker) return;
+            if (worker !== slot.worker) return;
             if (message.upstream) { void this.requestUpstream(worker, message); return; }
             if (message.cancelUpstream) { this.upstream.get(message.requestId)?.abort(); return; }
-            const job = message.id === this.active?.id ? this.active : this.parked.get(message.id);
+            const job = message.id === slot.active?.id ? slot.active : slot.parked.get(message.id);
             if (!job) return;
             if (message.progress) { job.onProgress?.(message.progress); return; }
-            if (message.telemetry) { job.onTelemetry?.(message.telemetry); return; }
+            if (message.telemetry) {
+                // A cached result/snapshot need not touch the resident graph.
+                if (message.telemetry.cacheStatus === 'hit' && slot.active === job) slot.dateKey = job.previousDateKey;
+                job.onTelemetry?.(message.telemetry);
+                return;
+            }
             if (message.waitingForIO) {
                 // At most one suspended context. It retains its immutable network;
                 // avoid admitting a second network during existing heap pressure.
-                if (this.active === job && this.parked.size < (this.config.maxLiveWaiters ?? 1)
+                if (slot.active === job && this.parked.size < (this.config.maxLiveWaiters ?? 1)
                     && message.heapRatio < 0.55) {
-                    this.parked.set(job.id, job);
-                    this.active = null;
+                    slot.parked.set(job.id, job);
+                    slot.active = null;
                     this.pump();
                 }
                 return;
             }
             if (message.readyToResume) {
-                if (this.active === job) worker.postMessage({ id: job.id, resume: true });
+                if (slot.active === job) worker.postMessage({ id: job.id, resume: true });
                 else if (!job.resuming) {
                     job.resuming = true;
                     job.resumeQueuedAt = Date.now();
@@ -195,8 +282,8 @@ export class PlannerService {
                 return;
             }
             clearTimeout(job.killTimer);
-            if (this.active === job) this.active = null;
-            this.parked.delete(job.id);
+            if (slot.active === job) slot.active = null;
+            slot.parked.delete(job.id);
             this.settle(job, message.error
                 ? Object.assign(new PlannerError(message.error.code, message.error.message, message.error.status),
                     message.error.reason ? { reason: message.error.reason } : {}) : null, message.result);
@@ -204,35 +291,35 @@ export class PlannerService {
         });
         worker.on('error', error => {
             console.error('Planner worker failed:', error.code || error.name);
-            if (worker === this.worker) this.resetWorker(new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is temporarily unavailable.', 503));
+            if (worker === slot.worker) this.resetWorker(new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is temporarily unavailable.', 503), slot);
         });
         worker.on('exit', () => {
-            if (worker === this.worker) this.resetWorker(new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is temporarily unavailable.', 503));
+            if (worker === slot.worker) this.resetWorker(new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is temporarily unavailable.', 503), slot);
         });
         if (this.config.prewarm && this.standardWorker && !this.metadataOnly) {
             const warm = () => {
-                if (this.worker === worker && !this.active && !this.parked.size && !this.queue.length) {
-                    void this.call('prewarm', {}, { priority: 'background' }).catch(() => {});
+                if (slot.worker === worker && !slot.active && !slot.parked.size && !this.queue.length) {
+                    void this.call('prewarm', {}, { priority: 'background' }, slot).catch(() => {});
                 }
             };
-            this.warmTimer = setTimeout(warm, 2000);
-            this.warmTimer.unref();
-            this.warmInterval = setInterval(warm, 60000);
-            this.warmInterval.unref();
+            slot.warmTimer = setTimeout(warm, 2000);
+            slot.warmTimer.unref();
+            slot.warmInterval = setInterval(warm, 60000);
+            slot.warmInterval.unref();
         }
     }
 
     async requestUpstream(worker, message) {
         const controller = new AbortController();
+        controller.worker = worker;
         this.upstream.set(message.requestId, controller);
         try {
             // Run on Express's asynchronous I/O path, sharing request spacing
             // and upstream metrics with existing departure-board consumers.
-            const { getWithRetry } = await import('../upstream-api-client.js');
-            const result = await getWithRetry({ ...message.upstream, signal: controller.signal });
-            if (this.worker === worker) worker.postMessage({ requestId: message.requestId, upstreamResult: { data: result.data } });
+            const result = await this.upstreamBroker.request(message.upstream, { signal: controller.signal });
+            if (this.slots.some(slot => slot.worker === worker)) worker.postMessage({ requestId: message.requestId, upstreamResult: { data: result.data } });
         } catch (error) {
-            if (this.worker === worker) worker.postMessage({ requestId: message.requestId, upstreamError: {
+            if (this.slots.some(slot => slot.worker === worker)) worker.postMessage({ requestId: message.requestId, upstreamError: {
                 code: error.code, name: error.name, status: error.response?.status
             } });
         } finally {
@@ -241,70 +328,92 @@ export class PlannerService {
     }
 
     pump() {
-        if (this.active || this.closed || this.restarting) return;
-        // Saved-route warming shares this worker and its resource limits. Give
-        // interactive searches the next slot, but eventually serve old refreshes.
-        const waitingRefresh = this.queue.findIndex(job => job.priority === 'background'
-            && Date.now() - job.enqueuedAt >= 120000);
-        const interactive = this.queue.findIndex(job => job.priority !== 'background');
-        const index = waitingRefresh >= 0 ? waitingRefresh : Math.max(0, interactive);
-        const [job] = this.queue.splice(index, 1);
-        if (!job) { if (!this.parked.size) this.worker?.unref(); return; }
-        try {
-            if (!this.worker) this.startWorker();
-            this.worker.ref();
-            this.active = job;
-            if (job.resuming) {
-                job.resuming = false;
-                this.parked.delete(job.id);
-                if (job.settled) job.killTimer = setTimeout(() => {
-                    if (this.active === job) this.resetWorker(new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499));
-                }, 1000);
-                job.onTelemetry?.({ metricsDelta: { resumeQueueMs: Date.now() - job.resumeQueuedAt } });
-                this.worker.postMessage({ id: job.id, resume: true });
+        if (this.closed) return;
+        while (true) {
+            const available = this.slots.filter(slot => !slot.active && !slot.restarting);
+            const eligible = job => !job.slot || available.includes(job.slot);
+            // Share priority and ageing across the whole pool. A pinned resume
+            // cannot block unrelated work that another isolate can execute.
+            const old = this.queue.findIndex(job => eligible(job) && job.priority === 'background'
+                && Date.now() - job.enqueuedAt >= 120000);
+            const interactive = this.queue.findIndex(job => eligible(job) && job.priority !== 'background');
+            const index = old >= 0 ? old : interactive >= 0 ? interactive : this.queue.findIndex(eligible);
+            if (!available.length || index < 0) {
+                for (const slot of available) if (!slot.parked.size) slot.worker?.unref();
                 return;
             }
-            if (job.execution) {
-                clearTimeout(job.timer);
-                job.timer = setTimeout(() => this.cancel(job,
-                    new PlannerError('SEARCH_TIMEOUT', 'This search could not finish within the available processing time. Please try a different time.', 504)), job.execution.timeoutMs);
+            const [job] = this.queue.splice(index, 1);
+            const cached = job.searchKey && this.searchOwners.get(job.searchKey);
+            const slot = job.slot ?? (cached?.slot.worker === cached?.worker && available.includes(cached?.slot) ? cached.slot : null)
+                ?? available.find(slot => job.dateKey && slot.dateKey === job.dateKey)
+                ?? available.find(slot => slot.worker) ?? available[0];
+            job.slot = slot;
+            try {
+                if (!slot.worker) this.startWorker(slot);
+                slot.worker.ref();
+                slot.active = job;
+                if (job.resuming) {
+                    job.resuming = false;
+                    slot.parked.delete(job.id);
+                    if (job.settled) job.killTimer = setTimeout(() => {
+                        if (slot.active === job) this.resetWorker(new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499), slot);
+                    }, 1000);
+                    job.onTelemetry?.({ metricsDelta: { resumeQueueMs: Date.now() - job.resumeQueuedAt } });
+                    slot.worker.postMessage({ id: job.id, resume: true });
+                    continue;
+                }
+                job.previousDateKey = slot.dateKey;
+                if (job.dateKey) slot.dateKey = job.dateKey;
+                if (job.execution) {
+                    clearTimeout(job.timer);
+                    job.timer = setTimeout(() => this.cancel(job,
+                        new PlannerError('SEARCH_TIMEOUT', 'This search could not finish within the available processing time. Please try a different time.', 504)), job.execution.timeoutMs);
+                }
+                job.onStart?.();
+                job.onTelemetry?.({ metricsDelta: { queueWaitMs: Date.now() - job.enqueuedAt } });
+                slot.worker.postMessage({ id: job.id, method: job.method, payload: job.payload,
+                    cancelBuffer: job.cancelBuffer, execution: job.execution });
+            } catch {
+                slot.active = job;
+                this.resetWorker(new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is unavailable on this server.', 503), slot);
             }
-            job.onStart?.();
-            job.onTelemetry?.({ metricsDelta: { queueWaitMs: Date.now() - job.enqueuedAt } });
-            this.worker.postMessage({ id: job.id, method: job.method, payload: job.payload,
-                cancelBuffer: job.cancelBuffer, execution: job.execution });
-        } catch {
-            this.active = job;
-            this.resetWorker(new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is unavailable on this server.', 503));
         }
     }
 
-    resetWorker(error) {
-        const worker = this.worker;
-        this.worker = null;
-        clearTimeout(this.warmTimer);
-        clearInterval(this.warmInterval);
-        for (const controller of this.upstream.values()) controller.abort();
-        this.upstream.clear();
-        if (this.active) {
-            clearTimeout(this.active.killTimer);
-            this.settle(this.active, error);
-            this.active = null;
+    resetWorker(error, slot = this.slots[0]) {
+        const worker = slot.worker;
+        slot.worker = null;
+        slot.dateKey = null;
+        clearTimeout(slot.warmTimer);
+        clearInterval(slot.warmInterval);
+        for (const [key, controller] of this.upstream) if (controller.worker === worker || this.workerCount === 1) {
+            controller.abort();
+            this.upstream.delete(key);
         }
-        for (const job of this.parked.values()) this.settle(job, error);
-        this.parked.clear();
-        // Unstarted work has no worker state to lose. Keep it through one
-        // recovery, with its original queue deadline and cancellation signal.
+        for (const map of [this.snapshotOwners, this.searchOwners]) {
+            for (const [key, owner] of map) if (owner.slot === slot) map.delete(key);
+        }
+        if (slot.active) {
+            clearTimeout(slot.active.killTimer);
+            this.settle(slot.active, error);
+            slot.active = null;
+        }
+        for (const job of slot.parked.values()) this.settle(job, error);
+        slot.parked.clear();
+        // Only this isolate's state is lost. Keep unstarted work through one
+        // recovery with its original deadline; other workers continue normally.
         this.queue = this.queue.filter(job => {
-            if (this.closed || job.settled || (job.workerRestarts = (job.workerRestarts ?? 0) + 1) > 1) {
+            if (job.slot && job.slot !== slot) return true;
+            const lostOwner = job.slot === slot || this.workerCount === 1;
+            if (this.closed || job.settled || lostOwner && (job.workerRestarts = (job.workerRestarts ?? 0) + 1) > 1) {
                 this.settle(job, error);
                 return false;
             }
             return true;
         });
-        this.restarting = true;
+        slot.restarting = true;
         Promise.resolve(worker?.terminate()).catch(() => {}).finally(() => {
-            this.restarting = false;
+            slot.restarting = false;
             this.pump();
         });
     }
@@ -316,6 +425,8 @@ export class PlannerService {
         this.savedRouteBoards?.close();
         this.metadataService?.close();
         this.journeys.clear();
-        this.resetWorker(new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is closed.', 503));
+        const error = new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is closed.', 503);
+        for (const slot of this.slots) this.resetWorker(error, slot);
+        this.upstreamBroker.close();
     }
 }

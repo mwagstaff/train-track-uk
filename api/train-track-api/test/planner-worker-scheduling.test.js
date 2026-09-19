@@ -88,10 +88,10 @@ async function fixture(t, overrides = {}, source) {
             await delay(30); leave('prewarm');
             return { services: [], stations: new Map(), rules: { tsi: [], links: [] } };
         };
-        PlannerEngine.prototype.runtime = () => ({ trace, owner });
+        PlannerEngine.prototype.runtime = function() { return { trace, owner, raptorIndexes: Number(Boolean(this.raptorIndex)) }; };
         await import(${JSON.stringify(workerModule)});
     `);
-    const service = new PlannerService({ ...plannerConfig({}), timeoutMs: 4000, prewarm: false, ...overrides }, {
+    const service = new PlannerService({ ...plannerConfig({}), timeoutMs: 4000, prewarm: false, workerCount: 1, ...overrides }, {
         workerURL: pathToFileURL(filename)
     });
     t.after(async () => { service.close(); await fs.rm(directory, { recursive: true, force: true }); });
@@ -252,6 +252,7 @@ test('prewarm shares the serial operation queue and profile methods receive tele
     const state = await service.call('runtime', {});
     assert.deepEqual(state.trace, ['enter:search', 'leave:search', 'enter:prewarm', 'leave:prewarm']);
     assert.equal(state.owner, null);
+    assert.equal(state.raptorIndexes, 1, 'Idle prewarming prepares the RAPTOR index before the first RAPTOR search');
     for (const method of ['routeBoardProfileChunk', 'routeBoardPreview']) {
         const measurements = [];
         assert.deepEqual(await service.call(method, { tag: method }, { onTelemetry: value => measurements.push(value) }), { method, tag: method });
@@ -306,4 +307,92 @@ test('cancelling a live search aborts its parent HTTP request and releases the I
     await rejected;
     await waitFor(() => aborted && !service.upstream.size && !service.parked.size && !service.active);
     assert.equal((await service.call('search', { tag: 'next' })).tag, 'next');
+});
+
+test('two real routing workers share one provider request and cancellation preserves the surviving waiter', { timeout: 5000 }, async t => {
+    const service = await fixture(t, { workerCount: 2 });
+    const controller = new AbortController();
+    let physicalRequests = 0, upstreamSignal, finish;
+    service.upstreamBroker.performRequest = ({ signal }) => {
+        physicalRequests++;
+        upstreamSignal = signal;
+        return new Promise((resolve, reject) => {
+            const abort = () => reject(Object.assign(new Error('Cancelled'), { name: 'AbortError', code: 'ERR_CANCELED' }));
+            signal.addEventListener('abort', abort, { once: true });
+            finish = () => {
+                signal.removeEventListener('abort', abort);
+                resolve({ data: { crs: 'AAA', generatedAt: new Date().toISOString(), trainServices: [] } });
+            };
+        });
+    };
+    const first = service.call('search', { tag: 'cancelled', provider: true }, { signal: controller.signal });
+    const rejected = assert.rejects(first, { code: 'SEARCH_CANCELLED' });
+    const survivor = service.call('search', { tag: 'survivor', provider: true });
+    try {
+        await waitFor(() => service.upstream.size === 2);
+        assert.equal(service.slots.filter(slot => slot.worker).length, 2);
+        assert.equal(physicalRequests, 1);
+        assert.equal(service.upstreamBroker.inflight.size, 1);
+        assert.equal([...service.upstreamBroker.inflight.values()][0].consumers.size, 2);
+        controller.abort();
+        await rejected;
+        await waitFor(() => service.upstream.size === 1);
+        assert.equal([...service.upstreamBroker.inflight.values()][0].consumers.size, 1);
+        assert.equal(upstreamSignal.aborted, false, 'Cancelling one logical waiter must preserve the shared HTTP request');
+        finish();
+        const result = await survivor;
+        assert.equal(result.tag, 'survivor');
+        assert.equal(result.observation.boards.length, 1);
+        assert.equal(result.observation.errors.length, 0);
+        assert.equal(physicalRequests, 1);
+        await waitFor(() => !service.upstream.size && !service.parked.size && !service.active);
+    } finally {
+        controller.abort();
+        finish?.();
+        await Promise.allSettled([first, survivor]);
+    }
+});
+
+test('a routing worker crash removes only its waiter from a shared provider request', { timeout: 5000 }, async t => {
+    const service = await fixture(t, { workerCount: 2 });
+    let physicalRequests = 0, upstreamSignal, finish;
+    service.upstreamBroker.performRequest = ({ signal }) => {
+        physicalRequests++;
+        upstreamSignal = signal;
+        return new Promise((resolve, reject) => {
+            const abort = () => reject(Object.assign(new Error('Cancelled'), { name: 'AbortError', code: 'ERR_CANCELED' }));
+            signal.addEventListener('abort', abort, { once: true });
+            finish = () => {
+                signal.removeEventListener('abort', abort);
+                resolve({ data: { crs: 'AAA', generatedAt: new Date().toISOString(), trainServices: [] } });
+            };
+        });
+    };
+    const observe = promise => promise.then(value => ({ value }), error => ({ error }));
+    const work = Object.fromEntries(['left', 'right'].map(tag => [tag,
+        observe(service.call('search', { tag, provider: true }))]));
+    try {
+        await waitFor(() => service.upstream.size === 2 && service.parked.size === 1);
+        assert.equal(physicalRequests, 1);
+        const crashedSlot = service.slots.find(slot => slot.parked.size);
+        const crashedTag = [...crashedSlot.parked.values()][0].payload.tag;
+        const survivorTag = crashedTag === 'left' ? 'right' : 'left';
+        await assert.rejects(service.call('search', { tag: 'crash', crash: true }, {}, crashedSlot),
+            { code: 'DATASET_UNAVAILABLE' });
+        assert.equal((await work[crashedTag]).error.code, 'DATASET_UNAVAILABLE');
+        await waitFor(() => service.upstream.size === 1);
+        assert.equal([...service.upstreamBroker.inflight.values()][0].consumers.size, 1);
+        assert.equal(upstreamSignal.aborted, false, 'Resetting one worker must preserve the other worker\'s HTTP interest');
+        finish();
+        const result = (await work[survivorTag]).value;
+        assert.equal(result.tag, survivorTag);
+        assert.equal(result.observation.boards.length, 1);
+        assert.equal(result.observation.errors.length, 0);
+        assert.equal(physicalRequests, 1);
+        await waitFor(() => !service.upstream.size && !service.parked.size && !service.active);
+    } finally {
+        finish?.();
+        service.close();
+        await Promise.all(Object.values(work));
+    }
 });

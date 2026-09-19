@@ -75,6 +75,20 @@ struct JourneyPlannerView: View {
                 }
             }
 
+            #if DEBUG
+            Section("Debug routing") {
+                Toggle("Use RAPTOR", isOn: Binding(get: { store.useRaptor }, set: { enabled in
+                    searchTask?.cancel()
+                    store.useRaptor = enabled
+                }))
+                .accessibilityIdentifier("planner.raptor")
+                Text(store.useRaptor
+                     ? "RAPTOR is experimental: Depart now or Depart at, timetable times only. Live times and live Tube directions are not used."
+                     : "Original routing algorithm. Switch on RAPTOR to compare searches.")
+                    .font(.caption).foregroundStyle(Color.plannerSecondaryText)
+            }
+            #endif
+
             timetableSection
 
             Section {
@@ -198,13 +212,15 @@ struct JourneyPlannerView: View {
 
     @ViewBuilder private var timetableSection: some View {
         Section {
-            Toggle("Use live times", isOn: Binding(get: { store.useLiveTimes }, set: { enabled in
-                store.useLiveTimes = enabled
-                if store.isSearching { startSearch() }
-            }))
-            .accessibilityIdentifier("planner.live-times")
-            Text("Live times cover journeys in the next 4 hours. Turn off to use scheduled times; live disruption warnings will still be shown.")
-                .font(.caption).foregroundStyle(Color.plannerSecondaryText)
+            if !store.usesRaptor {
+                Toggle("Use live times", isOn: Binding(get: { store.useLiveTimes }, set: { enabled in
+                    store.useLiveTimes = enabled
+                    if store.isSearching { startSearch() }
+                }))
+                .accessibilityIdentifier("planner.live-times")
+                Text("Live times cover journeys in the next 4 hours. Turn off to use scheduled times; live disruption warnings will still be shown.")
+                    .font(.caption).foregroundStyle(Color.plannerSecondaryText)
+            }
             if store.isLoadingStatus {
                 ProgressView("Checking timetable…")
             } else if let status = store.status {
@@ -227,13 +243,21 @@ struct JourneyPlannerView: View {
             await store.search(cursor: cursor, repeatingLastSearch: repeatingLastSearch)
             guard !Task.isCancelled else { return }
             if cursor == nil && store.response != nil { resultsPresented = true }
+            if cursor == nil && !repeatingLastSearch {
+                await store.searchForLaterTrainsWhenInitialWindowIsEmpty()
+            }
         }
     }
 
     private func recentDescription(_ recent: PlannerRecentSearch) -> String {
-        guard let date = recent.intent.explicitTime, recent.intent.timeMode != .now else { return "Depart now" }
+        #if DEBUG
+        let algorithm = recent.intent.algorithm == "raptor" ? " · RAPTOR" : " · Original"
+        #else
+        let algorithm = ""
+        #endif
+        guard let date = recent.intent.explicitTime, recent.intent.timeMode != .now else { return "Depart now\(algorithm)" }
         let suffix = date < Date() ? " · Choose a new time" : ""
-        return "\(recent.intent.timeMode.title) \(PlannerTime.display(date))\(suffix)"
+        return "\(recent.intent.timeMode.title) \(PlannerTime.display(date))\(suffix)\(algorithm)"
     }
 }
 
@@ -466,14 +490,22 @@ private struct PlannerResultsView: View {
                 Section {
                     Text("\(stationName(response.search.origin)) → \(stationName(response.search.destination))")
                         .font(.headline)
-                    Toggle("Use live times", isOn: Binding(get: { store.useLiveTimes }, set: changeLiveTimes))
-                        .accessibilityIdentifier("planner.live-times")
-                    PlannerLiveContextView(live: response.live)
+                    #if DEBUG
+                    Text(response.search.algorithm == "raptor" ? "Routing: RAPTOR · timetable-only" : "Routing: Original")
+                        .font(.caption).foregroundStyle(Color.plannerSecondaryText)
+                        .accessibilityIdentifier("planner.result.algorithm")
+                    #endif
+                    if response.search.algorithm != "raptor" {
+                        Toggle("Use live times", isOn: Binding(get: { store.useLiveTimes }, set: changeLiveTimes))
+                            .accessibilityIdentifier("planner.live-times")
+                        PlannerLiveContextView(live: response.live)
+                    }
                     Text(PlannerTime.displayRange(from: response.search.window.from, to: response.search.window.to, separator: " – "))
                         .font(.caption)
                     if response.search.searchTruncated {
                         Text("Some journeys may be missing.").foregroundStyle(Color.primary)
                     }
+                    automaticSearchNotice
                 }
                 if let error = store.searchError { Text(error.message).foregroundStyle(Color.primary) }
                 if store.isSearching {
@@ -483,7 +515,7 @@ private struct PlannerResultsView: View {
                 }
                 if response.journeys.isEmpty {
                     Section {
-                        Label("No journeys in this window", systemImage: "tram")
+                        Label(store.automaticSearchState == .noJourneysInNext24Hours ? "No journeys in the next 24 hours" : "No journeys in this window", systemImage: "tram")
                             .font(.headline)
                             .fixedSize(horizontal: false, vertical: true)
                         Text("\(response.search.timeType == "arriveBy" ? "Arrivals" : "Departures") searched: \(PlannerTime.displayRange(from: response.search.window.from, to: response.search.window.to, separator: " – "))")
@@ -494,7 +526,9 @@ private struct PlannerResultsView: View {
                                 .foregroundStyle(Color.plannerSecondaryText)
                                 .accessibilityIdentifier("planner.empty.change-limit")
                         }
-                        Text("Try another time window, or go back to change your search.")
+                        Text(store.automaticSearchState == .noJourneysInNext24Hours
+                             ? "We looked ahead for 24 hours but couldn't find a journey. You can keep searching later times, or go back to change your search."
+                             : "Try another time window, or go back to change your search.")
                             .foregroundStyle(Color.plannerSecondaryText)
                         if let later = response.pagination.later {
                             pageButton("Search later times", cursor: later)
@@ -565,6 +599,24 @@ private struct PlannerResultsView: View {
         .railwayBackgroundPOC(showsInfoButton: false)
         .navigationDestination(item: $selectedJourneyID) { id in
             PlannerJourneyDetailView(id: id, client: store.client)
+        }
+    }
+
+    @ViewBuilder private var automaticSearchNotice: some View {
+        switch store.automaticSearchState {
+        case .searchingLater:
+            Label("No journeys in the first time window. Looking for later trains…", systemImage: "magnifyingglass")
+                .foregroundStyle(Color.plannerSecondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("planner.automatic-search.progress")
+            ProgressView("Searching up to the next 24 hours…")
+        case .foundLater:
+            Label("No journeys in the first time window. Showing the next available trains.", systemImage: "train.side.front.car")
+                .foregroundStyle(Color.plannerSecondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("planner.automatic-search.found")
+        case .noJourneysInNext24Hours, nil:
+            EmptyView()
         }
     }
 
@@ -786,6 +838,13 @@ struct PlannerJourneySummary: View {
 
     private var departureDetails: some View {
         VStack(alignment: .leading, spacing: 1) {
+            if journey.requiresTransferCheck {
+                Label("Check transfer options", systemImage: "exclamationmark.triangle.fill")
+                    .fontWeight(.semibold)
+                    .foregroundStyle(Color.plannerWarningText)
+                    .accessibilityLabel("Warning: check transfer options")
+                    .accessibilityIdentifier("planner.transfer-warning.\(journey.id)")
+            }
             let scheduledDeparture = journey.scheduledDeparture ?? departureLeg?.scheduledDeparture ?? journey.departure
             let scheduledArrival = journey.scheduledArrival ?? journey.legs.last?.scheduledArrival ?? journey.arrival
             if abs(journey.departure.timeIntervalSince(scheduledDeparture)) >= 30 || abs(journey.arrival.timeIntervalSince(scheduledArrival)) >= 30 {
@@ -875,7 +934,21 @@ private struct PlannerTransportPill: View {
 private struct PlannerLegPill: View {
     let leg: PlannedJourney.Leg
     @ObservedObject private var config = ServerConfigStore.shared
+
     var body: some View {
+        if leg.mode == "bus" || leg.mode == "replacementBus" {
+            HStack(spacing: 8) {
+                operatorPill
+                Spacer(minLength: 8)
+                PlatformBadge(platform: "BUS", isBus: true)
+                    .accessibilityIdentifier("planner.leg.bus")
+            }
+        } else {
+            operatorPill
+        }
+    }
+
+    @ViewBuilder private var operatorPill: some View {
         if leg.localJourney?.isWalkingOnly == true {
             Label("Walk", systemImage: "figure.walk").font(.caption)
         } else if let local = leg.localJourney, local.isAvailable, !local.lines.isEmpty {
@@ -1022,6 +1095,20 @@ struct PlannerJourneyDetailView: View {
                             Text("Allow at least \(PlannerTime.minutes(leg.transfer?.interchangeMinutes ?? leg.arrival.timeIntervalSince(leg.departure) / 60)) to change trains.")
                                 .fixedSize(horizontal: false, vertical: true)
                         } else {
+                            if leg.requiresTransferCheck {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Label("Check transfer options", systemImage: "exclamationmark.triangle.fill")
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(Color.plannerWarningText)
+                                        .accessibilityLabel("Warning: check transfer options")
+                                    Text("No specific transport service is listed for this transfer.")
+                                    Text("Check your options before travelling. In London, you may need a taxi or night bus when the Tube is closed.")
+                                }
+                                .font(.subheadline)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityElement(children: .combine)
+                                .accessibilityIdentifier("planner.transfer-warning.\(index)")
+                            }
                             if leg.kind == "vehicle" || leg.isTubeTransfer { PlannerLegPill(leg: leg) }
                             let includeDate = !PlannerTime.calendar.isDate(leg.departure, inSameDayAs: leg.arrival)
                             if let live = leg.live, !liveIsStale { PlannerLiveBadge(live: live) }
@@ -1070,7 +1157,7 @@ struct PlannerJourneyDetailView: View {
                                 }
                                 if let extra = transfer.extraMinutes, extra > 0 { Text("Extra connection time: \(PlannerTime.minutes(extra)).") }
                                 if let waiting = transfer.waitingMinutes, waiting > 0 { Text("Waiting time: \(PlannerTime.minutes(waiting)).") }
-                                if leg.mode != "walk" && leg.mode != "interchange" && leg.localJourney?.isAvailable != true {
+                                if leg.mode != "walk" && leg.mode != "interchange" && leg.localJourney?.isAvailable != true && !leg.requiresTransferCheck {
                                     Text("A supplied connecting transfer. Specific departures and intermediate stops are not provided.")
                                         .font(.caption).foregroundStyle(Color.plannerSecondaryText)
                                 }

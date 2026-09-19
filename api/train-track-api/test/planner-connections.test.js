@@ -93,6 +93,66 @@ test('ALF pair interpretation does not reverse ordered TOC interchange rules', (
     assert.equal(connection({ arrivingOperator: 'BB', departingOperator: 'AA' }).minutes, 15);
 });
 
+test('repeated interchange checks preserve override conflicts, provenance, buffers and reverse timing', () => {
+    const first = Object.freeze({ id: 'TSI:1', station: 'KGX', arrivingOperator: 'AA', departingOperator: 'BB',
+        minutes: 3, sourceRef: Object.freeze({ member: 'TSI', line: 1 }) });
+    for (const secondMinutes of [3, 4, null, NaN, -1]) {
+        const net = network([walk()]);
+        net.rules.tsi = [first, { ...first, id: 'TSI:2', minutes: secondMinutes }];
+        const index = createConnectionIndex(net);
+        const query = { from: 'KGX', to: 'KGX', arrival: instant('20:00'),
+            arrivingOperator: 'AA', departingOperator: 'BB', extraConnectionMinutes: 2 };
+        for (let repeat = 0; repeat < 3; repeat++) {
+            const connection = resolveConnection(index, query);
+            if (secondMinutes !== 3) { assert.equal(connection, null); continue; }
+            assert.equal(connection.minutes, 5);
+            assert.equal(connection.ruleId, first.id);
+            assert.equal(connection.sourceRef, first.sourceRef);
+            assert.equal(connection.end, instant('20:05'));
+            assert.equal(resolveConnection(index, { ...query, departure: instant('20:05') - 1 }), null);
+            assert.equal(resolveConnection(index, { ...query, departure: instant('20:05'), direction: 'latest' }).start, query.arrival);
+        }
+        assert.equal(resolveConnection(index, { ...query, arrivingOperator: 'BB', departingOperator: 'AA' }).minutes, 17);
+    }
+});
+
+test('cached default interchanges use current station overlays and independent network indexes', () => {
+    const net = network([walk()]);
+    const index = createConnectionIndex(net);
+    const query = { from: 'KGX', to: 'KGX', arrival: instant('20:00') };
+    const first = resolveConnection(index, query);
+    assert.equal(first.minutes, 15);
+    const sourceRef = { member: 'MSN', line: 2 };
+    net.stations.get('KGX').minimumChangeMinutes = 6;
+    net.stations.get('KGX').sourceRef = sourceRef;
+    assert.equal(resolveConnection(index, query).minutes, 6);
+    assert.equal(resolveConnection(index, query).sourceRef, sourceRef);
+    const stations = new Map([['KGX', { crs: 'KGX', minimumChangeMinutes: 2 }]]);
+    assert.equal(resolveConnection({ ...index, stations }, query).minutes, 2);
+    assert.equal(resolveConnection(index, query).minutes, 6);
+    net.stations.get('KGX').minimumChangeMinutes = null;
+    assert.equal(resolveConnection(index, query), null);
+    assert.equal(resolveConnection(createConnectionIndex(network([walk()], [], { KGX: 9 })), query).minutes, 9);
+    assert.equal(resolveConnection(index, { ...query, from: 'UNKNOWN', to: 'UNKNOWN' }), null);
+    assert.equal(first.minutes, 15);
+});
+
+test('cached fixed-link clocks retain the starting service date for overnight weekday windows', () => {
+    const rule = { ...walk(), startTime: '2300', endTime: '0100', days: '1000000',
+        startDate: '2026-09-14', endDate: '2026-09-14' };
+    const index = createConnectionIndex(network([rule], [], { KGX: 0, STP: 0 }));
+    const at = value => Date.parse(value);
+    const query = { from: 'KGX', to: 'STP', arrival: at('2026-09-15T00:59:00+01:00') };
+    for (let repeat = 0; repeat < 3; repeat++) {
+        const connection = resolveConnection(index, query);
+        assert.equal(connection.end, at('2026-09-15T01:00:00+01:00'));
+        assert.equal(validateFixedLink(index, connection), true);
+        assert.equal(resolveConnection(index, { ...query, arrival: query.arrival + 1 }), null);
+        assert.equal(resolveConnection(index, { ...query, arrival: at('2026-09-16T00:30:00+01:00') }), null);
+        assert.equal(resolveConnection(index, { ...query, departure: connection.end, direction: 'latest' }).start, query.arrival);
+    }
+});
+
 function train(id, from, to, departure, arrival) {
     return { id, uid: id, variantId: id, source: 'MCA', originDate: '2026-09-15', mode: 'rail', operator: 'OP',
         calls: [

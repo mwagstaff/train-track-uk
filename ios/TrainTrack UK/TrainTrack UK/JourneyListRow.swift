@@ -144,7 +144,9 @@ struct JourneyCard: View {
     var showsHeader: Bool = true
     var allowsExpansion: Bool = true
     var plannedBoard: SavedRouteBoardState? = nil
-    var usesLiveTimes: Binding<Bool>? = nil
+    var laterBoard: SavedRouteBoardState? = nil
+    var onSearchLater: (() -> Void)? = nil
+    var onRetryLater: (() -> Void)? = nil
 
     @EnvironmentObject private var depStore: DeparturesStore
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -170,7 +172,7 @@ struct JourneyCard: View {
 
     private var upcomingDepartures: [DepartureV2] {
         if let direct = plannedBoard?.direct {
-            return SavedRouteDirectPresentation.upcoming(direct.departures, useLiveTimes: usesLiveTimes?.wrappedValue ?? true,
+            return SavedRouteDirectPresentation.upcoming(direct.departures, useLiveTimes: true,
                 now: Date(), observedAt: direct.lastSuccessfulUpdate)
         }
         return depStore.departures(for: firstLeg).filter {
@@ -217,16 +219,8 @@ struct JourneyCard: View {
             if let plannedBoard, !plannedBoard.usesLegacyDepartures, !plannedBoard.usesDirectDepartures {
                 SavedRouteBoardView(state: plannedBoard, routeKey: group.stationSequence.map(\.crs).joined(separator: "-"), departureCount: defaultDepartureCount,
                     isInteractive: isInteractive, isExpanded: isExpanded, onToggleExpanded: onToggleExpanded,
-                    usesLiveTimes: usesLiveTimes)
+                    progressTitle: nil, onRetry: nil)
             } else {
-            if usesDirectDepartures, let usesLiveTimes {
-                DisclosureGroup("Departure options") {
-                    Toggle("Use live times", isOn: usesLiveTimes)
-                        .accessibilityIdentifier("saved-route.live-times")
-                    Text("When off, departures use scheduled times and keep live disruption warnings.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.font(.subheadline).padding(16).disabled(!isInteractive)
-            }
             if let message = plannedBoard?.message {
                 Text(message).font(.caption).foregroundStyle(.secondary).padding(16)
             }
@@ -294,6 +288,8 @@ struct JourneyCard: View {
                 }
             }
             }
+
+            laterDepartureSearch
         }
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -304,6 +300,38 @@ struct JourneyCard: View {
         .task(id: prefetchTaskID) {
             guard plannedBoard == nil || plannedBoard?.usesLegacyDepartures == true || usesDirectDepartures else { return }
             await prefetchVisibleServiceDetails()
+        }
+    }
+
+    @ViewBuilder
+    private var laterDepartureSearch: some View {
+        Divider().padding(.horizontal, 16)
+        if let laterBoard {
+            SavedRouteBoardView(
+                state: laterBoard,
+                routeKey: "later-\(group.stationSequence.map(\.crs).joined(separator: "-"))",
+                departureCount: defaultDepartureCount,
+                isInteractive: isInteractive,
+                isExpanded: isExpanded,
+                onToggleExpanded: onToggleExpanded,
+                progressTitle: "Searching for later departures…",
+                onRetry: onRetryLater
+            )
+        } else {
+            Button(action: { onSearchLater?() }) {
+                HStack(spacing: 6) {
+                    Text("Search for later departures")
+                    Image(systemName: "chevron.down")
+                        .font(.caption.weight(.semibold))
+                }
+                .font(.subheadline.weight(.medium))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 13)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+            .disabled(!isInteractive || onSearchLater == nil)
+            .accessibilityIdentifier("saved-route.search-later")
         }
     }
 
@@ -401,12 +429,10 @@ struct JourneyCard: View {
                 if dynamicTypeSize.isAccessibilitySize {
                     HStack(spacing: 10) {
                         journeyUpdatesIndicator
-                        Text("Route updates").font(.caption2).fixedSize(horizontal: false, vertical: true)
                     }
                 } else {
                     VStack(spacing: 3) {
                         journeyUpdatesIndicator
-                        Text("Route updates").font(.caption2).fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -774,9 +800,7 @@ struct JourneyCard: View {
             hasServicesForAllLegs: itinerary.hasServicesForAllLegs
         ) else { return nil }
 
-        let arrivalTime = usesDirectDepartures && usesLiveTimes?.wrappedValue == false
-            ? itinerary.legs.last?.scheduledArrivalDate.map { PlannerTime.display($0, includeDate: false) }
-            : itinerary.finalArrivalTime
+        let arrivalTime = itinerary.finalArrivalTime
         let departure = departureDate(firstDeparture)
         let cancellation = JourneyItineraryBuilder.cancellation(
             for: firstDeparture,
@@ -838,7 +862,7 @@ struct JourneyCard: View {
 
     private func departureDisplayTime(_ departure: DepartureV2) -> String {
         if usesDirectDepartures {
-            return SavedRouteDirectPresentation.time(departure, useLiveTimes: usesLiveTimes?.wrappedValue ?? true)
+            return SavedRouteDirectPresentation.time(departure, useLiveTimes: true)
         }
         let estimated = departure.departureTime.estimated.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = estimated.lowercased()
@@ -858,7 +882,7 @@ struct JourneyCard: View {
 
     private func departureDate(_ departure: DepartureV2) -> Date? {
         if usesDirectDepartures {
-            return SavedRouteDirectPresentation.departureDate(departure, useLiveTimes: usesLiveTimes?.wrappedValue ?? true,
+            return SavedRouteDirectPresentation.departureDate(departure, useLiveTimes: true,
                 now: Date(), observedAt: plannedBoard?.direct?.lastSuccessfulUpdate)
         }
         return parseHHmm(departureDisplayTime(departure)) ?? parseHHmm(departure.departureTime.scheduled)

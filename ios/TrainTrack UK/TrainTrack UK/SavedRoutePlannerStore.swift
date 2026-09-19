@@ -6,7 +6,8 @@ struct SavedRouteQuery: Encodable, Hashable {
     let destination: String
     let via: [String]
     var realtime = "apply"
-    var id: String { ([origin] + via + [destination, realtime]).joined(separator: "-") }
+    var time: String? = nil
+    var id: String { ([origin] + via + [destination, realtime, time ?? "now"]).joined(separator: "-") }
 
     init(group: JourneyGroup) {
         origin = group.startStation.crs.uppercased()
@@ -14,7 +15,7 @@ struct SavedRouteQuery: Encodable, Hashable {
         via = group.viaStations.map { $0.crs.uppercased() }
     }
 
-    enum CodingKeys: String, CodingKey { case id, origin, destination, via, realtime }
+    enum CodingKeys: String, CodingKey { case id, origin, destination, via, realtime, time }
     func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(id, forKey: .id)
@@ -22,6 +23,7 @@ struct SavedRouteQuery: Encodable, Hashable {
         try values.encode(destination, forKey: .destination)
         try values.encode(via, forKey: .via)
         try values.encode(realtime, forKey: .realtime)
+        try values.encodeIfPresent(time, forKey: .time)
     }
 }
 
@@ -158,9 +160,10 @@ struct SavedRouteBoardState {
 final class SavedRoutePlannerStore {
     static let shared = SavedRoutePlannerStore()
     private(set) var states: [String: SavedRouteBoardState] = [:]
-    private var liveModes: [String: Bool] = [:]
+    private var laterQueries: [String: SavedRouteQuery] = [:]
     @ObservationIgnored private let client: any SavedRouteBoardServing
     @ObservationIgnored private var flights: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var laterSearches: Set<String> = []
     @ObservationIgnored private let now: () -> Date
 
     init(client: (any SavedRouteBoardServing)? = nil, now: @escaping () -> Date = Date.init) {
@@ -171,14 +174,53 @@ final class SavedRoutePlannerStore {
     private func key(_ query: SavedRouteQuery) -> String { client.routeBoardsServerIdentity + "|" + query.id }
 
     func query(for group: JourneyGroup) -> SavedRouteQuery {
-        var query = SavedRouteQuery(group: group)
-        query.realtime = usesLiveTimes(for: group) ? "apply" : "ignore"
-        return query
+        SavedRouteQuery(group: group)
     }
 
-    func usesLiveTimes(for group: JourneyGroup) -> Bool { liveModes[SavedRouteQuery(group: group).id] ?? true }
+    func laterState(for group: JourneyGroup) -> SavedRouteBoardState? {
+        guard let query = laterQueries[SavedRouteQuery(group: group).id] else { return nil }
+        return states[key(query)]
+    }
 
-    func setLiveTimes(_ value: Bool, for group: JourneyGroup) { liveModes[SavedRouteQuery(group: group).id] = value }
+    func searchLater(for group: JourneyGroup) async {
+        let routeID = SavedRouteQuery(group: group).id
+        guard laterQueries[routeID] == nil else { return }
+
+        var query = SavedRouteQuery(group: group)
+        query.time = PlannerTime.iso8601(now().addingTimeInterval(6 * 60 * 60))
+        laterQueries[routeID] = query
+        await performLaterSearch(query)
+    }
+
+    func retryLater(for group: JourneyGroup) async {
+        guard let query = laterQueries[SavedRouteQuery(group: group).id] else { return }
+        await performLaterSearch(query)
+    }
+
+    private func performLaterSearch(_ query: SavedRouteQuery) async {
+        let queryKey = key(query)
+        guard laterSearches.insert(queryKey).inserted else { return }
+        defer { laterSearches.remove(queryKey) }
+
+        for attempt in 0...1 {
+            guard !Task.isCancelled else { return }
+            states[queryKey] = SavedRouteBoardState(requestedAt: now())
+            if attempt > 0 {
+                do { try await Task.sleep(for: .seconds(1)) }
+                catch { return }
+            }
+            while !Task.isCancelled {
+                await refresh(queries: [query], force: true)
+                guard let state = states[queryKey], state.isPending else {
+                    if states[queryKey]?.result != nil { return }
+                    break
+                }
+                let pause = min(5, max(1, state.nextRefresh.timeIntervalSince(now())))
+                do { try await Task.sleep(for: .seconds(pause)) }
+                catch { return }
+            }
+        }
+    }
 
     private func queries(for groups: [JourneyGroup]) -> [SavedRouteQuery] {
         var seen = Set<String>()

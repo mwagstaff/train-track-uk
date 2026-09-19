@@ -19,6 +19,7 @@ const code = value => typeof value === 'string' && /^[A-Z0-9_]{1,80}$/.test(valu
 const METRICS = ['admissionQueueMs', 'queueWaitMs', 'resumeQueueMs', 'preparationMs', 'routingMs', 'liveLookupMs',
     'cpuMs', 'routeCalls', 'operations', 'labels', 'candidates', ...ROUTING_PROFILE_FIELDS];
 const RESOURCE_PEAKS = ['heapUsedBytes', 'rssBytes'];
+const ALGORITHMS = ['original', 'raptor'];
 
 // Search completion must never wait for Mongo. Coalesce lifecycle updates and
 // bound both retained records and actual database operations during an outage.
@@ -43,9 +44,11 @@ export class PlannerSearchLog {
                 via: Array.isArray(request.via) ? request.via.slice(0, 4).map(station).filter(Boolean) : [],
                 requestedTime: date(request.time), timeType: member(request.timeType, ['departAfter', 'arriveBy'], null),
                 realtime: member(request.realtime, ['apply', 'ignore', 'off'], 'off'),
+                algorithm: member(request.algorithm, ALGORITHMS, 'original'),
                 startedAt, finishedAt: null, durationMs: null, status: 'pending', outcome: 'pending', phase: 'queued',
                 cacheStatus: 'unknown', coalesced: false, errorCode: null, resultCount: null, datasetVersion: null, revision: 0 };
             const update = fields => {
+                if (ALGORITHMS.includes(fields.algorithm)) row.algorithm = fields.algorithm;
                 if (fields.cacheStatus === 'miss' || (fields.cacheStatus === 'hit' && row.cacheStatus === 'unknown')) {
                     row.cacheStatus = fields.cacheStatus;
                 }

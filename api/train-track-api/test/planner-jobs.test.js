@@ -209,7 +209,7 @@ test('worker progress does not settle a request and queue waiting does not consu
             parentPort.postMessage({ id: message.id, telemetry: { cacheStatus: 'hit' } });
             setTimeout(() => parentPort.postMessage({ id: message.id, result: { done: true } }), message.payload.delay);
         });`);
-    const service = new PlannerService({ ...plannerConfig({}), timeoutMs: 2000 }, { workerURL: pathToFileURL(filename) });
+    const service = new PlannerService({ ...plannerConfig({}), workerCount: 1, timeoutMs: 2000 }, { workerURL: pathToFileURL(filename) });
     t.after(() => service.close());
     const first = service.call('search', { delay: 300 });
     let started = false;

@@ -339,7 +339,7 @@ test('refresh is routing-free and full replan starts now while retaining a sourc
 });
 
 test('transfer-only profiles refresh to one unique current itinerary without live lookups', async t => {
-    for (const mode of ['walk', 'tubeTransfer']) {
+    for (const mode of ['walk', 'tubeTransfer', 'genericTransfer']) {
         const engine = fixture(t, [], { tsi: [], links: [{ id: mode, origin: 'AAA', destination: 'DDD',
             mode, minutes: 10, startTime: '0000', endTime: '2359', priority: 1 }] });
         engine.liveProvider = { fetchBoards: async () => assert.fail('Transfer-only boards need no live request') };

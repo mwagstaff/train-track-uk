@@ -667,8 +667,13 @@ private extension MyJourneysView {
                     showDeleteDialog = true
                 },
                 plannedBoard: routePlanner.state(for: displayedGroup),
-                usesLiveTimes: Binding(get: { routePlanner.usesLiveTimes(for: displayedGroup) },
-                    set: { routePlanner.setLiveTimes($0, for: displayedGroup) })
+                laterBoard: routePlanner.laterState(for: displayedGroup),
+                onSearchLater: {
+                    Task { await routePlanner.searchLater(for: displayedGroup) }
+                },
+                onRetryLater: {
+                    Task { await routePlanner.retryLater(for: displayedGroup) }
+                }
             )
         }
         .contentShape(Rectangle())

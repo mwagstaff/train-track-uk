@@ -30,20 +30,22 @@ export function normalizeRouteBoards(body, now) {
         if (!Array.isArray(via) || via.length > 4 || via.some(code => typeof code !== 'string' || !/^[A-Z0-9]{3}$/.test(code.trim().toUpperCase()))) {
             throw new PlannerError('INVALID_STATION', 'Supply at most four required intermediate stations in order.');
         }
-        const request = normalizeRequest({ ...route, time: new Date(now).toISOString(), timeType: 'departAfter',
+        const requestedTime = route.time === undefined ? new Date(now).toISOString() : route.time;
+        const request = normalizeRequest({ ...route, time: requestedTime, timeType: 'departAfter',
             realtime: 'off', limit: 5, windowMinutes: 360 });
         request.via = via.map(code => code.trim().toUpperCase());
         const stations = [request.origin, ...request.via, request.destination];
         if (new Set(stations).size !== stations.length) throw new PlannerError('INVALID_STATION', 'Choose different stations along the saved journey.');
-        return { id: route.id, realtime: route.realtime ?? 'apply', request };
+        return { id: route.id, realtime: route.realtime ?? 'apply', request, timeLocked: route.time !== undefined };
     });
 }
 
-export function routeBoardKey(request, version, now) {
-    const bucket = Math.floor(now / (2 * HOUR)) * 2 * HOUR;
-    const profileRequest = { ...request, time: new Date(bucket - 2 * HOUR).toISOString(), windowMinutes: 480, limit: 512 };
+export function routeBoardKey(request, version, now, { timeLocked = false } = {}) {
+    const bucket = timeLocked ? Date.parse(request.time) : Math.floor(now / (2 * HOUR)) * 2 * HOUR;
+    const profileRequest = { ...request, time: new Date(timeLocked ? bucket : bucket - 2 * HOUR).toISOString(),
+        windowMinutes: timeLocked ? 360 : 480, limit: 512 };
     const identity = { policy: PROFILE_POLICY, routing: POLICY_VERSION, live: LIVE_POLICY_VERSION, version, request: profileRequest };
-    return { key: createHash('sha256').update(JSON.stringify(identity)).digest('hex'), request: profileRequest, bucket };
+    return { key: createHash('sha256').update(JSON.stringify(identity)).digest('hex'), request: profileRequest, bucket, timeLocked };
 }
 
 export function routeBoardFragmentKey(request, version, from, to) {
@@ -104,14 +106,14 @@ export class PlannerRouteBoards {
                 error: { code: 'DATASET_UNAVAILABLE', message: metadata.reason || 'Saved journey planning is unavailable.' } })) };
         }
         for (const entry of this.entries.values()) {
-            if (entry.version !== metadata.dataset.version || entry.bucket !== Math.floor(now / (2 * HOUR)) * 2 * HOUR) {
+            if (entry.version !== metadata.dataset.version || (!entry.timeLocked && entry.bucket !== Math.floor(now / (2 * HOUR)) * 2 * HOUR)) {
                 this.cancelEntry(entry, 'superseded');
                 this.queue = this.queue.filter(work => work.entry !== entry);
                 this.entries.delete(entry.key);
             }
         }
         const boards = routes.map(route => {
-            const canonical = routeBoardKey(route.request, metadata.dataset.version, now);
+            const canonical = routeBoardKey(route.request, metadata.dataset.version, now, { timeLocked: route.timeLocked });
             let entry = this.entries.get(canonical.key);
             let created = false;
             if (!entry) {

@@ -22,6 +22,7 @@ test('search lifecycle persists allowlisted public fields, timestamps, queue-inc
     assert.equal(pending.status, 'pending');
     assert.equal(pending.finishedAt, null);
     assert.equal(pending.durationMs, null);
+    assert.equal(pending.algorithm, 'original');
     assert.ok(pending.startedAt instanceof Date);
     tick += 2300; now += 2300;
     handle.update({ phase: 'running', cacheStatus: 'miss', coalesced: true, datasetVersion: 'test-dataset' });
@@ -45,6 +46,42 @@ test('search lifecycle persists allowlisted public fields, timestamps, queue-inc
     assert.ok(completed.revision > pending.revision);
     assert.ok(!JSON.stringify(completed).includes('never-store'));
     assert.equal(writes.length, 2, 'Queued phase and terminal updates are coalesced');
+});
+
+test('search algorithms default to original and accept only bounded known request values', async () => {
+    const writes = [];
+    const log = new PlannerSearchLog({ now: () => epoch,
+        getCollection: async () => ({ bulkWrite: async operations => writes.push(...operations) }) });
+    for (const algorithm of [undefined, 'original', 'raptor', '<script>never-store</script>', { private: 'never-store' }]) {
+        log.start({ request: { algorithm } }).finish({ status: 'success' });
+    }
+    await log.flush();
+    assert.deepEqual(writes.map(rowFrom).map(row => row.algorithm), ['original', 'original', 'raptor', 'original', 'original']);
+    assert.equal(JSON.stringify(writes).includes('never-store'), false);
+});
+
+test('actual algorithm telemetry overrides the request, survives coalesced finish and rejects invalid updates', async () => {
+    const writes = [];
+    const log = new PlannerSearchLog({ now: () => epoch,
+        getCollection: async () => ({ bulkWrite: async operations => writes.push(...operations) }) });
+    const original = log.start({ request: { algorithm: 'raptor' } });
+    await log.flush();
+    original.update({ algorithm: 'original', coalesced: true });
+    original.finish({ status: 'success', algorithm: '<script>never-store</script>' });
+    original.update({ algorithm: 'raptor' });
+    await log.flush();
+    assert.equal(rowFrom(writes[0]).algorithm, 'raptor', 'Pending record describes the requested algorithm');
+    assert.equal(rowFrom(writes[1]).algorithm, 'original', 'Completed record describes the algorithm actually used');
+    assert.equal(rowFrom(writes[1]).coalesced, true);
+
+    const raptor = log.start({});
+    raptor.update({ algorithm: 'raptor', coalesced: true });
+    raptor.update({ algorithm: { private: 'never-store' } });
+    raptor.finish({ status: 'success', algorithm: 'raptor' });
+    await log.flush();
+    assert.equal(rowFrom(writes.at(-1)).algorithm, 'raptor');
+    assert.equal(rowFrom(writes.at(-1)).coalesced, true);
+    assert.equal(JSON.stringify(writes).includes('never-store'), false);
 });
 
 test('failed pending write cannot discard a newer finish and retries remain bounded', async () => {
@@ -184,7 +221,7 @@ test('statistics cover all selected rows and p99 uses nearest rank, independent 
             queries.push(query);
             const cursor = { sort(value) { query.sort = value; return cursor; }, skip(value) { query.skip = value; return cursor; },
                 limit(value) { query.limit = value; return cursor; },
-                toArray: async () => options.projection ? [{ durationMs: 9000 }] : [{ _id: 'one', origin: 'KTH', revision: 3 }] };
+                toArray: async () => options.projection ? [{ durationMs: 9000 }] : [{ _id: 'one', origin: 'KTH', algorithm: 'raptor', revision: 3 }] };
             return cursor;
         }
     };
@@ -201,6 +238,7 @@ test('statistics cover all selected rows and p99 uses nearest rank, independent 
     assert.equal(queries[1].skip, 100);
     assert.equal(queries[1].filter.startedAt.$gte.getTime(), epoch - PLANNER_SEARCH_RETENTION_MS);
     assert.equal(result.rows[0].revision, undefined);
+    assert.equal(result.rows[0].algorithm, 'raptor', 'Paging preserves the stored algorithm independently of summary statistics');
     await reader.list({ source: 'search-job', range: '7d', page: 2 });
     assert.equal(aggregates, 1, 'Sort and pagination share a bounded statistics snapshot');
 });

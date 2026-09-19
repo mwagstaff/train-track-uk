@@ -3,7 +3,7 @@ import path from 'node:path';
 import { getHeapStatistics } from 'node:v8';
 import { randomUUID } from 'node:crypto';
 import { ROUTING_PROFILE_FIELDS } from './telemetry.js';
-import { API_VERSION, POLICY_VERSION, CAPABILITIES, PlannerError, addDays,
+import { API_VERSION, POLICY_VERSION, RAPTOR_POLICY_VERSION, CAPABILITIES, PlannerError, addDays,
     londonDate, encodeCursor, journeyID, normalizeRequest } from './contract.js';
 
 const DAY = 86400000;
@@ -40,7 +40,9 @@ export class PlannerEngine {
         this.datasets = new Map();
         this.dates = new Map();
         this.networks = new Map();
+        this.raptorIndex = null;
         this.searches = new Map();
+        this.searchCacheGeneration = 0;
         this.tubeSnapshots = new Map();
         this.journeys = new Map();
         this.stats = { searches: 0, cacheHits: 0, datePreparations: 0 };
@@ -98,6 +100,7 @@ export class PlannerEngine {
         const retained = new Set(paths.map(item => item.path));
         for (const [key, old] of this.datasets) {
             if (!retained.has(key)) {
+                this.raptorIndex = null;
                 old.close();
                 this.datasets.delete(key);
                 for (const cache of [this.dates, this.networks, this.searches]) {
@@ -182,7 +185,8 @@ export class PlannerEngine {
         const stats = getHeapStatistics();
         const ratio = stats.used_heap_size / stats.heap_size_limit;
         if (ratio < MEMORY_RELIEF_RATIO) return;
-        this.searches.clear();
+        this.raptorIndex = null;
+        this.clearSearchCache();
         const snapshots = this.livePlanner?.snapshots;
         while (snapshots?.size > 2) snapshots.delete(snapshots.keys().next().value);
         while (this.tubeSnapshots.size > 2) this.tubeSnapshots.delete(this.tubeSnapshots.keys().next().value);
@@ -208,6 +212,7 @@ export class PlannerEngine {
         if (this.networks.has(key)) return this.networks.get(key);
         // One hot national index. Release the previous index before preparing another
         // date range, otherwise alternating dates can temporarily retain three indexes.
+        this.raptorIndex = null;
         this.networks.clear();
         // Keep dates adjacent to the new range while at most four dates stay
         // resident: today/tomorrow searches alternate between ranges that differ
@@ -254,6 +259,19 @@ export class PlannerEngine {
 
     async search({ request, version, offset = 0, liveSnapshotId, tubeSnapshotId }, signal, execution = {}) {
         const started = performance.now();
+        const cacheGeneration = this.searchCacheGeneration;
+        const algorithm = request.algorithm ?? 'original';
+        if (!['original', 'raptor'].includes(algorithm)) throw new PlannerError('INVALID_REQUEST', 'Choose original or raptor.');
+        if (algorithm === 'raptor' && (request.timeType !== 'departAfter'
+            || request.via !== undefined && (!Array.isArray(request.via) || request.via.length)
+            || request.realtime && request.realtime !== 'off' || liveSnapshotId || tubeSnapshotId || execution.excludeDirect)) {
+            throw new PlannerError('UNSUPPORTED_REQUEST', 'RAPTOR currently supports timetable-only departure searches without via stations.');
+        }
+        if (algorithm === 'raptor' && request.realtime === 'off') {
+            request = { ...request };
+            delete request.realtime;
+        }
+        execution.onTelemetry?.({ algorithm });
         const timeoutMs = execution.timeoutMs ?? this.config.timeoutMs;
         const maxOperations = execution.maxOperations ?? this.config.maxOperations;
         if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isSafeInteger(maxOperations) || maxOperations <= 0) {
@@ -276,7 +294,8 @@ export class PlannerEngine {
         if (tubeSnapshotId && (!tubeSnapshot || tubeSnapshot.key !== snapshotKey)) {
             throw new PlannerError('CURSOR_EXPIRED', 'The TfL information for this search has expired. Please search again.', 410);
         }
-        const key = `${repo.version}:${POLICY_VERSION}:${JSON.stringify(request)}:${offset}${execution.excludeDirect ? ':connecting' : ''}${execution.timetableOnly ? ':timetable' : ''}`;
+        const policy = algorithm === 'raptor' ? RAPTOR_POLICY_VERSION : POLICY_VERSION;
+        const key = `${repo.version}:${policy}:${JSON.stringify(request)}:${offset}${execution.excludeDirect ? ':connecting' : ''}${execution.timetableOnly ? ':timetable' : ''}`;
         const cached = this.searches.get(key);
         const cacheHit = !tubeSnapshot && !request.realtime && cached && this.now() - cached.createdAt < 5 * 60000
             && (!cached.tubeExpiresAt || cached.tubeExpiresAt > this.now());
@@ -306,7 +325,7 @@ export class PlannerEngine {
             }
             execution.onProgress?.('searching');
             let remainingOperations = maxOperations;
-            const resolveTubeConnection = execution.timetableOnly ? null : await this.tubeResolver({ signal: execution.abortSignal ?? (signal?.addEventListener ? signal : undefined), check,
+            const resolveTubeConnection = algorithm === 'raptor' || execution.timetableOnly ? null : await this.tubeResolver({ signal: execution.abortSignal ?? (signal?.addEventListener ? signal : undefined), check,
                 awaitIO: execution.awaitIO });
             const route = async (query, current, options = {}) => {
                 if (remainingOperations <= 0) throw new PlannerError('SEARCH_TIMEOUT', 'The search exceeded its work budget.', 504);
@@ -377,7 +396,7 @@ export class PlannerEngine {
         const response = {
             journeys, dataset,
             ...(result.live ? { live: result.live, disruptedJourneys: (result.disruptedJourneys ?? []).map(present) } : {}),
-            search: { ...request, window, searchTruncated: Boolean(result.searchTruncated || pageLimitReached || coverageEdge) },
+            search: { ...request, algorithm, window, searchTruncated: Boolean(result.searchTruncated || pageLimitReached || coverageEdge) },
             warnings: [...new Set([...dataset.warnings, ...resolutionWarnings, ...(result.warnings || []), ...(result.live?.warnings ?? []),
                 ...(coverageEdge ? ['Part of this search window falls outside the available timetable; results may be incomplete.'] : []),
                 ...(pageLimitReached ? ['The result limit was reached. Narrow the time window to see more journeys.'] : [])])],
@@ -385,9 +404,16 @@ export class PlannerEngine {
                 more: Number.isInteger(result.pagination?.nextOffset) && result.pagination.nextOffset <= 1000
                     ? encodeCursor(request, repo.version, result.pagination.nextOffset, result.liveSnapshotId, tubeSnapshotId) : undefined }
         };
-        if (!request.realtime && !response.search.searchTruncated) remember(this.searches, key,
+        if (cacheGeneration === this.searchCacheGeneration && !request.realtime && !response.search.searchTruncated) remember(this.searches, key,
             { result: response, createdAt: this.now(), tubeExpiresAt: result.tubeExpiresAt }, 64);
         return response;
+    }
+
+    clearSearchCache() {
+        const clearedSearches = this.searches.size;
+        this.searchCacheGeneration++;
+        this.searches.clear();
+        return { clearedSearches };
     }
 
     publicJourney(journey) {
@@ -465,11 +491,13 @@ export class PlannerEngine {
     async route(request, network, options = {}) {
         // Stored route profiles are structural timetable data, not a place to
         // persist expiring TfL forecasts. Refresh resolves their Tube transfers.
-        const resolveTubeConnection = options.departureProfile || options.timetableOnly ? null : options.resolveTubeConnection
+        const raptor = request.algorithm === 'raptor';
+        const resolveTubeConnection = raptor || options.departureProfile || options.timetableOnly ? null : options.resolveTubeConnection
             ?? await this.tubeResolver({ signal: options.abortSignal, awaitIO: options.awaitIO,
                 check: () => { if (options.signal?.aborted) throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499); } });
         const router = await import('./router.js');
-        const find = this.findJourneys ?? (resolveTubeConnection ? router.findJourneysAsync : router.findJourneys);
+        const find = raptor ? (query, current, settings) => this.routeRaptor(query, current, settings, router)
+            : this.findJourneys ?? (resolveTubeConnection ? router.findJourneysAsync : router.findJourneys);
         try {
             if (options?.measure) options.onTelemetry?.({ metricsDelta: { routeCalls: 1 } });
             const work = () => find(request, network, { ...options, resolveTubeConnection });
@@ -494,6 +522,62 @@ export class PlannerEngine {
             if (error.code === 'SEARCH_TIMEOUT') throw Object.assign(new PlannerError('SEARCH_TIMEOUT', 'The search exceeded its work budget. Try a narrower time window.', 504),
                 error.reason ? { reason: error.reason } : {}, error.metrics ? { metrics: error.metrics } : {});
             if (error.code === 'SEARCH_CANCELLED') throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);
+            throw error;
+        }
+    }
+
+    // Explicit experimental opt-in only. Keep one index alongside the engine's
+    // one dated network; it is released on date/version changes or heap pressure.
+    async routeRaptor(request, network, options, router) {
+        const started = performance.now();
+        const timeoutMs = options.timeoutMs ?? this.config.timeoutMs;
+        const maxOperations = options.maxOperations ?? this.config.maxOperations;
+        let preparationOperations = 0, indexBuildMs = 0, queryMetrics;
+        const checkpoint = () => {
+            if (options.signal?.aborted || options.abortSignal?.aborted) throw new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499);
+            if (performance.now() - started >= timeoutMs) throw new PlannerError('SEARCH_TIMEOUT', 'RAPTOR exceeded its execution time budget.', 504);
+        };
+        const check = () => {
+            if ((++preparationOperations & 255) === 1) checkpoint();
+            if (preparationOperations > maxOperations) throw new PlannerError('SEARCH_TIMEOUT', 'RAPTOR exceeded its work budget.', 504);
+        };
+        try {
+            checkpoint();
+            if (request.timeType !== 'departAfter' || request.via !== undefined && (!Array.isArray(request.via) || request.via.length)
+                || request.realtime && request.realtime !== 'off'
+                || options.excludeDirect || options.resolveTubeConnection) {
+                throw new PlannerError('UNSUPPORTED_REQUEST', 'RAPTOR currently supports timetable-only departure searches without via stations.');
+            }
+            const { compileRaptorNetwork, findRaptorJourneys } = await import('./raptor-poc.js');
+            checkpoint();
+            const indexingStarted = performance.now();
+            try {
+                if (this.raptorIndex?.network !== network) {
+                    this.raptorIndex = null;
+                    const index = compileRaptorNetwork(network, { check });
+                    checkpoint();
+                    this.raptorIndex = { network, index };
+                }
+                // The POC's independent validator still requires the original
+                // event index. Its work belongs to this request's budget too.
+                router.prepareNetwork(network, check);
+            } finally { indexBuildMs = performance.now() - indexingStarted; }
+            checkpoint();
+            if (preparationOperations >= maxOperations) throw new PlannerError('SEARCH_TIMEOUT', 'RAPTOR exceeded its work budget.', 504);
+            const result = findRaptorJourneys(request, this.raptorIndex.index, { ...options,
+                maxOperations: maxOperations - preparationOperations,
+                timeoutMs: Math.max(1, timeoutMs - (performance.now() - started)) });
+            queryMetrics = result.metrics;
+            checkpoint();
+            result.metrics = { ...result.metrics, operations: preparationOperations + result.metrics.operations, indexBuildMs };
+            const from = Date.parse(request.time), window = request.windowMinutes * 60000;
+            return { ...result,
+                searchWindow: { from: request.time, to: new Date(from + window).toISOString(), fromInclusive: true, toInclusive: false },
+                pagination: { ...result.pagination, earlierTime: new Date(from - window).toISOString(), laterTime: new Date(from + window).toISOString() },
+                warnings: ['Experimental RAPTOR timetable-only search: live rail changes and detailed TfL routing are not included. Equal-time alternatives may differ from the original planner.'] };
+        } catch (error) {
+            const metrics = error.metrics ?? queryMetrics;
+            error.metrics = { ...metrics, operations: preparationOperations + (metrics?.operations ?? 0), indexBuildMs };
             throw error;
         }
     }
@@ -592,11 +676,12 @@ export class PlannerEngine {
             diagnostics: network.diagnostics, resolutions, journeys: result.journeys, metrics: result.metrics };
     }
 
-    close() { for (const repo of this.datasets.values()) repo.close(); }
+    close() { this.raptorIndex = null; for (const repo of this.datasets.values()) repo.close(); }
 
     runtime() {
         return { ...this.stats, caches: { datasets: this.datasets.size, dates: this.dates.size,
-            networks: this.networks.size, searches: this.searches.size, journeys: this.journeys.size },
+            networks: this.networks.size, raptorIndexes: this.raptorIndex ? 1 : 0,
+            searches: this.searches.size, journeys: this.journeys.size },
             memoryBytes: process.memoryUsage() };
     }
 }
