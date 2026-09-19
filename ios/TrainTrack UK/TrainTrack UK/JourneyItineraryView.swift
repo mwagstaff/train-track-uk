@@ -507,7 +507,7 @@ struct JourneyItineraryView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.bold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color.navigationChevron)
             }
 
             if dynamicTypeSize.isAccessibilitySize {

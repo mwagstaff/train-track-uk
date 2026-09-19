@@ -20,8 +20,9 @@ struct ContentView: View {
     @State private var favouritesPath = NavigationPath()
     @State private var myJourneysPath = NavigationPath()
     @State private var inProgressPath = NavigationPath()
-    @State private var addJourneyPath = NavigationPath()
+    @State private var addJourneyPath: [AddJourneyNavigationDestination] = []
     @State private var profilePath = NavigationPath()
+    @State private var journeyPlannerStore = JourneyPlannerStore()
     @State private var tabSelectionFeedbackTrigger = 0
     @State private var horizontalSwipeDisabledTabs: Set<Tab> = []
     @State private var isRailwayBackgroundViewerPresented = false
@@ -100,7 +101,12 @@ struct ContentView: View {
                     .tag(Tab.inProgress)
             }
 
-            NavigationStack(path: $addJourneyPath) { AddJourneyEntryView() }
+            NavigationStack(path: $addJourneyPath) {
+                AddJourneyEntryView(
+                    plannerStore: journeyPlannerStore,
+                    navigationPath: $addJourneyPath
+                )
+            }
                 .modifier(JourneyUpdatesChrome(includeToast: true))
                 .horizontalTabSwipePage(.addJourney)
                 .horizontalTabSwipeDisabled(horizontalSwipeDisabledBinding(for: .addJourney))
@@ -150,7 +156,7 @@ struct ContentView: View {
             favouritesPath = NavigationPath()
             myJourneysPath = NavigationPath()
             inProgressPath = NavigationPath()
-            addJourneyPath = NavigationPath()
+            addJourneyPath = []
             profilePath = NavigationPath()
         }
         .onChange(of: router.historyTarget, initial: true) { _, target in

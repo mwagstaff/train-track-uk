@@ -183,7 +183,7 @@ struct JourneyHistoryStatsView: View {
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.navigationChevron)
                         .accessibilityHidden(true)
                 }
             }

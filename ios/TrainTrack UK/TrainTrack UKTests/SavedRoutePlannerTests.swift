@@ -145,7 +145,17 @@ struct SavedRoutePlannerTests {
         client.failure = PlannerError(code: "NETWORK", message: "Offline")
         await store.refresh(groups: [route], force: true)
         #expect(store.state(for: route).result != nil)
+        #expect(store.state(for: route).message == nil)
+        await store.refresh(groups: [route], force: true)
+        #expect(store.state(for: route).message == nil)
+        await store.refresh(groups: [route], force: true)
         #expect(store.state(for: route).message == "Offline")
+        client.failure = nil
+        client.status = "ready"
+        client.result = try result()
+        await store.refresh(groups: [route], force: true)
+        #expect(store.state(for: route).message == nil)
+        #expect(store.state(for: route).consecutiveFailures == 0)
         #expect(!store.state(for: route).usesLegacyDepartures)
     }
 
@@ -156,10 +166,49 @@ struct SavedRoutePlannerTests {
         client.failure = PlannerError(code: "HTTP_503", message: "Unavailable")
         await store.refresh(groups: [route])
         #expect(!store.state(for: route).usesLegacyDepartures)
-        #expect(!store.state(for: route).isPending)
+        #expect(store.state(for: route).isPending)
         client.failure = SavedRouteBoardError.unsupported
         await store.refresh(groups: [route], force: true)
         #expect(store.state(for: route).usesLegacyDepartures)
+    }
+
+    @Test func boardFailuresOnlyShowAfterRepeatedFailuresAndResetAfterRecovery() async throws {
+        let client = RouteBoardStub()
+        client.result = try result()
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "VIC"])
+        await store.refresh(groups: [route])
+        client.status = "error"
+        client.boardError = PlannerError(code: "SEARCH_TIMEOUT", message: "Refresh failed")
+        for attempt in 1...3 {
+            await store.refresh(groups: [route], force: true)
+            #expect(store.state(for: route).result != nil)
+            #expect(store.state(for: route).message == (attempt == 3 ? "Refresh failed" : nil))
+        }
+        client.status = "ready"
+        client.boardError = nil
+        await store.refresh(groups: [route], force: true)
+        #expect(!store.state(for: route).hasPersistentFailure)
+        #expect(store.state(for: route).message == nil)
+    }
+
+    @Test func partialLiveRefreshWarningsWaitForRepeatedFailures() async throws {
+        let client = RouteBoardStub()
+        var option = try journey(live: nil)
+        option.warnings = ["Live times could not be refreshed; scheduled times are shown."]
+        client.result = try result(journeys: [option])
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "VIC"])
+        for attempt in 1...3 {
+            await store.refresh(groups: [route], force: true)
+            #expect(store.state(for: route).hasPersistentFailure == (attempt == 3))
+            #expect(store.state(for: route).result?.journeys.count == 1)
+        }
+        option.warnings = ["A lift is unavailable."]
+        client.result = try result(journeys: [option])
+        await store.refresh(groups: [route], force: true)
+        #expect(!store.state(for: route).hasPersistentFailure)
+        #expect(!PlannerLivePresentation.isRefreshFailureWarning("A lift is unavailable."))
     }
 
     @Test func changingServerDoesNotDisplayOrReusePreviousServersBoard() async throws {
@@ -193,7 +242,7 @@ struct SavedRoutePlannerTests {
         var justRequested = SavedRouteBoardState()
         justRequested.requestedAt = now
         justRequested.waitingForCapacity = true
-        #expect(justRequested.progressPresentation(at: now)?.details.isEmpty == true)
+        #expect(justRequested.showsActivity)
 
         let data = Data("""
         {"id":"r","status":"queued","progress":{"phase":"queued","queuePosition":2,"queuedAt":"2027-01-15T08:00:00Z"}}
@@ -210,20 +259,15 @@ struct SavedRoutePlannerTests {
         let state = store.state(for: route)
         #expect(state.isPending)
         #expect(state.message == nil)
-        #expect(state.progressPresentation(at: now)?.title == "Waiting to plan journeys…")
-        #expect(state.progressPresentation(at: now)?.details == ["Queue position: 2", "Waiting: 1 min 5 sec"])
         client.boardError = nil
         client.progress = SavedRouteBoardProgress(phase: "searching", queuedAt: now.addingTimeInterval(-70),
             startedAt: now.addingTimeInterval(-20), completedWindows: 3, totalWindows: 8)
         await store.refresh(groups: [route], force: true)
-        #expect(store.state(for: route).progressPresentation(at: now)?.title == "Finding journey options…")
-        #expect(store.state(for: route).progressPresentation(at: now)?.details == ["Checked 3 of 8 timetable windows", "Elapsed: 1 min 10 sec"])
         client.status = "ready"
         client.result = try result()
         client.progress = nil
         await store.refresh(groups: [route], force: true)
         #expect(!store.state(for: route).isPending)
-        #expect(store.state(for: route).progressPresentation(at: now) == nil)
     }
 
     @Test func olderBusyHTTPResponsesKeepCachedRowsAndRetryWithoutInventingAnETA() async throws {
@@ -237,7 +281,6 @@ struct SavedRoutePlannerTests {
         let state = store.state(for: route)
         #expect(state.result != nil)
         #expect(state.message == nil)
-        #expect(state.progressPresentation(at: now)?.title == "Waiting to update journeys…")
         #expect(state.nextRefresh == now.addingTimeInterval(5))
     }
 
@@ -277,10 +320,9 @@ struct SavedRoutePlannerTests {
         let state = SavedRouteBoardState(board: board, message: error.message)
         #expect(state.isPending)
         #expect(state.message == error.message)
-        #expect(state.progressPresentation(at: now)?.title == "Waiting to retry…")
     }
 
-    @Test func laterSearchUsesTheFollowingSixHourWindowWithoutChangingSavedStops() async throws {
+    @Test func moreDeparturesSearchesTheCurrentSixHourWindowWithoutChangingSavedStops() async throws {
         let client = RouteBoardStub()
         client.result = try result()
         let store = SavedRoutePlannerStore(client: client, now: { now })
@@ -288,10 +330,53 @@ struct SavedRoutePlannerTests {
         await store.searchLater(for: route)
         let query = try #require(client.requests.first?.first)
         #expect(query.realtime == "apply")
-        #expect(query.time == PlannerTime.iso8601(now.addingTimeInterval(6 * 60 * 60)))
+        #expect(query.time == PlannerTime.iso8601(now))
         #expect(query.via == ["VIC"])
         #expect(store.laterState(for: route)?.isPending == false)
         #expect(route.stationSequence.map(\.crs) == ["KTH", "VIC", "INV"])
+
+        await store.searchLater(for: route)
+        #expect(client.requests.count == 1)
+        #expect(store.laterState(for: route)?.result != nil)
+    }
+
+    @Test func plannedAndLaterBoardsMergeChronologicallyWithPrimaryCopyOfOverlap() throws {
+        let first = try mergeJourney(
+            id: "first",
+            serviceID: "first-service",
+            departure: now.addingTimeInterval(600)
+        )
+        let scheduledOverlap = now.addingTimeInterval(3600)
+        let primaryOverlap = try mergeJourney(
+            id: "primary-overlap",
+            serviceID: "shared-service",
+            departure: scheduledOverlap,
+            scheduledDeparture: scheduledOverlap
+        )
+        let supplementalOverlap = try mergeJourney(
+            id: "supplemental-overlap",
+            serviceID: "shared-service",
+            departure: scheduledOverlap.addingTimeInterval(120),
+            scheduledDeparture: scheduledOverlap
+        )
+        let last = try mergeJourney(
+            id: "last",
+            serviceID: "last-service",
+            departure: now.addingTimeInterval(7 * 3600)
+        )
+        let expired = try mergeJourney(
+            id: "expired",
+            serviceID: "expired-service",
+            departure: now.addingTimeInterval(-60)
+        )
+
+        let merged = SavedRouteJourneyPresentation.merged(
+            primary: try result(journeys: [primaryOverlap, expired, first]),
+            supplemental: try result(journeys: [last, supplementalOverlap]),
+            at: now
+        )
+
+        #expect(merged.map(\.journey.id) == ["first", "primary-overlap", "last"])
     }
 
     @Test func laterSearchRetriesAutomaticallyAndCanBeRetriedManually() async throws {
@@ -301,13 +386,13 @@ struct SavedRoutePlannerTests {
         client.failure = PlannerError(code: "NETWORK", message: "Offline")
 
         await store.searchLater(for: route)
-        #expect(client.requests.count == 2)
+        #expect(client.requests.count == 3)
         #expect(store.laterState(for: route)?.message == "Offline")
 
         client.failure = nil
         client.result = try result()
         await store.retryLater(for: route)
-        #expect(client.requests.count == 3)
+        #expect(client.requests.count == 4)
         #expect(store.laterState(for: route)?.result != nil)
     }
 
@@ -439,6 +524,49 @@ struct SavedRoutePlannerTests {
         let raw: [String: Any] = ["id": UUID().uuidString, "departure": PlannerTime.iso8601(start),
             "arrival": PlannerTime.iso8601(start.addingTimeInterval(1200)), "durationMinutes": 20, "changes": 0, "legs": [leg]]
         return try PlannerTime.decoder().decode(PlannedJourney.self, from: JSONSerialization.data(withJSONObject: raw))
+    }
+
+    private func mergeJourney(
+        id: String,
+        serviceID: String,
+        departure: Date,
+        scheduledDeparture: Date? = nil
+    ) throws -> PlannedJourney {
+        let scheduled = scheduledDeparture ?? departure
+        let arrival = departure.addingTimeInterval(1200)
+        let scheduledArrival = scheduled.addingTimeInterval(1200)
+        let station: (String) -> [String: String] = { ["crs": $0, "name": $0] }
+        let leg: [String: Any] = [
+            "kind": "vehicle",
+            "mode": "rail",
+            "operator": "SE",
+            "serviceId": serviceID,
+            "originDate": "2027-01-15",
+            "from": station("KTH"),
+            "to": station("VIC"),
+            "departure": PlannerTime.iso8601(departure),
+            "arrival": PlannerTime.iso8601(arrival),
+            "scheduledDeparture": PlannerTime.iso8601(scheduled),
+            "scheduledArrival": PlannerTime.iso8601(scheduledArrival),
+            "callingPoints": [
+                ["station": station("KTH"), "departure": PlannerTime.iso8601(scheduled)],
+                ["station": station("VIC"), "arrival": PlannerTime.iso8601(scheduledArrival)]
+            ]
+        ]
+        let raw: [String: Any] = [
+            "id": id,
+            "departure": PlannerTime.iso8601(departure),
+            "arrival": PlannerTime.iso8601(arrival),
+            "scheduledDeparture": PlannerTime.iso8601(scheduled),
+            "scheduledArrival": PlannerTime.iso8601(scheduledArrival),
+            "durationMinutes": 20,
+            "changes": 0,
+            "legs": [leg]
+        ]
+        return try PlannerTime.decoder().decode(
+            PlannedJourney.self,
+            from: JSONSerialization.data(withJSONObject: raw)
+        )
     }
 
     private func result(journeys: [PlannedJourney] = []) throws -> PlannerSearchResponse {

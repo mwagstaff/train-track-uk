@@ -13,6 +13,53 @@ import JourneyActivityShared
 
 struct TrainTrack_UKTests {
 
+    @Test @MainActor func endingScheduledJourneyMatchesItsSeparateLiveSessionAndOnlySuppressesThisOccurrence() throws {
+        let now = Date()
+        let origin = Station(crs: "KTH", name: "Kent House", longitude: "-0.04", latitude: "51.41")
+        let destination = Station(crs: "VIC", name: "London Victoria", longitude: "-0.14", latitude: "51.49")
+        let group = JourneyGroup(id: UUID(), legs: [Journey(fromStation: origin, toStation: destination, favorite: false)])
+        let session = try notificationSubscription(id: "live-session", origin: "scheduled")
+        #expect(JourneyEndPolicy.matches(session, subscriptionID: "schedule", group: group))
+        let reverse = JourneyGroup(id: UUID(), legs: [Journey(fromStation: destination, toStation: origin, favorite: false)])
+        #expect(!JourneyEndPolicy.matches(session, subscriptionID: "schedule", group: reverse))
+        let schedule = scheduledJourneyUpdate(id: "schedule", days: DayOfWeek.allCases,
+            windows: [("00:00", "23:59"), ("00:00", "23:59")])
+        let keys = JourneyEndPolicy.scheduleKeys(for: schedule, group: group, now: now)
+        #expect(keys.count == 1)
+        let key = try #require(keys.first)
+        #expect(key.hasPrefix("KTH-VIC|"))
+        let suite = "ended-occurrence-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let manager = ScheduledLiveActivityAutoStartManager(skipDefaults: defaults)
+        manager.suppressScheduledJourney(scheduleKey: key)
+        // Recreate the manager to model relaunching after End journey.
+        let restored = ScheduledLiveActivityAutoStartManager(skipDefaults: defaults)
+        #expect(restored.shouldSkipForAdHocJourney(scheduleKey: key))
+        let tomorrow = try #require(Calendar.current.date(byAdding: .day, value: 1, to: now))
+        let nextKeys = JourneyEndPolicy.scheduleKeys(for: schedule, group: group, now: tomorrow)
+        #expect(keys.isDisjoint(with: nextKeys))
+        #expect(JourneyEndPolicy.scheduleKeys(for: schedule, group: reverse, now: now).isDisjoint(with: keys))
+    }
+
+    @Test func pendingLiveSessionDeletionStaysHiddenUntilTheServerStopsReturningIt() {
+        let whileServerStillHasSession = PendingLiveSessionDeletionPolicy.reconcile(
+            serverIDs: ["ended", "other"],
+            pendingDeletionIDs: ["ended"]
+        )
+
+        #expect(whileServerStillHasSession.visibleIDs == ["other"])
+        #expect(whileServerStillHasSession.pendingDeletionIDs == ["ended"])
+
+        let afterServerDeletion = PendingLiveSessionDeletionPolicy.reconcile(
+            serverIDs: ["other"],
+            pendingDeletionIDs: whileServerStillHasSession.pendingDeletionIDs
+        )
+
+        #expect(afterServerDeletion.visibleIDs == ["other"])
+        #expect(afterServerDeletion.pendingDeletionIDs.isEmpty)
+    }
+
     @Test func muteRequestsOnlyRetryTransientHTTPFailures() {
         #expect(NotificationMuteRequestRetryPolicy.shouldRetry(statusCode: 400) == false)
         #expect(NotificationMuteRequestRetryPolicy.shouldRetry(statusCode: 404) == false)

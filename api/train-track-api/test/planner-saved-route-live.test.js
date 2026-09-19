@@ -118,6 +118,25 @@ test('cached route topology composes newly departing trains rather than only ref
     assert.equal(JSON.stringify(original), untouched);
 });
 
+test('live refresh retains planned departures beyond a shallow live board without duplicating matched trains', async () => {
+    const f = fixture();
+    const original = plan([leg('ORG', 'DST', '12:05', '12:25')]);
+    original.result.journeys = [
+        plan([leg('ORG', 'DST', '12:05', '12:25')]).result.journeys[0],
+        plan([leg('ORG', 'DST', '12:35', '12:55')]).result.journeys[0],
+        plan([leg('ORG', 'DST', '13:05', '13:25')]).result.journeys[0]
+    ];
+    f.board('ORG', 'DST', [row('FIRST', '12:05'), row('SECOND', '12:35')]);
+    f.details('ORG', 'FIRST', '12:05', [point('DST', '12:25')]);
+    f.details('ORG', 'SECOND', '12:35', [point('DST', '12:55')]);
+
+    const result = await f.helper.refresh(original, request);
+
+    assert.deepEqual(result.journeys.map(journey => journey.legs[0].serviceId),
+        ['live:ORG:FIRST', 'live:ORG:SECOND', 'cached:ORG:13:05']);
+    assert.match(result.journeys[2].warnings.join(' '), /scheduled times are shown/i);
+});
+
 test('same starting train and route keeps the earliest arrival without changing cached candidates', () => {
     const option = (departure, arrival) => plan([leg('ORG', 'MID', '12:05', '12:20'), transfer('MID'),
         leg('MID', 'DST', departure, arrival)]).result.journeys[0];

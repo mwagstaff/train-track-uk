@@ -6,10 +6,10 @@ import { MODES } from './contract.js';
 // identity. Section 5.12 explicitly keeps TOC overrides ordered.
 // https://www.rspaccreditation.org/downloadPublic.php?did=c5VkXAQOgMj8q024cALYymTpxTFaroiwLL7mvDA0A3UB5FJKuO
 // ALF policy: the complete traversal must fit an active window. Boundaries use the
-// stated clock minute, inclusively. Walking from/to a journey endpoint does not
-// require an allowance to leave/enter a train there; boarding/alighting elsewhere
+// stated clock minute, inclusively. A fixed link from/to a journey endpoint does
+// not require an allowance outside the journey; boarding/alighting elsewhere
 // still uses the supplied station allowances.
-export const CONNECTION_POLICY = 'alf-pairs-endpoint-walk-allowances-v3';
+export const CONNECTION_POLICY = 'alf-pairs-endpoint-allowances-v4';
 const MINUTE = 60_000;
 const DAY = 86_400_000;
 // Europe/London since 1996: BST runs from 01:00 UTC on the last Sunday of March
@@ -144,10 +144,10 @@ export function stationAllowance(index, station) {
 
 const allowance = stationAllowance;
 
-function linkAllowances(index, from, to, mode, { originIsEndpoint = false, destinationIsEndpoint = false } = {}) {
+function linkAllowances(index, from, to, { originIsEndpoint = false, destinationIsEndpoint = false } = {}) {
     return {
-        exitMinutes: mode === 'walk' && originIsEndpoint ? 0 : allowance(index, from),
-        entryMinutes: mode === 'walk' && destinationIsEndpoint ? 0 : allowance(index, to)
+        exitMinutes: originIsEndpoint ? 0 : allowance(index, from),
+        entryMinutes: destinationIsEndpoint ? 0 : allowance(index, to)
     };
 }
 
@@ -252,7 +252,7 @@ export function resolveConnection(index, {
     for (const window of effectiveWindows(index, from, to, reference)) {
         const rule = window.rule;
         if (!modeSet.has(rule.mode)) continue;
-        const { exitMinutes, entryMinutes } = linkAllowances(index, from, to, rule.mode, { originIsEndpoint, destinationIsEndpoint });
+        const { exitMinutes, entryMinutes } = linkAllowances(index, from, to, { originIsEndpoint, destinationIsEndpoint });
         if (exitMinutes === null || entryMinutes === null) continue;
         const travel = rule.minutes * MINUTE;
         const entry = (entryMinutes + extra) * MINUTE;
@@ -282,7 +282,7 @@ export function resolveConnection(index, {
 export function validateFixedLink(index, connection, extraConnectionMinutes = 0, endpoints = {}) {
     const { from, to, start, end, movementStart, movementEnd, ruleId, mode, breakdown } = connection;
     if (![start, end, movementStart, movementEnd].every(Number.isFinite)) return false;
-    const { exitMinutes, entryMinutes } = linkAllowances(index, from, to, mode, endpoints);
+    const { exitMinutes, entryMinutes } = linkAllowances(index, from, to, endpoints);
     if (exitMinutes === null || entryMinutes === null) return false;
     const window = effectiveWindows(index, from, to, movementStart).find(window =>
         window.rule.id === ruleId && window.rule.mode === mode && movementStart >= window.start && movementEnd <= window.end);

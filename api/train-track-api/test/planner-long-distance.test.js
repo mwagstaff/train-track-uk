@@ -144,8 +144,8 @@ function assertFeasible(response, stations, tsi) {
                 assert.ok(Date.parse(after.departure) - Date.parse(before.arrival) >= (minimum + allowance.extraMinutes) * MINUTE);
             } else {
                 if (leg.mode !== 'walk') boardings++;
-                assert.equal(allowance.exitMinutes, leg.mode === 'walk' && i === 0 ? 0 : stations.get(leg.from.crs).minimumChangeMinutes);
-                assert.equal(allowance.entryMinutes, leg.mode === 'walk' && i === journey.legs.length - 1 ? 0 : stations.get(leg.to.crs).minimumChangeMinutes);
+                assert.equal(allowance.exitMinutes, i === 0 ? 0 : stations.get(leg.from.crs).minimumChangeMinutes);
+                assert.equal(allowance.entryMinutes, i === journey.legs.length - 1 ? 0 : stations.get(leg.to.crs).minimumChangeMinutes);
                 assert.ok(allowance.travelMinutes > 0);
                 assert.ok(allowance.waitingMinutes >= 0);
                 assert.equal((end - start) / MINUTE, allowance.exitMinutes + allowance.travelMinutes
@@ -192,6 +192,24 @@ test('optional RJTTF939 long-distance searches retain real overnight journeys an
         assert.equal(walk.to.crs, 'KTH');
         assert.deepEqual(walk.transfer, { exitMinutes: 0, travelMinutes: 9, entryMinutes: 4, extraMinutes: 0, waitingMinutes: 0 });
         assert.deepEqual(vehicles(journey).map(leg => [leg.from.crs, leg.to.crs]), [['KTH', 'VIC'], ['PAD', 'BRI']]);
+    });
+
+    await t.test('Clock House to London Bridge keeps the Kent House and Elephant route in both routers', async () => {
+        for (const algorithm of [undefined, 'raptor']) {
+            const response = await service.search({ origin: 'CLK', destination: 'LBG',
+                time: '2026-09-19T09:51:00+01:00', timeType: 'departAfter', limit: 10,
+                ...(algorithm ? { algorithm } : {}) });
+            assertFeasible(response, stations, tsi);
+            const journey = response.journeys.find(value => value.departure === '2026-09-19T09:29:00.000Z');
+            assert.ok(journey, `${algorithm ?? 'original'} omitted the 10:29 departure`);
+            assert.equal(journey.arrival, '2026-09-19T10:24:00.000Z');
+            assert.deepEqual(journey.legs.filter(leg => leg.mode !== 'interchange')
+                .map(leg => [leg.mode, leg.from.crs, leg.to.crs]), [
+                ['walk', 'CLK', 'KTH'], ['rail', 'KTH', 'HNH'],
+                ['rail', 'HNH', 'EPH'], ['tubeTransfer', 'EPH', 'LBG']
+            ]);
+            assert.equal(journey.legs.at(-1).transfer.entryMinutes, 0);
+        }
     });
 
     await t.test('defaults find legitimate overnight arrivals', async () => {

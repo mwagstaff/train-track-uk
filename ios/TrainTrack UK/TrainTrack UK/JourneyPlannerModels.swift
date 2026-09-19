@@ -442,6 +442,12 @@ enum PlannerTime {
         return value
     }
 
+    static var displayZone: TimeZone { .autoupdatingCurrent }
+
+    static var displayCalendar: Calendar {
+        displayCalendar(timeZone: displayZone)
+    }
+
     static func iso8601(_ date: Date) -> String {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -459,10 +465,14 @@ enum PlannerTime {
         return formatter.date(from: text)
     }
 
-    static func display(_ date: Date, includeDate: Bool = true) -> String {
+    static func display(
+        _ date: Date,
+        includeDate: Bool = true,
+        timeZone: TimeZone = .autoupdatingCurrent
+    ) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_GB")
-        formatter.timeZone = zone
+        formatter.timeZone = timeZone
         formatter.dateFormat = includeDate ? "EEE d MMM, HH:mm" : "HH:mm"
         return formatter.string(from: date)
     }
@@ -472,23 +482,49 @@ enum PlannerTime {
         return total >= 60 ? "\(total / 60)h \(total % 60)m" : "\(total) min"
     }
 
-    static func displayRange(from departure: Date, to arrival: Date, separator: String = " → ") -> String {
-        let includeDate = !calendar.isDate(departure, inSameDayAs: arrival)
-        return display(departure, includeDate: includeDate) + separator + display(arrival, includeDate: includeDate)
+    static func displayRange(
+        from departure: Date,
+        to arrival: Date,
+        separator: String = " → ",
+        timeZone: TimeZone = .autoupdatingCurrent
+    ) -> String {
+        let includeDate = !displayCalendar(timeZone: timeZone).isDate(departure, inSameDayAs: arrival)
+        return display(departure, includeDate: includeDate, timeZone: timeZone)
+            + separator
+            + display(arrival, includeDate: includeDate, timeZone: timeZone)
     }
 
-    static func journeyResultTimes(from departure: Date, to arrival: Date) -> (departure: String, arrival: String) {
-        let departureTime = display(departure, includeDate: false)
-        let arrivalTime = display(arrival, includeDate: false)
-        guard !calendar.isDate(departure, inSameDayAs: arrival) else {
+    static func journeyResultTimes(
+        from departure: Date,
+        to arrival: Date,
+        timeZone: TimeZone = .autoupdatingCurrent
+    ) -> (departure: String, arrival: String) {
+        let departureTime = display(departure, includeDate: false, timeZone: timeZone)
+        let arrivalTime = display(arrival, includeDate: false, timeZone: timeZone)
+        guard !displayCalendar(timeZone: timeZone).isDate(departure, inSameDayAs: arrival) else {
             return (departureTime, arrivalTime)
         }
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_GB")
-        formatter.timeZone = zone
+        formatter.timeZone = timeZone
         formatter.dateFormat = "EEE"
         return (departureTime, "\(arrivalTime) (\(formatter.string(from: arrival)))")
+    }
+
+    static func localTimeNotice(
+        timeZone: TimeZone = .autoupdatingCurrent,
+        locale: Locale = .autoupdatingCurrent
+    ) -> String? {
+        guard timeZone.identifier != zone.identifier else { return nil }
+        let name = timeZone.localizedName(for: .generic, locale: locale) ?? timeZone.identifier
+        return "Times shown are in \(name) rather than UK time."
+    }
+
+    private static func displayCalendar(timeZone: TimeZone) -> Calendar {
+        var value = Calendar(identifier: .gregorian)
+        value.timeZone = timeZone
+        return value
     }
 
     static func decoder() -> JSONDecoder {

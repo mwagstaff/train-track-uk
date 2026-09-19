@@ -474,6 +474,17 @@ struct JourneyPlannerTests {
             == ["Some live rail updates could not be retrieved."])
     }
 
+    @Test func searchResultsHideOnlyTheNeutralScheduledTimesWarning() {
+        let neutral = "Live information is not yet available for this train; scheduled times are shown."
+        let actionable = "Live information for this train could not be retrieved; scheduled times are shown."
+        let journey = PlannedJourney(id: "warnings", departure: now, arrival: now.addingTimeInterval(600),
+            durationMinutes: 10, changes: 0, legs: [], warnings: [neutral, actionable])
+
+        #expect(PlannerLivePresentation.warnings(for: journey) == [neutral, actionable])
+        #expect(PlannerLivePresentation.searchResultWarnings(for: journey) == [actionable])
+        #expect(PlannerLivePresentation.visibleWarnings([neutral]) == [neutral])
+    }
+
     @Test func genericTransferWarningsDecodeWithoutAssumingATubeService() throws {
         let text = #"{"kind":"transfer","mode":"genericTransfer","from":{"crs":"VIC","name":"London Victoria"},"to":{"crs":"EUS","name":"London Euston"},"departure":"2026-09-19T04:18:00Z","arrival":"2026-09-19T05:07:00Z"}"#
         let leg = try PlannerTime.decoder().decode(PlannedJourney.Leg.self, from: Data(text.utf8))
@@ -536,7 +547,11 @@ struct JourneyPlannerTests {
         #expect(leg.mapCallingPoints.map(\.station.crs) == ["VIC", "EUS"])
         #expect(local.changeInstruction(before: 0) == nil)
         #expect(local.changeInstruction(before: 1) == "Change at Embankment")
-        #expect(PlannerTime.display(try #require(local.steps?.first?.departureTime), includeDate: false) == "12:05")
+        #expect(PlannerTime.display(
+            try #require(local.steps?.first?.departureTime),
+            includeDate: false,
+            timeZone: PlannerTime.zone
+        ) == "12:05")
         let journey = PlannedJourney(id: "local", departure: leg.departure, arrival: leg.arrival,
             durationMinutes: 40, changes: 1, legs: [leg], warnings: local.notes)
         #expect(PlannerLivePresentation.warnings(for: journey) == local.notes)
@@ -578,7 +593,7 @@ struct JourneyPlannerTests {
         let winter = try #require(ISO8601DateFormatter().date(from: "2026-12-08T07:12:00Z"))
         #expect(PlannerTime.iso8601(summer).hasSuffix("+01:00"))
         #expect(PlannerTime.iso8601(winter).hasSuffix("Z"))
-        #expect(PlannerTime.display(summer, includeDate: false) == "07:12")
+        #expect(PlannerTime.display(summer, includeDate: false, timeZone: PlannerTime.zone) == "07:12")
         let coverage = PlannerDataset.Coverage(from: "2026-10-25", to: "2026-10-25")
         let range = try #require(coverage.dateRange)
         #expect(range.upperBound.timeIntervalSince(range.lowerBound) == 25 * 3600 - 1)
@@ -588,14 +603,52 @@ struct JourneyPlannerTests {
         let formatter = ISO8601DateFormatter()
         let departure = try #require(formatter.date(from: "2026-09-16T10:57:00+01:00"))
         let arrival = try #require(formatter.date(from: "2026-09-16T20:08:00+01:00"))
-        #expect(PlannerTime.displayRange(from: departure, to: arrival) == "10:57 → 20:08")
-        #expect(PlannerTime.displayRange(from: departure, to: arrival, separator: " – ") == "10:57 – 20:08")
+        #expect(PlannerTime.displayRange(from: departure, to: arrival, timeZone: PlannerTime.zone) == "10:57 → 20:08")
+        #expect(PlannerTime.displayRange(
+            from: departure,
+            to: arrival,
+            separator: " – ",
+            timeZone: PlannerTime.zone
+        ) == "10:57 – 20:08")
         let lateDeparture = try #require(formatter.date(from: "2026-09-16T22:55:00Z"))
         let nextDayArrival = try #require(formatter.date(from: "2026-09-16T23:30:00Z"))
-        #expect(PlannerTime.displayRange(from: lateDeparture, to: nextDayArrival) == "Wed 16 Sep, 23:55 → Thu 17 Sep, 00:30")
-        let overnightResult = PlannerTime.journeyResultTimes(from: lateDeparture, to: nextDayArrival)
+        #expect(PlannerTime.displayRange(
+            from: lateDeparture,
+            to: nextDayArrival,
+            timeZone: PlannerTime.zone
+        ) == "Wed 16 Sep, 23:55 → Thu 17 Sep, 00:30")
+        let overnightResult = PlannerTime.journeyResultTimes(
+            from: lateDeparture,
+            to: nextDayArrival,
+            timeZone: PlannerTime.zone
+        )
         #expect(overnightResult.departure == "23:55")
         #expect(overnightResult.arrival == "00:30 (Thu)")
+    }
+
+    @Test func journeyTimesUseTheDeviceTimeZoneAndExplainNonUKTimes() throws {
+        let formatter = ISO8601DateFormatter()
+        let departure = try #require(formatter.date(from: "2026-09-16T22:55:00Z"))
+        let arrival = try #require(formatter.date(from: "2026-09-16T23:30:00Z"))
+        let eastern = try #require(TimeZone(identifier: "America/New_York"))
+
+        #expect(PlannerTime.displayRange(
+            from: departure,
+            to: arrival,
+            timeZone: eastern
+        ) == "18:55 → 19:30")
+        let resultTimes = PlannerTime.journeyResultTimes(
+            from: departure,
+            to: arrival,
+            timeZone: eastern
+        )
+        #expect(resultTimes.departure == "18:55")
+        #expect(resultTimes.arrival == "19:30")
+        #expect(PlannerTime.localTimeNotice(
+            timeZone: eastern,
+            locale: Locale(identifier: "en_GB")
+        ) == "Times shown are in Eastern Time rather than UK time.")
+        #expect(PlannerTime.localTimeNotice(timeZone: PlannerTime.zone) == nil)
     }
 
     @Test func legHeadingsDescribeTransportAndStationChangesAndMapPointsIncludeEndpoints() throws {
@@ -640,7 +693,11 @@ struct JourneyPlannerTests {
         #expect(PlannerJourneyRouteMap.stationRole(crs: "PNE", journey: journey) == .stop)
         let train = journey.legs[0]
         func departure(at date: Date, code: String = "SE") -> DepartureV2 {
-            .init(departureTime: .init(scheduled: PlannerTime.display(train.departure, includeDate: false), estimated: "On time"),
+            .init(departureTime: .init(scheduled: PlannerTime.display(
+                train.departure,
+                includeDate: false,
+                timeZone: PlannerTime.zone
+            ), estimated: "On time"),
                   serviceType: "train", platform: nil, isCancelled: false, length: nil, destination: [], origin: nil,
                   serviceID: "live", delayReason: nil, cancelReason: nil, timestamp: date, operatorCode: code)
         }

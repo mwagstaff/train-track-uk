@@ -528,12 +528,16 @@ final class ScheduledLiveActivityAutoStartManager {
         self.skipDefaults = skipDefaults ?? UserDefaults(suiteName: suiteName) ?? .standard
     }
 
-    func shouldSkipForAdHocJourney(leg: NotificationLeg, now: Date = Date()) -> Bool {
+    func scheduleKey(for leg: NotificationLeg, now: Date = Date()) -> String {
         let window = leg.window(on: currentDayOfWeek(now: now))
-        return shouldSkipForAdHocJourney(scheduleKey: ScheduledLiveActivityTrigger.scheduleKey(
+        return ScheduledLiveActivityTrigger.scheduleKey(
             from: leg.from, to: leg.to,
             windowStart: window.windowStart, windowEnd: window.windowEnd, now: now
-        ))
+        )
+    }
+
+    func shouldSkipForAdHocJourney(leg: NotificationLeg, now: Date = Date()) -> Bool {
+        shouldSkipForAdHocJourney(scheduleKey: scheduleKey(for: leg, now: now))
     }
 
     func shouldSkipForAdHocJourney(scheduleKey: String?) -> Bool {
@@ -607,7 +611,7 @@ final class ScheduledLiveActivityAutoStartManager {
         }
     }
 
-    func dismissScheduledJourney(scheduleKey: String) async -> Bool {
+    func suppressScheduledJourney(scheduleKey: String) {
         let todayKey = ScheduledLiveActivityTrigger.currentDateKey()
         for key in [skippedScheduleKeysKey, reportedSkipKeysKey] {
             var keys = (skipDefaults.stringArray(forKey: key) ?? []).filter {
@@ -616,6 +620,11 @@ final class ScheduledLiveActivityAutoStartManager {
             if !keys.contains(scheduleKey) { keys.append(scheduleKey) }
             skipDefaults.set(keys, forKey: key)
         }
+
+    }
+
+    func dismissScheduledJourney(scheduleKey: String) async -> Bool {
+        suppressScheduledJourney(scheduleKey: scheduleKey)
 
         guard let url = URL(string: "\(ApiHostPreference.currentBaseURL)/notifications/scheduled/dismiss") else {
             return false

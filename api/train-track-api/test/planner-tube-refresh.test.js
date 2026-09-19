@@ -66,10 +66,11 @@ for (const [name, refresh] of [['route board', refreshBoard], ['saved route', re
         const journey = result.journeys[0], leg = journey.legs[0];
         assert.equal(leg.localJourney.id, 'direct');
         assert.equal(journey.changes, 0);
-        assert.equal(journey.arrival, iso(21));
-        assert.equal(leg.movementDeparture, iso(3));
-        assert.equal(leg.movementArrival, iso(17));
-        assert.equal(leg.breakdown.entryMinutes, 4);
+        assert.equal(journey.arrival, iso(14));
+        assert.equal(leg.movementDeparture, iso(0));
+        assert.equal(leg.movementArrival, iso(14));
+        assert.equal(leg.breakdown.exitMinutes, 0);
+        assert.equal(leg.breakdown.entryMinutes, 0);
         assert.equal(leg.genericTransfer, false);
         assert.ok(!leg.warnings.some(warning => /generic transfer/.test(warning)));
         assert.equal(result.live.expiresAt, iso(0.5));
@@ -86,7 +87,7 @@ for (const [name, refresh] of [['route board', refreshBoard], ['saved route', re
         const minor = { ...clear, status: 'minorIssues', issues: [{ id: 'minor', severity: 'minor', description: 'Signal delays' }] };
         const result = await refresh(fixture(), tubeProvider([{ id: 'minor', disruption: minor }]));
         const leg = result.journeys[0].legs[0];
-        assert.equal(result.journeys[0].arrival, iso(22));
+        assert.equal(result.journeys[0].arrival, iso(15));
         assert.equal(leg.localJourney.contingencyMinutes, 5);
         assert.match(leg.localJourney.notes.join(' '), /extra 5 minutes/);
         assert.deepEqual(leg.localJourney.warnings, ['Signal delays']);
@@ -115,7 +116,7 @@ for (const [name, refresh] of [['route board', refreshBoard], ['saved route', re
         assert.equal(result.journeys[0].legs[0].localJourney, undefined);
     });
 
-    test(`${name} unavailable TfL uses ten-minute endpoint allowances when station times are missing`, async () => {
+    test(`${name} unavailable TfL omits outside-journey endpoint allowances when station times are missing`, async () => {
         const f = fixture();
         for (const station of f.network.stations.values()) delete station.minimumChangeMinutes;
         const provider = { mapping: () => ({}), lookup: async () => ({ status: 'unavailable', journeys: [],
@@ -124,9 +125,9 @@ for (const [name, refresh] of [['route board', refreshBoard], ['saved route', re
         assert.equal(result.journeys.length, 1);
         const leg = result.journeys[0].legs[0];
         assert.equal(leg.localJourney.status, 'unavailable');
-        assert.equal(leg.breakdown.exitMinutes, 10);
-        assert.equal(leg.breakdown.entryMinutes, 10);
-        assert.equal(result.journeys[0].arrival, iso(30));
+        assert.equal(leg.breakdown.exitMinutes, 0);
+        assert.equal(leg.breakdown.entryMinutes, 0);
+        assert.equal(result.journeys[0].arrival, iso(10));
     });
 }
 

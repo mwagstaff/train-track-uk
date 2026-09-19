@@ -6,6 +6,29 @@ final class JourneyResumeUITests: XCTestCase {
     }
 
     @MainActor
+    func testEndJourneyRemovesInProgressTab() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["APP_STORE_SCREENSHOTS"] = "1"
+        app.launchEnvironment["UI_TEST_RESET_HISTORY"] = "1"
+        app.launchEnvironment["RELEASE_SCREENSHOT_SCREEN"] = "in-progress"
+        app.launch()
+        let end = app.buttons["End journey"]
+        XCTAssertTrue(end.waitForExistence(timeout: 20))
+        for _ in 0..<8 {
+            if end.isHittable && end.frame.maxY < app.tabBars.firstMatch.frame.minY { break }
+            app.swipeUp()
+        }
+        end.tap()
+        let confirm = app.alerts["End journey?"].buttons["End journey"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.tap()
+        let removed = expectation(for: NSPredicate(format: "exists == false"),
+            evaluatedWith: app.tabBars.buttons["In Progress"])
+        wait(for: [removed], timeout: 20)
+        capture("journey-ended-tab-removed", app: app)
+    }
+
+    @MainActor
     func testResumeFromCompletion() throws {
         let app = launchEndedJourney()
         let resume = app.buttons["Resume recording"]

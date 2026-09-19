@@ -1,10 +1,17 @@
 import CoreLocation
 import SwiftUI
 
+enum AddJourneyNavigationDestination: Hashable {
+    case plannerResults
+}
+
 struct AddJourneyEntryView: View {
+    let plannerStore: JourneyPlannerStore
+    @Binding var navigationPath: [AddJourneyNavigationDestination]
+
     var body: some View {
         if JourneyPlannerFeature.isEnabled {
-            JourneyPlannerView()
+            JourneyPlannerView(store: plannerStore, navigationPath: $navigationPath)
         } else {
             AddJourneyView(isTabRoot: true)
         }
@@ -12,10 +19,17 @@ struct AddJourneyEntryView: View {
 }
 
 struct JourneyPlannerView: View {
-    @State private var store = JourneyPlannerStore()
+    let store: JourneyPlannerStore
+    @Binding var navigationPath: [AddJourneyNavigationDestination]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var stationField: StationField?
-    @State private var resultsPresented = false
+    @State private var stationFieldsFlash = false
+    @State private var stationFieldsFlashTask: Task<Void, Never>?
     @State private var searchTask: Task<Void, Never>?
+
+    private enum ScrollTarget: Hashable {
+        case stationFields
+    }
 
     private enum StationField: String, Identifiable {
         case origin, destination
@@ -25,7 +39,8 @@ struct JourneyPlannerView: View {
 
     var body: some View {
         @Bindable var store = store
-        Form {
+        ScrollViewReader { scrollProxy in
+            Form {
             Section {
                 stationButton("From", station: store.origin, field: .origin)
                 stationButton("To", station: store.destination, field: .destination)
@@ -41,6 +56,7 @@ struct JourneyPlannerView: View {
                 .accessibilityIdentifier("planner.swap")
                 .accessibilityLabel("Swap stations")
             }
+            .id(ScrollTarget.stationFields)
 
             Section {
                 Picker("When", selection: Binding(get: { store.timeMode }, set: { mode in
@@ -68,8 +84,12 @@ struct JourneyPlannerView: View {
                             .accessibilityIdentifier("planner.date")
                     }
                 }
-                Text("All train times are UK time (Europe/London).")
-                    .font(.caption).foregroundStyle(Color.plannerSecondaryText)
+                if let notice = PlannerTime.localTimeNotice() {
+                    Label(notice, systemImage: "globe")
+                        .font(.caption)
+                        .foregroundStyle(Color.primary)
+                        .accessibilityIdentifier("planner.local-time-zone-note")
+                }
                 if let message = store.validationMessage(), store.origin != nil && store.destination != nil {
                     Text(message).foregroundStyle(Color.primary)
                 }
@@ -105,8 +125,7 @@ struct JourneyPlannerView: View {
                 }
                 ForEach(store.recents.searches) { recent in
                     Button {
-                        searchTask?.cancel()
-                        store.restore(recent)
+                        restore(recent, scrollProxy: scrollProxy)
                     } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("\(recent.intent.origin.name) → \(recent.intent.destination.name)")
@@ -118,6 +137,7 @@ struct JourneyPlannerView: View {
                     .swipeActions {
                         Button("Remove", role: .destructive) { store.recents.remove(id: recent.id) }
                     }
+                    .accessibilityHint("Fills the station fields and returns to the top.")
                     .accessibilityAction(named: "Remove recent search") { store.recents.remove(id: recent.id) }
                 }
                 if !store.recents.searches.isEmpty {
@@ -132,8 +152,8 @@ struct JourneyPlannerView: View {
         .tint(Color.plannerActionText)
         .navigationTitle("New journey")
         .navigationBarTitleDisplayMode(.inline)
-        .environment(\.timeZone, PlannerTime.zone)
-        .environment(\.calendar, PlannerTime.calendar)
+        .environment(\.timeZone, PlannerTime.displayZone)
+        .environment(\.calendar, PlannerTime.displayCalendar)
         .sheet(item: $stationField) { field in
             NavigationStack {
                 PlannerStationPicker(title: field.title, client: store.client) { station in
@@ -141,14 +161,17 @@ struct JourneyPlannerView: View {
                 }
             }
         }
-        .navigationDestination(isPresented: $resultsPresented) {
-            PlannerResultsView(store: store, loadPage: { startSearch(cursor: $0) }, cancelSearch: {
-                searchTask?.cancel()
-                store.cancelSearch()
-            }, rerunSearch: { startSearch() })
+        .navigationDestination(for: AddJourneyNavigationDestination.self) { destination in
+            switch destination {
+            case .plannerResults:
+                PlannerResultsView(store: store, loadPage: { startSearch(cursor: $0) }, cancelSearch: {
+                    searchTask?.cancel()
+                    store.cancelSearch()
+                }, rerunSearch: { startSearch() })
+            }
         }
-        .onChange(of: resultsPresented) { _, presented in
-            if !presented {
+        .onChange(of: navigationPath) { _, path in
+            if !path.contains(.plannerResults) {
                 searchTask?.cancel()
                 store.cancelSearch()
             }
@@ -164,6 +187,8 @@ struct JourneyPlannerView: View {
         .onDisappear {
             searchTask?.cancel()
             store.cancelSearch()
+            stationFieldsFlashTask?.cancel()
+        }
         }
         .railwayBackgroundPOC()
     }
@@ -177,8 +202,48 @@ struct JourneyPlannerView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.plannerActionText.opacity(stationFieldsFlash ? 0.18 : 0))
+                .padding(.horizontal, -8)
+                .padding(.vertical, -4)
+        }
+        .scaleEffect(stationFieldsFlash && !reduceMotion ? 1.015 : 1)
         .accessibilityIdentifier("planner.\(field.rawValue)")
         .accessibilityLabel("\(title), \(station?.name ?? "select station")")
+    }
+
+    private func restore(_ recent: PlannerRecentSearch, scrollProxy: ScrollViewProxy) {
+        searchTask?.cancel()
+        store.restore(recent)
+        stationFieldsFlashTask?.cancel()
+        stationFieldsFlash = false
+
+        if reduceMotion {
+            scrollProxy.scrollTo(ScrollTarget.stationFields, anchor: .top)
+            stationFieldsFlash = true
+            stationFieldsFlashTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(350))
+                guard !Task.isCancelled else { return }
+                stationFieldsFlash = false
+            }
+        } else {
+            withAnimation(.easeOut(duration: 0.25)) {
+                scrollProxy.scrollTo(ScrollTarget.stationFields, anchor: .top)
+            }
+            stationFieldsFlashTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeOut(duration: 0.12)) {
+                    stationFieldsFlash = true
+                }
+                try? await Task.sleep(for: .milliseconds(280))
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeOut(duration: 0.2)) {
+                    stationFieldsFlash = false
+                }
+            }
+        }
     }
 
     @ViewBuilder private var plannerAvailabilitySection: some View {
@@ -203,7 +268,11 @@ struct JourneyPlannerView: View {
         searchTask = Task {
             await store.search(cursor: cursor, repeatingLastSearch: repeatingLastSearch)
             guard !Task.isCancelled else { return }
-            if cursor == nil && store.response != nil { resultsPresented = true }
+            if cursor == nil,
+               store.response != nil,
+               !navigationPath.contains(.plannerResults) {
+                navigationPath.append(.plannerResults)
+            }
             if cursor == nil && !repeatingLastSearch {
                 await store.searchForLaterTrainsWhenInitialWindowIsEmpty()
             }
@@ -412,6 +481,13 @@ private struct PlannerStationPicker: View {
     }
 }
 
+private struct PendingPlannerJourneySave {
+    let stations: [Station]
+    let destinationTab: Tab
+    let startUpdates: Bool
+    let saveAsFavourite: Bool
+}
+
 private struct PlannerResultsView: View {
     let store: JourneyPlannerStore
     let loadPage: (String) -> Void
@@ -422,13 +498,14 @@ private struct PlannerResultsView: View {
     @State private var travelVia = false
     @State private var selectingVia = false
     @State private var saveJourney = false
-    @State private var startTrackingNow = true
+    @State private var startTrackingNow = false
     @State private var scheduleJourney = false
     @State private var saveAsFavourite = false
     @State private var isSaving = false
     @State private var saveMessage: String?
     @State private var scheduleDestination: NotificationScheduleDestination?
-    @State private var postScheduleTab: Tab?
+    @State private var pendingScheduledSave: PendingPlannerJourneySave?
+    @State private var scheduleWasSaved = false
     @State private var stationCatalogue = StationsService.shared.stations
     @ObservedObject private var config = ServerConfigStore.shared
     @EnvironmentObject private var router: TabRouter
@@ -497,6 +574,7 @@ private struct PlannerResultsView: View {
                                 .accessibilityIdentifier("planner.disrupted.\(journey.id)")
                             }
                         }
+                        .disclosureGroupStyle(NavigationChevronDisclosureStyle())
                         .accessibilityIdentifier("planner.disrupted-options")
                     }
                 }
@@ -526,6 +604,7 @@ private struct PlannerResultsView: View {
                                 Text(note).font(.caption)
                             }
                         }
+                        .disclosureGroupStyle(NavigationChevronDisclosureStyle())
                     }
                 }
             }
@@ -554,7 +633,9 @@ private struct PlannerResultsView: View {
             NotificationScheduleView(
                 group: destination.group,
                 reverseGroup: destination.reverseGroup,
-                existingSubscription: destination.existingSubscription
+                existingSubscription: destination.existingSubscription,
+                dismissControl: .back,
+                onSaved: { scheduleWasSaved = true }
             )
         }
         .navigationDestination(item: $selectedJourneyID) { id in
@@ -599,11 +680,11 @@ private struct PlannerResultsView: View {
                 .accessibilityIdentifier("planner.save-journey")
 
             if saveJourney {
-                Toggle("Start tracking journey now", isOn: $startTrackingNow)
+                Toggle("Start journey updates now", isOn: $startTrackingNow)
                     .accessibilityIdentifier("planner.save.start-tracking")
                 Toggle("Schedule journey", isOn: $scheduleJourney)
                     .accessibilityIdentifier("planner.save.schedule")
-                Toggle("Save as favourite", isOn: $saveAsFavourite)
+                Toggle("Save to Favourites", isOn: $saveAsFavourite)
                     .accessibilityIdentifier("planner.save.favourite")
                 if let saveMessage {
                     Label(saveMessage, systemImage: "exclamationmark.triangle")
@@ -651,53 +732,117 @@ private struct PlannerResultsView: View {
         guard let stations = selectedStations else { return }
         isSaving = true
         saveMessage = nil
-        let store = JourneyStore.shared
-        if !store.groupExists(for: stations) {
-            store.addJourneyGroup(stations: stations, favorite: saveAsFavourite, saveReturn: true)
+        let destinationTab: Tab = saveAsFavourite ? .favourites : .myJourneys
+        if scheduleJourney {
+            guard let group = savedGroup(for: stations)
+                    ?? transientGroup(for: stations, favorite: saveAsFavourite),
+                  let reverseGroup = savedGroup(for: Array(stations.reversed()))
+                    ?? transientGroup(for: Array(stations.reversed()), favorite: saveAsFavourite) else {
+                saveMessage = "This journey could not be prepared for scheduling."
+                isSaving = false
+                return
+            }
+            pendingScheduledSave = PendingPlannerJourneySave(
+                stations: stations,
+                destinationTab: destinationTab,
+                startUpdates: startTrackingNow,
+                saveAsFavourite: saveAsFavourite
+            )
+            scheduleWasSaved = false
+            scheduleDestination = NotificationScheduleDestination(
+                group: group,
+                reverseGroup: reverseGroup,
+                existingSubscription: nil
+            )
+            return
         }
-        guard let group = store.journeyGroups().first(where: {
-            $0.stationSequence.map { $0.crs.uppercased() } == stations.map { $0.crs.uppercased() }
-        }) else {
+
+        guard let group = commitJourney(stations: stations, saveAsFavourite: saveAsFavourite) else {
             saveMessage = "This journey could not be saved."
             isSaving = false
             return
         }
-        if saveAsFavourite && !group.favorite {
-            store.setFavorite(group: group, includeReturn: true, value: true)
-        }
-        if startTrackingNow {
-            Task {
-                _ = await JourneyUpdateActions.start(
-                    group: group,
-                    scheduledSubscription: nil,
-                    liveSession: nil,
-                    liveActivityDurationMinutes: liveActivityDurationMinutes,
-                    notificationStore: notificationStore,
-                    activityManager: activityMgr,
-                    departuresStore: depStore
-                )
-            }
-        }
-        let destinationTab: Tab = saveAsFavourite ? .favourites : .myJourneys
-        if scheduleJourney {
-            postScheduleTab = destinationTab
-            scheduleDestination = NotificationScheduleDestination(
-                group: group,
-                reverseGroup: store.reverseGroup(for: group),
-                existingSubscription: nil
-            )
-        } else {
-            finishSave(on: destinationTab)
-        }
+        if startTrackingNow { startJourneyUpdates(for: group) }
+        finishSave(on: group.favorite ? .favourites : destinationTab)
     }
 
     private func finishScheduling() {
-        guard let tab = postScheduleTab else {
+        let pending = pendingScheduledSave
+        let shouldCommit = scheduleWasSaved
+        pendingScheduledSave = nil
+        scheduleWasSaved = false
+
+        guard shouldCommit, let pending else {
             isSaving = false
             return
         }
-        postScheduleTab = nil
-        finishSave(on: tab)
+        guard let group = commitJourney(
+            stations: pending.stations,
+            saveAsFavourite: pending.saveAsFavourite
+        ) else {
+            saveMessage = "This journey could not be saved."
+            isSaving = false
+            return
+        }
+        if pending.startUpdates { startJourneyUpdates(for: group) }
+        finishSave(on: group.favorite ? .favourites : pending.destinationTab)
+    }
+
+    private func commitJourney(stations: [Station], saveAsFavourite: Bool) -> JourneyGroup? {
+        let journeyStore = JourneyStore.shared
+        if !journeyStore.groupExists(for: stations) {
+            journeyStore.addJourneyGroup(stations: stations, favorite: saveAsFavourite, saveReturn: true)
+        }
+        let shouldFavouritePair = saveAsFavourite || savedGroup(for: stations)?.favorite == true
+        let reverseStations = Array(stations.reversed())
+        if !journeyStore.groupExists(for: reverseStations) {
+            journeyStore.addJourneyGroup(stations: reverseStations, favorite: shouldFavouritePair, saveReturn: false)
+        }
+        guard var group = savedGroup(for: stations) else { return nil }
+        if saveAsFavourite && !group.favorite {
+            journeyStore.setFavorite(group: group, includeReturn: true, value: true)
+            group = savedGroup(for: stations) ?? group
+        }
+        return group
+    }
+
+    private func savedGroup(for stations: [Station]) -> JourneyGroup? {
+        let stationCodes = stations.map { $0.crs.uppercased() }
+        return JourneyStore.shared.journeyGroups().first { group in
+            group.stationSequence.map { $0.crs.uppercased() } == stationCodes
+        }
+    }
+
+    private func transientGroup(for stations: [Station], favorite: Bool) -> JourneyGroup? {
+        guard stations.count >= 2 else { return nil }
+        let groupID = UUID()
+        let createdAt = Date()
+        let legs = stations.indices.dropLast().map { index in
+            Journey(
+                id: UUID(),
+                groupId: groupID,
+                legIndex: index,
+                fromStation: stations[index],
+                toStation: stations[index + 1],
+                createdAt: createdAt,
+                favorite: favorite
+            )
+        }
+        return JourneyGroup(id: groupID, legs: legs)
+    }
+
+    private func startJourneyUpdates(for group: JourneyGroup) {
+        Task {
+            _ = await JourneyUpdateActions.start(
+                group: group,
+                scheduledSubscription: nil,
+                liveSession: nil,
+                liveActivityDurationMinutes: liveActivityDurationMinutes,
+                notificationStore: notificationStore,
+                activityManager: activityMgr,
+                departuresStore: depStore
+            )
+        }
     }
 
     private func finishSave(on tab: Tab) {
@@ -707,12 +852,15 @@ private struct PlannerResultsView: View {
 
     private func departureCard(_ journeys: [PlannedJourney]) -> some View {
         let comparison = JourneyDurationComparison(journeys: journeys)
+        let firstFastestIndex = journeys.indices.first { comparison.tag(for: journeys[$0]) == .fastest }
         return VStack(spacing: 0) {
             ForEach(Array(journeys.enumerated()), id: \.element.id) { index, journey in
+                let comparisonTag = comparison.tag(for: journey)
+                let displayedTag = comparisonTag == .fastest && index != firstFastestIndex ? nil : comparisonTag
                 Button {
                     selectedJourneyID = journey.id
                 } label: {
-                    PlannerJourneySummary(journey: journey, showsChevron: true, durationTag: comparison.tag(for: journey))
+                    PlannerJourneySummary(journey: journey, showsChevron: true, durationTag: displayedTag)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
                         .overlay(alignment: .leading) {
@@ -780,14 +928,11 @@ struct PlannerChangesBadge: View {
 
     var body: some View {
         if changes > 0 {
-            Text("\(changes) change\(changes == 1 ? "" : "s")")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.black)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(fill, in: Capsule())
-                .overlay(Capsule().stroke(Color.black.opacity(0.14), lineWidth: 1))
-                .fixedSize()
+            JourneyMetadataBadge(
+                text: "\(changes) change\(changes == 1 ? "" : "s")",
+                foreground: .black,
+                background: fill
+            )
                 .accessibilityIdentifier("planner.changes.\(changes)")
         } else {
             Text("Direct").font(.caption).foregroundStyle(Color.plannerSecondaryText)
@@ -800,6 +945,8 @@ struct PlannerJourneySummary: View {
     var showsChevron = false
     var liveIsStale = false
     var durationTag: JourneyDurationTag? = nil
+    var showsRefreshWarnings = true
+    var showsTravelNotes = true
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
 
@@ -867,51 +1014,56 @@ struct PlannerJourneySummary: View {
         }, details: {
             departureDetails
         }, footer: {
-            if dynamicTypeSize.isAccessibilitySize {
-                VStack(alignment: .leading, spacing: 8) {
-                    durationAndChanges
-                    PlannerJourneyOperators(journey: journey)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                }
-            } else {
-                HStack(alignment: .bottom, spacing: 8) {
-                    durationAndChanges
-                    Spacer(minLength: 8)
-                    PlannerJourneyOperators(journey: journey)
-                }
-            }
+            summaryFooter
         }, showsChevron: showsChevron)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
     }
 
-    private var durationAndChanges: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            durationAndChangesLabel
+    private var summaryFooter: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            durationLabel
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 8) {
+                    journeyBadges
+                    PlannerJourneyOperators(journey: journey)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .center, spacing: 8) {
+                        journeyBadges
+                        Spacer(minLength: 8)
+                        PlannerJourneyOperators(journey: journey)
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        journeyBadges
+                        PlannerJourneyOperators(journey: journey)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                }
+            }
+        }
+    }
+
+    private var journeyBadges: some View {
+        HStack(spacing: 6) {
+            if journey.changes > 0 { PlannerChangesBadge(changes: journey.changes) }
             if let durationTag { JourneyDurationBadge(tag: durationTag) }
         }
     }
 
-    @ViewBuilder private var durationAndChangesLabel: some View {
+    @ViewBuilder private var durationLabel: some View {
         if journey.changes == 0 {
             Text("\(PlannerTime.minutes(journey.durationMinutes)) · Direct")
                 .font(.caption).foregroundStyle(Color.plannerSecondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(PlannerTime.minutes(journey.durationMinutes))
-                    PlannerChangesBadge(changes: journey.changes)
-                }
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(PlannerTime.minutes(journey.durationMinutes))
-                    PlannerChangesBadge(changes: journey.changes)
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(Color.plannerSecondaryText)
-            .fixedSize(horizontal: false, vertical: true)
+            Text(PlannerTime.minutes(journey.durationMinutes))
+                .font(.caption)
+                .foregroundStyle(Color.plannerSecondaryText)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -937,11 +1089,15 @@ struct PlannerJourneySummary: View {
             if localChanges > 0 {
                 Text("Includes \(localChanges) \(localChanges == 1 ? "change" : "changes") within London transport.")
             }
-            let warnings = PlannerLivePresentation.warnings(for: journey)
-            ForEach(Array(warnings.prefix(2)), id: \.self) { warning in
-                Text(warning).foregroundStyle(Color.primary)
+            if showsTravelNotes {
+                let warnings = PlannerLivePresentation.searchResultWarnings(for: journey).filter {
+                    showsRefreshWarnings || !PlannerLivePresentation.isRefreshFailureWarning($0)
+                }
+                ForEach(Array(warnings.prefix(2)), id: \.self) { warning in
+                    Text(warning).foregroundStyle(Color.primary)
+                }
+                if warnings.count > 2 { Text("More travel notes in journey details.") }
             }
-            if warnings.count > 2 { Text("More travel notes in journey details.") }
         }
         .font(.caption)
         .foregroundStyle(Color.plannerSecondaryText)
@@ -1228,6 +1384,7 @@ struct PlannerJourneyDetailView: View {
                                         .accessibilityIdentifier("planner.calling-point.\(point.station.crs)")
                                     }
                                 }
+                                .disclosureGroupStyle(NavigationChevronDisclosureStyle())
                                 .accessibilityIdentifier("planner.calling-points.\(index)")
                             }
                             if let transfer = leg.transfer {
@@ -1291,7 +1448,40 @@ struct PlannerJourneyDetailView: View {
     }
 }
 
+struct NavigationChevronDisclosureStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    configuration.isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    configuration.label
+                    Spacer(minLength: 8)
+                    Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.forward")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.navigationChevron)
+                        .accessibilityHidden(true)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
+
+            if configuration.isExpanded {
+                configuration.content
+                    .padding(.top, 8)
+            }
+        }
+    }
+}
+
 extension Color {
+    static var navigationChevron: Color {
+        Color(uiColor: .tertiaryLabel)
+    }
+
     static var plannerActionText: Color {
         Color(uiColor: UIColor { traits in
             traits.userInterfaceStyle == .dark ? .systemCyan : UIColor(red: 0, green: 0.3, blue: 0.65, alpha: 1)

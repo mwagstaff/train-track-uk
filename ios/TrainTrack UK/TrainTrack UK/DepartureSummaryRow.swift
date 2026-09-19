@@ -36,7 +36,7 @@ struct DepartureSummaryRow<Timing: View, Platform: View, Status: View, Details: 
             if showsChevron {
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.bold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color.navigationChevron)
                     .accessibilityHidden(true)
             }
         }
@@ -81,14 +81,29 @@ struct JourneyDurationBadge: View {
     let tag: JourneyDurationTag
 
     var body: some View {
-        Text(tag.rawValue)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(tag == .fastest ? Color.plannerOnTimeText : Color.plannerSecondaryText)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background((tag == .fastest ? Color.green : Color.secondary).opacity(0.12), in: Capsule())
-            .fixedSize()
+        JourneyMetadataBadge(
+            text: tag.rawValue,
+            foreground: tag == .fastest ? Color.plannerOnTimeText : Color.black,
+            background: tag == .fastest ? Color.green.opacity(0.12) : Color.yellow
+        )
             .accessibilityLabel(tag == .fastest ? "Fastest journey" : "Slower than average journey")
             .accessibilityIdentifier("journey.duration.\(tag == .fastest ? "fastest" : "slower")")
+    }
+}
+
+struct JourneyMetadataBadge: View {
+    let text: String
+    let foreground: Color
+    let background: Color
+
+    var body: some View {
+        Text(text)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(background, in: Capsule())
+            .overlay(Capsule().stroke(Color.black.opacity(0.14), lineWidth: 1))
+            .fixedSize()
     }
 }

@@ -129,6 +129,40 @@ private struct PersistedScheduledJourneyActivation: Codable {
     var recoveryGeometries: [PersistedScheduledRecoveryGeometry]? = nil
 }
 
+enum PendingLiveSessionDeletionPolicy {
+    static func reconcile(
+        serverIDs: Set<String>,
+        pendingDeletionIDs: Set<String>
+    ) -> (visibleIDs: Set<String>, pendingDeletionIDs: Set<String>) {
+        (
+            visibleIDs: serverIDs.subtracting(pendingDeletionIDs),
+            pendingDeletionIDs: pendingDeletionIDs.intersection(serverIDs)
+        )
+    }
+}
+
+@MainActor
+enum JourneyEndPolicy {
+    static func matches(_ subscription: NotificationSubscription, subscriptionID: String, group: JourneyGroup) -> Bool {
+        if subscription.id == subscriptionID { return true }
+        let legs = subscription.legs.filter(\.enabled)
+        return legs.first?.from.caseInsensitiveCompare(group.startStation.crs) == .orderedSame
+            && legs.last?.to.caseInsensitiveCompare(group.endStation.crs) == .orderedSame
+    }
+
+    static func scheduleKeys(for subscription: NotificationSubscription, group: JourneyGroup, now: Date) -> Set<String> {
+        Set(subscription.legs.filter { leg in
+            leg.enabled && group.legs.contains {
+                $0.fromStation.crs.caseInsensitiveCompare(leg.from) == .orderedSame
+                    && $0.toStation.crs.caseInsensitiveCompare(leg.to) == .orderedSame
+            }
+        }.compactMap { leg -> String? in
+            guard let window = NotificationScheduleActivationPolicy.activeWindow(for: subscription, leg: leg, now: now) else { return nil }
+            return ScheduledLiveActivityAutoStartManager.shared.scheduleKey(for: leg, now: window.start)
+        })
+    }
+}
+
 private struct PersistedScheduledRecoveryGeometry: Codable {
     let from: String
     let to: String
@@ -168,6 +202,7 @@ final class NotificationSubscriptionStore: ObservableObject {
 
     private static let knownIDsKey = "knownSubscriptionIDs"
     private static let knownIDsBootstrappedKey = "knownSubscriptionIDsBootstrapped"
+    private static let pendingLiveSessionDeletionIDsKey = "pendingLiveSessionDeletionIDs"
 
     private var knownSubscriptionIDs: Set<String> {
         get { Set(UserDefaults.standard.stringArray(forKey: Self.knownIDsKey) ?? []) }
@@ -177,6 +212,11 @@ final class NotificationSubscriptionStore: ObservableObject {
     private var hasBootstrappedKnownIDs: Bool {
         get { UserDefaults.standard.bool(forKey: Self.knownIDsBootstrappedKey) }
         set { UserDefaults.standard.set(newValue, forKey: Self.knownIDsBootstrappedKey) }
+    }
+
+    private var pendingLiveSessionDeletionIDs: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: Self.pendingLiveSessionDeletionIDsKey) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: Self.pendingLiveSessionDeletionIDsKey) }
     }
 
     // MARK: - Init
@@ -206,7 +246,16 @@ final class NotificationSubscriptionStore: ObservableObject {
             subscriptions = await reconcileSubscriptions(fetched)
             await refreshScheduledActivationCache()
             rescheduleOneOffExpiration()
-            liveSessions = fetchedLive
+            let pendingDeletionIDs = pendingLiveSessionDeletionIDs
+            let reconciliation = PendingLiveSessionDeletionPolicy.reconcile(
+                serverIDs: Set(fetchedLive.map(\.id)),
+                pendingDeletionIDs: pendingDeletionIDs
+            )
+            pendingLiveSessionDeletionIDs = reconciliation.pendingDeletionIDs
+            liveSessions = fetchedLive.filter { reconciliation.visibleIDs.contains($0.id) }
+            for id in reconciliation.pendingDeletionIDs {
+                try? await service.deleteLiveSession(id: id)
+            }
             hasLoadedRemoteState = true
             hasLoadedOnce = true
             lastError = nil
@@ -387,6 +436,46 @@ final class NotificationSubscriptionStore: ObservableObject {
         liveSessions.removeAll { $0.id == id }
         JourneyTrackingCoordinator.shared.disarm(subscriptionID: id)
         hasLoadedRemoteState = true
+        await syncGeofences()
+    }
+
+    func endJourneyUpdates(subscriptionID: String, group: JourneyGroup) async {
+        let coordinator = JourneyTrackingCoordinator.shared
+        let reference = coordinator.armedCandidates.first { $0.subscriptionId == subscriptionID }?.activeFrom
+            ?? coordinator.activeJourney?.scheduleOccurrenceStart ?? Date()
+        let schedules = subscriptions + cachedScheduledActivations.map(\.subscription)
+        let scheduleKeys = schedules.reduce(into: Set<String>()) { keys, subscription in
+            keys.formUnion(JourneyEndPolicy.scheduleKeys(for: subscription, group: group, now: reference))
+        }
+        let sessionIDs = Set(liveSessions.filter {
+            JourneyEndPolicy.matches($0, subscriptionID: subscriptionID, group: group)
+        }.map(\.id))
+        // Persist suppression before any suspension can let geofences re-arm this occurrence.
+        for key in scheduleKeys {
+            ScheduledLiveActivityAutoStartManager.shared.suppressScheduledJourney(scheduleKey: key)
+        }
+        pendingLiveSessionDeletionIDs.formUnion(sessionIDs)
+        liveSessions.removeAll { sessionIDs.contains($0.id) }
+        let candidateIDs = coordinator.armedCandidates.filter {
+            $0.subscriptionId == subscriptionID || $0.stations.map { $0.crs.uppercased() } == group.stationSequence.map { $0.crs.uppercased() }
+        }.map(\.subscriptionId)
+        for id in candidateIDs { coordinator.disarm(subscriptionID: id) }
+        hasLoadedRemoteState = true
+
+        if coordinator.activeJourney?.subscriptionId == subscriptionID {
+            await coordinator.endActiveJourney()
+            coordinator.clearRecentlyCompletedJourney()
+        }
+        await LiveActivityManager.shared.stopJourneyActivities(
+            deepLinkFromCRS: group.startStation.crs, deepLinkToCRS: group.endStation.crs
+        )
+        for key in scheduleKeys {
+            _ = await ScheduledLiveActivityAutoStartManager.shared.dismissScheduledJourney(scheduleKey: key)
+        }
+        for id in sessionIDs {
+            do { try await service.deleteLiveSession(id: id) }
+            catch { debugLog("⚠️ [Store] Ended journey session \(id); server deletion will retry: \(error.localizedDescription)") }
+        }
         await syncGeofences()
     }
 

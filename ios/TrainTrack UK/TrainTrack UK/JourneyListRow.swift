@@ -196,6 +196,24 @@ struct JourneyCard: View {
         allowsExpansion && summaries.count > defaultDepartureCount
     }
 
+    private var usesPlannedJourneys: Bool {
+        guard let plannedBoard else { return false }
+        return !plannedBoard.usesLegacyDepartures && !plannedBoard.usesDirectDepartures
+    }
+
+    private var showsLaterDeparturesControl: Bool {
+        allowsExpansion && (canExpand || onSearchLater != nil)
+    }
+
+    private var hasVisibleStandaloneLaterJourneys: Bool {
+        guard isExpanded, !usesPlannedJourneys, let laterBoard else { return false }
+        return !laterBoard.upcomingJourneys(at: Date()).isEmpty
+    }
+
+    private var isFindingStandaloneLaterJourneys: Bool {
+        isExpanded && !usesPlannedJourneys && laterBoard?.isPending == true
+    }
+
     private var firstSummary: Summary? { summaries.first }
 
     private var dataAvailability: JourneyDataAvailability {
@@ -218,31 +236,25 @@ struct JourneyCard: View {
 
             if let plannedBoard, !plannedBoard.usesLegacyDepartures, !plannedBoard.usesDirectDepartures {
                 SavedRouteBoardView(state: plannedBoard, routeKey: group.stationSequence.map(\.crs).joined(separator: "-"), departureCount: defaultDepartureCount,
-                    isInteractive: isInteractive, isExpanded: isExpanded, onToggleExpanded: onToggleExpanded,
-                    progressTitle: nil, onRetry: nil)
+                    isInteractive: isInteractive, isExpanded: isExpanded,
+                    onRetry: nil,
+                    supplementalState: laterBoard,
+                    onRetrySupplemental: onRetryLater)
             } else {
             if let message = plannedBoard?.message {
                 Text(message).font(.caption).foregroundStyle(.secondary).padding(16)
             }
-            if dataAvailability.status != .live {
+            if dataAvailability.status != .live && (plannedBoard == nil || plannedBoard?.hasPersistentFailure == true) {
                 dataAvailabilityNotice
                 Divider().padding(.horizontal, 16)
             }
 
             VStack(alignment: .leading, spacing: 0) {
                 if displayedSummaries.isEmpty {
-                    if depStore.isInitialLoadInProgress || isLoadingServiceDetails {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                                .accessibilityHidden(true)
-                            Text("Loading upcoming departures…")
-                        }
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 16)
+                    if hasVisibleStandaloneLaterJourneys || isFindingStandaloneLaterJourneys {
+                        EmptyView()
+                    } else if depStore.isInitialLoadInProgress || isLoadingServiceDetails {
+                        EmptyView()
                     } else if dataAvailability.status == .live {
                         Text("No upcoming departures found")
                             .font(.subheadline)
@@ -264,32 +276,27 @@ struct JourneyCard: View {
                         }
                     }
                 }
+            }
 
-                if canExpand {
+            if isExpanded, let laterBoard {
+                if !displayedSummaries.isEmpty && hasVisibleStandaloneLaterJourneys {
                     Divider().padding(.horizontal, 16)
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            onToggleExpanded()
-                        }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text(isExpanded ? "Show fewer departures" : "View all departures")
-                            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                                .font(.caption.weight(.semibold))
-                        }
-                        .font(.subheadline.weight(.medium))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 13)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(Color.accentColor)
-                    .disabled(!isInteractive)
-                    .accessibilityLabel(isExpanded ? "Show fewer departures" : "View all departures")
                 }
+                SavedRouteBoardView(
+                    state: laterBoard,
+                    routeKey: "later-\(group.stationSequence.map(\.crs).joined(separator: "-"))",
+                    departureCount: defaultDepartureCount,
+                    isInteractive: isInteractive,
+                    isExpanded: true,
+                    onRetry: onRetryLater,
+                    showsEmptyState: false
+                )
             }
             }
 
-            laterDepartureSearch
+            if showsLaterDeparturesControl {
+                laterDeparturesControl
+            }
         }
         .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
@@ -303,36 +310,32 @@ struct JourneyCard: View {
         }
     }
 
-    @ViewBuilder
-    private var laterDepartureSearch: some View {
-        Divider().padding(.horizontal, 16)
-        if let laterBoard {
-            SavedRouteBoardView(
-                state: laterBoard,
-                routeKey: "later-\(group.stationSequence.map(\.crs).joined(separator: "-"))",
-                departureCount: defaultDepartureCount,
-                isInteractive: isInteractive,
-                isExpanded: isExpanded,
-                onToggleExpanded: onToggleExpanded,
-                progressTitle: "Searching for later departures…",
-                onRetry: onRetryLater,
-                showsProgressWithResults: false
-            )
-        } else {
-            Button(action: { onSearchLater?() }) {
-                HStack(spacing: 6) {
-                    Text("Search for later departures")
-                    Image(systemName: "chevron.down")
-                        .font(.caption.weight(.semibold))
-                }
-                .font(.subheadline.weight(.medium))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 13)
+    private var laterDeparturesControl: some View {
+        Button {
+            let shouldSearch = !isExpanded
+            withAnimation(.easeInOut(duration: 0.2)) {
+                onToggleExpanded()
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.accentColor)
-            .disabled(!isInteractive || onSearchLater == nil)
-            .accessibilityIdentifier("saved-route.search-later")
+            if shouldSearch {
+                onSearchLater?()
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(isExpanded ? "Fewer departures" : "More departures")
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(.caption.weight(.semibold))
+            }
+            .font(.subheadline.weight(.medium))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 13)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Color.accentColor)
+        .disabled(!isInteractive)
+        .accessibilityLabel(isExpanded ? "Fewer departures" : "More departures")
+        .accessibilityIdentifier("saved-route.later-departures")
+        .overlay(alignment: .top) {
+            Divider().padding(.horizontal, 16)
         }
     }
 
@@ -470,11 +473,32 @@ struct JourneyCard: View {
             .contentShape(Rectangle())
     }
 
+    private var isRefreshingDepartures: Bool {
+        plannedBoard?.showsActivity == true
+            || (isExpanded && laterBoard?.showsActivity == true)
+            || (plannedBoard == nil && depStore.isInitialLoadInProgress)
+            || isLoadingServiceDetails
+    }
+
     private var routeTitle: some View {
-        Text(group.displayTitle)
-            .font(.headline)
-            .foregroundStyle(.primary)
-            .multilineTextAlignment(.leading)
+        HStack(spacing: 6) {
+            Text(group.displayTitle)
+                .font(.headline)
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.leading)
+            // Keep the title's available width unchanged as refreshes start and finish.
+            ProgressView()
+                .controlSize(.small)
+                .dynamicTypeSize(.medium)
+                .frame(width: 16, height: 16)
+                .opacity(isRefreshingDepartures ? 1 : 0)
+                .accessibilityHidden(true)
+                .allowsHitTesting(false)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(group.displayTitle)
+        .accessibilityValue(isRefreshingDepartures ? "Updating departures" : "")
+        .accessibilityIdentifier("saved-route.progress.\(group.stationSequence.map(\.crs).joined(separator: "-"))")
     }
 
     @ViewBuilder

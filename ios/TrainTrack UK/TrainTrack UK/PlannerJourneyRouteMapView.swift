@@ -247,7 +247,11 @@ struct PlannerMapLiveService {
               let stations = details.stationBranches.first(where: { branch in
                   guard let start = branch.firstIndex(where: { $0.crs == leg.from.crs }),
                         let end = branch.lastIndex(where: { $0.crs == leg.to.crs }) else { return false }
-                  return start < end && branch[start].st == PlannerTime.display(leg.scheduledDeparture ?? leg.departure, includeDate: false)
+                  return start < end && branch[start].st == PlannerTime.display(
+                    leg.scheduledDeparture ?? leg.departure,
+                    includeDate: false,
+                    timeZone: PlannerTime.zone
+                  )
               }), stations.count >= 2 else { return nil }
         let formatter = ISO8601DateFormatter()
         let date = formatter.date(from: details.generatedAt)

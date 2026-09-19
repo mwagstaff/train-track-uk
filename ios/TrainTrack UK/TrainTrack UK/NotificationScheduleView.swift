@@ -1,10 +1,17 @@
 import SwiftUI
 import UIKit
 
+enum NotificationScheduleDismissControl {
+    case close
+    case back
+}
+
 struct NotificationScheduleView: View {
     let group: JourneyGroup
     let reverseGroup: JourneyGroup?
     let existingSubscription: NotificationSubscription?
+    let dismissControl: NotificationScheduleDismissControl
+    let onSaved: (() -> Void)?
 
     @EnvironmentObject var activityMgr: LiveActivityManager
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
@@ -37,11 +44,15 @@ struct NotificationScheduleView: View {
     init(
         group: JourneyGroup,
         reverseGroup: JourneyGroup? = nil,
-        existingSubscription: NotificationSubscription? = nil
+        existingSubscription: NotificationSubscription? = nil,
+        dismissControl: NotificationScheduleDismissControl = .close,
+        onSaved: (() -> Void)? = nil
     ) {
         self.group = group
         self.reverseGroup = reverseGroup
         self.existingSubscription = existingSubscription
+        self.dismissControl = dismissControl
+        self.onSaved = onSaved
         var grouped: [JourneyGroup] = [group]
         if let reverseGroup, reverseGroup.id != group.id {
             grouped.append(reverseGroup)
@@ -241,14 +252,26 @@ struct NotificationScheduleView: View {
                 }
             }
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button {
-                        attemptDismiss()
-                    } label: {
-                        Image(systemName: "xmark")
+                if dismissControl == .back {
+                    ToolbarItem(placement: .navigation) {
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "chevron.backward")
+                        }
+                        .accessibilityLabel("Back")
+                        .disabled(isSaving || isDeleting)
                     }
-                    .accessibilityLabel("Close")
-                    .disabled(isSaving || isDeleting)
+                } else {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button {
+                            attemptDismiss()
+                        } label: {
+                            Image(systemName: "xmark")
+                        }
+                        .accessibilityLabel("Close")
+                        .disabled(isSaving || isDeleting)
+                    }
                 }
 
                 ToolbarItemGroup(placement: .confirmationAction) {
@@ -714,6 +737,7 @@ struct NotificationScheduleView: View {
 
             do {
                 _ = try await notificationStore.upsert(request)
+                onSaved?()
                 dismiss()
             } catch {
                 showError(error.localizedDescription)

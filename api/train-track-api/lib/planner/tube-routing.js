@@ -3,7 +3,7 @@ import { PlannerError } from './contract.js';
 
 const MINUTE = 60000;
 const CLOSURE_NOTE = 'Connections using a confirmed TfL closure were excluded; alternative routes and onward trains use the available services.';
-export const TUBE_POLICY = 'tubetrack-v1-minor-contingency-5';
+export const TUBE_POLICY = 'tubetrack-v2-endpoint-allowances';
 const walking = mode => ['walk', 'walking'].includes(mode);
 export const tubeBoardings = steps => (steps ?? []).filter(step => !walking(step.mode)).length;
 const iso = time => new Date(time).toISOString();
@@ -69,8 +69,10 @@ function allowances(index, query, provider) {
     const valid = value => Number.isFinite(value) && value >= 0;
     const exit = origin?.exitMinutes ?? stationAllowance(index, query.from);
     const entry = destination?.entryMinutes ?? stationAllowance(index, query.to);
-    return { exitMinutes: (valid(exit) ? exit : 10) + (valid(origin?.accessWalkingMinutes) ? origin.accessWalkingMinutes : 0),
-        entryMinutes: (valid(entry) ? entry : 10) + (valid(destination?.accessWalkingMinutes) ? destination.accessWalkingMinutes : 0),
+    return { exitMinutes: query.originIsEndpoint ? 0
+        : (valid(exit) ? exit : 10) + (valid(origin?.accessWalkingMinutes) ? origin.accessWalkingMinutes : 0),
+        entryMinutes: query.destinationIsEndpoint ? 0
+        : (valid(entry) ? entry : 10) + (valid(destination?.accessWalkingMinutes) ? destination.accessWalkingMinutes : 0),
         extraMinutes: query.extraConnectionMinutes ?? 0 };
 }
 

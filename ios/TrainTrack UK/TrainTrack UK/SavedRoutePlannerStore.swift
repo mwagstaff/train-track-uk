@@ -49,11 +49,6 @@ struct SavedRouteBoardProgress: Decodable {
     var totalWindows: Int? = nil
 }
 
-struct SavedRouteProgressPresentation {
-    let title: String
-    let details: [String]
-}
-
 struct SavedRouteBoardsResponse: Decodable {
     let apiVersion: Int
     let boards: [SavedRouteBoard]
@@ -107,12 +102,17 @@ struct SavedRouteBoardState {
     var nextRefresh = Date.distantPast
     var requestedAt: Date? = nil
     var waitingForCapacity = false
+    var consecutiveFailures = 0
+    var isRefreshing = false
+
+    var hasPersistentFailure: Bool { consecutiveFailures >= 3 }
+    var showsActivity: Bool { isRefreshing || isPending }
 
     var result: PlannerSearchResponse? { board?.result }
     var direct: JourneyDeparturesSnapshot? { board?.source == "direct" ? board?.direct : nil }
     var usesDirectDepartures: Bool { direct != nil }
-    var isPending: Bool { board?.progress?.phase == "retrying" || waitingForCapacity || (board == nil && message == nil) || board?.status == "queued" || board?.status == "refreshing" }
-    var isStale: Bool { board?.status != "ready" || message != nil }
+    var isPending: Bool { (consecutiveFailures > 0 && !hasPersistentFailure) || board?.progress?.phase == "retrying" || waitingForCapacity || (board == nil && message == nil) || board?.status == "queued" || board?.status == "refreshing" }
+    var isStale: Bool { board?.status != "ready" || consecutiveFailures > 0 || message != nil }
 
     func directAvailability(at now: Date = Date()) -> JourneyDataAvailability? {
         guard let direct else { return nil }
@@ -121,39 +121,6 @@ struct SavedRouteBoardState {
         let status: JourneyDataStatus = (isStale || expired) && direct.dataStatus.severity < JourneyDataStatus.stale.severity
             ? .stale : direct.dataStatus
         return JourneyDataAvailability(status: status, lastSuccessfulUpdate: observed)
-    }
-
-    func progressPresentation(at now: Date) -> SavedRouteProgressPresentation? {
-        guard isPending else { return nil }
-        let progress = board?.progress
-        let phase = waitingForCapacity ? "queued" : progress?.phase
-        let title: String
-        switch phase {
-        case "queued": title = result == nil ? "Waiting to plan journeys…" : "Waiting to update journeys…"
-        case "preparing": title = "Preparing journey search…"
-        case "searching": title = result == nil ? "Finding journey options…" : "Updating journey options…"
-        case "live": title = "Checking live times…"
-        case "retrying": title = "Waiting to retry…"
-        default:
-            title = board == nil ? "Loading journey options…"
-                : (result == nil ? "Waiting to plan journeys…" : "Updating journey options…")
-        }
-        var details: [String] = []
-        if let position = progress?.queuePosition, position > 0 {
-            details.append("Queue position: \(position)")
-        }
-        if let completed = progress?.completedWindows, let total = progress?.totalWindows,
-           total > 0, completed >= 0, completed <= total {
-            details.append("Checked \(completed) of \(total) timetable windows")
-        }
-        if let began = progress?.queuedAt ?? requestedAt, began <= now {
-            let seconds = Int(now.timeIntervalSince(began))
-            if seconds > 0 {
-                let elapsed = seconds < 60 ? "\(seconds) sec" : "\(seconds / 60) min \(seconds % 60) sec"
-                details.append("\(phase == "queued" || phase == "retrying" ? "Waiting" : "Elapsed"): \(elapsed)")
-            }
-        }
-        return SavedRouteProgressPresentation(title: title, details: details)
     }
 }
 
@@ -189,7 +156,10 @@ final class SavedRoutePlannerStore {
         guard laterQueries[routeID] == nil else { return }
 
         var query = SavedRouteQuery(group: group)
-        query.time = PlannerTime.iso8601(now().addingTimeInterval(6 * 60 * 60))
+        // Search the current six-hour timetable window again. The compact live
+        // board can omit valid alternatives; the presentation layer merges the
+        // fuller result with it and removes overlaps.
+        query.time = PlannerTime.iso8601(now())
         laterQueries[routeID] = query
         await performLaterSearch(query)
     }
@@ -204,17 +174,17 @@ final class SavedRoutePlannerStore {
         guard laterSearches.insert(queryKey).inserted else { return }
         defer { laterSearches.remove(queryKey) }
 
-        for attempt in 0...1 {
+        for attempt in 0...2 {
             guard !Task.isCancelled else { return }
-            states[queryKey] = SavedRouteBoardState(requestedAt: now())
+            if attempt == 0 { states[queryKey] = SavedRouteBoardState(requestedAt: now()) }
             if attempt > 0 {
                 do { try await Task.sleep(for: .seconds(1)) }
                 catch { return }
             }
             while !Task.isCancelled {
                 await refresh(queries: [query], force: true)
-                guard let state = states[queryKey], state.isPending else {
-                    if states[queryKey]?.result != nil { return }
+                guard let state = states[queryKey], state.isPending, state.consecutiveFailures == 0 else {
+                    if states[queryKey]?.result != nil && states[queryKey]?.consecutiveFailures == 0 { return }
                     break
                 }
                 let pause = min(5, max(1, state.nextRefresh.timeIntervalSince(now())))
@@ -257,14 +227,20 @@ final class SavedRoutePlannerStore {
         for offset in stride(from: 0, to: missing.count, by: 8) {
             let batch = Array(missing[offset..<min(offset + 8, missing.count)])
             let keys = batch.map { server + "|" + $0.id }
-            for key in keys where self.states[key]?.requestedAt == nil {
+            for key in keys {
                 var state = self.states[key] ?? SavedRouteBoardState()
-                state.requestedAt = now()
+                state.requestedAt = state.requestedAt ?? now()
+                state.isRefreshing = true
                 self.states[key] = state
             }
             let task = Task { [weak self] in
                 guard let self else { return }
-                defer { for key in keys { self.flights[key] = nil } }
+                defer {
+                    for key in keys {
+                        self.flights[key] = nil
+                        self.states[key]?.isRefreshing = false
+                    }
+                }
                 guard self.client.routeBoardsServerIdentity == server else { return }
                 do {
                     let response = try await self.client.routeBoards(batch)
@@ -290,10 +266,17 @@ final class SavedRoutePlannerStore {
                         }
                         let interval = min(20, max(1, (board.pollAfterMs ?? 20000) / 1000))
                         let waiting = board.error?.code == "SEARCH_BUSY"
-                        self.states[key] = SavedRouteBoardState(board: board, message: waiting ? nil : board.error?.message,
+                        let liveRefreshFailed = board.result?.journeys.contains { journey in
+                            PlannerLivePresentation.warnings(for: journey).contains(where: PlannerLivePresentation.isRefreshFailureWarning)
+                        } == true || (board.direct.map { $0.dataStatus != .live } ?? false)
+                        let failures = (board.error != nil || liveRefreshFailed) && !waiting
+                            ? (self.states[key]?.consecutiveFailures ?? 0) + 1
+                            : (board.status == "ready" ? 0 : self.states[key]?.consecutiveFailures ?? 0)
+                        self.states[key] = SavedRouteBoardState(board: board,
+                            message: failures >= 3 ? board.error?.message ?? self.states[key]?.message : nil,
                             nextRefresh: self.now().addingTimeInterval(interval),
                             requestedAt: board.status == "ready" ? nil : self.states[key]?.requestedAt,
-                            waitingForCapacity: waiting)
+                            waitingForCapacity: waiting, consecutiveFailures: failures)
                     }
                 } catch SavedRouteBoardError.unsupported {
                     for key in keys {
@@ -321,7 +304,8 @@ final class SavedRoutePlannerStore {
 
     private func fail(key: String, message: String) {
         var state = states[key] ?? SavedRouteBoardState()
-        state.message = message
+        state.consecutiveFailures += 1
+        state.message = state.hasPersistentFailure ? message : nil
         state.waitingForCapacity = false
         state.nextRefresh = now().addingTimeInterval(20)
         states[key] = state

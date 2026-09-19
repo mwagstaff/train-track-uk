@@ -55,13 +55,13 @@ async function search(request, net, source) {
     return findJourneysAsync(request, net, { resolveTubeConnection, maxOperations: 1000000, timeoutMs: 10000 });
 }
 
-test('transfer-only routing adds endpoint allowances once and publishes chronological Tube steps', async () => {
+test('transfer-only routing omits outside-journey endpoint allowances and publishes chronological Tube steps', async () => {
     const source = provider(({ time }) => [option(Date.parse(time), 14, clear, ['bakerloo', 'victoria'])]);
     const net = network();
     const result = await search(query(), net, source);
     assert.equal(result.journeys.length, 1);
     const journey = result.journeys[0];
-    assert.equal(journey.durationMinutes, 24);
+    assert.equal(journey.durationMinutes, 14);
     assert.equal(journey.changes, 1);
     assert.equal(journey.legs[0].localJourney.steps.length, 2);
     assert.equal(journey.legs[0].from.crs, 'PAD');
@@ -147,7 +147,7 @@ test('arrive-by reserves the five-minute minor-delay contingency before selectin
     const request = query({ time: iso(at('12:00')), timeType: 'arriveBy' });
     const result = await search(request, network(), source);
     assert.equal(result.journeys[0].arrival, iso(at('12:00')));
-    assert.equal(result.journeys[0].departure, iso(at('11:30')));
+    assert.equal(result.journeys[0].departure, iso(at('11:40')));
     assert.ok(source.calls.every(call => call.timeMode === 'arriveBy'));
     assert.ok(validateJourney(result.journeys[0], network(), request));
 });

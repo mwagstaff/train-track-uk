@@ -1,6 +1,9 @@
 import SwiftUI
 
 enum PlannerLivePresentation {
+    private static let neutralScheduledTimesWarningPrefix =
+        "live information is not yet available"
+
     static func hasTimingEvidence(_ live: PlannerLiveAnnotation) -> Bool {
         live.departure != nil || live.arrival != nil || live.isCancelled || live.isDelayed
             || live.partCancelled == true || live.status == "partCancelled" || live.status == "onTime"
@@ -40,6 +43,18 @@ enum PlannerLivePresentation {
         visibleWarnings((journey.warnings ?? []) + journey.legs.flatMap {
             ($0.localJourney?.travelNotes ?? []) + ($0.live?.warnings ?? []) + ($0.warnings ?? [])
         })
+    }
+
+    static func searchResultWarnings(for journey: PlannedJourney) -> [String] {
+        warnings(for: journey).filter {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+                .hasPrefix(neutralScheduledTimesWarningPrefix)
+        }
+    }
+
+    static func isRefreshFailureWarning(_ warning: String) -> Bool {
+        warning.hasPrefix("Live times could not be refreshed")
     }
 
     static func visibleWarnings(_ values: [String]) -> [String] {

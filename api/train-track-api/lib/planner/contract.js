@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 
 export const API_VERSION = 3;
-export const POLICY_VERSION = 'scheduled-v7-tfl-priority';
-export const LIVE_POLICY_VERSION = 'live-v5-tfl-priority';
-export const RAPTOR_POLICY_VERSION = 'raptor-poc-v1';
+export const POLICY_VERSION = 'scheduled-v8-tfl-endpoints';
+export const LIVE_POLICY_VERSION = 'live-v6-tfl-endpoints';
+export const RAPTOR_POLICY_VERSION = 'raptor-poc-v2';
 export const LIVE_WINDOW_HOURS = 4;
 export const MAX_CHANGES = 5;
 export const DEFAULT_WINDOW_MINUTES = 360;

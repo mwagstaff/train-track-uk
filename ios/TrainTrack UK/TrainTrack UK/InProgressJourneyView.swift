@@ -617,11 +617,16 @@ struct InProgressJourneyView: View {
     }
 
     private var endJourneyLink: some View {
-        Button("End journey") { isShowingEndConfirmation = true }
+        Button { isShowingEndConfirmation = true } label: {
+            Text("End journey")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .underline()
+                .padding(.horizontal, 18)
+                .frame(minHeight: 44)
+                .background(Color(white: 0.16).opacity(0.96), in: Capsule())
+        }
             .buttonStyle(.plain)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .underline()
             .frame(maxWidth: .infinity)
             .padding(.top, 12)
             .padding(.bottom, 4)
@@ -984,33 +989,10 @@ struct InProgressJourneyView: View {
     }
 
     private func endJourney() {
-        if let active = coordinator.activeJourney {
-            run {
-                if let session = notificationStore.liveSessions.first(where: { $0.id == active.subscriptionId }) {
-                    try? await notificationStore.deleteLiveSession(id: session.id)
-                }
-                await activityManager.stopJourneyActivities(
-                    deepLinkFromCRS: active.plannedOrigin.crs,
-                    deepLinkToCRS: active.plannedDestination.crs
-                )
-                await coordinator.endActiveJourney()
-            }
-            return
-        }
-
         guard let subscriptionID = effectiveSubscriptionID,
               let group = selectedGroup else { return }
         run {
-            if let session = notificationStore.liveSessions.first(where: { $0.id == subscriptionID }) {
-                try? await notificationStore.deleteLiveSession(id: session.id)
-            }
-            if coordinator.armedCandidates.contains(where: { $0.subscriptionId == subscriptionID }) {
-                coordinator.disarm(subscriptionID: subscriptionID)
-            }
-            await activityManager.stopJourneyActivities(
-                deepLinkFromCRS: group.startStation.crs,
-                deepLinkToCRS: group.endStation.crs
-            )
+            await notificationStore.endJourneyUpdates(subscriptionID: subscriptionID, group: group)
         }
     }
 
@@ -1321,7 +1303,7 @@ private struct RecentServicePicker: View {
 
                                     Image(systemName: "chevron.right")
                                         .font(.caption.weight(.semibold))
-                                        .foregroundStyle(.tertiary)
+                                        .foregroundStyle(Color.navigationChevron)
                                         .accessibilityHidden(true)
                                 }
                                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -1352,7 +1334,7 @@ private struct RecentServicePicker: View {
                                 Spacer()
                                 Image(systemName: "chevron.right")
                                     .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.tertiary)
+                                    .foregroundStyle(Color.navigationChevron)
                                     .accessibilityHidden(true)
                             }
                             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)

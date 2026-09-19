@@ -61,6 +61,30 @@ test('reverse ALF traversal uses reversed endpoint allowances, one buffer, and e
     assert.equal(validateFixedLink(index, backwards, 2), true);
 });
 
+test('a Tube fixed link does not add station allowances beyond the journey endpoints', () => {
+    // Independently transcribed RJTTF939 ALF:1178, used by the 10:29
+    // Clock House -> Kent House -> Herne Hill -> Elephant & Castle route.
+    const rule = parseFixedLink('M=TUBE,O=EPH,D=LBG,T=15,S=0001,E=2359,P=4,R=1111110',
+        { member: 'ALF', line: 1178 });
+    const index = createConnectionIndex(network([rule], [], { EPH: 5, LBG: 10 }));
+    const final = resolveConnection(index, {
+        from: 'EPH', to: 'LBG', arrival: instant('11:04'), destinationIsEndpoint: true
+    });
+    assert.equal(final.movementStart, instant('11:09'));
+    assert.equal(final.end, instant('11:24'));
+    assert.deepEqual(final.breakdown,
+        { exitMinutes: 5, travelMinutes: 15, entryMinutes: 0, extraMinutes: 0, waitingMinutes: 0 });
+    assert.equal(validateFixedLink(index, final, 0, { destinationIsEndpoint: true }), true);
+
+    const transferOnly = resolveConnection(index, {
+        from: 'EPH', to: 'LBG', arrival: instant('11:09'),
+        originIsEndpoint: true, destinationIsEndpoint: true
+    });
+    assert.equal(transferOnly.end, instant('11:24'));
+    assert.deepEqual(transferOnly.breakdown,
+        { exitMinutes: 0, travelMinutes: 15, entryMinutes: 0, extraMinutes: 0, waitingMinutes: 0 });
+});
+
 test('ALF reverse entries retain priority, mode permission, calendar and full traversal boundaries', () => {
     const rule = { ...walk(), startTime: '2000', endTime: '2010', startDate: '2026-09-15', endDate: '2026-09-15' };
     const index = createConnectionIndex(network([rule], [], { KGX: 0, STP: 0 }));

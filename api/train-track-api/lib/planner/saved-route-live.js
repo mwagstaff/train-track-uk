@@ -338,7 +338,15 @@ export class SavedRouteLive {
         const available = currentRows(board, now, realtime, request.allowedModes);
         context.limited ||= available.length > MAX_OPTIONS;
         const rows = available.slice(0, MAX_OPTIONS);
-        let missing = board.dataStatus === 'partial';
+        const represents = (row, leg) => mode(row) === leg.mode
+            && rowTime(row, now).scheduled === instant(leg.scheduledDeparture ?? leg.departure);
+        // A provider can report a fresh/live board while returning fewer rows
+        // than the cached six-hour plan. Treat unmatched planned trains like a
+        // partial response so they remain available as scheduled fallbacks.
+        let missing = board.dataStatus === 'partial' || examples.some(leg => {
+            const departure = instant(leg.scheduledDeparture ?? leg.departure);
+            return departure >= now && departure <= now + 4 * HOUR && !rows.some(row => represents(row, leg));
+        });
         const values = await Promise.all(rows.map(async row => {
             const record = await context.detail(row, first.from.crs);
             if (!record) { missing = true; return null; }
@@ -349,7 +357,8 @@ export class SavedRouteLive {
             return value;
         }));
         return [...values.filter(Boolean), ...later, ...(missing ? fallback().filter(leg => !values.some(value => value
-            && value.scheduledDeparture === leg.departure && value.operator === leg.operator)) : [])];
+            && value.mode === leg.mode && value.from.crs === leg.from.crs && value.to.crs === leg.to.crs
+            && instant(value.scheduledDeparture ?? value.departure) === instant(leg.departure))) : [])];
     }
 
     vehicle(row, record, path, template, request, now) {
