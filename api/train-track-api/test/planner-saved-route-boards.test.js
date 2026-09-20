@@ -123,6 +123,10 @@ test('time-locked later searches preserve their window and bypass current direct
     assert.equal(board.source, 'planned');
     assert.ok(board.result);
     assert.equal(board.direct, undefined);
+    assert.equal(f.refreshCalls.length, 1);
+    assert.equal((await f.manager.get(future)).boards[0].status, 'ready');
+    await idle(f.manager);
+    assert.equal(f.refreshCalls.length, 1, 'a completed future board must wait for the next live-check interval');
 });
 
 test('unknown, stale, partial and failed direct lookups cannot start a planner fallback', async t => {

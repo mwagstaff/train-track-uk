@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
 
 export const API_VERSION = 3;
-export const POLICY_VERSION = 'scheduled-v8-tfl-endpoints';
-export const LIVE_POLICY_VERSION = 'live-v6-tfl-endpoints';
-export const RAPTOR_POLICY_VERSION = 'raptor-poc-v2';
+export const POLICY_VERSION = 'scheduled-v9-metro-wait-limit';
+export const LIVE_POLICY_VERSION = 'live-v7-metro-wait-limit';
+export const RAPTOR_POLICY_VERSION = 'raptor-poc-v3-metro-wait-limit';
 export const LIVE_WINDOW_HOURS = 4;
 export const MAX_CHANGES = 5;
 export const DEFAULT_WINDOW_MINUTES = 360;
-export const MODES = ['rail', 'replacementBus', 'walk', 'tubeTransfer', 'genericTransfer'];
+export const MAX_CONNECTION_WAIT_MINUTES = 360;
+export const MODES = ['rail', 'replacementBus', 'walk', 'tubeTransfer', 'metroTransfer', 'genericTransfer'];
 export const CAPABILITIES = Object.freeze({
     algorithms: ['original', 'raptor'],
     timeTypes: ['departAfter', 'arriveBy'], maxChanges: MAX_CHANGES,

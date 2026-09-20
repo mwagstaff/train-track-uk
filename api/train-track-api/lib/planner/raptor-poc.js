@@ -1,5 +1,5 @@
 import { createConnectionIndex, resolveConnection, CONNECTION_POLICY } from './connections.js';
-import { MAX_CHANGES, DEFAULT_WINDOW_MINUTES, MODES } from './contract.js';
+import { MAX_CHANGES, DEFAULT_WINDOW_MINUTES, MAX_CONNECTION_WAIT_MINUTES, MODES } from './contract.js';
 import { liveCall, liveLeg } from './live-network.js';
 import { validateJourney } from './router.js';
 
@@ -260,6 +260,7 @@ export function findRaptorJourneys(request, index, options = {}) {
         }
         const query = Date.parse(request.time), window = (request.windowMinutes ?? DEFAULT_WINDOW_MINUTES) * MINUTE;
         const maxDuration = (options.maxDurationMinutes ?? 1440) * MINUTE;
+        const maxConnectionWait = MAX_CONNECTION_WAIT_MINUTES * MINUTE;
         const maxChanges = request.maxChanges ?? MAX_CHANGES, maxBoardings = maxChanges + 1;
         const limit = request.limit ?? 5, offset = options.offset ?? 0;
         const extra = request.extraConnectionMinutes ?? 0;
@@ -433,7 +434,8 @@ export function findRaptorJourneys(request, index, options = {}) {
                     const boundary = label.boundary ?? connection?.start ?? departure;
                     const boardings = round + 1 + (connection?.boardings ?? 0);
                     if (boundary < query || boundary >= query + window || boardings > maxBoardings
-                        || departure - boundary > maxDuration) return;
+                        || departure - boundary > maxDuration
+                        || label.path && departure - (connection?.end ?? label.time) > maxConnectionWait) return;
                     if (boardings + onwardBounds[position + 1] > maxBoardings) { metrics.topologyPruned++; return; }
                     const values = aboard.get(service.id) ?? [];
                     const boarding = { service, position, boundary, boardings,
@@ -556,8 +558,9 @@ export function findRaptorJourneys(request, index, options = {}) {
         return { journeys, metrics: report(), searchTruncated: false,
             ...(request.origin === request.destination ? { alreadyAtDestination: true } : {}),
             pagination: { offset, total: candidates.length, nextOffset: offset + limit < candidates.length ? offset + limit : null },
-            policy: { experimental: true, version: 'mc-raptor-scheduled-poc-v1', connectionPolicy: CONNECTION_POLICY,
+            policy: { experimental: true, version: 'mc-raptor-scheduled-poc-v2', connectionPolicy: CONNECTION_POLICY,
                 timeType: 'departAfter', maxChanges, windowMinutes: window / MINUTE, maxDurationMinutes: maxDuration / MINUTE,
+                maxConnectionWaitMinutes: maxConnectionWait / MINUTE,
                 maxConsecutiveFixedLinks: 1, equalCriteria: 'one representative', dynamicTubeResolution: false } };
     } catch (error) {
         error.metrics = report();

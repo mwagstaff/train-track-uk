@@ -322,7 +322,7 @@ struct SavedRoutePlannerTests {
         #expect(state.message == error.message)
     }
 
-    @Test func moreDeparturesSearchesTheCurrentSixHourWindowWithoutChangingSavedStops() async throws {
+    @Test func moreDeparturesSearchesTheFollowingSixHourWindowWithoutChangingSavedStops() async throws {
         let client = RouteBoardStub()
         client.result = try result()
         let store = SavedRoutePlannerStore(client: client, now: { now })
@@ -330,7 +330,7 @@ struct SavedRoutePlannerTests {
         await store.searchLater(for: route)
         let query = try #require(client.requests.first?.first)
         #expect(query.realtime == "apply")
-        #expect(query.time == PlannerTime.iso8601(now))
+        #expect(query.time == PlannerTime.iso8601(now.addingTimeInterval(6 * 60 * 60)))
         #expect(query.via == ["VIC"])
         #expect(store.laterState(for: route)?.isPending == false)
         #expect(route.stationSequence.map(\.crs) == ["KTH", "VIC", "INV"])

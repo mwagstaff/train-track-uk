@@ -328,7 +328,7 @@ test('many departure profiles skip onward trains which cannot complete within th
         [['AAA', null, i], ['BBB', i + 5, null]]));
     for (let i = 0; i < 1200; i++) services.push(train(`deadEnd${i}`, 'OP',
         [['BBB', null, 400 + i / 10], ['CCC', 410 + i / 10, null]]));
-    services.push(train('onward', 'OP', [['BBB', null, 900], ['DDD', 910, null]]));
+    services.push(train('onward', 'OP', [['BBB', null, 500], ['DDD', 510, null]]));
     for (const reverse of [false, true]) {
         const rows = reverse ? services.map(service => ({ ...service, calls: service.calls.toReversed().map(call => ({
             ...call, arrival: call.departure == null ? null : time(1000) - (call.departure - zero),

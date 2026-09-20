@@ -156,10 +156,9 @@ final class SavedRoutePlannerStore {
         guard laterQueries[routeID] == nil else { return }
 
         var query = SavedRouteQuery(group: group)
-        // Search the current six-hour timetable window again. The compact live
-        // board can omit valid alternatives; the presentation layer merges the
-        // fuller result with it and removes overlaps.
-        query.time = PlannerTime.iso8601(now())
+        // Continue from the end of the primary six-hour timetable window. The
+        // presentation layer merges this result with it and removes overlaps.
+        query.time = PlannerTime.iso8601(now().addingTimeInterval(6 * 60 * 60))
         laterQueries[routeID] = query
         await performLaterSearch(query)
     }

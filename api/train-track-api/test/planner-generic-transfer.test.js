@@ -37,11 +37,37 @@ function network() {
 
 test('generic transfers are advertised and enabled by default, with explicit exclusions preserved', () => {
     assert.ok(CAPABILITIES.allowedModes.includes('genericTransfer'));
-    assert.deepEqual(normalizeRequest(input).allowedModes, [...previousModes, 'genericTransfer'].sort());
+    assert.ok(CAPABILITIES.allowedModes.includes('metroTransfer'));
+    assert.deepEqual(normalizeRequest(input).allowedModes, [...previousModes, 'metroTransfer', 'genericTransfer'].sort());
     assert.deepEqual(normalizeRequest({ ...input, allowedModes: previousModes }).allowedModes, [...previousModes].sort());
     assert.deepEqual(normalizeRequest({ ...input, allowedModes: ['rail', 'genericTransfer'] }).allowedModes, ['genericTransfer', 'rail']);
-    assert.throws(() => normalizeRequest({ ...input, allowedModes: ['metroTransfer'] }), { code: 'INVALID_REQUEST' });
+    assert.deepEqual(normalizeRequest({ ...input, allowedModes: ['metroTransfer'] }).allowedModes, ['metroTransfer']);
 });
+
+const sundayInstant = (day, clock) => Date.parse(`2026-09-${day}T${clock}:00+01:00`);
+const clockService = (uid, mode, from, to, departureDay, departure, arrivalDay, arrival) => ({
+    id: uid, uid, variantId: uid, originDate: `2026-09-${departureDay}`, mode, operator: 'SE', calls: [
+        { station: from, sequence: 0, departure: sundayInstant(departureDay, departure), arrival: null, canBoard: true, canAlight: false },
+        { station: to, sequence: 1, departure: null, arrival: sundayInstant(arrivalDay, arrival), canBoard: false, canAlight: true }
+    ]
+});
+
+function clockHouseNetwork(nextNightOnly = false) {
+    const services = [
+        clockService('clk-ele-bus', 'replacementBus', 'CLK', 'ELE', '20', '00:43', '20', '00:50'),
+        clockService(nextNightOnly ? 'late-bus' : 'early-bus', 'replacementBus', 'BKJ', 'SRT',
+            '20', nextNightOnly ? '22:20' : '06:38', '20', nextNightOnly ? '22:26' : '06:44'),
+        clockService('srt-lbg', 'rail', 'SRT', 'LBG', '20', nextNightOnly ? '22:40' : '07:01',
+            '20', nextNightOnly ? '23:00' : '07:47')
+    ];
+    return {
+        stations: new Map(['CLK', 'ELE', 'BKJ', 'SRT', 'LBG'].map(crs => [crs, { crs, name: crs, minimumChangeMinutes: 0 }])),
+        rules: { tsi: [], links: [
+            parseFixedLink('M=METRO,O=ELE,D=BKJ,T=55,S=0001,E=2359,P=4,R=1111111', { member: 'ALF', line: 1 })
+        ] },
+        services
+    };
+}
 
 test('existing normalized cursors keep their original mode permissions', () => {
     for (const algorithm of ['original', 'raptor']) {
@@ -118,5 +144,20 @@ for (const algorithm of ['original', 'raptor']) {
         assert.equal(route(permitted, net).journeys[0].arrival, iso('13:41'));
         const endingAtDeparture = normalizeRequest({ ...input, algorithm, time: '2026-09-18T22:44:00+01:00' });
         assert.equal(route(endingAtDeparture, net).journeys.length, 0, 'The source departure window has an exclusive end');
+    });
+
+    test(`${algorithm} uses the Clock House Metro connection and rejects an overnight wait`, () => {
+        const request = normalizeRequest({
+            origin: 'CLK', destination: 'LBG', time: '2026-09-20T00:42:00+01:00',
+            timeType: 'departAfter', realtime: 'off', algorithm, limit: 10
+        });
+        const result = route(request, clockHouseNetwork());
+        assert.equal(result.journeys.length, 1);
+        assert.equal(result.journeys[0].departure, new Date(sundayInstant('20', '00:43')).toISOString());
+        assert.equal(result.journeys[0].arrival, new Date(sundayInstant('20', '07:47')).toISOString());
+        assert.ok(result.journeys[0].legs.some(leg => leg.mode === 'metroTransfer'));
+        assert.equal(route({ ...request, allowedModes: previousModes }, clockHouseNetwork()).journeys.length, 0);
+        assert.equal(route(request, clockHouseNetwork(true)).journeys.length, 0,
+            'a next-night service is not a reasonable connection to an after-midnight arrival');
     });
 }

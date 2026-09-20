@@ -94,6 +94,7 @@ struct PlannedJourney: Codable, Identifiable, Equatable {
             else if isTubeTransfer { transport = localJourney?.isAvailable == true ? "London transport" : "Tube" }
             else if mode == "walk" { transport = "Walk" }
             else if mode == "replacementBus" { transport = "Replacement bus" }
+            else if mode == "metroTransfer" { transport = "Metro" }
             else if mode == "bus" { transport = "Bus" }
             else if kind == "vehicle" { transport = "Train" }
             else { transport = "Transfer" }
@@ -364,7 +365,7 @@ struct PlannerSearchRequest: Encodable, Equatable {
     var via: [String]? = nil
     var maxChanges: Int? = nil
     var extraConnectionMinutes = 0
-    var allowedModes = ["rail", "replacementBus", "walk", "tubeTransfer", "genericTransfer"]
+    var allowedModes = ["rail", "replacementBus", "walk", "tubeTransfer", "metroTransfer", "genericTransfer"]
     var limit = 5
     var cursor: String?
     var realtime: String? = "apply"

@@ -218,6 +218,7 @@ export class SavedRouteBoards {
             entry.value = this.preferredValue(result, entry.directCandidate);
             entry.source = entry.value.source;
             entry.error = null;
+            entry.nextCheckAt = this.now() + LIVE_MS;
             observation?.finish({ status: 'success', outcome: result.journeys.length ? 'completed' : 'empty',
                 resultCount: result.journeys.length, firstResultAt: new Date(this.now()), finishedAt: new Date(this.now()) });
         } catch (error) {

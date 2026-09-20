@@ -110,10 +110,10 @@ struct JourneyPlannerTests {
         #expect(json["maxChanges"] as? Int == 2)
     }
 
-    @Test func defaultSearchRequestsIncludeGenericTransfers() throws {
+    @Test func defaultSearchRequestsIncludeSuppliedTransfers() throws {
         let request = try intent(mode: .now).request(now: now)
         let body = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any])
-        #expect(body["allowedModes"] as? [String] == ["rail", "replacementBus", "walk", "tubeTransfer", "genericTransfer"])
+        #expect(body["allowedModes"] as? [String] == ["rail", "replacementBus", "walk", "tubeTransfer", "metroTransfer", "genericTransfer"])
     }
 
     @Test func searchesAlwaysEncodeRaptorWithLiveTimesAndRejectArriveBy() throws {
@@ -665,6 +665,7 @@ struct JourneyPlannerTests {
         #expect(train.heading == "Train from Kent House to London Victoria")
         #expect(train.mapCallingPoints.map(\.station.crs) == ["KTH", "PNE", "VIC"])
         #expect(leg("transfer", "tubeTransfer").heading == "Tube from Kent House to London Victoria")
+        #expect(leg("transfer", "metroTransfer").heading == "Metro from Kent House to London Victoria")
         #expect(leg("vehicle", "replacementBus").heading == "Replacement bus from Kent House to London Victoria")
         let change = leg("transfer", "interchange", destination: from)
         #expect(change.isTrainChange)

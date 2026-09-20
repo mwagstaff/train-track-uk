@@ -1,12 +1,12 @@
 import { createConnectionIndex, resolveConnection, validateFixedLink, CONNECTION_POLICY } from './connections.js';
-import { MAX_CHANGES, DEFAULT_WINDOW_MINUTES, MODES } from './contract.js';
+import { MAX_CHANGES, DEFAULT_WINDOW_MINUTES, MAX_CONNECTION_WAIT_MINUTES, MODES } from './contract.js';
 import { liveCall, liveLeg } from './live-network.js';
 import { validateTubeConnection, tubeBoardings } from './tube-routing.js';
 import { ROUTING_PROFILE_FIELDS } from './telemetry.js';
 
 const MINUTE = 60_000;
 const indexes = new WeakMap();
-export const ROUTING_POLICY_VERSION = 'scheduled-round-profile-tfl-priority-v3';
+export const ROUTING_POLICY_VERSION = 'scheduled-round-profile-tfl-priority-v4';
 export const DEFAULT_MODES = MODES;
 
 function routePhaseMetrics() {
@@ -213,7 +213,8 @@ export function validateJourney(journey, network, request) {
         const leg = journey.legs[i];
         const start = Date.parse(leg.departure);
         const end = Date.parse(leg.arrival);
-        if (leg.from.crs !== at || !(end >= start) || start < previousEnd) return false;
+        if (leg.from.crs !== at || !(end >= start) || start < previousEnd
+            || Number.isFinite(previousEnd) && start - previousEnd > MAX_CONNECTION_WAIT_MINUTES * MINUTE) return false;
         if (leg.durationMinutes !== (end - start) / MINUTE) return false;
         if (leg.kind === 'vehicle') {
             const service = index.services.get(leg.serviceId);
@@ -523,6 +524,7 @@ function* journeySearch(request, network, options = {}) {
     const query = Date.parse(request.time);
     const window = (request.windowMinutes ?? DEFAULT_WINDOW_MINUTES) * MINUTE;
     const maxDuration = (options.maxDurationMinutes ?? 1440) * MINUTE;
+    const maxConnectionWait = MAX_CONNECTION_WAIT_MINUTES * MINUTE;
     const maxChanges = request.maxChanges ?? MAX_CHANGES;
     const maxBoardings = maxChanges + 1;
     const limit = request.limit ?? 5;
@@ -567,7 +569,9 @@ function* journeySearch(request, network, options = {}) {
     const metadata = {
         searchTruncated: false, warnings: [], searchWindow: { from: new Date(from).toISOString(), to: new Date(to).toISOString(), fromInclusive: !reverse, toInclusive: reverse },
         pagination: { earlierTime: new Date(reverse ? from : from - window).toISOString(), laterTime: new Date(reverse ? to + window : to).toISOString() },
-        policy: { version: ROUTING_POLICY_VERSION, connectionPolicy: CONNECTION_POLICY, maxChanges, maxDurationMinutes: maxDuration / MINUTE, windowMinutes: window / MINUTE, maxConsecutiveFixedLinks: 1 }
+        policy: { version: ROUTING_POLICY_VERSION, connectionPolicy: CONNECTION_POLICY, maxChanges,
+            maxDurationMinutes: maxDuration / MINUTE, maxConnectionWaitMinutes: maxConnectionWait / MINUTE,
+            windowMinutes: window / MINUTE, maxConsecutiveFixedLinks: 1 }
     };
     if (request.origin === request.destination) return { ...metadata, journeys: [], alreadyAtDestination: true, metrics: metrics() };
     const rounds = Array.from({ length: maxBoardings + 1 }, () => new Map());
@@ -841,6 +845,7 @@ function* journeySearch(request, network, options = {}) {
                         const event = events[eventIndex];
                         if (reverse ? event.time < eventBound : event.time > eventBound) break;
                         if (reverse ? event.time <= completionBound : event.time >= completionBound) break;
+                        if (!initial && (reverse ? ready - event.time : event.time - ready) > maxConnectionWait) break;
                         const outerBound = label.boundary ?? (reverse ? (cross ? from : to) : (cross ? to : from));
                         if (Math.abs(event.time - outerBound) > maxDuration) break;
                         if (initial && !cross && (reverse ? event.time <= from : event.time >= to)) break;
