@@ -169,22 +169,27 @@ export async function verifyLoadCache(report, uri = process.env.MONGODB_URI_TRAI
         for (const stage of report.stages) {
             const expected = new Set(stage.results.map(result => `${result.route}:${result.requestedTime}`));
             let rows = [];
-            for (let attempt = 0; attempt < 10; attempt++) {
-                rows = await collection.find({ source: 'search', algorithm: 'raptor',
+            for (let attempt = 0; attempt < 20; attempt++) {
+                rows = await collection.find({ source: report.source ?? 'search', algorithm: 'raptor',
                     requestedTime: { $in: stage.results.map(result => new Date(result.requestedTime)) },
                     startedAt: { $gte: new Date(stage.startedAt), $lte: new Date(stage.endedAt) } },
                 { projection: { origin: 1, destination: 1, requestedTime: 1,
-                    cacheStatus: 1, status: 1, errorCode: 1 } }).toArray();
+                    cacheStatus: 1, status: 1, errorCode: 1, metrics: 1 } }).toArray();
                 rows = rows.filter(row => expected.has(`${row.origin}-${row.destination}:${row.requestedTime?.toISOString()}`));
-                if (rows.length >= stage.users) break;
+                if (rows.length >= (stage.attempted ?? stage.users)) break;
                 await sleep(500);
             }
             stage.cache = { logged: rows.length, misses: rows.filter(row => row.cacheStatus === 'miss').length,
                 successfulMisses: rows.filter(row => row.status === 'success' && row.cacheStatus === 'miss').length,
                 hits: rows.filter(row => row.cacheStatus === 'hit').length,
                 unknown: rows.filter(row => row.cacheStatus === 'unknown').length };
+            const byRequest = new Map(rows.map(row => [`${row.origin}-${row.destination}:${row.requestedTime?.toISOString()}`, row]));
+            for (const result of stage.results) {
+                const metrics = byRequest.get(`${result.route}:${result.requestedTime}`)?.metrics;
+                result.serverQueueMs = metrics ? (metrics.admissionQueueMs ?? 0) + (metrics.queueWaitMs ?? 0) : null;
+            }
         }
-        return report.stages.every(stage => stage.cache.logged === stage.users && stage.cache.hits === 0
+        return report.stages.every(stage => stage.cache.logged === (stage.attempted ?? stage.users) && stage.cache.hits === 0
             && stage.cache.successfulMisses === stage.successful);
     } finally { await client.close(); }
 }

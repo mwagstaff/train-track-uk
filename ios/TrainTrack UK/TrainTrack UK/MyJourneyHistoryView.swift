@@ -60,8 +60,21 @@ struct MyJourneyHistoryView: View {
             .sorted { $0.date > $1.date }
     }
 
+    private var inProgressClaimsCount: Int {
+        historyStore.records.filter { JourneyHistoryClaimsFilter.inProgress.includes($0.delayRepayClaimStatus) }.count
+    }
+
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
+            if inProgressClaimsCount > 0 {
+                OpenClaimsLozenge(count: inProgressClaimsCount) {
+                    showingClaims = true
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+            }
+
+            Group {
             if historyStore.records.isEmpty {
                 historyUnavailableCard {
                     ContentUnavailableView(
@@ -149,6 +162,7 @@ struct MyJourneyHistoryView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+            }
             }
         }
         .scrollContentBackground(.hidden)
@@ -452,6 +466,42 @@ struct MyJourneyHistoryView: View {
     #endif
 }
 
+private struct OpenClaimsLozenge: View {
+    let count: Int
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Text("\(count)")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(minWidth: 22, minHeight: 22)
+                    .background(Color.orange, in: Circle())
+
+                Text("View my open delay repay claims")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(.regularMaterial, in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(count) open Delay Repay \(count == 1 ? "claim" : "claims")")
+        .accessibilityHint("Opens your Delay Repay claims")
+    }
+}
+
 enum JourneyHistoryClaimsFilter: String, CaseIterable, Identifiable {
     case inProgress
     case completed
@@ -485,6 +535,13 @@ private struct JourneyHistoryClaimsView: View {
             .sorted { $0.completedAt > $1.completedAt }
     }
 
+    private var groupedRecords: [(date: Date, records: [JourneyHistoryRecord])] {
+        let calendar = Calendar.current
+        return Dictionary(grouping: records) { calendar.startOfDay(for: $0.completedAt) }
+            .map { ($0.key, $0.value.sorted { $0.completedAt > $1.completedAt }) }
+            .sorted { $0.date > $1.date }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             Picker("Claim status", selection: $filter) {
@@ -507,19 +564,29 @@ private struct JourneyHistoryClaimsView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(records) { record in
-                    VStack(spacing: 0) {
-                        NavigationLink {
-                            JourneyHistoryDetailView(record: record)
-                        } label: {
-                            JourneyHistoryRow(record: record)
-                        }
+                List {
+                    ForEach(groupedRecords, id: \.date) { group in
+                        Section {
+                            ForEach(group.records) { record in
+                                VStack(spacing: 0) {
+                                    NavigationLink {
+                                        JourneyHistoryDetailView(record: record)
+                                    } label: {
+                                        JourneyHistoryRow(record: record)
+                                    }
 
-                        Divider()
-                            .padding(.top, 4)
-                        JourneyHistoryDelayRepayActions(record: record)
-                            .padding(.top, 8)
-                            .padding(.bottom, 4)
+                                    Divider()
+                                        .padding(.top, 4)
+                                    JourneyHistoryDelayRepayActions(record: record)
+                                        .padding(.top, 8)
+                                        .padding(.bottom, 4)
+                                }
+                            }
+                        } header: {
+                            RailwayBackgroundSectionHeader(
+                                title: JourneyHistoryFriendlyDate.sectionTitle(for: group.date)
+                            )
+                        }
                     }
                 }
                 .scrollContentBackground(.hidden)
@@ -528,6 +595,65 @@ private struct JourneyHistoryClaimsView: View {
         .navigationTitle("My claims")
         .navigationBarTitleDisplayMode(.inline)
         .railwayBackgroundPOC(showsInfoButton: false)
+    }
+}
+
+private enum JourneyHistoryFriendlyDate {
+    static func sectionTitle(for date: Date, calendar: Calendar = .current, now: Date = Date()) -> String {
+        let heading = headingText(for: date, calendar: calendar)
+        guard let relative = relativeText(for: date, calendar: calendar, now: now) else {
+            return heading
+        }
+        return "\(heading) (\(relative))"
+    }
+
+    private static func headingText(for date: Date, calendar: Calendar) -> String {
+        let weekday = date.formatted(.dateTime.weekday(.wide))
+        let month = date.formatted(.dateTime.month(.wide))
+        let day = calendar.component(.day, from: date)
+        let ordinalFormatter = NumberFormatter()
+        ordinalFormatter.numberStyle = .ordinal
+        let dayOrdinal = ordinalFormatter.string(from: NSNumber(value: day)) ?? "\(day)"
+        return "\(weekday), \(month) \(dayOrdinal)"
+    }
+
+    private static func relativeText(for date: Date, calendar: Calendar, now: Date) -> String? {
+        let startOfDay = calendar.startOfDay(for: date)
+        let startOfToday = calendar.startOfDay(for: now)
+        guard startOfDay <= startOfToday else { return nil }
+        let days = calendar.dateComponents([.day], from: startOfDay, to: startOfToday).day ?? 0
+
+        switch days {
+        case 0: return "today"
+        case 1: return "yesterday"
+        case 2...6: return "last \(date.formatted(.dateTime.weekday(.wide)))"
+        default: break
+        }
+
+        let weeks = Int((Double(days) / 7.0).rounded())
+        if weeks <= 4 {
+            switch weeks {
+            case 1: return "last week"
+            case 2: return "a couple of weeks ago"
+            default: return "\(weeks) weeks ago"
+            }
+        }
+
+        let months = Int((Double(days) / 30.44).rounded())
+        if months <= 11 {
+            switch months {
+            case 1: return "last month"
+            case 2: return "a couple of months ago"
+            default: return "\(months) months ago"
+            }
+        }
+
+        let years = Int((Double(days) / 365.25).rounded())
+        switch years {
+        case 1: return "last year"
+        case 2: return "a couple of years ago"
+        default: return "\(years) years ago"
+        }
     }
 }
 

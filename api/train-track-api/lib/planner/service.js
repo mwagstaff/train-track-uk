@@ -41,7 +41,7 @@ export function plannerConfig(env = process.env) {
         maintenanceMinFreeMemoryMb: number('PLANNER_MAINTENANCE_MIN_FREE_MEMORY_MB', 512, 0, 65536),
         maintenanceMaxLoadPerCpu: number('PLANNER_MAINTENANCE_MAX_LOAD_PER_CPU', 0.8, 0.1, 4),
         maxLiveWaiters: number('PLANNER_MAX_LIVE_WAITERS', 1, 0, 1),
-        maxSearchJobs: number('PLANNER_MAX_SEARCH_JOBS', 8, 1, 32),
+        maxSearchJobs: number('PLANNER_MAX_SEARCH_JOBS', 20, 1, 32),
         // Resolve the current dates and build the national index before the
         // first search of the day asks for them.
         prewarm: env.PLANNER_PREWARM !== 'false'

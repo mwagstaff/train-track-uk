@@ -53,9 +53,14 @@ deploy/train_track_planner_mvp.zsh load
 
 # Admit up to 20 requests during this run without changing the saved configuration.
 PLANNER_MVP_LOAD_LEVELS=5,10,20 deploy/train_track_planner_mvp.zsh load --admission-cap 20
+
+# Exercise the iPhone's queued-search path: 5/10/20-user bursts, then 20 users for 60 seconds.
+deploy/train_track_planner_mvp.zsh jobs-load
 ```
 
 Override `PLANNER_MVP_ORIGIN`, `PLANNER_MVP_DESTINATION`, `PLANNER_MVP_RUNS`, or `PLANNER_MVP_DATASET_SOURCE` when needed. Each smoke run verifies authenticated health/readiness, public status, both station lookups, searches, journey detail, queued submission/completion, and private metrics. Reports are written on the Mini under `/Users/mwagstaff/.local/share/train-track-planner/mvp-reports`. Normal repeated samples usually hit the search-result cache, and even the first sample may hit from an earlier run. `PLANNER_MVP_NO_CACHE=1` clears both workers' search-result caches before every direct or queued request. The `load` action clears caches between the 5, 10, 20, and 50 concurrent-user stages and varies each request time; it samples the planner process's cumulative CPU time and RSS every 250 ms, prints a comparison table, and verifies search-log cache misses. Configure stages with `PLANNER_MVP_LOAD_LEVELS=5,10,20,50`. `--admission-cap N` accepts 1–100, temporarily overrides the configured `PLANNER_MAX_QUEUE` for this load run, and automatically restores it on completion or after five minutes if interrupted; deploy the updated planner service before using this flag. The command warns and exits non-zero for any failed/timed-out/rejected search, cache hit or unverifiable cache status, or failed post-test health check. These tests are result-cache misses, not cold processes, timetable indexes, OS page caches, or Mongo caches. Direct requests above the service's bounded admission queue can receive HTTP 429; report those separately rather than treating them as completed searches. Compare matching datasets, queries and run counts rather than treating these few samples as a capacity claim.
+
+`jobs-load` tests `/search-jobs` separately from the direct-search admission cap. It runs 5/10/20 simultaneous job submissions, then keeps 20 virtual users searching for 60 seconds (one outstanding job per user). Adjust with `--levels`, `--users`, and `--duration-seconds`; duration 0 skips the sustained stage. It clears result caches between stages, varies every query instant, verifies each job's cache status in Mongo, and reports submit-to-result and server queue times. It samples planner CPU/RSS and whole-host CPU, memory-pressure free percentage, and swap during each stage. The authenticated loopback test supplies distinct simulated network addresses so a single load generator can test 20 independent users without triggering the separate four-jobs-per-network safeguard; this does **not** test shared-carrier-NAT fairness. Failed/rejected/timed-out or empty jobs, unverified cache misses, and failed health checks cause a non-zero exit. The queued-job default is 20; this setting does not increase the two routing workers or the direct-search cap of eight.
 
 The MVP intentionally remains not production-ready even though direct scheduled searches pass; the readiness reason can be `timetable_stale` for the bundled snapshot or `ingestion_unavailable` because ingestion and TubeTrack are still explicitly disabled. Its Mongo connection is local, not to `sky`. Do not select it as the app-facing target until ingestion is current and the authenticated gateway checks pass. Stop it with:
 
@@ -299,7 +304,7 @@ Rebuild the app to enable this flow. The existing `/search` endpoint, v1/v2 rout
 | `PLANNER_HEAP_MB` | 1024 per routing worker; not a process RSS limit |
 | `PLANNER_DATE_CACHE_SIZE` | 6 |
 | `PLANNER_MAX_OPERATIONS` | 10000000, synchronous searches |
-| `PLANNER_MAX_SEARCH_JOBS` | 8 distinct queued/running searches |
+| `PLANNER_MAX_SEARCH_JOBS` | 20 distinct queued/running searches |
 | `PLANNER_JOB_QUEUE_TIMEOUT_MS` | 480000 before processing starts |
 | `PLANNER_JOB_TIMEOUT_MS` | 600000 processing time |
 | `PLANNER_JOB_MAX_OPERATIONS` | 1000000000 |
