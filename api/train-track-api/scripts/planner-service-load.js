@@ -159,9 +159,9 @@ export async function runPlannerServiceLoad({ baseUrl = 'http://127.0.0.1:3014',
     return report;
 }
 
-export async function verifyLoadCache(report, uri = process.env.MONGODB_URI_TRAIN_TRACK_UK,
+export async function verifyLoadCache(report, uri = process.env.MONGODB_URI_JOURNEY_PLANNER || process.env.MONGODB_URI_TRAIN_TRACK_UK,
     createClient = value => new MongoClient(value)) {
-    if (!uri) throw new Error('MONGODB_URI_TRAIN_TRACK_UK is required to verify cache misses.');
+    if (!uri) throw new Error('MONGODB_URI_JOURNEY_PLANNER is required to verify cache misses.');
     const client = createClient(uri);
     try {
         await client.connect();

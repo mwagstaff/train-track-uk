@@ -39,7 +39,7 @@ export class PlannerLiveProvider {
   constructor({ request = getWithRetry, now = Date.now, credentials = () => ({
     board: process.env.LIVE_DEPARTURE_BOARD_API_KEY,
     details: process.env.SERVICE_DETAILS_API_KEY,
-    staff: process.env.STAFF_DEPARTURES_API_KEY
+    staff: process.env.LIVE_DEPARTURE_BOARD_STAFF_VERSION_API_KEY || process.env.STAFF_DEPARTURES_API_KEY
   }) } = {}) {
     this.request = request;
     this.now = now;

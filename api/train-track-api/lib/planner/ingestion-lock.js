@@ -1,7 +1,12 @@
-import { mkdir, open, readFile, rm, readdir } from 'node:fs/promises';
+import { mkdir, open, readFile, rm, readdir, stat } from 'node:fs/promises';
 import { dirname, basename, join } from 'node:path';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const run = promisify(execFile);
+const EMPTY_LOCK_GRACE_MS = 10 * 60 * 1000;
 
 async function owner(path) {
     try { return JSON.parse(await readFile(path, 'utf8')); }
@@ -11,6 +16,21 @@ function isDead(value) {
     if (value?.hostname !== hostname() || !Number.isSafeInteger(value.pid) || value.pid <= 0) return false;
     try { process.kill(value.pid, 0); return false; }
     catch (error) { return error.code === 'ESRCH'; }
+}
+
+async function recoverable(path) {
+    const value = await owner(path);
+    if (isDead(value)) return true;
+    if (value !== null) return false;
+    // A crash between O_EXCL creation and writing the owner leaves an empty
+    // lock. Reclaim it only after a grace period, and only when lsof can prove
+    // no process still holds the file open. Other unknown locks fail closed.
+    let details;
+    try { details = await stat(path); }
+    catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+    if (!details.isFile() || details.size !== 0 || Date.now() - details.mtimeMs < EMPTY_LOCK_GRACE_MS) return false;
+    try { await run('lsof', ['-n', '-F', 'p', '--', path], { timeout: 5000 }); return false; }
+    catch (error) { return error.code === 1 && !error.stdout; }
 }
 
 // Recovery is serialised separately, then re-checks the owner. Two callers
@@ -23,14 +43,14 @@ export async function acquireOwnedLock(path, { message = 'Another timetable proc
     try { handle = await open(path, 'wx', 0o600); }
     catch (error) {
         if (error.code !== 'EEXIST') throw error;
-        if (!isDead(await owner(path))) throw locked();
+        if (!await recoverable(path)) throw locked();
         const recoveryPath = `${path}.recovery`, recovery = await open(recoveryPath, 'wx', 0o600).catch(error => {
             if (error.code === 'EEXIST') throw locked();
             throw error;
         });
         try {
             await recovery.writeFile(JSON.stringify({ pid: process.pid, hostname: hostname() }));
-            if (!isDead(await owner(path))) throw locked();
+            if (!await recoverable(path)) throw locked();
             await rm(path);
             try { handle = await open(path, 'wx', 0o600); }
             catch (error) { if (error.code === 'EEXIST') throw locked(); throw error; }

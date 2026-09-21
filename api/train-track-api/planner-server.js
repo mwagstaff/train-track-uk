@@ -24,8 +24,9 @@ export async function createPlannerServer({ env = process.env, service, searchLo
     if (!['mongo', 'memory'].includes(persistenceMode)) {
         throw new Error('PLANNER_PERSISTENCE_MODE must be mongo or memory.');
     }
-    if (env.NODE_ENV === 'production' && persistenceMode === 'mongo' && !env.MONGODB_URI_TRAIN_TRACK_UK) {
-        throw new Error('MONGODB_URI_TRAIN_TRACK_UK is required for the production standalone planner.');
+    if (env.NODE_ENV === 'production' && persistenceMode === 'mongo'
+        && !(env.MONGODB_URI_JOURNEY_PLANNER || env.MONGODB_URI_TRAIN_TRACK_UK)) {
+        throw new Error('MONGODB_URI_JOURNEY_PLANNER is required for the production standalone planner.');
     }
     const useMongo = initializeMongo ?? persistenceMode === 'mongo';
     const config = plannerConfig(env);

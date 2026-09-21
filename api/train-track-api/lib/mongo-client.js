@@ -1,7 +1,7 @@
 import { MongoClient } from 'mongodb';
 
 const DEFAULT_URI = 'mongodb://localhost:27017/train_track_uk';
-const MONGODB_URI = process.env.MONGODB_URI_TRAIN_TRACK_UK || DEFAULT_URI;
+const MONGODB_URI = process.env.MONGODB_URI_JOURNEY_PLANNER || process.env.MONGODB_URI_TRAIN_TRACK_UK || DEFAULT_URI;
 const DB_NAME = resolveDatabaseName(MONGODB_URI) || 'train_track_uk';
 
 let clientPromise = null;

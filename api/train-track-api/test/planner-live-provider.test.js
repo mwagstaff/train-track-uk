@@ -17,6 +17,18 @@ const details = (crs = 'ECR') => ({ crs, generatedAt: '2026-09-16T11:59:55Z', st
   ]
 });
 
+test('default staff credential reads the Bitwarden staff-version variable', () => {
+  const previous = process.env.LIVE_DEPARTURE_BOARD_STAFF_VERSION_API_KEY;
+  try {
+    process.env.LIVE_DEPARTURE_BOARD_STAFF_VERSION_API_KEY = 'test-staff-version';
+    const provider = new PlannerLiveProvider();
+    assert.equal(provider.credentials().staff, 'test-staff-version');
+  } finally {
+    if (previous === undefined) delete process.env.LIVE_DEPARTURE_BOARD_STAFF_VERSION_API_KEY;
+    else process.env.LIVE_DEPARTURE_BOARD_STAFF_VERSION_API_KEY = previous;
+  }
+});
+
 test('overlapping searches share a live lookup and one caller cancelling does not cancel the other', async () => {
   let release, count = 0, upstreamSignal;
   const provider = new PlannerLiveProvider({ credentials, now: () => now, request: async ({ signal }) => {

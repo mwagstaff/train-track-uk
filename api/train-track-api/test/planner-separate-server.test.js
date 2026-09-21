@@ -222,3 +222,16 @@ test('explicit memory persistence starts the production planner without Mongo fo
     await runtime.close();
     assert.equal(closed, true);
 });
+
+test('production planner accepts the dedicated Mongo URI variable', async () => {
+    const env = { NODE_ENV: 'production', PLANNER_HOST_ID: 'mini', PLANNER_SERVICE_TOKEN: token,
+        PLANNER_INGESTION_ENABLED: 'false', PLANNER_DATA_DIR: '/tmp/planner-mongo-env-test' };
+    const service = { config: { dataDirectory: env.PLANNER_DATA_DIR }, close() {} };
+    await assert.rejects(createPlannerServer({ env, service, searchLog: noOpPlannerSearchLog,
+        initializeMongo: false }), /MONGODB_URI_JOURNEY_PLANNER is required/);
+    const runtime = await createPlannerServer({ env: { ...env,
+        MONGODB_URI_JOURNEY_PLANNER: 'mongodb://127.0.0.1:27017/train_track_planner' },
+        service, searchLog: noOpPlannerSearchLog, initializeMongo: false });
+    assert.equal(runtime.persistenceMode, 'mongo');
+    await runtime.close();
+});

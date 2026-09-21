@@ -31,9 +31,29 @@ deploy either.
 
 The isolated MVP runs the standalone HTTP service and both routing workers on the Mini, with Mini-local Mongo for planner search history and route caches. In-flight jobs remain in process memory. The app-facing API still runs on `sky`, but its only configured planner target is **`mini`**; devices retain the same API URL. Sky no longer constructs the embedded planner or runs timetable ingestion. The Mini process binds to loopback, and an authenticated Tailscale Funnel route maps `/train-track-planner` to port 3014. This is an internal device-testing pilot, not an unattended production service. Sky's old timetable files were retained for recovery, not used for live planning.
 
+### Request flow and why Mini may call a live API
+
+```mermaid
+flowchart LR
+    Phone[iPhone planner] -->|v3/v4 planner request| Sky[Sky train-track-api gateway]
+    Sky -->|authenticated HTTPS via Tailscale Funnel| Mini[Mini standalone planner]
+    Mini -->|RAPTOR search and jobs| Timetable[Active local SQLite timetable]
+    Mini -->|history and route-board cache| Mongo[Mini-local Mongo]
+    Mini -.->|live route boards / saved-route refresh only| Live[Rail Data live departure-board API]
+    S3[S3 full and daily timetable deliveries] -->|startup and hourly ingestion on Mini| Timetable
+    Mini -->|authenticated ingestion metrics| Prom[Prometheus on Sky]
+    Prom -->|alert rules| Alerts[Alertmanager email]
+```
+
+Ordinary `/search` and `/search-jobs` use Mini's scheduled timetable and RAPTOR; they do not need the live departure-board API to calculate a route. The same Mini service also handles planner live route-board and saved-route refresh operations. Those use live departure boards and service details to overlay current departures on a cached route pattern, and can therefore contact Rail Data directly. In particular, a Mini log saying `Failed to get data from API for journey KTH to VIC ... 401` comes from the live departure-board adapter used by saved-route refresh, not the RAPTOR router. It means live observations may be unavailable for that operation; it does not invalidate the scheduled route calculation. Sky still handles its non-planner API features, including their own live-data lookups, but does not perform the v3/v4 planner's routing or ingestion. Mini's live-board credential is separate from the Sky process environment and must itself be valid for that API.
+
 `PLANNER_RAPTOR_ONLY=true` on Mini makes interactive `/search` and `/search-jobs` default to RAPTOR when an algorithm is omitted, reject explicit Original or Original cursors, and advertise only RAPTOR depart-after capability. The iPhone planner already sends RAPTOR depart-after requests. Saved-route board planning and disruption-profile calculations are separate internal operations and can still use their legacy routing code; this is **not** a claim that every planner calculation is RAPTOR. The production Mini service definition carries the same setting for the later LaunchDaemon migration.
 
-The initial MVP source was the validated compact schema-v2 snapshot at `var/planner/snapshots/RJTTF939-compact-v2`. Managed S3 ingestion is now enabled on Mini and has activated the current RJTTF965 full feed (source 20 September 2026, sequence 965, version `4c30a81b224fb1a33518271493d69507cdb123529f709fcf8b7d324a94d22e80`). The service checks for updates on startup and hourly in a separate process. The current pointer and ingestion state live under `/Users/mwagstaff/.local/share/train-track-planner/mvp-data`; future `all` deploys do not replace the managed dataset with the bundled older snapshot while ingestion is enabled. The service is still a login-scoped LaunchAgent named `com.train-track-planner.mvp` on port 3014. Mini-local Mongo has authorization enabled and is not exposed through Funnel.
+The initial MVP source was the validated compact schema-v2 snapshot at `var/planner/snapshots/RJTTF939-compact-v2`. Managed S3 ingestion is now enabled on Mini and has activated the RJTTF966 full feed (source 21 September 2026, sequence 966, version `d79b0840f1e5bc0a4e9ca80470f982f3819c19c1e6de2c219b705eb0d219c336`, checked after the 21 September recovery). The service checks for updates on startup and hourly in a separate process. The current pointer and ingestion state live under `/Users/mwagstaff/.local/share/train-track-planner/mvp-data`; future `all` deploys do not replace the managed dataset with the bundled older snapshot while ingestion is enabled. The service is still a login-scoped LaunchAgent named `com.train-track-planner.mvp` on port 3014. Mini-local Mongo has authorization enabled and is not exposed through Funnel.
+
+On 21 September an interrupted lock creation left an empty `.activation.lock`. The activation guard intentionally failed closed, so hourly checks recorded `lastResult: error` / `lastErrorCode: ACTIVATION_BLOCKED` while the previous timetable continued serving searches. After confirming no ingestion worker or open lock handle, the empty lock was preserved as `.activation.lock.stale-20260921T150036`, and a manual sync activated sequence 966. The lock helper now automatically reclaims only an empty lock older than ten minutes when `lsof` proves no process holds it open. Recent, non-empty, live, remote or unverifiable locks remain protected and need operator inspection. The subsequent startup check reported `unchanged` with no error.
+
+Sky Prometheus scrapes Mini's authenticated `/internal/planner/metrics` through the existing Funnel route using a group-restricted token file mounted only in the Prometheus container. The `train-track-planner-mvp` rules alert on an ingestion `error` or update `gap`, an overdue hourly check, unreadable state, disabled ingestion, or an abandoned worker; the generic `TargetDown` rule catches an unreachable metrics endpoint. Apply or refresh this monitoring with `monitoring/configure-planner-ingestion-alerts.sh sky` from server-tooling. The alert rule file and setup are documented in [server-tooling monitoring](../../server-tooling/monitoring/README.md). On an alert, inspect the bounded fields in `ingestion-state.json` and the active dataset pointer on Mini before attempting recovery; do not delete an unknown or live lock.
 
 From `/Users/mwagstaff/dev/server-tooling`:
 
@@ -82,7 +102,7 @@ The app-facing API remains on `sky`. It contains a target registry and gateway f
 npm run start:planner
 ```
 
-The standalone process requires `PLANNER_HOST_ID`, `PLANNER_SERVICE_TOKEN`, an explicit `PLANNER_INGESTION_ENABLED=true|false`, `PLANNER_DATA_DIR`, and production `MONGODB_URI_TRAIN_TRACK_UK`. It binds to `PLANNER_LISTEN_HOST` (normally `127.0.0.1`) and `PORT` (3014 in the deployment definition). It starts no APNs, device polling, notification, live-activity, or disruption scheduler. Its `/healthcheck` route reports process liveness only; every planner route, internal operation, readiness response, and metrics response requires the bearer service credential.
+The standalone process requires `PLANNER_HOST_ID`, `PLANNER_SERVICE_TOKEN`, an explicit `PLANNER_INGESTION_ENABLED=true|false`, `PLANNER_DATA_DIR`, and production `MONGODB_URI_JOURNEY_PLANNER`. During the Bitwarden migration, it also accepts the previous `MONGODB_URI_TRAIN_TRACK_UK` value; the dedicated variable takes precedence when both are present. It binds to `PLANNER_LISTEN_HOST` (normally `127.0.0.1`) and `PORT` (3014 in the deployment definition). It starts no APNs, device polling, notification, live-activity, or disruption scheduler. Its `/healthcheck` route reports process liveness only; every planner route, internal operation, readiness response, and metrics response requires the bearer service credential.
 
 The API target registry is an absolute JSON file outside deployed source. Start from `api/train-track-api/config/planner-targets.example.json`, provision `PLANNER_MINI_SERVICE_TOKEN` and `PLANNER_ROUTING_SECRET` through the secret manager, then set:
 
