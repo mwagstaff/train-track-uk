@@ -7,6 +7,28 @@ import { normalizePlannerSearchLogQuery } from '../lib/planner-search-log.js';
 const shell = ({ title, body }) => `<title>${title}</title>${body}`;
 const now = new Date('2026-09-17T12:00:00Z');
 
+test('public planner admin shows target status but cannot change the target', async () => {
+    let handler;
+    const posts = [];
+    const plannerTargets = {
+        describe: () => ({ targetId: 'mini', revision: 2, forced: false, targets: [
+            { id: 'sky', label: 'Sky (embedded)' }, { id: 'mini', label: 'Mini', health: { ready: true } }
+        ] }),
+        health: async () => ({ ready: true })
+    };
+    registerPlannerSearchAdminRoutes({ get(_path, callback) { handler = callback; }, post(path) { posts.push(path); } }, {
+        listSearches: async () => data(), renderShell: shell, plannerTargets
+    });
+    const res = response();
+    await handler({ query: {} }, res);
+    assert.equal(res.statusCode, 200);
+    assert.match(res.html, /Target changes require the Sky operator command/);
+    assert.equal(res.html.includes('planner-target-form'), false);
+    assert.equal(res.html.includes('data-planner-target-controls'), false);
+    assert.equal(res.html.includes('planner-cache-clear'), false);
+    assert.deepEqual(posts, []);
+});
+
 test('admin search page delegates sorting, filters and pagination to the repository', async () => {
     const query = { sort: 'durationMs', direction: 'desc', range: '7d', source: 'saved-route', page: '2', per_page: '25' };
     let received;

@@ -218,7 +218,7 @@ const app = express();
 app.use(cors());
 // Parse planner searches before the legacy 1 MB parser so their stricter limit
 // is effective. Existing namespaces keep their established parser and metrics.
-const embeddedPlannerService = new PlannerService();
+const embeddedPlannerService = process.env.PLANNER_EMBEDDED_ENABLED === 'false' ? null : new PlannerService();
 const plannerTargets = await loadPlannerTargets(process.env, embeddedPlannerService);
 const plannerService = new PlannerTargetManager({ targets: plannerTargets,
     defaultTargetId: process.env.PLANNER_DEFAULT_TARGET || 'sky',
@@ -231,7 +231,7 @@ const plannerRouting = new PlannerRoutingStore({ secret: routingSecret,
     legacyTargetId: process.env.PLANNER_LEGACY_TARGET || 'sky' });
 registerPlannerGateway(app, { targets: plannerService, ownership: plannerRouting,
     recordRequest: recordPlannerRequest, requestMiddleware: metricsMiddleware });
-registerPlannerRoutes(app, { service: embeddedPlannerService });
+if (embeddedPlannerService) registerPlannerRoutes(app, { service: embeddedPlannerService });
 const monitorConfig = disruptionConfig();
 const disruptionMonitor = registerDisruptionRoutes(app, new DisruptionMonitor({
     planner: plannerService,
@@ -1645,7 +1645,7 @@ disruptionMonitor.start();
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
     timetableIngestion.stop();
     disruptionMonitor.stop();
-    embeddedPlannerService.close();
+    embeddedPlannerService?.close();
     void plannerSearchLog.close({ timeoutMs: 3000 });
     server.close();
     setTimeout(() => process.exit(signal === 'SIGINT' ? 130 : 0), 6000);

@@ -1,13 +1,6 @@
 {
   "targets": [
     {
-      "id": "sky",
-      "label": "Sky (embedded)",
-      "mode": "embedded",
-      "expectedHostId": "sky",
-      "protocolVersion": 1
-    },
-    {
       "id": "mini",
       "label": "Mac Mini",
       "mode": "remote",

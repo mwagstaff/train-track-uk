@@ -30,7 +30,7 @@ const timeFormatter = new Intl.DateTimeFormat('en-GB', {
 });
 
 export function registerPlannerSearchAdminRoutes(app, { listSearches, renderShell, clearSearchCache, plannerTargets, logger = console }) {
-    const cacheClearToken = typeof clearSearchCache === 'function' || plannerTargets ? randomBytes(32).toString('hex') : null;
+    const cacheClearToken = typeof clearSearchCache === 'function' ? randomBytes(32).toString('hex') : null;
     if (cacheClearToken) app.post(`${ROUTE}/cache/clear`, async (req, res) => {
         res.set('Cache-Control', 'no-store');
         // CORS is enabled for the public API; a custom header alone does not
@@ -49,24 +49,6 @@ export function registerPlannerSearchAdminRoutes(app, { listSearches, renderShel
                 code: known ? error.code : 'DATASET_UNAVAILABLE',
                 message: known && error.status === 429 ? 'The planner is busy. Wait for searches to finish, then try again.'
                     : 'The search cache could not be cleared. Try again shortly.'
-            } });
-        }
-    });
-    if (plannerTargets && cacheClearToken) app.post(`${ROUTE}/target`, async (req, res) => {
-        res.set('Cache-Control', 'no-store');
-        if (!req.is('application/json') || req.get('X-TrainTrack-Admin-CSRF') !== cacheClearToken
-            || req.get('Sec-Fetch-Site') !== 'same-origin') {
-            res.status(403).json({ error: { code: 'INVALID_ADMIN_REQUEST',
-                message: 'Refresh this admin page before changing the planner target.' } });
-            return;
-        }
-        try { res.json(await plannerTargets.select({ targetId: req.body?.targetId, revision: req.body?.revision,
-            operator: req.get('X-Forwarded-User') ?? null })); }
-        catch (error) {
-            const known = error instanceof PlannerError;
-            res.status(known ? error.status : 503).json({ error: {
-                code: known ? error.code : 'DATASET_UNAVAILABLE',
-                message: known ? error.message : 'The planner target could not be changed.'
             } });
         }
     });
@@ -140,7 +122,7 @@ export function renderPlannerSearchPage(data, { renderShell, now = new Date(), r
                         aria-describedby="planner-cache-help">Clear search cache</button>` : ''}
                 </div>
             </header>
-            ${renderTargetSelection(data.targetSelection, url, cacheClearToken)}
+            ${renderTargetSelection(data.targetSelection)}
             ${cacheClearToken ? `<div class="planner-cache-tools">
                 <p id="planner-cache-help">Clears cached RAPTOR and Original search results on the selected planner${data.targetSelection?.targetId ? ` (${escapeHtml(data.targetSelection.targetId)})` : ''}. Timetable indexes stay warm; journey details and search history are kept. Wait for running searches to finish, then clear and start a new app search rather than retrying an existing job.</p>
                 <p id="planner-cache-status" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -276,7 +258,7 @@ function windowLabel(window) {
     const label = value => { const parsed = new Date(value); return `${dateFormatter.format(parsed)}, ${timeFormatter.format(parsed)}`; };
     return `${label(window.from)} – ${label(window.to)}`;
 }
-function renderTargetSelection(selection, url, csrfToken) {
+function renderTargetSelection(selection) {
     if (!selection?.targets?.length) return '';
     const active = selection.targets.find(target => target.id === selection.targetId);
     const health = active?.health;
@@ -287,15 +269,8 @@ function renderTargetSelection(selection, url, csrfToken) {
             <p><strong>${escapeHtml(active?.label ?? selection.targetId ?? 'Unavailable')}</strong> · ${escapeHtml(status)}
             ${health?.dataset?.version ? ` · Dataset ${escapeHtml(String(health.dataset.version).slice(0, 12))}` : ''}
             ${selection.stale ? ' · Selection data is stale' : ''}</p></div>
-        <form id="planner-target-form" data-target-url="${escapeHtml(url(`${ROUTE}/target`))}" data-csrf-token="${escapeHtml(csrfToken || '')}">
-            <label for="planner-target-select">Execution host</label>
-            <select id="planner-target-select"${selection.forced ? ' disabled' : ''}>${selection.targets.map(target =>
-                `<option value="${escapeHtml(target.id)}"${target.id === selection.targetId ? ' selected' : ''}>${escapeHtml(target.label)}</option>`).join('')}</select>
-            <input type="hidden" name="revision" value="${escapeHtml(selection.revision)}">
-            <button type="submit"${selection.forced || !selection.targetId ? ' disabled' : ''}>Switch target</button>
-            <span role="status" aria-live="polite">${selection.forced ? 'Locked by PLANNER_FORCE_TARGET.' : 'New searches use the selected target; existing work remains with its owner.'}</span>
-        </form>
-    </section>${selection.forced ? '' : `<script data-planner-target-controls>(${initializePlannerTargetSelection.toString()})();</script>`}`;
+        <p class="meta">${selection.forced ? 'Locked by PLANNER_FORCE_TARGET.' : 'Target changes require the Sky operator command; this public admin page is read-only.'}</p>
+    </section>`;
 }
 function filters(data, url, now = new Date()) {
     const selected = data.q ?? `-${data.range || '24h'}`;
@@ -325,29 +300,6 @@ function filters(data, url, now = new Date()) {
         <span id="planner-filter-help" class="planner-muted">Select Apply filters to update the results.</span>
         ${data.stats ? `<span class="planner-updated">Figures checked ${formatTime(data.stats.asOf || now, false)}</span>` : ''}
     </form><script data-planner-filter-controls>(${initializePlannerFilters.toString()})();</script>`;
-}
-
-function initializePlannerTargetSelection() {
-    const form = document.querySelector('#planner-target-form');
-    if (!form) return;
-    const select = form.querySelector('select'), button = form.querySelector('button'), status = form.querySelector('[role="status"]');
-    form.addEventListener('submit', async event => {
-        event.preventDefault();
-        button.disabled = select.disabled = true;
-        status.textContent = 'Checking the selected planner before switching…';
-        try {
-            const response = await fetch(form.dataset.targetUrl, { method: 'POST', credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json', 'X-TrainTrack-Admin-CSRF': form.dataset.csrfToken },
-                body: JSON.stringify({ targetId: select.value, revision: Number(form.elements.revision.value) }) });
-            const result = await response.json();
-            if (!response.ok) throw new Error(result.error?.message || 'The target could not be changed.');
-            status.textContent = `Planner target changed to ${result.targetId}. Refreshing…`;
-            location.reload();
-        } catch (error) {
-            status.textContent = error instanceof Error ? error.message : 'The target could not be changed.';
-            button.disabled = select.disabled = false;
-        }
-    });
 }
 
 function initializePlannerCacheClear() {
@@ -456,10 +408,6 @@ const styles = `
     .planner-target { margin-top:18px; padding:16px; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:16px; background:var(--panel); border:1px solid var(--line); border-radius:8px; }
     .planner-target h2 { margin:0 0 6px; font-size:15px; }
     .planner-target p { margin:0; color:var(--muted); font-size:12px; }
-    .planner-target form { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
-    .planner-target label { font-size:12px; color:var(--muted); font-weight:600; }
-    .planner-target select { min-height:39px; border:1px solid var(--line); border-radius:7px; background:var(--panel); color:var(--text); padding:8px; }
-    .planner-target span { flex-basis:100%; max-width:520px; color:var(--muted); font-size:11px; }
     .planner-cache-tools p { margin:0; }
     #planner-cache-status:not(:empty) { margin-top:8px; color:var(--text); font-weight:600; }
     #planner-cache-status[data-state="error"] { color:#a22b27; }

@@ -4,7 +4,7 @@ import express from 'express';
 import { CAPABILITIES, POLICY_VERSION, LIVE_POLICY_VERSION, RAPTOR_POLICY_VERSION,
     normalizeRequest, encodeCursor, decodeCursor } from '../lib/planner/contract.js';
 import { PlannerEngine } from '../lib/planner/engine.js';
-import { PlannerService, plannerConfig } from '../lib/planner/service.js';
+import { PlannerService, plannerConfig, normalizeSearchPayload } from '../lib/planner/service.js';
 import { PlannerSearchJobs } from '../lib/planner/search-jobs.js';
 import { findJourneys } from '../lib/planner/router.js';
 import { registerPlannerRoutes } from '../lib/planner-routes.js';
@@ -49,6 +49,32 @@ test('algorithm selection defaults to original without changing established norm
     for (const algorithm of ['', 'RAPTOR', null, 1, {}, ['raptor'], 'other']) {
         assert.throws(() => normalizeRequest({ ...body, algorithm }), { code: 'INVALID_REQUEST' });
     }
+});
+
+test('RAPTOR-only policy defaults interactive searches to RAPTOR and rejects original cursors and arrive-by', async t => {
+    assert.equal(plannerConfig({ PLANNER_RAPTOR_ONLY: 'true' }).raptorOnly, true);
+    assert.equal(normalizeSearchPayload(body, true).request.algorithm, 'raptor');
+    assert.throws(() => normalizeSearchPayload({ ...body, algorithm: 'original' }, true), { code: 'UNSUPPORTED_REQUEST' });
+    assert.throws(() => normalizeSearchPayload({ ...body, timeType: 'arriveBy' }, true), { code: 'UNSUPPORTED_REQUEST' });
+    assert.throws(() => normalizeSearchPayload({ cursor: encodeCursor(normalizeRequest(body), version) }, true),
+        { code: 'UNSUPPORTED_REQUEST' });
+    assert.equal(normalizeSearchPayload({ cursor: encodeCursor(normalizeRequest({ ...body, algorithm: 'raptor' }), version) }, true)
+        .request.algorithm, 'raptor');
+
+    const calls = [];
+    const service = { config: { ...config, raptorOnly: true },
+        status: async () => ({ available: true, dataset: { version } }),
+        call(method, payload, options) {
+            options.onStart();
+            calls.push({ method, payload });
+            return Promise.resolve({ journeys: [], search: { algorithm: payload.request.algorithm } });
+        } };
+    const jobs = new PlannerSearchJobs(service, { searchLog: noOpPlannerSearchLog });
+    t.after(() => jobs.close());
+    await assert.rejects(jobs.submit({ ...body, algorithm: 'original' }), { code: 'UNSUPPORTED_REQUEST' });
+    await jobs.submit(body);
+    await tick();
+    assert.equal(calls[0].payload.request.algorithm, 'raptor');
 });
 
 test('RAPTOR accepts live departure searches and normalizes ordered via stations', () => {

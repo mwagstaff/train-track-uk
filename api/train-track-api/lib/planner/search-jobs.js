@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { decodeCursor, normalizeRequest, PlannerError } from './contract.js';
-import { plannerConfig } from './service.js';
+import { decodeCursor, PlannerError } from './contract.js';
+import { plannerConfig, normalizeSearchPayload } from './service.js';
 import { noOpPlannerSearchLog } from '../planner-search-log.js';
 
 const pending = work => work.state === 'queued' || work.state === 'running';
@@ -48,7 +48,7 @@ export class PlannerSearchJobs {
         if (idempotencyKey && !/^[A-Za-z0-9_-]{8,128}$/.test(idempotencyKey)) {
             throw new PlannerError('INVALID_REQUEST', 'Use an 8–128 character Idempotency-Key.');
         }
-        const payload = body?.cursor === undefined ? { request: normalizeRequest(body) } : decodeCursor(body.cursor);
+        const payload = normalizeSearchPayload(body, this.config.raptorOnly);
         const requestedKey = JSON.stringify(payload);
         const retryKey = idempotencyKey ? `${client}:${idempotencyKey}` : null;
         const previous = () => {

@@ -17,6 +17,7 @@ export function plannerConfig(env = process.env) {
         dataDirectory: path.resolve(env.PLANNER_DATA_DIR || path.join(os.homedir(), '.local/share/train-track-api/planner')),
         datasetPath: env.PLANNER_DATASET_PATH ? path.resolve(env.PLANNER_DATASET_PATH) : null,
         enabled: env.PLANNER_ENABLED !== 'false',
+        raptorOnly: env.PLANNER_RAPTOR_ONLY === 'true',
         tubeTrackEnabled: env.PLANNER_TUBETRACK_ENABLED !== 'false',
         // Prototype defaults for the agreed monthly full-feed cadence; configure before production.
         warnAgeDays: number('PLANNER_WARN_AGE_DAYS', 35, 1, 365),
@@ -46,6 +47,18 @@ export function plannerConfig(env = process.env) {
         // first search of the day asks for them.
         prewarm: env.PLANNER_PREWARM !== 'false'
     };
+}
+
+export function normalizeSearchPayload(body, raptorOnly = false) {
+    const payload = body?.cursor === undefined
+        ? { request: normalizeRequest(raptorOnly && body?.algorithm === undefined
+            && body && typeof body === 'object' && !Array.isArray(body)
+            ? { ...body, algorithm: 'raptor' } : body) }
+        : decodeCursor(body.cursor);
+    if (raptorOnly && payload.request.algorithm !== 'raptor') {
+        throw new PlannerError('UNSUPPORTED_REQUEST', 'This planner supports RAPTOR depart-after searches only.', 400);
+    }
+    return payload;
 }
 
 // One shared admission queue; CPU and SQLite work stay in bounded routing isolates.
@@ -107,10 +120,12 @@ export class PlannerService {
         return this.metadataService;
     }
 
-    status(options) {
-        if (this.closed) return this.call('status', {}, options);
-        return this.standardWorker && !this.metadataOnly
-            ? this.metadata().call('status', {}, options) : this.call('status', {}, options);
+    async status(options) {
+        const status = this.closed ? await this.call('status', {}, options)
+            : this.standardWorker && !this.metadataOnly
+                ? await this.metadata().call('status', {}, options) : await this.call('status', {}, options);
+        return this.config.raptorOnly ? { ...status, capabilities: { ...status.capabilities,
+            algorithms: ['raptor'], timeTypes: ['departAfter'] } } : status;
     }
     stations(query, options) {
         if (typeof query !== 'string' || query.length > 100) {
@@ -122,8 +137,7 @@ export class PlannerService {
     }
     search(body, options) {
         try {
-            const payload = body?.cursor === undefined
-                ? { request: normalizeRequest(body) } : decodeCursor(body.cursor);
+            const payload = normalizeSearchPayload(body, this.config.raptorOnly);
             return this.call('search', payload, options);
         } catch (error) { return Promise.reject(error); }
     }
@@ -177,6 +191,9 @@ export class PlannerService {
     call(method, payload = {}, options = {}, targetSlot) {
         const { signal, execution, onStart, onProgress, onTelemetry, queueTimeoutMs, priority = 'interactive' } = options;
         if (this.closed) return Promise.reject(new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is unavailable.', 503));
+        if (method === 'search' && this.config.raptorOnly && payload.request?.algorithm !== 'raptor') {
+            return Promise.reject(new PlannerError('UNSUPPORTED_REQUEST', 'This planner supports RAPTOR depart-after searches only.', 400));
+        }
         if (signal?.aborted) return Promise.reject(new PlannerError('SEARCH_CANCELLED', 'Search cancelled.', 499));
         // The persistent monitor owns its backlog. Maintenance never queues up
         // inside foreground admission, never ages, and gives way to all demand.

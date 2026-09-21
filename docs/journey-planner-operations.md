@@ -25,13 +25,15 @@ deploy either.
 - The supplied package needs about 676.5 MB of source files. Its existing schema v1 SQLite snapshot is 1.07 GB; new compact schema v2 imports measured 275.7 MB with the same supported routing data. Existing v1 snapshots remain readable. See [search optimisation and measurements](planner-search-optimisation.md). Budget space for source, staging, active and rollback snapshots, validation and future growth. Activation does not delete old snapshots.
 - Up to two workers run independent searches concurrently, each with its own read-only connection to the same immutable SQLite snapshot. A separate small worker handles station lookups and timetable metadata. Workers start lazily; queue admission stays global, and elapsed time, operation count and per-worker V8 heap are bounded. SQLite native memory and total process RSS are not capped by the V8 heap setting; measure on the deployment host before release. Set `PLANNER_WORKERS=1` for the previous single-worker capacity.
 
-## Production deployment on `sky`
+## Current deployment: Sky gateway, Mini execution
 
-### Mini performance MVP without production cutover
+### Mini internal device pilot (21 September 2026)
 
-The isolated MVP runs the real standalone HTTP service and both routing workers on the Mini. It keeps all traffic on loopback and leaves `sky`, the persisted planner target, Funnel routes, and the production `train-track-planner` service definition unchanged. It now uses Mini-local Mongo for planner search history and route caches; in-flight jobs remain in process memory.
+The isolated MVP runs the standalone HTTP service and both routing workers on the Mini, with Mini-local Mongo for planner search history and route caches. In-flight jobs remain in process memory. The app-facing API still runs on `sky`, but its only configured planner target is **`mini`**; devices retain the same API URL. Sky no longer constructs the embedded planner or runs timetable ingestion. The Mini process binds to loopback, and an authenticated Tailscale Funnel route maps `/train-track-planner` to port 3014. This is an internal device-testing pilot, not an unattended production service. Sky's old timetable files were retained for recovery, not used for live planning.
 
-The current MVP source is the validated compact schema-v2 snapshot at `var/planner/snapshots/RJTTF939-compact-v2`. The preparation script copies its contents to a Mini-local path and recreates `active.json`; it never copies the host-specific local pointer. It also downloads the configured official Node 24 arm64 archive and `SHASUMS256.txt`, verifies the archive checksum, creates a host-local 64-character service token, and installs a login-scoped LaunchAgent named `com.train-track-planner.mvp` on port 3014.
+`PLANNER_RAPTOR_ONLY=true` on Mini makes interactive `/search` and `/search-jobs` default to RAPTOR when an algorithm is omitted, reject explicit Original or Original cursors, and advertise only RAPTOR depart-after capability. The iPhone planner already sends RAPTOR depart-after requests. Saved-route board planning and disruption-profile calculations are separate internal operations and can still use their legacy routing code; this is **not** a claim that every planner calculation is RAPTOR. The production Mini service definition carries the same setting for the later LaunchDaemon migration.
+
+The initial MVP source was the validated compact schema-v2 snapshot at `var/planner/snapshots/RJTTF939-compact-v2`. Managed S3 ingestion is now enabled on Mini and has activated the current RJTTF965 full feed (source 20 September 2026, sequence 965, version `4c30a81b224fb1a33518271493d69507cdb123529f709fcf8b7d324a94d22e80`). The service checks for updates on startup and hourly in a separate process. The current pointer and ingestion state live under `/Users/mwagstaff/.local/share/train-track-planner/mvp-data`; future `all` deploys do not replace the managed dataset with the bundled older snapshot while ingestion is enabled. The service is still a login-scoped LaunchAgent named `com.train-track-planner.mvp` on port 3014. Mini-local Mongo has authorization enabled and is not exposed through Funnel.
 
 From `/Users/mwagstaff/dev/server-tooling`:
 
@@ -39,10 +41,10 @@ From `/Users/mwagstaff/dev/server-tooling`:
 # Read-only: shows exactly which Mini prerequisites are absent.
 deploy/train_track_planner_mvp.zsh preflight
 
-# Prepare runtime/token, deploy, copy and activate data, then run checks.
+# Prepare runtime/token, deploy and run checks; keep managed data when ingestion is enabled.
 deploy/train_track_planner_mvp.zsh all
 
-# Repeat the same original/RAPTOR measurements without redeploying.
+# Repeat RAPTOR measurements without redeploying.
 PLANNER_MVP_RUNS=5 deploy/train_track_planner_mvp.zsh smoke
 
 # RAPTOR-only result-cache misses, including the long-distance routes.
@@ -62,7 +64,7 @@ Override `PLANNER_MVP_ORIGIN`, `PLANNER_MVP_DESTINATION`, `PLANNER_MVP_RUNS`, or
 
 `jobs-load` tests `/search-jobs` separately from the direct-search admission cap. It runs 5/10/20 simultaneous job submissions, then keeps 20 virtual users searching for 60 seconds (one outstanding job per user). Adjust with `--levels`, `--users`, and `--duration-seconds`; duration 0 skips the sustained stage. It clears result caches between stages, varies every query instant, verifies each job's cache status in Mongo, and reports submit-to-result and server queue times. It samples planner CPU/RSS and whole-host CPU, memory-pressure free percentage, and swap during each stage. The authenticated loopback test supplies distinct simulated network addresses so a single load generator can test 20 independent users without triggering the separate four-jobs-per-network safeguard; this does **not** test shared-carrier-NAT fairness. Failed/rejected/timed-out or empty jobs, unverified cache misses, and failed health checks cause a non-zero exit. The queued-job default is 20; this setting does not increase the two routing workers or the direct-search cap of eight.
 
-The MVP intentionally remains not production-ready even though direct scheduled searches pass; the readiness reason can be `timetable_stale` for the bundled snapshot or `ingestion_unavailable` because ingestion and TubeTrack are still explicitly disabled. Its Mongo connection is local, not to `sky`. Do not select it as the app-facing target until ingestion is current and the authenticated gateway checks pass. Stop it with:
+The MVP's authenticated readiness is now `ready: true`, and app-facing RAPTOR searches, queued polling, journey detail, and v4 live route boards have passed through Sky's gateway. TubeTrack is enabled. Search history remains in Mini-local Mongo, not Sky's Mongo. The process and Funnel restoration are still login-scoped, so a reboot/FileVault unlock may require operator attention. Stopping Mini now makes app-facing planning unavailable; drain or announce an interruption before stopping it. Stop it with:
 
 ```sh
 /Users/mwagstaff/dev/server-tooling/deploy/stop_node_project.zsh train-track-planner-mvp mini
@@ -70,11 +72,11 @@ The MVP intentionally remains not production-ready even though direct scheduled 
 
 Mini Mongo can be provisioned with `deploy/train_track_planner_mongo.zsh check` and `deploy/train_track_planner_mongo.zsh setup` from server-tooling. Setup refuses existing users/credentials, creates a dedicated `train_track_planner` database account and a local admin recovery credential, enables authorization, restarts Mongo, verifies unauthenticated reads are denied, and adds the connection to the existing MVP credential file. Both Mongo and the planner HTTP service stay bound to loopback. Back up `/Users/mwagstaff/.local/share/train-track-planner/mongodb-admin.password` securely; database files need a separate regular backup and restore test.
 
-Move to the production service only after the Mini-local database backup, current ingestion state, authenticated Funnel routing, bounded log rotation, and the system LaunchDaemon/FileVault startup path are ready. Re-run equivalent smoke queries through the Funnel URL before registering or selecting `mini` on `sky`.
+Move to the production system service only after the Mini-local database backup/restore test, bounded log rotation, and the system LaunchDaemon/FileVault startup path are ready. The authenticated Funnel route and fresh ingestion are already in place; re-run gateway and device checks after changing the Mini service. The production `train-track-planner` deployment definition exists, but is **not installed**: its system LaunchDaemon needs an interactive administrator authorization that was unavailable to the deployer. Its private service/Mongo/S3 credentials have been staged; keep `BW_ENV_SYNC=0` until the secret-manager entries are updated.
 
 ### Separate planner execution on the Mac Mini
 
-The app-facing API remains on `sky`. It now contains a target registry and gateway for the complete v3/v4 planner namespace; devices keep their existing API URL. The original embedded planner remains a registered rollback target. A separately authenticated process can run the same planner routes on the Mini with:
+The app-facing API remains on `sky`. It contains a target registry and gateway for the complete v3/v4 planner namespace; devices keep their existing API URL. The registry contains only Mini and the embedded Sky planner is disabled. A separately authenticated process runs the planner routes on the Mini with:
 
 ```sh
 npm run start:planner
@@ -86,15 +88,26 @@ The API target registry is an absolute JSON file outside deployed source. Start 
 
 ```sh
 PLANNER_TARGETS_FILE=/absolute/private/path/planner-targets.json
-PLANNER_DEFAULT_TARGET=sky
+PLANNER_DEFAULT_TARGET=mini
+PLANNER_LEGACY_TARGET=mini
+PLANNER_EMBEDDED_ENABLED=false
+PLANNER_INGESTION_ENABLED=false
 PLANNER_HOST_ID=sky
 ```
 
-`PLANNER_FORCE_TARGET=sky|mini` is an emergency override and locks the admin selector. The active target otherwise lives in the `planner_configuration` Mongo collection with a revision check. The Journey Planner admin page validates candidate identity, protocol, and readiness before switching; a failed check leaves the old target active. New searches follow the new selection. Jobs, details, cursors, and idempotent retries continue to use their issuing target through expiring records in `planner_routing_ownership`. Keep the old target running throughout the drain period.
+`PLANNER_FORCE_TARGET` is an emergency override and locks target changes, but can only name a configured target. The active target otherwise lives in the `planner_configuration` Mongo collection with a revision check. The public Journey Planner admin page displays the selected target but cannot change it. The Sky-only operator command below checks candidate identity, protocol and readiness. Jobs, details, cursors, and idempotent retries use expiring records in `planner_routing_ownership`. A cutover audit found no unexpired Sky-owned artifacts before removing Sky from the target registry.
+
+The command is intentionally not exposed over HTTP. From an operator terminal, inspect the persisted target with:
+
+```sh
+ssh sky 'cd /home/mwagstaff/dev/train-track-api && set -a && . ./.static-config-train-track-api.env.sh && . ./.bw-secrets.env.sh && set +a && /home/mwagstaff/.local/share/train-track-api/runtime/node24/bin/node scripts/planner-target-admin.js status'
+```
+
+The persisted selection was last verified as Mini at revision 4. The command cannot select Sky now that Sky is absent from the registry. A rollback to embedded execution requires restoring the saved Sky registry at `/home/mwagstaff/.local/share/train-track-api/planner-targets.json.before-mini-only-20260921`, changing the Sky deployment configuration to enable the embedded service and current ingestion, redeploying, and checking readiness before selection. Do not simply select Sky or assume its retained timetable is current.
 
 Search execution logs now include trusted `host`, process `instanceId`, and optional `buildRevision`. The admin history page has an independent Sky/Mini history-source filter: Mini rows are fetched over the authenticated planner service API, without a Mongo connection from `sky` to Mini. Switching history source never changes where new searches run. Each database's Host filter applies to its rows and summary statistics. Records created before this release appear as **Unknown / legacy** and are not relabelled.
 
-The separate `train-track-planner` entry in server-tooling deploys `planner-server.js` to `/Users/mwagstaff/dev/train-track-planner`, pins a dedicated Node 24 runtime, persists data at `/Users/mwagstaff/.local/share/train-track-planner/planner`, writes service output below `/Users/mwagstaff/Library/Logs/train-track-planner`, and declares a system LaunchDaemon. Source replacement cannot delete those logs; configure bounded host rotation before production cutover. The deployer will not fall back to a login-scoped LaunchAgent: installation or restart fails until non-interactive administrator authorization is available. Prepare the pinned runtime and credentials first, then use:
+The separate `train-track-planner` entry in server-tooling deploys `planner-server.js` to `/Users/mwagstaff/dev/train-track-planner`, pins a dedicated Node 24 runtime, persists data at `/Users/mwagstaff/.local/share/train-track-planner/planner`, writes service output below `/Users/mwagstaff/Library/Logs/train-track-planner`, and declares a system LaunchDaemon. The production data directory has already been populated and validated against the same current full feed as the MVP, and the private credentials are staged. Source replacement cannot delete service logs; configure bounded host rotation before production cutover. The deployer will not fall back to a login-scoped LaunchAgent: installation or restart fails until non-interactive administrator authorization is available. Once the remaining host prerequisites are arranged, announce an interruption, stop the MVP (freeing port 3014), then run:
 
 ```sh
 /Users/mwagstaff/dev/server-tooling/deploy/node_project.zsh train-track-planner mini --full --no-tail
@@ -110,9 +123,9 @@ Do not run that command until all of these are true:
 - The bearer token is different from app credentials and is present on both `sky` and the Mini. TLS validation stays enabled.
 - The Mini runtime and Funnel configuration work without an interactive login after FileVault has been unlocked.
 
-A read-only Mini audit on 21 September 2026 found that Funnel was still being restored by the valid login-scoped `com.mike.tailscale-funnel-apply` LaunchAgent. The similarly named file under `/Library/LaunchDaemons` contained shell installation commands rather than a valid plist and was not loaded. Replace it with a reviewed valid system service before relying on Funnel after reboot; the MVP loopback checks deliberately do not depend on it.
+A Mini audit on 21 September 2026 found that Funnel is still restored by the valid login-scoped `com.mike.tailscale-funnel-apply` LaunchAgent. The similarly named file under `/Library/LaunchDaemons` contained shell installation commands rather than a valid plist and was not loaded. The managed Funnel apply script is `/Users/mwagstaff/dev/server-tooling/deploy/tailscale-funnel-apply.sh`; it was installed at `/Users/mwagstaff/bin/tailscale-funnel-apply.sh` with a dated backup of the previous script. Replace the invalid system file with a reviewed service before relying on Funnel after reboot/FileVault unlock.
 
-Cut over from the admin page only after authenticated health/readiness, cold and warm searches, queued polling/cancellation, detail, v3/v4 boards, disruption profiles, ingestion, metrics, and central search logs pass from `sky` through the Funnel URL. Roll back by selecting `sky`; do not replay accepted Mini jobs on `sky`. Existing Mini-owned artifacts continue to route to the Mini while it drains. If the Mini is unavailable, rollback affects new work only.
+For a full public release, validate authenticated health/readiness, cold and warm searches, queued polling/cancellation, detail, v3/v4 boards, disruption profiles, ingestion, metrics, and central search logs from `sky` through the Funnel URL. The internal pilot has covered the main search/queued/detail/v4-board paths, not this whole release checklist. Recovery to Sky now requires a configuration and service rollback, not a one-command target change. The admin page itself remains publicly readable and its cache-clear control is not operator-authenticated; add a proper admin access boundary before exposing further controls or treating the setup as generally available.
 
 Shutdown marks the HTTP process closed, stops ingestion, closes planner workers/managers, gives the bounded search logger time to flush, and closes Mongo. In-memory planner work still expires when its execution process restarts. FileVault remains enabled; operator unlock versus unattended recovery is still an operational decision, and automatic power restart alone does not solve it.
 
@@ -121,7 +134,7 @@ TrainTrack uses the private **Node 24.21.0 LTS** runtime at `/home/mwagstaff/.lo
 The TrainTrack entry in `/Users/mwagstaff/dev/server-tooling/deploy/config/node_projects.json` persists:
 
 - `node_binary`: the private runtime above, used for service startup and dependency installation/builds.
-- `static_env.PLANNER_DATA_DIR`: `/home/mwagstaff/.local/share/train-track-api/planner`.
+- `static_env.PLANNER_EMBEDDED_ENABLED=false` and `PLANNER_INGESTION_ENABLED=false`: no Sky-local planner execution or timetable checks.
 - `rsync_excludes`: `/resources/timetable_full/` and `/var/planner/`, preventing future code syncs from copying development data or Mac-specific active pointers.
 
 The standard deployment command can now be used for subsequent code releases:
@@ -130,11 +143,13 @@ The standard deployment command can now be used for subsequent code releases:
 /Users/mwagstaff/dev/server-tooling/deploy/node_project.zsh train-track-api sky --quick
 ```
 
-Full deployments use the same runtime pin and exclusions. A missing pinned runtime fails before deployment changes begin. Other projects retain their existing runtime selection. Timetable ingestion is now role-explicit: set `PLANNER_INGESTION_ENABLED=true` on a host that owns ingestion and `false` everywhere else. Credentials alone no longer activate the API host's scheduler. Existing excluded source-tree copies are protected by rsync; they are not the production data source.
+Full deployments use the same runtime pin and exclusions. A missing pinned runtime fails before deployment changes begin. Other projects retain their existing runtime selection. Timetable ingestion is role-explicit: it is enabled on Mini and disabled on Sky. Credentials alone no longer activate the API host's scheduler. Existing excluded source-tree copies are protected by rsync; they are not the production data source.
 
-The supplied RJTTF939 snapshot was validated on the host and moved to `PLANNER_DATA_DIR/snapshots/3d9d573635ed619ac3808338176858077f4d35650846ba0a0e829ed53ad64f5c`, then activated with the CLI. `active.json` contains the absolute Linux path. The unit is `com.train-track-api.api.service`; its wrapper and static configuration are regenerated by the deployer.
+### Historical Sky-local timetable procedure (inactive)
 
-For future monthly feeds, stage the complete delivery on `sky`, then run from `/home/mwagstaff/dev/train-track-api` using the private runtime. Replace the source and candidate paths below with the new delivery's paths:
+The supplied RJTTF939 snapshot was validated on Sky and moved to `PLANNER_DATA_DIR/snapshots/3d9d573635ed619ac3808338176858077f4d35650846ba0a0e829ed53ad64f5c`, then activated with the CLI. This data is retained but is **not** used by the current Mini-only target. The Sky API unit is `com.train-track-api.api.service`; its wrapper and static configuration are regenerated by the deployer.
+
+The following commands document the former Sky-local procedure. New monthly feeds are now handled by Mini's managed ingestion; do not use these commands for live planner data. Replace the source and candidate paths below only for an intentional Sky recovery:
 
 ```sh
 /home/mwagstaff/.local/share/train-track-api/runtime/node24/bin/node --max-old-space-size=512 scripts/planner.js import --source /absolute/path/to/new-full-delivery --staging /home/mwagstaff/.local/share/train-track-api/planner/snapshots/NEW_CANDIDATE --mode full

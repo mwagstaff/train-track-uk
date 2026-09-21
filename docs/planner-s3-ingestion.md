@@ -2,7 +2,7 @@
 
 ## Delivery and safety
 
-The API checks `s3://traintrack-uk-daily-full-timetable` in `eu-west-2` at startup
+The standalone planner on Mini checks `s3://traintrack-uk-daily-full-timetable` in `eu-west-2` at startup
 and every 3,600 seconds while running. It checks `timetable_full.zip` and
 `timetable_update.zip` with HEAD; unchanged, committed deliveries need no GET,
 parsing or search-snapshot rebuild. Changed deliveries are conditionally
@@ -42,17 +42,17 @@ next update. A manual activation/rollback during ingestion blocks publication
 against the superseded active version. Future checks follow the newly active
 snapshot.
 
-### Current delivery gap — verified on 18 September 2026
+### Historical delivery gap — verified on 18 September 2026
 
-Read-only access tests on `sky` succeeded using the deployed credentials. The
+This gap was superseded by the complete RJTTF965 full delivery generated on 20 September 2026. Mini activated it on 21 September and reports no pending gap; Sky ingestion is disabled. The following describes the earlier failure mode, not the current feed state. Read-only access tests on `sky` succeeded using the deployed credentials. The
 bucket has monthly **939 / 25 August** and daily **962 / 17 September**. Updates
 **940–961 (22 deliveries) are missing**. Their 18 September upload timestamps
 do not establish fresh timetable content. Ingestion may build/activate the
 complete compact 939 baseline, but **will not apply 962 directly**. It reports a
 gap and keeps the last valid full/effective snapshot.
 
-Obtain a current complete full package, or arrange replay of every missing
-daily package in order, before expecting up-to-date daily routing. With only
+If a gap recurs, obtain a current complete full package or arrange replay of every missing
+daily package in order before expecting up-to-date daily routing. With only
 two overwritten latest keys, an outage or missed delivery can cause another
 gap; the current worker does not invent or fetch an unspecified historical-key
 layout. Ask the delivery provider for immutable dated keys or accessible retained
@@ -110,10 +110,10 @@ are cached; there is no unsafe force-apply option. Exit codes: 0 completed,
 2 missing update chain (a valid full baseline may have activated), 1 failure,
 130 interrupted.
 
-On `sky`, after deployment, use the pinned Node runtime, not shell Node 20:
+On the current Mini MVP service, use the pinned Node runtime and its private environment:
 
 ```sh
-rtk proxy ssh sky 'cd /home/mwagstaff/dev/train-track-api && source .static-config-train-track-api.env.sh && source .bw-secrets.env.sh && /home/mwagstaff/.local/share/train-track-api/runtime/node24/bin/node --max-old-space-size=512 scripts/planner.js sync'
+ssh mini 'cd /Users/mwagstaff/dev/train-track-planner-mvp && source .static-config-train-track-planner-mvp.env.sh && source .bw-secrets.planner-mvp.env.sh && /Users/mwagstaff/.local/share/train-track-planner/runtime/node24/bin/node --max-old-space-size=512 scripts/planner.js sync --data-dir /Users/mwagstaff/.local/share/train-track-planner/mvp-data'
 ```
 
 Add `--dry-run` for a validation-only activation check. Both environment files
@@ -145,7 +145,7 @@ temporary filesystems. It prunes managed history before staging and after failed
 normal runs, avoiding an accumulating failure loop. Dry-run candidates are not
 automatically pruned by dry runs; subsequent normal sync applies retention.
 V8 limits are not an RSS cap. Measure total memory, CPU contention and disk usage
-on `sky` before turning on unattended imports.
+on Mini before increasing its unattended import workload.
 
 ## Grafana and deployment acceptance
 
