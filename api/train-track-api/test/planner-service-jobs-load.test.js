@@ -86,3 +86,15 @@ test('job cache verification reads search-job logs and uses attempted count', as
     assert.equal(await verifyLoadCache(report, 'mongodb://unused', () => client), true);
     assert.equal(report.stages[0].results[0].serverQueueMs, 75);
 });
+
+test('job load warnings identify timeouts, empty results, cache uncertainty and health failure', () => {
+    const report = { healthAfterLoad: 503, stages: [{ kind: 'burst', users: 2, results: [
+        { route: 'KTH-INV', status: 'timeout', errorCode: 'CLIENT_TIMEOUT', durationMs: 120000, journeyCount: 0 },
+        { route: 'ABD-PNZ', status: 'completed', errorCode: null, durationMs: 1500, journeyCount: 0 }
+    ] }] };
+    const warnings = jobsLoadWarnings(report, false);
+    assert.ok(warnings.some(warning => /KTH-INV.*CLIENT_TIMEOUT/.test(warning)));
+    assert.ok(warnings.some(warning => /ABD-PNZ.*no journeys/.test(warning)));
+    assert.ok(warnings.some(warning => /Zero-cache-hit verification failed/.test(warning)));
+    assert.ok(warnings.some(warning => /health check returned HTTP 503/.test(warning)));
+});
