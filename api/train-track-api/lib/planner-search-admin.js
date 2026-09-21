@@ -16,7 +16,7 @@ const SOURCES = [
 const RANGES = [['-5m', 'Last 5 minutes'], ['-15m', 'Last 15 minutes'], ['-1h', 'Last hour'],
     ['-24h', 'Last 24 hours'], ['-7d', 'Last 7 days'], ['custom', 'Custom dates']];
 const COLUMNS = [
-    ['origin', 'From'], ['destination', 'To'], ['startedAt', 'Search started'],
+    ['origin', 'From'], ['destination', 'To'], ['host', 'Host'], ['startedAt', 'Search started'],
     ['finishedAt', 'Results returned'], ['status', 'Status'], ['cacheStatus', 'Cache'],
     ['algorithm', 'Algorithm', false],
     ['durationMs', 'Duration'], ['source', 'Source']
@@ -29,8 +29,8 @@ const timeFormatter = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
 });
 
-export function registerPlannerSearchAdminRoutes(app, { listSearches, renderShell, clearSearchCache, logger = console }) {
-    const cacheClearToken = typeof clearSearchCache === 'function' ? randomBytes(32).toString('hex') : null;
+export function registerPlannerSearchAdminRoutes(app, { listSearches, renderShell, clearSearchCache, plannerTargets, logger = console }) {
+    const cacheClearToken = typeof clearSearchCache === 'function' || plannerTargets ? randomBytes(32).toString('hex') : null;
     if (cacheClearToken) app.post(`${ROUTE}/cache/clear`, async (req, res) => {
         res.set('Cache-Control', 'no-store');
         // CORS is enabled for the public API; a custom header alone does not
@@ -52,11 +52,33 @@ export function registerPlannerSearchAdminRoutes(app, { listSearches, renderShel
             } });
         }
     });
+    if (plannerTargets && cacheClearToken) app.post(`${ROUTE}/target`, async (req, res) => {
+        res.set('Cache-Control', 'no-store');
+        if (!req.is('application/json') || req.get('X-TrainTrack-Admin-CSRF') !== cacheClearToken
+            || req.get('Sec-Fetch-Site') !== 'same-origin') {
+            res.status(403).json({ error: { code: 'INVALID_ADMIN_REQUEST',
+                message: 'Refresh this admin page before changing the planner target.' } });
+            return;
+        }
+        try { res.json(await plannerTargets.select({ targetId: req.body?.targetId, revision: req.body?.revision,
+            operator: req.get('X-Forwarded-User') ?? null })); }
+        catch (error) {
+            const known = error instanceof PlannerError;
+            res.status(known ? error.status : 503).json({ error: {
+                code: known ? error.code : 'DATASET_UNAVAILABLE',
+                message: known ? error.message : 'The planner target could not be changed.'
+            } });
+        }
+    });
     app.get(ROUTE, async (req, res) => {
         res.set('Cache-Control', 'no-store');
         const requestPath = req.path || ROUTE;
         try {
             const data = await listSearches(req.query || {});
+            if (plannerTargets) {
+                try { await plannerTargets.health(plannerTargets.describe().targetId); } catch { /* Render the last known state. */ }
+                data.targetSelection = plannerTargets.describe();
+            }
             res.type('html').send(renderPlannerSearchPage(data, { renderShell, requestPath, cacheClearToken }));
         } catch (error) {
             const invalid = error?.code === 'INVALID_SEARCH_RANGE';
@@ -110,7 +132,7 @@ export function renderPlannerSearchPage(data, { renderShell, now = new Date(), r
         body: `<main class="wrap planner-admin">
             <header class="planner-heading"><div><p class="planner-eyebrow">Train Track Admin</p>
                 <h1>Journey planner searches</h1>
-                <p class="meta">Seven days of search history · Table times Europe/London</p></div>
+                <p class="meta">Seven days of search history · ${escapeHtml(data.historyTarget ?? 'sky')} database · Table times Europe/London</p></div>
                 <div class="planner-heading-actions">
                     <a class="planner-button secondary" href="${href(url, data)}">Refresh</a>
                     ${cacheClearToken ? `<button type="button" id="planner-cache-clear" class="planner-button secondary" disabled
@@ -118,18 +140,19 @@ export function renderPlannerSearchPage(data, { renderShell, now = new Date(), r
                         aria-describedby="planner-cache-help">Clear search cache</button>` : ''}
                 </div>
             </header>
+            ${renderTargetSelection(data.targetSelection, url, cacheClearToken)}
             ${cacheClearToken ? `<div class="planner-cache-tools">
-                <p id="planner-cache-help">Clears cached RAPTOR and Original search results on this API. Timetable indexes stay warm; journey details and search history are kept. Wait for running searches to finish, then clear and start a new app search rather than retrying an existing job.</p>
+                <p id="planner-cache-help">Clears cached RAPTOR and Original search results on the selected planner${data.targetSelection?.targetId ? ` (${escapeHtml(data.targetSelection.targetId)})` : ''}. Timetable indexes stay warm; journey details and search history are kept. Wait for running searches to finish, then clear and start a new app search rather than retrying an existing job.</p>
                 <p id="planner-cache-status" role="status" aria-live="polite" aria-atomic="true"></p>
                 <noscript>Enable JavaScript to clear the search cache.</noscript>
             </div><script data-planner-cache-controls>(${initializePlannerCacheClear.toString()})();</script>` : ''}
             ${filters(data, url, now)}
             <section aria-labelledby="planner-summary-title">
-                <h2 id="planner-summary-title" class="planner-section-title">${escapeHtml(filteredLabel)}<span>All matching searches, across every page</span></h2>
+                <h2 id="planner-summary-title" class="planner-section-title">${escapeHtml(filteredLabel)}<span>All matching searches in this database, across every page</span></h2>
                 ${data.window ? `<p class="planner-window">${windowLabel(data.window)} · Europe/London · By search start time</p>` : ''}
                 <dl class="planner-stats">${cards.map(([label, value, detail]) => `<div><dt>${label}</dt><dd>${value}</dd><p>${detail}</p></div>`).join('')}</dl>
                 <details class="planner-definitions"><summary>How these figures are calculated</summary>
-                    <p>Durations run from search submission to completion on the server, including queue time. They do not include delivery to the device. The 99th percentile is the observed nearest-rank value; small samples may equal the longest search. Success, failure and duration figures include successful and failed searches only. A search returning no journeys still counts as successful.</p>
+                    <p>Durations run from submission to completion on the execution host, including queue time. They do not include gateway or device delivery. Host identifies the machine that performed or served the operation, including cache hits. The 99th percentile is the observed nearest-rank value; small samples may equal the longest search. Success, failure and duration figures include successful and failed searches only. A search returning no journeys still counts as successful.</p>
                     <p>Unfinished searches, cancellations and expired work are excluded from success and failure percentages. Unfinished searches may be queued, running or interrupted by a server restart. Cache hit rate uses known hits and misses only; ${number(stats.cacheUnknown)} searches have no cache result. Results returned shows server completion time, including failures. Station columns sort by station code. Summary figures may be cached for 15 seconds.</p>
                 </details>
             </section>
@@ -163,6 +186,7 @@ function renderRow(row) {
     return `<tr>
         <td class="planner-station">${station(row.origin)}${Array.isArray(row.via) && row.via.length ? `<small>via ${escapeHtml(row.via.join(' → '))}</small>` : ''}</td>
         <td class="planner-station">${station(row.destination)}</td>
+        <td>${escapeHtml(row.host || 'Unknown / legacy')}</td>
         <td class="planner-date">${formatTime(row.startedAt)}</td>
         <td class="planner-date">${row.finishedAt ? formatTime(row.finishedAt) : '<span class="planner-muted">—</span>'}</td>
         <td><span class="planner-status status-${status}">${statusLabel}</span>${detail && !['success', 'fail'].includes(detail) ? `<small class="planner-outcome">${escapeHtml(humanize(detail))}</small>` : ''}${resultDetail ? `<small>${resultDetail}</small>` : ''}</td>
@@ -252,14 +276,41 @@ function windowLabel(window) {
     const label = value => { const parsed = new Date(value); return `${dateFormatter.format(parsed)}, ${timeFormatter.format(parsed)}`; };
     return `${label(window.from)} – ${label(window.to)}`;
 }
+function renderTargetSelection(selection, url, csrfToken) {
+    if (!selection?.targets?.length) return '';
+    const active = selection.targets.find(target => target.id === selection.targetId);
+    const health = active?.health;
+    const status = !selection.targetId ? 'No active target' : health?.ready === true ? 'Ready'
+        : health ? 'Unavailable' : 'Health unknown';
+    return `<section class="planner-target" aria-labelledby="planner-target-title">
+        <div><h2 id="planner-target-title">Planner destination</h2>
+            <p><strong>${escapeHtml(active?.label ?? selection.targetId ?? 'Unavailable')}</strong> · ${escapeHtml(status)}
+            ${health?.dataset?.version ? ` · Dataset ${escapeHtml(String(health.dataset.version).slice(0, 12))}` : ''}
+            ${selection.stale ? ' · Selection data is stale' : ''}</p></div>
+        <form id="planner-target-form" data-target-url="${escapeHtml(url(`${ROUTE}/target`))}" data-csrf-token="${escapeHtml(csrfToken || '')}">
+            <label for="planner-target-select">Execution host</label>
+            <select id="planner-target-select"${selection.forced ? ' disabled' : ''}>${selection.targets.map(target =>
+                `<option value="${escapeHtml(target.id)}"${target.id === selection.targetId ? ' selected' : ''}>${escapeHtml(target.label)}</option>`).join('')}</select>
+            <input type="hidden" name="revision" value="${escapeHtml(selection.revision)}">
+            <button type="submit"${selection.forced || !selection.targetId ? ' disabled' : ''}>Switch target</button>
+            <span role="status" aria-live="polite">${selection.forced ? 'Locked by PLANNER_FORCE_TARGET.' : 'New searches use the selected target; existing work remains with its owner.'}</span>
+        </form>
+    </section>${selection.forced ? '' : `<script data-planner-target-controls>(${initializePlannerTargetSelection.toString()})();</script>`}`;
+}
 function filters(data, url, now = new Date()) {
     const selected = data.q ?? `-${data.range || '24h'}`;
     const periods = RANGES.some(([value]) => value === selected) ? RANGES : [[selected, relativeLabel(selected)], ...RANGES];
     const from = data.from ?? data.window?.from ?? new Date(new Date(now).getTime() - 86400000);
     const to = data.to ?? data.window?.to ?? now;
+    const hosts = [...new Set(data.hosts ?? [])]
+        .filter(Boolean).sort();
     return `<form class="planner-filters" action="${escapeHtml(url(ROUTE))}" method="GET" aria-describedby="planner-filter-help">
+        ${data.targetSelection?.targets?.length ? `<div class="planner-filter"><label for="planner-history-target">History database</label><select id="planner-history-target" name="historyTarget">${options(data.targetSelection.targets.map(target => [target.id, target.label]), data.historyTarget)}</select></div>` : ''}
         <div class="planner-filter"><label for="planner-period">Period</label><select id="planner-period" name="q">${options(periods, selected)}</select></div>
         <div class="planner-filter"><label for="planner-source">Source</label><select id="planner-source" name="source">${options(SOURCES, data.source)}</select></div>
+        <div class="planner-filter"><label for="planner-host">Host</label><select id="planner-host" name="host">${options([
+            ['all', 'All hosts'], ...hosts.map(host => [host, host]), ['unknown', 'Unknown / legacy']
+        ], data.host ?? 'all')}</select></div>
         <div class="planner-filter"><label for="planner-page-size">Rows per page</label><select id="planner-page-size" name="per_page">${options([[25, '25'], [50, '50'], [100, '100']], data.pageSize)}</select></div>
         <input type="hidden" name="sort" value="${escapeHtml(data.sort)}">
         <input type="hidden" name="direction" value="${escapeHtml(data.direction)}">
@@ -274,6 +325,29 @@ function filters(data, url, now = new Date()) {
         <span id="planner-filter-help" class="planner-muted">Select Apply filters to update the results.</span>
         ${data.stats ? `<span class="planner-updated">Figures checked ${formatTime(data.stats.asOf || now, false)}</span>` : ''}
     </form><script data-planner-filter-controls>(${initializePlannerFilters.toString()})();</script>`;
+}
+
+function initializePlannerTargetSelection() {
+    const form = document.querySelector('#planner-target-form');
+    if (!form) return;
+    const select = form.querySelector('select'), button = form.querySelector('button'), status = form.querySelector('[role="status"]');
+    form.addEventListener('submit', async event => {
+        event.preventDefault();
+        button.disabled = select.disabled = true;
+        status.textContent = 'Checking the selected planner before switching…';
+        try {
+            const response = await fetch(form.dataset.targetUrl, { method: 'POST', credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json', 'X-TrainTrack-Admin-CSRF': form.dataset.csrfToken },
+                body: JSON.stringify({ targetId: select.value, revision: Number(form.elements.revision.value) }) });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error?.message || 'The target could not be changed.');
+            status.textContent = `Planner target changed to ${result.targetId}. Refreshing…`;
+            location.reload();
+        } catch (error) {
+            status.textContent = error instanceof Error ? error.message : 'The target could not be changed.';
+            button.disabled = select.disabled = false;
+        }
+    });
 }
 
 function initializePlannerCacheClear() {
@@ -296,7 +370,7 @@ function initializePlannerCacheClear() {
                 throw new Error('The server did not confirm cache clearing. Refresh this page and try again.');
             }
             status.dataset.state = 'success';
-            status.textContent = `Search cache cleared (${result.clearedSearches} entries). Submit a new app search to run the selected algorithm again. Other searches can warm the cache again.`;
+            status.textContent = `Search cache cleared (${result.clearedSearches} entries) on ${result.hostId || result.targetId || 'the selected planner'}. Submit a new app search to run the selected algorithm again. Other searches can warm the cache again.`;
         } catch (error) {
             status.dataset.state = 'error';
             status.textContent = `Cache clearing was not confirmed. ${error instanceof Error && error.message ? error.message : 'Check your connection, then refresh this page and try again.'}`;
@@ -353,12 +427,13 @@ function errorFilters(query = {}) {
     const text = (value, fallback) => typeof value === 'string' && value.length <= 100 ? value : fallback;
     return { range: text(query.range, '24h'), q: text(query.q, query.range === 'custom' || query.from || query.to ? 'custom' : undefined),
         from: text(query.from, undefined), to: text(query.to, undefined), timezone: query.timezone === 'UTC' ? 'UTC' : undefined,
-        source: text(query.source, 'all'), sort: text(query.sort, 'startedAt'), direction: text(query.direction, 'desc'),
+        source: text(query.source, 'all'), host: text(query.host, 'all'), sort: text(query.sort, 'startedAt'), direction: text(query.direction, 'desc'),
         page: text(query.page, '1'), pageSize: text(query.per_page, '50') };
 }
 function href(url, data, overrides = {}) {
     const next = { ...data, ...overrides };
-    const query = new URLSearchParams({ range: next.range, source: next.source, sort: next.sort, direction: next.direction, page: next.page, per_page: next.pageSize });
+    const query = new URLSearchParams({ range: next.range, source: next.source, host: next.host ?? 'all', sort: next.sort, direction: next.direction, page: next.page, per_page: next.pageSize });
+    if (next.historyTarget) query.set('historyTarget', next.historyTarget);
     if (next.q) query.set('q', next.q);
     if (next.q === 'custom') {
         if (next.from) query.set('from', next.from);
@@ -378,6 +453,13 @@ const styles = `
     .planner-heading-actions .planner-button:hover:not(:disabled) { border-color:var(--accent); }
     .planner-heading-actions button:disabled { opacity:.65; cursor:wait; }
     .planner-cache-tools { margin-top:16px; max-width:1000px; font-size:12px; line-height:1.6; color:var(--muted); }
+    .planner-target { margin-top:18px; padding:16px; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:16px; background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+    .planner-target h2 { margin:0 0 6px; font-size:15px; }
+    .planner-target p { margin:0; color:var(--muted); font-size:12px; }
+    .planner-target form { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+    .planner-target label { font-size:12px; color:var(--muted); font-weight:600; }
+    .planner-target select { min-height:39px; border:1px solid var(--line); border-radius:7px; background:var(--panel); color:var(--text); padding:8px; }
+    .planner-target span { flex-basis:100%; max-width:520px; color:var(--muted); font-size:11px; }
     .planner-cache-tools p { margin:0; }
     #planner-cache-status:not(:empty) { margin-top:8px; color:var(--text); font-weight:600; }
     #planner-cache-status[data-state="error"] { color:#a22b27; }

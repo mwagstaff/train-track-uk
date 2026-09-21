@@ -16,10 +16,11 @@ const unavailableNotices = { available: false, checkedAt: null, notices: [], rea
 export class DisruptionMonitor {
     constructor({ planner, store = new DisruptionStore(), notices, holidays = new BankHolidayCalendar(),
         pushClient, isHolidayMode = () => false, config = disruptionConfig(), now = Date.now,
-        readIngestion, observe = () => {}, logger = console } = {}) {
+        readIngestion, combinedPlannerReadiness = false, observe = () => {}, logger = console } = {}) {
         this.planner = planner; this.store = store; this.notices = notices; this.holidays = holidays;
         this.pushClient = pushClient; this.isHolidayMode = isHolidayMode; this.config = config;
         this.now = now; this.observe = observe; this.logger = logger;
+        this.combinedPlannerReadiness = combinedPlannerReadiness && !readIngestion;
         this.readIngestion = readIngestion ?? (async () => {
             try { return JSON.parse(await readFile(join(planner.config.dataDirectory, 'ingestion-state.json'), 'utf8')); }
             catch { return null; }
@@ -98,11 +99,15 @@ export class DisruptionMonitor {
     }
     async refreshSources() {
         if (this.now() < this.refreshAt) return;
-        const [status, ingestion, notices] = await Promise.all([
-            this.planner.status().catch(() => null), this.readIngestion().catch(() => null),
+        const [plannerState, notices] = await Promise.all([
+            this.combinedPlannerReadiness ? this.planner.readiness().catch(() => null)
+                : Promise.all([this.planner.status().catch(() => null), this.readIngestion().catch(() => null)])
+                    .then(([status, ingestion]) => ({ status, ingestion })),
             this.notices?.getSnapshot().catch(() => unavailableNotices) ?? unavailableNotices,
             this.holidays.refresh()
         ]);
+        const status = plannerState?.status ?? null, ingestion = plannerState?.ingestion ?? null;
+        this.targetPin = plannerState?.targetId ? { targetId: plannerState.targetId, revision: plannerState.targetRevision } : null;
         this.status = status;
         this.readiness = assessTimetableReadiness(status, ingestion, { now: this.now(), maxSourceAgeHours: this.config.maxSourceAgeHours });
         this.noticeSnapshot = notices;
@@ -123,8 +128,12 @@ export class DisruptionMonitor {
         if (!this.readiness.ready || this.stopped || this.planner.maintenanceAvailable?.() === false) return;
         // Re-read ingestion before every CPU admission. Import work can begin
         // between the less frequent source refreshes.
-        const ingestion = await this.readIngestion();
-        if (!assessTimetableReadiness(this.status, ingestion, { now: this.now(), maxSourceAgeHours: this.config.maxSourceAgeHours }).ready) {
+        const plannerState = this.combinedPlannerReadiness
+            ? await this.planner.readiness({ targetPin: this.targetPin }).catch(() => null) : null;
+        const ingestion = this.combinedPlannerReadiness ? plannerState?.ingestion : await this.readIngestion();
+        const status = this.combinedPlannerReadiness ? plannerState?.status : this.status;
+        if (this.combinedPlannerReadiness && plannerState?.capacity?.maintenanceAvailable === false) return;
+        if (!assessTimetableReadiness(status, ingestion, { now: this.now(), maxSourceAgeHours: this.config.maxSourceAgeHours }).ready) {
             this.refreshAt = 0; return;
         }
         const job = await this.store.claim(this.readiness.datasetVersion, this.now());
@@ -133,7 +142,7 @@ export class DisruptionMonitor {
         try {
             const result = await this.planner.disruptionProfile({ from: job.stations[0], to: job.stations.at(-1),
                 via: job.stations.slice(1, -1), date: job.date, startMinutes: job.startMinutes, endMinutes: job.endMinutes },
-            { signal: this.controller.signal });
+            { signal: this.controller.signal, targetPin: this.targetPin });
             if (result.datasetVersion !== job.datasetVersion) {
                 await this.store.defer(job, this.now(), 'dataset_changed'); this.refreshAt = 0;
             } else if (!result.complete && ['SEARCH_TIMEOUT', 'DATASET_UNAVAILABLE', 'DATASET_STALE', 'CURSOR_EXPIRED'].includes(result.reason)

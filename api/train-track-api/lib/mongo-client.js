@@ -20,6 +20,10 @@ export const COLLECTIONS = Object.freeze({
     holidayMode: 'holiday_mode',
     recentDepartures: 'recent_departures',
     plannerSearches: 'planner_searches',
+    plannerRouteProfiles: 'planner_route_profiles_v1',
+    plannerSavedRoutePlans: 'planner_saved_route_plans_v1',
+    plannerConfiguration: 'planner_configuration',
+    plannerRoutingOwnership: 'planner_routing_ownership',
     disruptionMonitors: 'disruption_monitors',
     disruptionProfiles: 'disruption_profiles',
     disruptionDeliveries: 'disruption_deliveries'
@@ -29,8 +33,19 @@ export const PLANNER_SEARCH_INDEXES = [
     { key: { startedAt: 1 }, name: 'started_at_7_day_ttl', expireAfterSeconds: 7 * 24 * 60 * 60 },
     { key: { startedAt: -1, _id: -1 }, name: 'latest_searches' },
     { key: { source: 1, startedAt: -1 }, name: 'source_started_at' },
-    { key: { durationMs: 1, startedAt: 1 }, name: 'search_duration' }
+    { key: { durationMs: 1, startedAt: 1 }, name: 'search_duration' },
+    { key: { host: 1, startedAt: -1 }, name: 'host_started_at' }
 ];
+
+export const PLANNER_RUNTIME_INDEXES = Object.freeze({
+    routingOwnership: [
+        { key: { expiresAt: 1 }, name: 'routing_ownership_expiry', expireAfterSeconds: 0 },
+        { key: { type: 1, updatedAt: -1 }, name: 'routing_ownership_type' }
+    ],
+    configuration: [
+        { key: { updatedAt: -1 }, name: 'planner_configuration_updated' }
+    ]
+});
 
 export async function getMongoClient() {
     if (!clientPromise) {
@@ -89,6 +104,10 @@ async function createIndexes() {
             { key: { expiresAt: 1 }, name: 'delivery_expiry', expireAfterSeconds: 0 }
         ]),
         db.collection(COLLECTIONS.plannerSearches).createIndexes(PLANNER_SEARCH_INDEXES),
+        db.collection(COLLECTIONS.plannerRouteProfiles).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0, name: 'expires_at_ttl' }),
+        db.collection(COLLECTIONS.plannerSavedRoutePlans).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0, name: 'expires_at_ttl' }),
+        db.collection(COLLECTIONS.plannerRoutingOwnership).createIndexes(PLANNER_RUNTIME_INDEXES.routingOwnership),
+        db.collection(COLLECTIONS.plannerConfiguration).createIndexes(PLANNER_RUNTIME_INDEXES.configuration),
         db.collection(COLLECTIONS.notificationSubscriptions).createIndexes([
             { key: { deviceId: 1, source: 1 }, name: 'device_source' },
             { key: { source: 1, activeUntil: 1 }, name: 'source_active_until' },
@@ -142,6 +161,28 @@ async function createIndexes() {
         ])
     ]);
     console.log('[mongo] indexes ready');
+}
+
+// The standalone planner only creates indexes for executor-owned collections.
+// Gateway selection/ownership indexes remain on sky's database.
+export async function ensurePlannerMongoIndexes() {
+    const db = await getMongoDb();
+    await Promise.all([
+        db.collection(COLLECTIONS.plannerSearches).createIndexes(PLANNER_SEARCH_INDEXES),
+        db.collection(COLLECTIONS.plannerRouteProfiles).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0, name: 'expires_at_ttl' }),
+        db.collection(COLLECTIONS.plannerSavedRoutePlans).createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0, name: 'expires_at_ttl' }),
+        db.collection(COLLECTIONS.recentDepartures).createIndexes([
+            { key: { fromCRS: 1, toCRS: 1, scheduledDepartureAt: -1 }, name: 'route_scheduled_departure' },
+            { key: { expiresAt: 1 }, name: 'expires_at_ttl', expireAfterSeconds: 0 }
+        ])
+    ]);
+}
+
+export async function closeMongoClient() {
+    const promise = clientPromise;
+    clientPromise = null;
+    indexesPromise = null;
+    if (promise) await (await promise).close();
 }
 
 function ttlSeconds(envName, defaultDays) {

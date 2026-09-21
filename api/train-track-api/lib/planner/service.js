@@ -1,4 +1,5 @@
 import { Worker } from 'node:worker_threads';
+import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { PlannerError, normalizeRequest, decodeCursor } from './contract.js';
@@ -70,6 +71,33 @@ export class PlannerService {
         this.journeys = new Map();
         this.maintenanceHeadroom = maintenanceHeadroom ?? (() => os.freemem() >= (config.maintenanceMinFreeMemoryMb ?? 512) * 1048576
             && os.loadavg()[0] / (os.availableParallelism?.() ?? os.cpus().length) < (config.maintenanceMaxLoadPerCpu ?? 0.8));
+        this.loadAdmissionOverride = null;
+    }
+
+    get maxQueue() { return this.loadAdmissionOverride?.maxQueue ?? this.config.maxQueue; }
+
+    acquireLoadAdmissionCap(maxQueue) {
+        if (!Number.isInteger(maxQueue) || maxQueue < 1 || maxQueue > 100) {
+            throw new PlannerError('INVALID_REQUEST', 'Admission cap must be an integer from 1 to 100.', 400);
+        }
+        if (this.closed) throw new PlannerError('DATASET_UNAVAILABLE', 'Journey planning is unavailable.', 503);
+        if (this.loadAdmissionOverride) throw new PlannerError('LOAD_TEST_ACTIVE', 'Another planner load test is active.', 409);
+        const leaseId = randomUUID(), configuredMaxQueue = this.config.maxQueue;
+        const expiresAt = new Date(Date.now() + 300000).toISOString();
+        const timer = setTimeout(() => this.releaseLoadAdmissionCap(leaseId), 300000);
+        timer.unref();
+        this.loadAdmissionOverride = { leaseId, maxQueue, timer };
+        return { leaseId, configuredMaxQueue, maxQueue, expiresAt };
+    }
+
+    releaseLoadAdmissionCap(leaseId) {
+        const active = this.loadAdmissionOverride;
+        if (active && active.leaseId !== leaseId) {
+            throw new PlannerError('LOAD_TEST_ACTIVE', 'A different planner load test owns the admission override.', 409);
+        }
+        if (active) clearTimeout(active.timer);
+        this.loadAdmissionOverride = null;
+        return { restored: Boolean(active), maxQueue: this.config.maxQueue };
     }
 
     metadata() {
@@ -161,7 +189,7 @@ export class PlannerService {
         if (this.workerCount > 1 && targetSlot === undefined && ['clearSearchCache', 'runtime'].includes(method)) {
             const slots = this.slots.filter(slot => slot.worker);
             // A cold slot has no result cache or runtime allocations to inspect.
-            if (this.pendingCount({ includeMaintenance: false }) + slots.length > this.config.maxQueue) {
+            if (this.pendingCount({ includeMaintenance: false }) + slots.length > this.maxQueue) {
                 return Promise.reject(new PlannerError('SEARCH_BUSY', 'Journey planning is busy. Please try again shortly.', 429));
             }
             return Promise.all(slots.map(slot => this.call(method, payload, options, slot))).then(results => {
@@ -180,7 +208,7 @@ export class PlannerService {
                     workers: results.map((result, index) => ({ slot: slots[index].id, ...result })) };
             });
         }
-        if (priority !== 'maintenance' && this.pendingCount({ includeMaintenance: false }) >= this.config.maxQueue) {
+        if (priority !== 'maintenance' && this.pendingCount({ includeMaintenance: false }) >= this.maxQueue) {
             return Promise.reject(new PlannerError('SEARCH_BUSY', 'Journey planning is busy. Please try again shortly.', 429));
         }
         if (method === 'search' && (payload.liveSnapshotId || payload.tubeSnapshotId)) {
@@ -454,6 +482,7 @@ export class PlannerService {
 
     close() {
         this.closed = true;
+        if (this.loadAdmissionOverride) this.releaseLoadAdmissionCap(this.loadAdmissionOverride.leaseId);
         this.searchJobs?.close();
         this.routeBoards?.close();
         this.savedRouteBoards?.close();

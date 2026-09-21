@@ -15,7 +15,9 @@ export function timetableIngestionConfig(env = process.env) {
     const planner = plannerConfig(env);
     const configured = Boolean(env.TRAIN_TRACK_UK_TIMETABLE_S3_BUCKET_ACCESS_KEY && env.TRAIN_TRACK_UK_TIMETABLE_S3_BUCKET_SECRET_ACCESS_KEY);
     return {
-        enabled: env.PLANNER_INGESTION_ENABLED === 'true' || (env.PLANNER_INGESTION_ENABLED !== 'false' && configured && planner.enabled),
+        // Service role must be deliberate: credentials alone never start the
+        // importer on a gateway or warm-standby host.
+        enabled: env.PLANNER_INGESTION_ENABLED === 'true',
         configured, dataDirectory: planner.dataDirectory, datasetPath: planner.datasetPath,
         bucket: env.TRAIN_TRACK_UK_TIMETABLE_S3_BUCKET || 'traintrack-uk-daily-full-timetable',
         region: env.TRAIN_TRACK_UK_TIMETABLE_S3_REGION || 'eu-west-2',

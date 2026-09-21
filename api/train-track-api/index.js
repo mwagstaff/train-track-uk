@@ -30,7 +30,12 @@ import { resolveDelayRepayOperator } from './lib/delay-repay-config.js';
 import { getOperatorBrandingConfig } from './lib/operator-branding-config.js';
 import { registerRailwayBackgroundRoutes } from './lib/railway-backgrounds.js';
 import { registerPlannerRoutes } from './lib/planner-routes.js';
+import { PlannerService } from './lib/planner/service.js';
+import { registerPlannerGateway } from './lib/planner-gateway.js';
+import { PlannerRoutingStore } from './lib/planner-routing-store.js';
+import { loadPlannerTargets, PlannerTargetManager } from './lib/planner-targets.js';
 import { startTimetableIngestion } from './lib/planner/ingestion-scheduler.js';
+import { timetableIngestionConfig } from './lib/planner/ingestion-source.js';
 import { DisruptionMonitor } from './lib/disruptions/manager.js';
 import { disruptionConfig } from './lib/disruptions/model.js';
 import { createPlannedEngineeringProvider } from './lib/disruptions/notices.js';
@@ -46,6 +51,7 @@ import {
     markDeviceDataDeleted
 } from './lib/device-data-deletion-state.js';
 import path from 'path';
+import { plannerSearchLog } from './lib/planner-search-log.js';
 
 notificationSubscriptionManager.getDeviceLiveActivities = (deviceId) =>
     Array.from(liveActivityManager.subscriptions.values()).filter((session) => session.deviceId === deviceId);
@@ -212,10 +218,24 @@ const app = express();
 app.use(cors());
 // Parse planner searches before the legacy 1 MB parser so their stricter limit
 // is effective. Existing namespaces keep their established parser and metrics.
-const plannerService = registerPlannerRoutes(app, { recordRequest: recordPlannerRequest, requestMiddleware: metricsMiddleware });
+const embeddedPlannerService = new PlannerService();
+const plannerTargets = await loadPlannerTargets(process.env, embeddedPlannerService);
+const plannerService = new PlannerTargetManager({ targets: plannerTargets,
+    defaultTargetId: process.env.PLANNER_DEFAULT_TARGET || 'sky',
+    forceTargetId: process.env.PLANNER_FORCE_TARGET || null });
+await plannerService.init();
+const routingSecret = process.env.PLANNER_ROUTING_SECRET || process.env.PLANNER_SERVICE_TOKEN
+    || (process.env.NODE_ENV === 'production' ? null : 'train-track-development-routing-secret');
+if (!routingSecret) throw new Error('PLANNER_ROUTING_SECRET is required in production.');
+const plannerRouting = new PlannerRoutingStore({ secret: routingSecret,
+    legacyTargetId: process.env.PLANNER_LEGACY_TARGET || 'sky' });
+registerPlannerGateway(app, { targets: plannerService, ownership: plannerRouting,
+    recordRequest: recordPlannerRequest, requestMiddleware: metricsMiddleware });
+registerPlannerRoutes(app, { service: embeddedPlannerService });
 const monitorConfig = disruptionConfig();
 const disruptionMonitor = registerDisruptionRoutes(app, new DisruptionMonitor({
     planner: plannerService,
+    combinedPlannerReadiness: true,
     config: monitorConfig,
     notices: createPlannedEngineeringProvider({ endpoint: monitorConfig.noticeEndpoint,
         authorization: monitorConfig.noticeAuthorization, username: monitorConfig.noticeUsername,
@@ -1617,13 +1637,16 @@ const server = app.listen(port, () => {
     console.log(`Server running on port ${port}`);
     logLiveActivityStartup();
 });
-const timetableIngestion = startTimetableIngestion();
+const timetableIngestion = startTimetableIngestion({ config: { ...timetableIngestionConfig(),
+    enabled: process.env.PLANNER_INGESTION_ENABLED === 'true' } });
 disruptionMonitor.start();
 // Stop the importer as well as the HTTP server on service shutdown. Leave its
 // five-second kill escalation time to run before this process exits.
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
     timetableIngestion.stop();
     disruptionMonitor.stop();
+    embeddedPlannerService.close();
+    void plannerSearchLog.close({ timeoutMs: 3000 });
     server.close();
     setTimeout(() => process.exit(signal === 'SIGINT' ? 130 : 0), 6000);
 });

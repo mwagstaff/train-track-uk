@@ -63,3 +63,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+## Commands for the user
+
+Use `rtk`/`rtk proxy` only for agent-internal shell tool calls. Commands shown to the user must be plain, directly runnable commands without an `rtk` or `rtk proxy` prefix.

@@ -71,10 +71,10 @@ overrides are `TRAIN_TRACK_UK_TIMETABLE_S3_BUCKET`,
 `TRAIN_TRACK_UK_TIMETABLE_S3_REGION`, `TRAIN_TRACK_UK_TIMETABLE_S3_FULL_KEY` and
 `TRAIN_TRACK_UK_TIMETABLE_S3_UPDATE_KEY`; their defaults are listed above.
 
-Automatic checks enable when both credentials are present and the planner is
-enabled. `PLANNER_INGESTION_ENABLED=false` disables unattended checks while
-allowing manual `sync`. `true` explicitly enables them and reports missing
-credentials as a configuration error. **Unset `PLANNER_DATASET_PATH`**: a fixed
+Automatic checks require `PLANNER_INGESTION_ENABLED=true`; credentials alone
+never assign ingestion ownership to a process. `false` or an unset value disables
+unattended checks while allowing manual `sync`. `true` reports missing credentials
+as a configuration error. **Unset `PLANNER_DATASET_PATH`**: a fixed
 snapshot override would otherwise prevent searches following new activations.
 Keep the existing absolute, persistent `PLANNER_DATA_DIR` outside deployed
 source. Runtime: Node ≥22.16 with SQLite (production pinned Node 24), `unzip`,

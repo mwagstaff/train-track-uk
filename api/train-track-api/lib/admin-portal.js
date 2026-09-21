@@ -24,8 +24,10 @@ const DEFAULT_DEVICE_PAGE_SIZE = 50;
 const DEFAULT_REPLAY_DEVICE_ID = 'BF4D495F-E69A-4E7D-B47D-09930684A323';
 
 export function registerAdminRoutes(app, { plannerService } = {}) {
-    registerPlannerSearchAdminRoutes(app, { listSearches: listPlannerSearchLogs, renderShell: renderAdminShell,
-        clearSearchCache: plannerService ? () => plannerService.clearSearchCache() : undefined });
+    registerPlannerSearchAdminRoutes(app, { listSearches: plannerService?.listSearches
+        ? query => plannerService.listSearches(query) : listPlannerSearchLogs, renderShell: renderAdminShell,
+        clearSearchCache: plannerService ? () => plannerService.clearSearchCache() : undefined,
+        plannerTargets: plannerService?.describe ? plannerService : undefined });
 
     app.get('/admin', async (req, res) => {
         try {

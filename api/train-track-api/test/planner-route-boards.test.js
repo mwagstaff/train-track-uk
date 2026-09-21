@@ -597,7 +597,7 @@ test('persistent cache creates TTL, filters expired records itself and bounds st
             .sort((a, b) => b.expiresAt - a.expiresAt).slice(count).map(value => ({ _id: value._id })) }) }) }),
         deleteMany: async query => query._id.$in.forEach(key => records.delete(key))
     };
-    const cache = new RouteBoardCache({ collection: async () => collection, now: () => start, maxEntries: 2 });
+    const cache = new RouteBoardCache({ collection: async () => collection, now: () => start, maxEntries: 2, ensureIndex: true });
     for (let i = 1; i <= 3; i++) await cache.set(String(i), { profile: { version }, computedAt: start, expiresAt: start + i * 1000 });
     assert.equal(records.size, 2);
     assert.ok(!records.has('1'));

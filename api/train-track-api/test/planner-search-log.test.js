@@ -13,6 +13,7 @@ test('search lifecycle persists allowlisted public fields, timestamps, queue-inc
     const writes = [];
     let now = epoch, tick = 100;
     const log = new PlannerSearchLog({ now: () => now, monotonicNow: () => tick,
+        host: 'sky', instanceId: 'instance-one', buildRevision: 'build-one',
         getCollection: async () => ({ bulkWrite: async operations => writes.push(...operations) }) });
     const handle = log.start({ source: 'search-job', request: { origin: ' kth ', destination: 'VIC', via: ['BMS'],
         time: new Date(epoch).toISOString(), timeType: 'departAfter', realtime: 'apply', token: 'never-store',
@@ -23,6 +24,9 @@ test('search lifecycle persists allowlisted public fields, timestamps, queue-inc
     assert.equal(pending.finishedAt, null);
     assert.equal(pending.durationMs, null);
     assert.equal(pending.algorithm, 'original');
+    assert.equal(pending.host, 'sky');
+    assert.equal(pending.instanceId, 'instance-one');
+    assert.equal(pending.buildRevision, 'build-one');
     assert.ok(pending.startedAt instanceof Date);
     tick += 2300; now += 2300;
     handle.update({ phase: 'running', cacheStatus: 'miss', coalesced: true, datasetVersion: 'test-dataset' });
@@ -145,6 +149,14 @@ test('retention is fixed at seven days and expired buffered events are not reins
     handle.finish({ status: 'other', outcome: 'expired' });
     await log.flush();
     assert.equal(writes, 0);
+});
+
+test('host history has a bounded compound index and unknown legacy filtering is explicit', () => {
+    assert.ok(PLANNER_SEARCH_INDEXES.some(index => index.name === 'host_started_at'
+        && index.key.host === 1 && index.key.startedAt === -1));
+    assert.equal(normalizePlannerSearchLogQuery({ host: 'mikes-mac-mini' }).host, 'mikes-mac-mini');
+    assert.equal(normalizePlannerSearchLogQuery({ host: 'unknown' }).host, 'unknown');
+    assert.equal(normalizePlannerSearchLogQuery({ host: { $ne: null } }).host, 'all');
 });
 
 test('admin queries allow only known sorts, sources and bounded pagination', () => {

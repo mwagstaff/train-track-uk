@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "./.dev.sh",
     "start": "node index.js",
+    "start:planner": "node planner-server.js",
+    "smoke:planner-service": "node scripts/planner-service-smoke.js",
     "test": "node --test test/*.test.js",
     "test:planner": "node --test test/planner-*.test.js",
     "planner": "node scripts/planner.js",

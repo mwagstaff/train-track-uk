@@ -9,7 +9,7 @@ import { plannerSearchLog } from './planner-search-log.js';
 
 export function registerPlannerRoutes(app, { service = new PlannerService(), recordRequest = () => {}, requestMiddleware,
     searchLog = plannerSearchLog, routeBoards = new PlannerRouteBoards(service, { searchLog }),
-    savedRouteBoards = new SavedRouteBoards(service, { searchLog }) } = {}) {
+    savedRouteBoards = new SavedRouteBoards(service, { searchLog }), resolveCaller } = {}) {
     const router = express.Router();
     const jobs = new PlannerSearchJobs(service, { searchLog });
     service.searchJobs = jobs;
@@ -109,6 +109,8 @@ export function registerPlannerRoutes(app, { service = new PlannerService(), rec
     router.post('/search', ...beforeRequest('search'), requireJSON, express.json({ limit: '16kb' }), parseError, handle('search'));
     router.get('/journeys/:id', ...beforeRequest('journey'), handle('journey'));
     const caller = req => {
+        if (resolveCaller) return resolveCaller(req);
+        if (req.plannerTrustedCaller) return req.plannerTrustedCaller;
         const remote = req.socket.remoteAddress || 'unknown';
         const forwarded = req.get('CF-Connecting-IP');
         const network = ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remote) && isIP(forwarded || '') ? forwarded : remote;

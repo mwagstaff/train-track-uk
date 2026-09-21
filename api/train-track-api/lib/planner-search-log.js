@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
 import { normalizePlannerSearchRange, plannerSearchWindow } from './planner-search-range.js';
 import { ROUTING_PROFILE_FIELDS } from './planner/telemetry.js';
@@ -25,21 +26,28 @@ const ALGORITHMS = ['original', 'raptor'];
 // bound both retained records and actual database operations during an outage.
 export class PlannerSearchLog {
     constructor({ getCollection = collection, now = Date.now, monotonicNow = () => performance.now(),
-        maxPending = 2000, batchSize = 50, retryMs = 1000, maxAttempts = 3, warn = message => console.warn(message) } = {}) {
-        Object.assign(this, { getCollection, now, monotonicNow, maxPending, batchSize, retryMs, maxAttempts, warn });
+        maxPending = 2000, batchSize = 50, retryMs = 1000, maxAttempts = 3, warn = message => console.warn(message),
+        host = process.env.PLANNER_HOST_ID || hostname(), instanceId = process.env.PLANNER_INSTANCE_ID || randomUUID(),
+        buildRevision = process.env.BUILD_REVISION || null } = {}) {
+        Object.assign(this, { getCollection, now, monotonicNow, maxPending, batchSize, retryMs, maxAttempts, warn,
+            host, instanceId, buildRevision });
         this.pending = new Map();
         this.writing = null;
         this.timer = null;
+        this.closed = false;
         this.dropped = 0;
         this.lastWarning = -Infinity;
     }
 
     start(input = {}) {
+        if (this.closed) return noopHandle;
         try {
             const request = input.request ?? {};
             const startedAt = date(input.startedAt) ?? new Date(this.now());
             const tick = this.monotonicNow();
-            const row = { _id: randomUUID(), source: member(input.source, PLANNER_SEARCH_SOURCES, 'search'),
+            const row = { _id: randomUUID(), host: this.host, instanceId: this.instanceId,
+                ...(this.buildRevision ? { buildRevision: this.buildRevision } : {}),
+                source: member(input.source, PLANNER_SEARCH_SOURCES, 'search'),
                 origin: station(request.origin), destination: station(request.destination),
                 via: Array.isArray(request.via) ? request.via.slice(0, 4).map(station).filter(Boolean) : [],
                 requestedTime: date(request.time), timeType: member(request.timeType, ['departAfter', 'arriveBy'], null),
@@ -118,7 +126,7 @@ export class PlannerSearchLog {
     }
 
     schedule(delay) {
-        if (this.timer || this.writing || !this.pending.size) return;
+        if (this.closed || this.timer || this.writing || !this.pending.size) return;
         this.timer = setTimeout(() => { this.timer = null; void this.flush(); }, delay);
         this.timer.unref();
     }
@@ -156,15 +164,29 @@ export class PlannerSearchLog {
         });
         return this.writing;
     }
+
+    async close({ timeoutMs = 3000 } = {}) {
+        this.closed = true;
+        clearTimeout(this.timer);
+        this.timer = null;
+        const deadline = Date.now() + timeoutMs;
+        while ((this.pending.size || this.writing) && Date.now() < deadline) {
+            if (this.writing) await Promise.race([this.writing, new Promise(resolve => setTimeout(resolve, 25))]);
+            else await this.flush();
+        }
+    }
 }
 
-const SORTS = ['origin', 'destination', 'startedAt', 'finishedAt', 'status', 'cacheStatus', 'durationMs', 'source'];
+const SORTS = ['origin', 'destination', 'startedAt', 'finishedAt', 'status', 'cacheStatus', 'durationMs', 'source', 'host'];
 const positive = (value, fallback, max) => /^\d+$/.test(String(value ?? '')) && Number(value) > 0
     ? Math.min(max, Number(value)) : fallback;
 export function normalizePlannerSearchLogQuery(query = {}) {
+    const host = typeof query.host === 'string' && /^(?:all|unknown|[a-z0-9][a-z0-9._-]{0,63})$/i.test(query.host)
+        ? query.host : 'all';
     return { page: positive(query.page, 1, 100000), pageSize: positive(query.per_page, 50, 200),
         sort: member(query.sort, SORTS, 'startedAt'), direction: member(query.direction, ['asc', 'desc'], 'desc'),
-        ...normalizePlannerSearchRange(query), source: member(query.source, ['all', ...PLANNER_SEARCH_SOURCES], 'all') };
+        ...normalizePlannerSearchRange(query), source: member(query.source, ['all', ...PLANNER_SEARCH_SOURCES], 'all'),
+        ...(host !== 'all' || query.host !== undefined ? { host } : {}) };
 }
 
 const emptyStats = () => ({ total: 0, success: 0, fail: 0, other: 0, pending: 0, completed: 0,
@@ -192,13 +214,15 @@ export class PlannerSearchLogReader {
     }
 
     async snapshot(db, options) {
-        const key = JSON.stringify([options.range, options.q, options.from, options.to, options.source]);
+        const key = JSON.stringify([options.range, options.q, options.from, options.to, options.source, options.host ?? 'all']);
         const old = this.snapshots.get(key);
         if (old && this.now() - old.at < this.statsTtlMs) return old.promise;
         const at = this.now();
         const window = plannerSearchWindow(options, at);
         const filter = { startedAt: { $gte: window.from, $lte: window.to },
-            ...(options.source !== 'all' ? { source: options.source } : {}) };
+            ...(options.source !== 'all' ? { source: options.source } : {}),
+            ...(options.host === 'unknown' ? { $or: [{ host: { $exists: false } }, { host: null }, { host: '' }] }
+                : options.host && options.host !== 'all' ? { host: options.host } : {}) };
         const promise = this.statistics(db, filter).then(stats => ({ filter, window, stats: { ...stats, asOf: new Date(at) } }))
             .catch(error => { if (this.snapshots.get(key)?.promise === promise) this.snapshots.delete(key); throw error; });
         this.snapshots.delete(key);
@@ -234,6 +258,10 @@ export class PlannerSearchLogReader {
     async read(options) {
         const db = await this.getCollection();
         const { filter, window, stats } = await this.snapshot(db, options);
+        const hostFilter = { startedAt: filter.startedAt, ...(options.source !== 'all' ? { source: options.source } : {}) };
+        const hosts = typeof db.distinct === 'function'
+            ? (await db.distinct('host', hostFilter, { maxTimeMS: 3000 })).filter(value => typeof value === 'string' && value).sort()
+            : [];
         const totalPages = Math.max(1, Math.ceil(stats.total / options.pageSize));
         const page = Math.min(options.page, totalPages);
         const direction = options.direction === 'asc' ? 1 : -1;
@@ -243,7 +271,7 @@ export class PlannerSearchLogReader {
             $gte: new Date(Math.max(filter.startedAt.$gte.getTime(), this.now() - PLANNER_SEARCH_RETENTION_MS)) } };
         const records = await db.find(currentFilter, { maxTimeMS: 5000, timeoutMS: 6000, timeoutMode: 'cursorLifetime', allowDiskUse: true })
             .sort({ [options.sort]: direction, _id: direction }).skip((page - 1) * options.pageSize).limit(options.pageSize).toArray();
-        return { ...options, page, total: stats.total, totalPages, stats, window,
+        return { ...options, host: options.host ?? 'all', hosts, page, total: stats.total, totalPages, stats, window,
             rows: records.map(({ _id, revision, ...row }) => ({ id: String(_id), ...row })) };
     }
 }

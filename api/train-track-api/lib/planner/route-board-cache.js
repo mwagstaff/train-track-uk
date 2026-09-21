@@ -8,8 +8,8 @@ const MAX_RECORD_BYTES = 4 * 1024 * 1024;
 // immutable hourly fragments survive until overlapping profiles stop using them.
 export class RouteBoardCache {
     constructor({ collection = () => getMongoCollection(COLLECTION), now = Date.now,
-        maxEntries = 256, maxBytes = 32 * 1024 * 1024, deadlineMs = 750 } = {}) {
-        Object.assign(this, { collection, now, maxEntries, maxBytes, deadlineMs });
+        maxEntries = 256, maxBytes = 32 * 1024 * 1024, deadlineMs = 750, ensureIndex = false } = {}) {
+        Object.assign(this, { collection, now, maxEntries, maxBytes, deadlineMs, ensureIndex });
         this.memory = new Map();
         this.bytes = 0;
         this.database = null;
@@ -19,10 +19,11 @@ export class RouteBoardCache {
     }
 
     async db() {
+        if (!this.collection) return null;
         if (this.now() < this.retryAfter) return null;
         if (!this.database) {
             this.database = Promise.resolve().then(this.collection).then(async value => {
-                await value.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0, name: 'expires_at_ttl', timeoutMS: 500 });
+                if (this.ensureIndex) await value.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0, name: 'expires_at_ttl', timeoutMS: 500 });
                 return value;
             }).catch(() => { this.database = null; this.retryAfter = this.now() + 60000; return null; });
         }

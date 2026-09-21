@@ -28,7 +28,7 @@ test('admin search page delegates sorting, filters and pagination to the reposit
 
 test('linked headings are sortable, Algorithm is a plain heading and latest searches sort first by default', () => {
     const html = render(data());
-    for (const field of ['origin', 'destination', 'startedAt', 'finishedAt', 'status', 'cacheStatus', 'durationMs', 'source']) {
+    for (const field of ['origin', 'destination', 'host', 'startedAt', 'finishedAt', 'status', 'cacheStatus', 'durationMs', 'source']) {
         assert.match(html, new RegExp(`sort=${field}&amp;direction=asc&amp;page=1`));
     }
     assert.match(html, /aria-sort="descending"[^>]*>\s*<a[^>]*sort=startedAt/);
@@ -43,7 +43,7 @@ test('summary uses all-query statistics and explains the actual denominators', (
     assert.match(html, /90\.0% \/ 10\.0%/);
     assert.match(html, /75\.0%/);
     assert.match(html, /2m 15s/);
-    assert.match(html, /All matching searches, across every page/);
+    assert.match(html, /All matching searches in this database, across every page/);
     assert.match(html, /including queue time/);
     assert.match(html, /Unfinished searches, cancellations and expired work are excluded/);
     assert.match(html, /queued, running or interrupted by a server restart/);
@@ -76,7 +76,7 @@ test('algorithm column distinguishes RAPTOR, original and legacy records without
     assert.equal((body.match(/<td>Unknown<\/td>/g) || []).length, 2);
     assert.equal(html.includes('private-algorithm'), false);
     assert.equal(html.includes('<script>'), false);
-    for (const row of body.matchAll(/<tr>([\s\S]*?)<\/tr>/g)) assert.equal((row[1].match(/<td(?:\s|>)/g) || []).length, 9);
+    for (const row of body.matchAll(/<tr>([\s\S]*?)<\/tr>/g)) assert.equal((row[1].match(/<td(?:\s|>)/g) || []).length, 10);
 });
 
 test('pending, cancelled, expired and failed records have truthful status and missing durations', () => {
@@ -105,7 +105,7 @@ test('empty samples show unavailable statistics rather than misleading zero late
     const stats = { total: 0, pending: 0, other: 0, completed: 0, success: 0, fail: 0, cacheHits: 0, cacheMisses: 0, cacheUnknown: 0, p99DurationMs: null, maxDurationMs: null, averageDurationMs: null };
     const html = render(data({ rows: [], stats, total: 0 }));
     assert.match(html, /No searches in this period/);
-    assert.match(html, /<td colspan="9" class="empty">/);
+    assert.match(html, /<td colspan="10" class="empty">/);
     assert.match(html, /<dd>— \/ —<\/dd>/);
     assert.match(html, /<dt>99th percentile<\/dt><dd>—<\/dd>/);
     assert.match(html, /0–0 of 0/);
@@ -149,11 +149,12 @@ test('all search controls preserve root or proxy-mounted URLs, including trailin
             assert.equal(response.status, 200);
             const html = await response.text();
             const links = [...html.matchAll(/href="([^"]+)"/g)].map(match => new URL(match[1].replaceAll('&amp;', '&'), currentUrl));
-            assert.equal(links.length, 11, 'refresh, eight sorts and both pagination directions');
+            assert.equal(links.length, 12, 'refresh, nine sorts and both pagination directions');
             for (const link of links) {
                 assert.equal(link.pathname, `${prefix}/admin/journey-planner`);
                 assert.equal(link.searchParams.get('range'), '24h');
                 assert.equal(link.searchParams.get('source'), 'all');
+                assert.equal(link.searchParams.get('host'), 'all');
                 assert.equal(link.searchParams.get('per_page'), '50');
                 assert.equal((await fetch(link)).status, 200);
             }
@@ -197,7 +198,7 @@ test('custom period fields explicitly use UTC and canonical bookmarks survive ev
     assert.match(html, /name="from"[^>]*value="2026-10-25T00:15:00\.000"/);
     assert.match(html, /name="to"[^>]*value="2026-10-25T01:45:00\.000"/);
     const links = [...html.matchAll(/href="([^"]+)"/g)].map(match => new URL(match[1].replaceAll('&amp;', '&'), 'https://example.test/train-track/admin/journey-planner'));
-    assert.equal(links.length, 11);
+    assert.equal(links.length, 12);
     for (const link of links) {
         assert.equal(link.pathname, '/train-track/admin/journey-planner');
         assert.equal(link.searchParams.get('q'), 'custom');

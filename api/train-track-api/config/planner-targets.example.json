@@ -1,0 +1,20 @@
+{
+  "targets": [
+    {
+      "id": "sky",
+      "label": "Sky (embedded)",
+      "mode": "embedded",
+      "expectedHostId": "sky",
+      "protocolVersion": 1
+    },
+    {
+      "id": "mini",
+      "label": "Mac Mini",
+      "mode": "remote",
+      "baseUrl": "https://mikes-mac-mini.dog-rattlesnake.ts.net/train-track-planner",
+      "expectedHostId": "mikes-mac-mini",
+      "protocolVersion": 1,
+      "tokenEnv": "PLANNER_MINI_SERVICE_TOKEN"
+    }
+  ]
+}

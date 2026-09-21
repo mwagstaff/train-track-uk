@@ -32,7 +32,7 @@ async function temporary(t) {
 
 test('ingestion auto-enables only with both credentials and an enabled planner, with explicit overrides', () => {
   assert.equal(timetableIngestionConfig({}).enabled, false);
-  assert.equal(timetableIngestionConfig({ ...credentials }).enabled, true);
+  assert.equal(timetableIngestionConfig({ ...credentials }).enabled, false);
   assert.equal(timetableIngestionConfig({ TRAIN_TRACK_UK_TIMETABLE_S3_BUCKET_ACCESS_KEY: 'test-only' }).configured, false);
   assert.equal(timetableIngestionConfig({ TRAIN_TRACK_UK_TIMETABLE_S3_BUCKET_SECRET_ACCESS_KEY: 'test-only' }).configured, false);
   assert.equal(timetableIngestionConfig({ ...credentials, PLANNER_ENABLED: 'false' }).enabled, false);

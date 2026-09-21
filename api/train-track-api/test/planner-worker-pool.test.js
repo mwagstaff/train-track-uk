@@ -125,6 +125,25 @@ test('planner worker count defaults to two, supports one or two, and bounds inva
     } finally { service.close(); }
 });
 
+test('temporary load admission cap changes real pool admission without changing configuration', { timeout: 10000 }, async t => {
+    const service = await fixture(t, { maxQueue: 1 });
+    const rendezvous = gate();
+    const first = service.call('search', { request, tag: 'first', gate: rendezvous.buffer });
+    try {
+        await waitFor(() => Atomics.load(rendezvous, 0) === 1);
+        await assert.rejects(service.call('search', { request, tag: 'rejected' }), { code: 'SEARCH_BUSY' });
+        const lease = service.acquireLoadAdmissionCap(2);
+        assert.equal(service.config.maxQueue, 1);
+        const second = service.call('search', { request: { ...request, destination: 'CCC' },
+            tag: 'second', gate: rendezvous.buffer });
+        await waitFor(() => Atomics.load(rendezvous, 0) === 2);
+        assert.equal(service.releaseLoadAdmissionCap(lease.leaseId).maxQueue, 1);
+        await assert.rejects(service.call('search', { request, tag: 'rejected-again' }), { code: 'SEARCH_BUSY' });
+        release(rendezvous);
+        await Promise.all([first, second]);
+    } finally { release(rendezvous); }
+});
+
 test('two synchronous CPU searches run in separate workers and the pool stays bounded', { timeout: 10000 }, async t => {
     const service = await fixture(t);
     const rendezvous = gate();
