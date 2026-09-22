@@ -206,6 +206,21 @@ final class NetworkServicePhone {
     static let shared = NetworkServicePhone()
     private init() {}
 
+    private func measuredData(for request: URLRequest, operation: String, count: Int) async throws -> (Data, URLResponse) {
+        let started = ContinuousClock.now
+        let trace = String(UUID().uuidString.prefix(8))
+        ClientPerf.log("http.start id=\(trace) operation=\(operation) count=\(count)")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            ClientPerf.log("http.end id=\(trace) operation=\(operation) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) status=\(status) bytes=\(data.count)")
+            return (data, response)
+        } catch {
+            ClientPerf.log("http.failed id=\(trace) operation=\(operation) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) errorType=\(type(of: error))")
+            throw error
+        }
+    }
+
     private let maxDeparturePairsPerRequest = 4
     private let departureBatchDelayRangeMs: ClosedRange<UInt64> = 0...500
 
@@ -314,7 +329,7 @@ final class NetworkServicePhone {
         var request = URLRequest(url: url)
         if let timeout { request.timeoutInterval = timeout }
         request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await measuredData(for: request, operation: "departures", count: pairs.count)
         guard let http = response as? HTTPURLResponse else { throw PhoneNetworkError.noData }
         guard (200..<300).contains(http.statusCode) else { throw PhoneNetworkError.httpStatus(http.statusCode) }
 
@@ -374,7 +389,7 @@ final class NetworkServicePhone {
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout ?? 10
         request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await measuredData(for: request, operation: "serviceDetails", count: ids.count)
         guard let http = response as? HTTPURLResponse else { throw PhoneNetworkError.noData }
         guard (200..<300).contains(http.statusCode) else { throw PhoneNetworkError.httpStatus(http.statusCode) }
         let arrAny = try JSONSerialization.jsonObject(with: data, options: [])
@@ -437,7 +452,7 @@ final class NetworkServicePhone {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(deviceToken, forHTTPHeaderField: "X-Device-Token")
         request.httpBody = try JSONEncoder().encode(LoadingDetailsBatchRequestV1(services: requests))
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await measuredData(for: request, operation: "loadingDetails", count: requests.count)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw PhoneNetworkError.noData
         }

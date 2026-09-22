@@ -153,6 +153,8 @@ struct JourneyCard: View {
     @ObservedObject private var serverConfig = ServerConfigStore.shared
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
     @State private var isLoadingServiceDetails = false
+    @State private var appearedAt: ContinuousClock.Instant?
+    @State private var reportedFirstDeparture = false
 
     private struct Summary: Identifiable {
         let firstLeg: Journey
@@ -199,6 +201,17 @@ struct JourneyCard: View {
     private var usesPlannedJourneys: Bool {
         guard let plannedBoard else { return false }
         return !plannedBoard.usesLegacyDepartures && !plannedBoard.usesDirectDepartures
+    }
+
+    private var hasVisibleDepartures: Bool {
+        if usesPlannedJourneys { return !(plannedBoard?.upcomingJourneys(at: Date()).isEmpty ?? true) }
+        return !displayedSummaries.isEmpty
+    }
+
+    private func reportFirstDepartureIfVisible() {
+        guard hasVisibleDepartures, !reportedFirstDeparture, let appearedAt else { return }
+        reportedFirstDeparture = true
+        ClientPerf.log("card.firstDeparture route=\(group.startStation.crs)-\(group.endStation.crs) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: appearedAt)) source=\(usesPlannedJourneys ? "planned" : usesDirectDepartures ? "direct" : "legacy")")
     }
 
     private var showsLaterDeparturesControl: Bool {
@@ -311,6 +324,16 @@ struct JourneyCard: View {
         .task(id: prefetchTaskID) {
             guard plannedBoard == nil || plannedBoard?.usesLegacyDepartures == true || usesDirectDepartures else { return }
             await prefetchVisibleServiceDetails()
+        }
+        .onAppear {
+            appearedAt = .now
+            reportedFirstDeparture = false
+            ClientPerf.log("card.appear route=\(group.startStation.crs)-\(group.endStation.crs) spinner=\(isRefreshingDepartures)")
+            reportFirstDepartureIfVisible()
+        }
+        .onChange(of: hasVisibleDepartures) { _, _ in reportFirstDepartureIfVisible() }
+        .onChange(of: isRefreshingDepartures) { _, refreshing in
+            ClientPerf.log("card.spinner route=\(group.startStation.crs)-\(group.endStation.crs) active=\(refreshing) board=\(plannedBoard?.showsActivity == true) serviceDetails=\(isLoadingServiceDetails)")
         }
     }
 

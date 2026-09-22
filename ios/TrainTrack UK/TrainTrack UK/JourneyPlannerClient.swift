@@ -136,6 +136,15 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
 
     func search(_ request: PlannerSearchRequest, progress: @escaping @MainActor (PlannerSearchProgress) -> Void) async throws -> PlannerSearchResponse {
         try request.validateAlgorithm()
+        let started = ContinuousClock.now
+        let trace = String(UUID().uuidString.prefix(8))
+        var outcome = "started"
+        var polls = 0
+        var lastPhase: PlannerSearchJob.Status?
+        ClientPerf.log("planner.search.start id=\(trace) route=\(request.origin)-\(request.destination)")
+        defer {
+            ClientPerf.log("planner.search.end id=\(trace) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) outcome=\(outcome) polls=\(polls)")
+        }
         let base = try Self.plannerBaseURL(from: selectedBaseURL())
         let body: Data
         if let cursor = request.cursor {
@@ -157,7 +166,9 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
             } catch let failure as HTTPFailure where failure.status == 404 {
                 progress(.running)
                 let result: PlannerSearchResponse = try await send(path: ["search"], body: body, base: base)
-                return try result.verifiedAlgorithm(for: request)
+                let verified = try result.verifiedAlgorithm(for: request)
+                outcome = "completed-legacy"
+                return verified
             }
             guard !job.id.isEmpty else { throw invalidJobResponse() }
             jobID = job.id
@@ -168,23 +179,37 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
                 case .completed:
                     guard let result = job.result else { throw invalidJobResponse() }
                     terminal = true
-                    return try result.verifiedAlgorithm(for: request)
+                    let verified = try result.verifiedAlgorithm(for: request)
+                    outcome = "completed"
+                    return verified
                 case .failed:
                     terminal = true
+                    outcome = "failed"
                     throw job.error ?? PlannerError(code: "SEARCH_FAILED", message: "This search could not be completed. Please try again.")
                 case .cancelled:
                     terminal = true
+                    outcome = "cancelled"
                     throw job.error ?? PlannerError(code: "SEARCH_CANCELLED", message: "This search was cancelled. Please try again.")
                 case .queued:
+                    if lastPhase != job.status {
+                        ClientPerf.log("planner.search.queued id=\(trace) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) position=\(job.queuePosition ?? 0)")
+                    }
                     progress(.queued(position: job.queuePosition))
                 case .running:
+                    if lastPhase != job.status {
+                        ClientPerf.log("planner.search.running id=\(trace) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started))")
+                    }
                     progress(.running)
                 }
+                lastPhase = job.status
                 let interval = min(5, max(0.5, (job.pollAfterMs ?? 1000) / 1000))
                 try await timing.sleep(max(0, min(interval, deadline - timing.now())))
                 job = try await jobRequest(base: base, path: ["search-jobs", job.id], deadline: deadline)
+                polls += 1
             }
         } catch {
+            if outcome == "started" { outcome = Task.isCancelled ? "cancelled" : "failed" }
+            ClientPerf.log("planner.search.error id=\(trace) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) errorType=\(type(of: error))")
             if let jobID, !terminal { cancelJob(id: jobID, base: base) }
             try Task.checkCancellation()
             if let failure = error as? HTTPFailure {
@@ -277,6 +302,10 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
+        let started = ContinuousClock.now
+        let trace = String(UUID().uuidString.prefix(8))
+        let operation = path.first ?? "unknown"
+        ClientPerf.log("planner.http.start id=\(trace) operation=\(operation) method=\(request.httpMethod ?? "GET")")
         let timeoutMessage = path.first == "search" || path.first == "search-jobs"
             ? "This search took too long. Try again, or choose a different time."
             : "The journey planner took too long to respond. Please try again."
@@ -285,10 +314,15 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
         do {
             (data, response) = try await session.data(for: request)
         } catch let error as URLError where error.code == .timedOut {
+            ClientPerf.log("planner.http.failed id=\(trace) operation=\(operation) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) error=timeout")
             try Task.checkCancellation()
             throw PlannerError(code: "NETWORK_TIMEOUT", message: timeoutMessage)
+        } catch {
+            ClientPerf.log("planner.http.failed id=\(trace) operation=\(operation) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) errorType=\(type(of: error))")
+            throw error
         }
         try Task.checkCancellation()
+        ClientPerf.log("planner.http.end id=\(trace) operation=\(operation) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) status=\((response as? HTTPURLResponse)?.statusCode ?? 0) bytes=\(data.count)")
         guard let http = response as? HTTPURLResponse else {
             throw PlannerError(code: "UNAVAILABLE", message: "The journey planner is unavailable. Please try again.")
         }
@@ -304,9 +338,13 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
             if preserveHTTPStatus { throw HTTPFailure(status: http.statusCode, error: error) }
             throw error
         }
+        let decodingStarted = ContinuousClock.now
         do {
-            return try PlannerTime.decoder().decode(Response.self, from: data)
+            let value = try PlannerTime.decoder().decode(Response.self, from: data)
+            ClientPerf.log("planner.decode id=\(trace) operation=\(operation) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: decodingStarted))")
+            return value
         } catch {
+            ClientPerf.log("planner.decode.failed id=\(trace) operation=\(operation) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: decodingStarted))")
             throw PlannerError(code: "INVALID_RESPONSE", message: "The journey planner returned an unreadable response. Please try again.")
         }
     }

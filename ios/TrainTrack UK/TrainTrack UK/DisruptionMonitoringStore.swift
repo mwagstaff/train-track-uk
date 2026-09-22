@@ -25,7 +25,16 @@ enum DisruptionMonitoringClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(snapshot.deviceID, forHTTPHeaderField: "X-Device-Token")
         request.httpBody = try JSONEncoder().encode(snapshot)
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let started = ContinuousClock.now
+        ClientPerf.log("advance.http.start monitors=\(snapshot.monitors.count)")
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            ClientPerf.log("advance.http.failed elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) errorType=\(type(of: error))")
+            throw error
+        }
+        ClientPerf.log("advance.http.end elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) status=\((response as? HTTPURLResponse)?.statusCode ?? 0) bytes=\(data.count)")
         guard let http = response as? HTTPURLResponse else { throw DisruptionMonitoringError.unavailable }
         if http.statusCode == 410 { throw DisruptionMonitoringError.deviceDeleted }
         if (400..<500).contains(http.statusCode),
@@ -139,9 +148,17 @@ final class DisruptionMonitoringStore {
         #endif
         revision += 1
         needsSync = true
-        guard !isRefreshing else { return }
+        guard !isRefreshing else {
+            ClientPerf.log("advance.sync.coalesced revision=\(revision)")
+            return
+        }
         isRefreshing = true
-        defer { isRefreshing = false }
+        let started = ContinuousClock.now
+        ClientPerf.log("advance.sync.start revision=\(revision)")
+        defer {
+            isRefreshing = false
+            ClientPerf.log("advance.sync.end elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) revision=\(revision)")
+        }
         while needsSync && !isSuspended && !Task.isCancelled {
             needsSync = false
             let authorized = await pushAuthorized()
@@ -178,16 +195,19 @@ final class DisruptionMonitoringStore {
                 response = result
                 responseHost = currentHost
                 lastError = nil
+                ClientPerf.log("advance.sync.applied elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) mode=\(result.mode) monitors=\(result.monitors.count)")
                 defaults.set(try? JSONEncoder().encode(result), forKey: Self.responseKey)
                 defaults.set(currentHost, forKey: Self.hostKey)
             } catch DisruptionMonitoringError.deviceDeleted {
                 suspendAfterDataDeletion()
             } catch DisruptionMonitoringError.rejected(let message) {
+                ClientPerf.log("advance.sync.rejected elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started))")
                 lastError = "Advance warning settings could not be saved. \(message)"
                 needsSync = false
             } catch is CancellationError {
                 return
             } catch {
+                ClientPerf.log("advance.sync.failed elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) errorType=\(type(of: error))")
                 lastError = "Upcoming disruption checks could not be refreshed. We’ll try again when you next open the app."
                 // Don't retry continuously while offline. Local settings/deletions remain
                 // the source of truth and will be uploaded on the next foreground refresh.

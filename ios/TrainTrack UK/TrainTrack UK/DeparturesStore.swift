@@ -182,7 +182,10 @@ final class DeparturesStore: ObservableObject {
     }
 
     private func refreshPrioritizingFavourites(for journeys: [Journey]) async {
+        let started = ContinuousClock.now
         let favouriteJourneys = journeys.filter(\.favorite)
+        ClientPerf.log("departures.initial.start favourites=\(favouriteJourneys.count) others=\(journeys.count - favouriteJourneys.count)")
+        defer { ClientPerf.log("departures.initial.end elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started))") }
         guard !favouriteJourneys.isEmpty else {
             await refresh(for: journeys)
             return
@@ -221,6 +224,9 @@ final class DeparturesStore: ObservableObject {
             }
             return
         }
+        let started = ContinuousClock.now
+        let trace = String(UUID().uuidString.prefix(8))
+        ClientPerf.log("departures.refresh.start id=\(trace) pairs=\(pairs.count) delayed=\(delayBeforeEachBatch)")
         do {
             let snapshots = try await NetworkServicePhone.shared.fetchDeparturesAggregated(
                 pairs: pairs,
@@ -230,10 +236,13 @@ final class DeparturesStore: ObservableObject {
                 snapshots,
                 replacingExistingDepartures: replacingExistingDepartures
             )
+            ClientPerf.log("departures.refresh.applied id=\(trace) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) snapshots=\(snapshots.count) departures=\(departures.values.reduce(0) { $0 + $1.count })")
             reloadClosestFavouriteWidgetIfNeeded()
             await refreshLoading(for: departures)
+            ClientPerf.log("departures.refresh.complete id=\(trace) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started))")
         } catch {
             markDepartureRefreshFailed(for: pairs)
+            ClientPerf.log("departures.refresh.failed id=\(trace) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) errorType=\(type(of: error))")
         }
     }
 

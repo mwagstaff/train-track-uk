@@ -132,6 +132,7 @@ final class SavedRoutePlannerStore {
     private var laterQueries: [String: SavedRouteQuery] = [:]
     @ObservationIgnored private let client: any SavedRouteBoardServing
     @ObservationIgnored private var flights: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var firstRequestStarted: [String: ContinuousClock.Instant] = [:]
     @ObservationIgnored private var laterSearches: Set<String> = []
     @ObservationIgnored private let now: () -> Date
 
@@ -226,14 +227,18 @@ final class SavedRoutePlannerStore {
         for offset in stride(from: 0, to: missing.count, by: 8) {
             let batch = Array(missing[offset..<min(offset + 8, missing.count)])
             let keys = batch.map { server + "|" + $0.id }
+            let trace = String(UUID().uuidString.prefix(8))
             for key in keys {
                 var state = self.states[key] ?? SavedRouteBoardState()
+                if state.requestedAt == nil { firstRequestStarted[key] = .now }
                 state.requestedAt = state.requestedAt ?? now()
                 state.isRefreshing = true
                 self.states[key] = state
             }
             let task = Task { [weak self] in
                 guard let self else { return }
+                let started = ContinuousClock.now
+                ClientPerf.log("savedRoutes.batch.start id=\(trace) routes=\(batch.count) force=\(force)")
                 defer {
                     for key in keys {
                         self.flights[key] = nil
@@ -244,6 +249,7 @@ final class SavedRoutePlannerStore {
                 do {
                     let response = try await self.client.routeBoards(batch)
                     try Task.checkCancellation()
+                    ClientPerf.log("savedRoutes.batch.response id=\(trace) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) boards=\(response.boards.map { "\($0.source ?? "unknown"):\($0.status)" }.joined(separator: ","))")
                     guard [3, 4].contains(response.apiVersion) else { throw PlannerError(code: "INVALID_RESPONSE", message: "Journey options could not be read. Please try again.") }
                     for (query, key) in zip(batch, keys) {
                         guard var board = response.boards.first(where: { $0.id == query.id }) else {
@@ -271,6 +277,11 @@ final class SavedRoutePlannerStore {
                         let failures = (board.error != nil || liveRefreshFailed) && !waiting
                             ? (self.states[key]?.consecutiveFailures ?? 0) + 1
                             : (board.status == "ready" ? 0 : self.states[key]?.consecutiveFailures ?? 0)
+                        if (board.result != nil || board.direct != nil), self.states[key]?.board?.result == nil,
+                           self.states[key]?.board?.direct == nil, let requestStarted = self.firstRequestStarted[key] {
+                            ClientPerf.log("savedRoutes.firstData route=\(query.origin)-\(query.destination) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: requestStarted)) source=\(board.source ?? "unknown") status=\(board.status)")
+                        }
+                        if board.status == "ready" { self.firstRequestStarted[key] = nil }
                         self.states[key] = SavedRouteBoardState(board: board,
                             message: failures >= 3 ? board.error?.message ?? self.states[key]?.message : nil,
                             nextRefresh: self.now().addingTimeInterval(interval),
@@ -278,11 +289,13 @@ final class SavedRoutePlannerStore {
                             waitingForCapacity: waiting, consecutiveFailures: failures)
                     }
                 } catch SavedRouteBoardError.unsupported {
+                    ClientPerf.log("savedRoutes.batch.unsupported id=\(trace) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started))")
                     for key in keys {
                         self.states[key] = SavedRouteBoardState(message: "Journey planning is not available on this server. Showing saved-route departures.",
                             usesLegacyDepartures: true, nextRefresh: self.now().addingTimeInterval(300))
                     }
                 } catch let error as PlannerError where error.code == "SEARCH_BUSY" {
+                    ClientPerf.log("savedRoutes.batch.busy id=\(trace) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started))")
                     for key in keys {
                         var state = self.states[key] ?? SavedRouteBoardState()
                         state.message = nil
@@ -292,6 +305,7 @@ final class SavedRoutePlannerStore {
                     }
                 } catch {
                     guard !Task.isCancelled else { return }
+                    ClientPerf.log("savedRoutes.batch.failed id=\(trace) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) errorType=\(type(of: error))")
                     for key in keys { self.fail(key: key, message: error.localizedDescription) }
                 }
             }
