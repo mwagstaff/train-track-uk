@@ -211,12 +211,12 @@ test('target activation checks readiness and uses revision comparison before cha
     await assert.rejects(manager.select({ targetId: 'sky', revision: 3 }), { code: 'TARGET_REVISION_CONFLICT' });
 });
 
-test('explicit memory persistence starts the production planner without Mongo for isolated MVP measurements', async () => {
+test('explicit memory persistence starts the production planner without Mongo for isolated measurements', async () => {
     let closed = false;
-    const service = { config: { dataDirectory: '/tmp/planner-mvp-test' }, close() { closed = true; } };
-    const runtime = await createPlannerServer({ env: { NODE_ENV: 'production', PLANNER_HOST_ID: 'mini-mvp',
+    const service = { config: { dataDirectory: '/tmp/planner-service-test' }, close() { closed = true; } };
+    const runtime = await createPlannerServer({ env: { NODE_ENV: 'production', PLANNER_HOST_ID: 'mini-planner',
         PLANNER_SERVICE_TOKEN: token, PLANNER_INGESTION_ENABLED: 'false', PLANNER_PERSISTENCE_MODE: 'memory',
-        PLANNER_DATA_DIR: '/tmp/planner-mvp-test' }, service });
+        PLANNER_DATA_DIR: '/tmp/planner-service-test' }, service });
     assert.equal(runtime.persistenceMode, 'memory');
     assert.equal(runtime.searchLog, noOpPlannerSearchLog);
     await runtime.close();

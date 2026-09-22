@@ -1,72 +1,76 @@
-Couldn't read values in CFPrefsPlistSource<0x1062d8640> (Domain: group.dev.skynolimit.traintrack, User: kCFPreferencesAnyUser, ByHost: Yes, Container: (null), Contents Need Refresh: Yes (Cached: 0, Newest: 0, Index: 0): Using kCFPreferencesAnyUser with a container is only allowed for System Containers, detaching from cfprefsd
+Couldn't read values in CFPrefsPlistSource<0x1406d0640> (Domain: group.dev.skynolimit.traintrack, User: kCFPreferencesAnyUser, ByHost: Yes, Container: (null), Contents Need Refresh: Yes (Cached: 0, Newest: 0, Index: 0): Using kCFPreferencesAnyUser with a container is only allowed for System Containers, detaching from cfprefsd
 [Scheduled] App launch
 Device: 3DEE2ED2-4B35-4ED1-8693-D50AB0AA8794
 API: https://api.skynolimit.dev/train-track/api/v2
 Notification APNs sandbox: true
 📊 [LiveActivity] State updated: isActive=false, activeJourneys=[]
-[JourneyHistory] Journey history store ready with 44 record(s)
+[JourneyHistory] Journey history store ready with 45 record(s)
 [ClientPerf] advance.sync.start revision=1
-{"msg":"#Warning Error reading file", "file":"\/\/private\/var\/Managed Preferences\/mobile\/com.apple.CoreMotion.plist", "error":"Error Domain=NSCocoaErrorDomain Code=257 \"The file “com.apple.CoreMotion.plist” couldn’t be opened because you don’t have permission to view it.\" UserInfo={NSFilePath=\/\/private\/var\/Managed Preferences\/mobile\/com.apple.CoreMotion.plist, NSURL=file:\/\/\/\/private\/var\/Managed%20Preferences\/mobile\/com.apple.CoreMotion.plist, NSUnderlyingError=0x116c1cab0 {Error Domain=NSPOSIXErrorDomain Code=1 \"Operation not permitted\"}}"}
+{"msg":"#Warning Error reading file", "file":"\/\/private\/var\/Managed Preferences\/mobile\/com.apple.CoreMotion.plist", "error":"Error Domain=NSCocoaErrorDomain Code=257 \"The file “com.apple.CoreMotion.plist” couldn’t be opened because you don’t have permission to view it.\" UserInfo={NSFilePath=\/\/private\/var\/Managed Preferences\/mobile\/com.apple.CoreMotion.plist, NSURL=file:\/\/\/\/private\/var\/Managed%20Preferences\/mobile\/com.apple.CoreMotion.plist, NSUnderlyingError=0x141410ae0 {Error Domain=NSPOSIXErrorDomain Code=1 \"Operation not permitted\"}}"}
 📍 [LocationManagerPhone] init auth=3
 📍 [LocationManagerPhone] request auth=3
 📍 [LocationManagerPhone] requestLocation()
 Error -17102 decompressing image -- possibly corrupt
-Do not put a navigation destination modifier inside a "lazy” container, like `List` or `LazyVStack`. These containers create child views only when needed to render on screen. Add the navigation destination modifier outside these containers so that the navigation stack can always see the destination. There's a misplaced `navigationDestination(isPresented:destination:)` modifier presenting `Optional<PlannerJourneyDetailView>`. It will be ignored in a future release.
-[ClientPerf] card.appear route=VIC-KTH spinner=true
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-[ActivityMonitor] Activity.activityUpdates stream started
-📍 [GeofenceManager] init auth=3 monitored=12
-Reading from public effective user settings.
-📍 [GeofenceManager] Started CLServiceSession(.always)
-non-launching port is incompatible with service identifier "com.apple.PointerUI.pointeruid.default-service"
-[ClientPerf] departures.initial.start favourites=2 others=14
-[ClientPerf] departures.refresh.start id=833FB673 pairs=2 delayed=false
-[ClientPerf] http.start id=3685A44A operation=departures count=2
-[ClientPerf] advance.http.start monitors=12
-⚙️ [ServerConfig] maxSubscriptionsPerDevice = 3
-⚙️ [ServerConfig] maxLiveSessionsPerDevice = 3
-⚙️ [ServerConfig] operator branding version = 2026-09-16
-📍 [LocationManagerPhone] authorization changed -> 3
-📍 [LocationManagerPhone] didUpdateLocations lat=51.51636603807369 lng=-0.10568836247553197
-📍 [LocationManagerPhone] cancel active request
-📍 [LocationManagerPhone] didUpdateLocations lat=51.51636603807369 lng=-0.10568836247553197
-📍 [LocationManagerPhone] didUpdateLocations lat=51.51636603807369 lng=-0.10568836247553197
-📍 [LocationManagerPhone] didUpdateLocations lat=51.516366045489086 lng=-0.1056884248912459
-📍 [LocationManagerPhone] didUpdateLocations lat=51.516366045489086 lng=-0.1056884248912459
-📍 [LocationManagerPhone] didUpdateLocations lat=51.516366045684904 lng=-0.10568842606361467
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-🔄 [App] App became active - triggering Live Activity refresh
-📍 [App] App became active - refreshing notification subscriptions & geofences
 nw_connection_copy_protocol_metadata_internal_block_invoke [C3] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
 nw_connection_copy_protocol_metadata_internal_block_invoke [C3] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
 nw_connection_copy_protocol_metadata_internal_block_invoke [C3] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
 nw_connection_copy_connected_local_endpoint_block_invoke [C3] Client called nw_connection_copy_connected_local_endpoint on unconnected nw_connection
 nw_connection_copy_connected_remote_endpoint_block_invoke [C3] Client called nw_connection_copy_connected_remote_endpoint on unconnected nw_connection
+Do not put a navigation destination modifier inside a "lazy” container, like `List` or `LazyVStack`. These containers create child views only when needed to render on screen. Add the navigation destination modifier outside these containers so that the navigation stack can always see the destination. There's a misplaced `navigationDestination(isPresented:destination:)` modifier presenting `Optional<PlannerJourneyDetailView>`. It will be ignored in a future release.
+[ClientPerf] card.appear route=KTH-VIC spinner=true
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ActivityMonitor] Activity.activityUpdates stream started
+📍 [GeofenceManager] init auth=3 monitored=0
+Reading from public effective user settings.
+📍 [GeofenceManager] Started CLServiceSession(.always)
+non-launching port is incompatible with service identifier "com.apple.PointerUI.pointeruid.default-service"
+[ClientPerf] departures.initial.start favourites=2 others=14
+[ClientPerf] departures.refresh.start id=3CDE0D75 pairs=2 delayed=false
+[ClientPerf] http.start id=E54A8F73 operation=departures count=2
+[ClientPerf] advance.http.start monitors=12
+📍 [LocationManagerPhone] authorization changed -> 3
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] cancel active request
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40137976330141 lng=-0.04574036960341714
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+🔄 [App] App became active - triggering Live Activity refresh
+📍 [App] App became active - refreshing notification subscriptions & geofences
 [Geofence] Location authorization changed: status=authorizedAlways
 [Scheduled] Live Activity scan: tracked=0, system=0, unregistered=0, scheduled=0
 [LiveActivity] Skipping check-in because no activities are active
 [Scheduled] Live Activity scan: tracked=0, system=0, unregistered=0, scheduled=0
 ⚠️ [LiveActivity] No active activities, skipping refresh
-[ClientPerf] advance.sync.coalesced revision=2
+nw_connection_stats_fill_in_statistics_report_for_endpoint_on_nw_queue nw_connection_get_mptcpinfo_for_connected_endpoint_on_nw_queue failed
 📍 [LocationManagerPhone] request auth=3
 📍 [LocationManagerPhone] requestLocation()
-📍 [LocationManagerPhone] didUpdateLocations lat=51.516366045684904 lng=-0.10568842606361467
+[ClientPerf] advance.sync.coalesced revision=2
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
 📍 [LocationManagerPhone] cancel active request
-📍 [LocationManagerPhone] didUpdateLocations lat=51.51636604569129 lng=-0.10568842611755032
-📍 [LocationManagerPhone] didUpdateLocations lat=51.51636604569129 lng=-0.10568842611755032
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40137968712186 lng=-0.04574068408644023
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
 [LiveActivity] Push-to-start token registered successfully
-[ClientPerf] advance.http.end elapsedMs=586 status=200 bytes=1682
-[ClientPerf] http.end id=3685A44A operation=departures elapsedMs=589 status=200 bytes=9820
-[ClientPerf] departures.refresh.applied id=833FB673 elapsedMs=595 snapshots=2 departures=32
-[ClientPerf] http.start id=E45F0119 operation=loadingDetails count=16
+[ClientPerf] advance.http.end elapsedMs=5944 status=200 bytes=1682
+[ClientPerf] http.end id=E54A8F73 operation=departures elapsedMs=5947 status=200 bytes=9820
+nw_connection_copy_protocol_metadata_internal_block_invoke [C9] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+nw_connection_copy_protocol_metadata_internal_block_invoke [C9] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+nw_connection_copy_protocol_metadata_internal_block_invoke [C9] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
+nw_connection_copy_connected_local_endpoint_block_invoke [C9] Client called nw_connection_copy_connected_local_endpoint on unconnected nw_connection
+nw_connection_copy_connected_remote_endpoint_block_invoke [C9] Client called nw_connection_copy_connected_remote_endpoint on unconnected nw_connection
+[ClientPerf] departures.refresh.applied id=3CDE0D75 elapsedMs=5957 snapshots=2 departures=32
+[ClientPerf] http.start id=AE805D53 operation=loadingDetails count=16
 ⚙️ [ServerConfig] maxSubscriptionsPerDevice = 3
 ⚙️ [ServerConfig] maxLiveSessionsPerDevice = 3
 ⚙️ [ServerConfig] operator branding version = 2026-09-16
-[ClientPerf] savedRoutes.batch.start id=B4B4F615 routes=1 force=false
-[ClientPerf] planner.http.start id=8325902A operation=route-boards method=POST
+[ClientPerf] savedRoutes.batch.start id=6A18A653 routes=1 force=false
+[ClientPerf] planner.http.start id=E23DB935 operation=route-boards method=POST
 [ClientPerf] advance.http.start monitors=12
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
 [JourneyHistory] Restored 0 journey candidate(s); active journey none
 [ClientPerf] advance.sync.coalesced revision=3
 📍 [GeofenceManager] updateBackgroundLocationState active=true allowsBackground=false
@@ -83,138 +87,745 @@ nw_connection_copy_connected_remote_endpoint_block_invoke [C3] Client called nw_
 📍 [GeofenceManager] Stopped CLBackgroundActivitySession
 📍 [GeofenceManager] updateBackgroundLocationState active=true allowsBackground=false
 📍 [GeofenceManager] Stopped CLBackgroundActivitySession
+📍 [GeofenceManager] updateBackgroundLocationState active=true allowsBackground=false
+📍 [GeofenceManager] Stopped CLBackgroundActivitySession
+📍 [GeofenceManager] updateBackgroundLocationState active=true allowsBackground=false
+📍 [GeofenceManager] Stopped CLBackgroundActivitySession
+[Scheduled] Live Activity scan: tracked=0, system=0, unregistered=0, scheduled=0
+[LiveActivity] Push-to-start token registered successfully
+⚙️ [ServerConfig] maxSubscriptionsPerDevice = 3
+⚙️ [ServerConfig] maxLiveSessionsPerDevice = 3
+⚙️ [ServerConfig] operator branding version = 2026-09-16
+nw_connection_stats_fill_in_statistics_report_for_endpoint_on_nw_queue nw_connection_get_mptcpinfo_for_connected_endpoint_on_nw_queue failed, backtrace limit exceeded
+[ClientPerf] advance.http.end elapsedMs=229 status=200 bytes=1682
 [Geofence] Geofence eligibility
 Scheduled: 1
 Live sessions: 0
 Eligible: 1
 Skipped: expired=0, noEnabledLegs=0
 Sessions: none
+[ClientPerf] advance.http.start monitors=12
 📍 [GeofenceManager] requestAlwaysAuthorizationIfNeeded auth=3
-[ClientPerf] advance.http.end elapsedMs=97 status=200 bytes=1682
-[LiveActivity] Push-to-start token registered successfully
 📍 [GeofenceManager] updateBackgroundLocationState active=true allowsBackground=false
 📍 [GeofenceManager] Stopped CLBackgroundActivitySession
 📍 [GeofenceManager] updateBackgroundLocationState active=true allowsBackground=false
 📍 [GeofenceManager] Stopped CLBackgroundActivitySession
 📍 Geofence sync: 12 desired, +0 added, -0 removed, tracking=2
-[ClientPerf] advance.http.start monitors=12
 [Geofence] Geofence sync: 12 desired, +0 added, -0 removed, tracking=2
-📍 [GeofenceManager] updateBackgroundLocationState active=true allowsBackground=false
-📍 [GeofenceManager] Stopped CLBackgroundActivitySession
-📍 [GeofenceManager] updateBackgroundLocationState active=true allowsBackground=false
-📍 [GeofenceManager] Stopped CLBackgroundActivitySession
+[ClientPerf] planner.http.end id=E23DB935 operation=route-boards elapsedMs=335 status=200 bytes=177
+[ClientPerf] planner.decode id=E23DB935 operation=route-boards elapsedMs=2
+[ClientPerf] savedRoutes.batch.response id=6A18A653 elapsedMs=339 boards=direct:queued
+[ClientPerf] advance.http.end elapsedMs=236 status=200 bytes=1682
+[ClientPerf] advance.sync.applied elapsedMs=12185 mode=shadow monitors=12
+[ClientPerf] advance.sync.end elapsedMs=12187 revision=3
 [Scheduled] Live Activity scan: tracked=0, system=0, unregistered=0, scheduled=0
-[ClientPerf] planner.http.end id=8325902A operation=route-boards elapsedMs=197 status=200 bytes=177
-[ClientPerf] planner.decode id=8325902A operation=route-boards elapsedMs=2
-[ClientPerf] savedRoutes.batch.response id=B4B4F615 elapsedMs=201 boards=direct:queued
-[ClientPerf] advance.http.end elapsedMs=154 status=200 bytes=1682
-[ClientPerf] advance.sync.applied elapsedMs=1334 mode=shadow monitors=12
-[ClientPerf] advance.sync.end elapsedMs=1336 revision=3
+[ClientPerf] http.end id=AE805D53 operation=loadingDetails elapsedMs=1016 status=200 bytes=15382
+[ClientPerf] departures.refresh.complete id=3CDE0D75 elapsedMs=6981
+[ClientPerf] departures.refresh.start id=DCCC3A5A pairs=12 delayed=false
+[ClientPerf] http.start id=C484514C operation=departures count=4
+[ClientPerf] savedRoutes.batch.start id=3287493C routes=1 force=false
+[ClientPerf] planner.http.start id=D824064D operation=route-boards method=POST
+[ClientPerf] planner.http.end id=D824064D operation=route-boards elapsedMs=325 status=200 bytes=4645
+[ClientPerf] planner.decode id=D824064D operation=route-boards elapsedMs=0
+[ClientPerf] savedRoutes.batch.response id=3287493C elapsedMs=326 boards=direct:ready
+[ClientPerf] savedRoutes.firstData route=KTH-VIC elapsedMs=2965 source=direct status=ready
+[ClientPerf] card.firstDeparture route=KTH-VIC elapsedMs=7930 source=direct
+[ClientPerf] card.spinner route=KTH-VIC active=false board=false serviceDetails=true
+[ClientPerf] card.spinner route=KTH-VIC active=true board=false serviceDetails=true
+[ClientPerf] http.start id=B22707B8 operation=serviceDetails count=5
+[ClientPerf] http.end id=C484514C operation=departures elapsedMs=1043 status=200 bytes=19769
+[ClientPerf] http.start id=787A7FDC operation=departures count=4
 [Scheduled] Live Activity scan: tracked=0, system=0, unregistered=0, scheduled=0
-[ClientPerf] http.end id=E45F0119 operation=loadingDetails elapsedMs=907 status=200 bytes=15386
-[ClientPerf] departures.refresh.complete id=833FB673 elapsedMs=1509
-[ClientPerf] departures.refresh.start id=EFE17881 pairs=12 delayed=false
-[ClientPerf] http.start id=16C75519 operation=departures count=4
-[ClientPerf] http.end id=16C75519 operation=departures elapsedMs=144 status=200 bytes=19739
-[ClientPerf] http.start id=0D9CEED9 operation=departures count=4
-[ClientPerf] savedRoutes.batch.start id=8B26B056 routes=1 force=false
-[ClientPerf] planner.http.start id=CEC06FDF operation=route-boards method=POST
-[ClientPerf] planner.http.end id=CEC06FDF operation=route-boards elapsedMs=180 status=200 bytes=5084
-[ClientPerf] planner.decode id=CEC06FDF operation=route-boards elapsedMs=0
-[ClientPerf] savedRoutes.batch.response id=8B26B056 elapsedMs=181 boards=direct:ready
-[ClientPerf] savedRoutes.firstData route=VIC-KTH elapsedMs=1561 source=direct status=ready
-[ClientPerf] card.firstDeparture route=VIC-KTH elapsedMs=2256 source=direct
-[ClientPerf] card.spinner route=VIC-KTH active=false board=false serviceDetails=true
-[ClientPerf] card.spinner route=VIC-KTH active=true board=false serviceDetails=true
-[ClientPerf] http.start id=16D27F2F operation=serviceDetails count=5
-[ClientPerf] http.end id=0D9CEED9 operation=departures elapsedMs=1360 status=200 bytes=10445
-[ClientPerf] http.start id=3FAD65AD operation=departures count=4
-[Scheduled] Live Activity scan: tracked=0, system=0, unregistered=0, scheduled=0
-[ClientPerf] http.end id=16D27F2F operation=serviceDetails elapsedMs=975 status=200 bytes=12206
-[ClientPerf] card.spinner route=VIC-KTH active=false board=false serviceDetails=false
-[ClientPerf] http.end id=3FAD65AD operation=departures elapsedMs=1046 status=200 bytes=10489
-[ClientPerf] departures.refresh.applied id=EFE17881 elapsedMs=2559 snapshots=12 departures=162
-[ClientPerf] http.start id=F2677FD9 operation=loadingDetails count=50
-[ClientPerf] http.end id=F2677FD9 operation=loadingDetails elapsedMs=1250 status=200 bytes=41085
-[ClientPerf] departures.refresh.complete id=EFE17881 elapsedMs=3818
-[ClientPerf] departures.initial.end elapsedMs=5328
-📍 [LocationManagerPhone] init auth=3
-📍 [LocationManagerPhone] request auth=3
-📍 [LocationManagerPhone] requestLocation()
-📍 [LocationManagerPhone] init auth=3
-📍 [LocationManagerPhone] request auth=3
-📍 [LocationManagerPhone] requestLocation()
-Do not put a navigation destination modifier inside a "lazy” container, like `List` or `LazyVStack`. These containers create child views only when needed to render on screen. Add the navigation destination modifier outside these containers so that the navigation stack can always see the destination. There's a misplaced `navigationDestination(isPresented:destination:)` modifier presenting `Optional<PlannerJourneyDetailView>`. It will be ignored in a future release.
-Do not put a navigation destination modifier inside a "lazy” container, like `List` or `LazyVStack`. These containers create child views only when needed to render on screen. Add the navigation destination modifier outside these containers so that the navigation stack can always see the destination. There's a misplaced `navigationDestination(isPresented:destination:)` modifier presenting `Optional<PlannerJourneyDetailView>`. It will be ignored in a future release.
-Do not put a navigation destination modifier inside a "lazy” container, like `List` or `LazyVStack`. These containers create child views only when needed to render on screen. Add the navigation destination modifier outside these containers so that the navigation stack can always see the destination. There's a misplaced `navigationDestination(isPresented:destination:)` modifier presenting `Optional<PlannerJourneyDetailView>`. It will be ignored in a future release.
-Do not put a navigation destination modifier inside a "lazy” container, like `List` or `LazyVStack`. These containers create child views only when needed to render on screen. Add the navigation destination modifier outside these containers so that the navigation stack can always see the destination. There's a misplaced `navigationDestination(isPresented:destination:)` modifier presenting `Optional<PlannerJourneyDetailView>`. It will be ignored in a future release.
-Do not put a navigation destination modifier inside a "lazy” container, like `List` or `LazyVStack`. These containers create child views only when needed to render on screen. Add the navigation destination modifier outside these containers so that the navigation stack can always see the destination. There's a misplaced `navigationDestination(isPresented:destination:)` modifier presenting `Optional<PlannerJourneyDetailView>`. It will be ignored in a future release.
-[ClientPerf] card.appear route=BIK-ELE spinner=true
-[ClientPerf] card.appear route=STP-KTH spinner=true
-[ClientPerf] card.appear route=LBG-CLK spinner=true
-[ClientPerf] card.appear route=BFR-KTH spinner=true
-[ClientPerf] card.appear route=ZFD-KTH spinner=true
+[ClientPerf] http.end id=B22707B8 operation=serviceDetails elapsedMs=693 status=200 bytes=13052
+[ClientPerf] card.spinner route=KTH-VIC active=false board=false serviceDetails=false
+[ClientPerf] http.end id=787A7FDC operation=departures elapsedMs=1526 status=200 bytes=10453
+[ClientPerf] http.start id=C3822D17 operation=departures count=4
+[ClientPerf] http.end id=C3822D17 operation=departures elapsedMs=1041 status=200 bytes=10505
+[ClientPerf] departures.refresh.applied id=DCCC3A5A elapsedMs=3640 snapshots=12 departures=162
+[ClientPerf] http.start id=5D0DDC77 operation=loadingDetails count=50
+[ClientPerf] http.end id=5D0DDC77 operation=loadingDetails elapsedMs=1876 status=200 bytes=38979
+[ClientPerf] departures.refresh.complete id=DCCC3A5A elapsedMs=5534
+[ClientPerf] departures.initial.end elapsedMs=12516
+[ClientPerf] departures.refresh.start id=7788A926 pairs=14 delayed=true
+[ClientPerf] http.start id=99390BB8 operation=departures count=4
+[ClientPerf] http.end id=99390BB8 operation=departures elapsedMs=106 status=200 bytes=19954
+[ClientPerf] http.start id=C19BC01F operation=departures count=4
+[ClientPerf] http.end id=C19BC01F operation=departures elapsedMs=122 status=200 bytes=19881
+[ClientPerf] http.start id=9FE1D900 operation=departures count=4
+[ClientPerf] http.end id=9FE1D900 operation=departures elapsedMs=101 status=200 bytes=413
+[ClientPerf] http.start id=F1E3BBCC operation=departures count=2
+[ClientPerf] http.end id=F1E3BBCC operation=departures elapsedMs=102 status=200 bytes=10299
+[ClientPerf] departures.refresh.applied id=7788A926 elapsedMs=1294 snapshots=14 departures=162
+[ClientPerf] http.start id=83A39F77 operation=loadingDetails count=50
+[ClientPerf] http.end id=83A39F77 operation=loadingDetails elapsedMs=1076 status=200 bytes=33454
+[ClientPerf] departures.refresh.complete id=7788A926 elapsedMs=2390
+[ClientPerf] card.spinner route=KTH-VIC active=true board=true serviceDetails=false
+[ClientPerf] savedRoutes.batch.start id=A0DFA704 routes=1 force=false
+[ClientPerf] planner.http.start id=C390661A operation=route-boards method=POST
+[ClientPerf] planner.http.end id=C390661A operation=route-boards elapsedMs=1510 status=200 bytes=4645
+[ClientPerf] planner.decode id=C390661A operation=route-boards elapsedMs=3
+[ClientPerf] savedRoutes.batch.response id=A0DFA704 elapsedMs=1514 boards=direct:ready
+[ClientPerf] card.spinner route=KTH-VIC active=false board=false serviceDetails=false
+[ClientPerf] departures.refresh.start id=B2918BB7 pairs=14 delayed=true
+[ClientPerf] http.start id=4EBE093B operation=departures count=4
+[ClientPerf] http.end id=4EBE093B operation=departures elapsedMs=87 status=200 bytes=19954
+[ClientPerf] http.start id=65202671 operation=departures count=4
+[ClientPerf] http.end id=65202671 operation=departures elapsedMs=90 status=200 bytes=19881
+[ClientPerf] http.start id=CD1CE917 operation=departures count=4
+[ClientPerf] http.end id=CD1CE917 operation=departures elapsedMs=91 status=200 bytes=413
+[ClientPerf] http.start id=BDA0A1CA operation=departures count=2
+[ClientPerf] http.end id=BDA0A1CA operation=departures elapsedMs=100 status=200 bytes=10299
+[ClientPerf] departures.refresh.applied id=B2918BB7 elapsedMs=1143 snapshots=14 departures=162
+[ClientPerf] http.start id=E445C674 operation=loadingDetails count=50
+[ClientPerf] http.end id=E445C674 operation=loadingDetails elapsedMs=595 status=200 bytes=37325
+[ClientPerf] departures.refresh.complete id=B2918BB7 elapsedMs=1758
+[ClientPerf] savedRoutes.batch.start id=2A98D457 routes=1 force=false
+[ClientPerf] planner.http.start id=E7CB51FF operation=route-boards method=POST
+[ClientPerf] card.spinner route=KTH-VIC active=true board=true serviceDetails=false
+[ClientPerf] planner.http.end id=E7CB51FF operation=route-boards elapsedMs=140 status=200 bytes=4717
+[ClientPerf] planner.decode id=E7CB51FF operation=route-boards elapsedMs=0
+[ClientPerf] savedRoutes.batch.response id=2A98D457 elapsedMs=142 boards=direct:refreshing
+[ClientPerf] savedRoutes.batch.start id=9C79AD2C routes=1 force=false
+[ClientPerf] planner.http.start id=CBA4B57C operation=route-boards method=POST
+[ClientPerf] planner.http.end id=CBA4B57C operation=route-boards elapsedMs=200 status=200 bytes=4645
+[ClientPerf] planner.decode id=CBA4B57C operation=route-boards elapsedMs=3
+[ClientPerf] savedRoutes.batch.response id=9C79AD2C elapsedMs=203 boards=direct:ready
+[ClientPerf] card.spinner route=KTH-VIC active=false board=false serviceDetails=false
+[ClientPerf] departures.refresh.start id=5B0F92A0 pairs=14 delayed=true
+[ClientPerf] http.start id=20BB8127 operation=departures count=4
+[ClientPerf] http.end id=20BB8127 operation=departures elapsedMs=151 status=200 bytes=20554
+[ClientPerf] http.start id=4E844B0A operation=departures count=4
+[ClientPerf] http.end id=4E844B0A operation=departures elapsedMs=97 status=200 bytes=19881
+[ClientPerf] http.start id=4D58297E operation=departures count=4
+[ClientPerf] http.end id=4D58297E operation=departures elapsedMs=97 status=200 bytes=413
+[ClientPerf] http.start id=6171E4B2 operation=departures count=2
+[ClientPerf] http.end id=6171E4B2 operation=departures elapsedMs=83 status=200 bytes=10299
+[ClientPerf] departures.refresh.applied id=5B0F92A0 elapsedMs=1685 snapshots=14 departures=164
+[ClientPerf] http.start id=4A731D1F operation=loadingDetails count=50
+[ClientPerf] http.end id=4A731D1F operation=loadingDetails elapsedMs=1426 status=200 bytes=37766
+[ClientPerf] departures.refresh.complete id=5B0F92A0 elapsedMs=3132
+[ClientPerf] savedRoutes.batch.start id=1EA94849 routes=1 force=false
+[ClientPerf] planner.http.start id=BA293C42 operation=route-boards method=POST
+[ClientPerf] card.spinner route=KTH-VIC active=true board=true serviceDetails=false
+[ClientPerf] planner.http.end id=BA293C42 operation=route-boards elapsedMs=214 status=200 bytes=177
+[ClientPerf] planner.decode id=BA293C42 operation=route-boards elapsedMs=0
+[ClientPerf] savedRoutes.batch.response id=1EA94849 elapsedMs=215 boards=direct:queued
+[ClientPerf] departures.refresh.start id=75CD9E48 pairs=14 delayed=true
+[ClientPerf] http.start id=4DCBDF38 operation=departures count=4
+[ClientPerf] http.end id=4DCBDF38 operation=departures elapsedMs=103 status=200 bytes=20460
+[ClientPerf] http.start id=C82FF201 operation=departures count=4
+[ClientPerf] http.end id=C82FF201 operation=departures elapsedMs=106 status=200 bytes=19958
+[ClientPerf] http.start id=CFB1A299 operation=departures count=4
+[ClientPerf] savedRoutes.batch.start id=2B4F8572 routes=1 force=false
+[ClientPerf] planner.http.start id=37BA8750 operation=route-boards method=POST
+[ClientPerf] http.end id=CFB1A299 operation=departures elapsedMs=183 status=200 bytes=413
+[ClientPerf] planner.http.end id=37BA8750 operation=route-boards elapsedMs=206 status=200 bytes=4941
+[ClientPerf] planner.decode id=37BA8750 operation=route-boards elapsedMs=0
+[ClientPerf] savedRoutes.batch.response id=2B4F8572 elapsedMs=207 boards=direct:ready
+[ClientPerf] card.spinner route=KTH-VIC active=false board=false serviceDetails=true
+[ClientPerf] card.spinner route=KTH-VIC active=true board=false serviceDetails=true
+[ClientPerf] http.start id=EB52B70D operation=serviceDetails count=5
+[ClientPerf] http.start id=8FAA0D3F operation=departures count=2
+[ClientPerf] http.end id=8FAA0D3F operation=departures elapsedMs=82 status=200 bytes=10299
+[ClientPerf] departures.refresh.applied id=75CD9E48 elapsedMs=1681 snapshots=14 departures=164
+[ClientPerf] http.start id=2A24C077 operation=loadingDetails count=50
+[ClientPerf] http.end id=EB52B70D operation=serviceDetails elapsedMs=654 status=200 bytes=13052
+[ClientPerf] card.spinner route=KTH-VIC active=false board=false serviceDetails=false
+[ClientPerf] http.end id=2A24C077 operation=loadingDetails elapsedMs=1358 status=200 bytes=34389
+[ClientPerf] departures.refresh.complete id=75CD9E48 elapsedMs=3059
+[ClientPerf] departures.refresh.start id=0C65BC89 pairs=14 delayed=true
+[ClientPerf] http.start id=DD1ECFE9 operation=departures count=4
+[ClientPerf] http.end id=DD1ECFE9 operation=departures elapsedMs=109 status=200 bytes=20460
+[ClientPerf] http.start id=A97A479B operation=departures count=4
+[ClientPerf] http.end id=A97A479B operation=departures elapsedMs=87 status=200 bytes=19958
+[ClientPerf] http.start id=EA54EC58 operation=departures count=4
+[ClientPerf] http.end id=EA54EC58 operation=departures elapsedMs=88 status=200 bytes=413
+[ClientPerf] card.spinner route=KTH-VIC active=true board=true serviceDetails=false
+[ClientPerf] savedRoutes.batch.start id=D6829DF3 routes=1 force=false
+[ClientPerf] planner.http.start id=55828739 operation=route-boards method=POST
+[ClientPerf] http.start id=92CC53DD operation=departures count=2
+[ClientPerf] http.end id=92CC53DD operation=departures elapsedMs=344 status=200 bytes=10299
+[ClientPerf] departures.refresh.applied id=0C65BC89 elapsedMs=1957 snapshots=14 departures=164
+[ClientPerf] http.start id=04039785 operation=loadingDetails count=50
+[ClientPerf] planner.http.end id=55828739 operation=route-boards elapsedMs=752 status=200 bytes=4941
+[ClientPerf] planner.decode id=55828739 operation=route-boards elapsedMs=0
+[ClientPerf] savedRoutes.batch.response id=D6829DF3 elapsedMs=752 boards=direct:ready
+[ClientPerf] card.spinner route=KTH-VIC active=false board=false serviceDetails=false
+[ClientPerf] http.end id=04039785 operation=loadingDetails elapsedMs=1693 status=200 bytes=34565
+[ClientPerf] departures.refresh.complete id=0C65BC89 elapsedMs=3670
+[ClientPerf] planner.http.start id=F957668A operation=status method=GET
+[ClientPerf] planner.http.start id=33AC800D operation=status method=GET
 cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] planner.http.failed id=F957668A operation=status elapsedMs=85 errorType=NSURLError
+[ClientPerf] planner.http.end id=33AC800D operation=status elapsedMs=304 status=200 bytes=1273
+[ClientPerf] planner.decode id=33AC800D operation=status elapsedMs=2
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] planner.search.start id=947937F7 route=ABA-WCY
+[ClientPerf] planner.http.start id=850B7D93 operation=search-jobs method=POST
+[ClientPerf] planner.http.end id=850B7D93 operation=search-jobs elapsedMs=370 status=202 bytes=100
+[ClientPerf] planner.decode id=850B7D93 operation=search-jobs elapsedMs=4
+[ClientPerf] planner.search.queued id=947937F7 elapsedMs=378 position=1
+[ClientPerf] planner.http.start id=BCDA816C operation=search-jobs method=GET
+[ClientPerf] planner.http.end id=BCDA816C operation=search-jobs elapsedMs=285 status=200 bytes=98
+[ClientPerf] planner.decode id=BCDA816C operation=search-jobs elapsedMs=0
+[ClientPerf] planner.search.running id=947937F7 elapsedMs=1704
+[ClientPerf] departures.refresh.start id=9352FE0C pairs=14 delayed=true
+[ClientPerf] http.start id=B8DD6942 operation=departures count=4
+[ClientPerf] http.end id=B8DD6942 operation=departures elapsedMs=106 status=200 bytes=20460
+[ClientPerf] http.start id=994F8902 operation=departures count=4
+[ClientPerf] http.end id=994F8902 operation=departures elapsedMs=110 status=200 bytes=20136
+[ClientPerf] http.start id=FE861E74 operation=departures count=4
+[ClientPerf] planner.http.start id=99A320B1 operation=search-jobs method=GET
+[ClientPerf] http.end id=FE861E74 operation=departures elapsedMs=101 status=200 bytes=413
+[ClientPerf] http.start id=D62FC85E operation=departures count=2
+[ClientPerf] http.end id=D62FC85E operation=departures elapsedMs=219 status=200 bytes=10300
+[ClientPerf] departures.refresh.applied id=9352FE0C elapsedMs=1203 snapshots=14 departures=164
+[ClientPerf] http.start id=CEFBE8AE operation=loadingDetails count=50
+[ClientPerf] planner.http.end id=99A320B1 operation=search-jobs elapsedMs=560 status=200 bytes=3699
+[ClientPerf] planner.decode id=99A320B1 operation=search-jobs elapsedMs=3
+[ClientPerf] planner.search.end id=947937F7 elapsedMs=3304 outcome=completed polls=2
+[ClientPerf] planner.search.start id=141FBE23 route=ABA-WCY
+[ClientPerf] planner.http.start id=7D9956C0 operation=search-jobs method=POST
+Update NavigationRequestObserver tried to update multiple times per frame.
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] planner.http.end id=7D9956C0 operation=search-jobs elapsedMs=447 status=202 bytes=100
+[ClientPerf] planner.decode id=7D9956C0 operation=search-jobs elapsedMs=0
+[ClientPerf] planner.search.queued id=141FBE23 elapsedMs=448 position=1
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] planner.search.error id=141FBE23 elapsedMs=581 errorType=CancellationError
+[ClientPerf] planner.search.end id=141FBE23 elapsedMs=581 outcome=cancelled polls=0
+[ClientPerf] http.end id=CEFBE8AE operation=loadingDetails elapsedMs=895 status=200 bytes=38958
+[ClientPerf] departures.refresh.complete id=9352FE0C elapsedMs=2115
+[ClientPerf] planner.http.start id=1170A187 operation=status method=GET
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] planner.http.end id=1170A187 operation=status elapsedMs=415 status=200 bytes=1273
+[ClientPerf] planner.decode id=1170A187 operation=status elapsedMs=1
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+📍 [LocationManagerPhone] init auth=3
+📍 [LocationManagerPhone] request auth=3
+📍 [LocationManagerPhone] requestLocation()
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 📍 [LocationManagerPhone] authorization changed -> 3
-📍 [LocationManagerPhone] didUpdateLocations lat=51.51636605015712 lng=-0.10568846345248341
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
 📍 [LocationManagerPhone] cancel active request
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40137951958751 lng=-0.04574132098724588
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+isKeyboardMinorEdgeWidth may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardVerticalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardHorizontalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHandBias may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHeight may only be set for UIKBDynamicRenderFactory, changes not saved
+isKeyboardMinorEdgeWidth may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardVerticalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardHorizontalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHandBias may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHeight may only be set for UIKBDynamicRenderFactory, changes not saved
+isKeyboardMinorEdgeWidth may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardVerticalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardHorizontalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHandBias may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHeight may only be set for UIKBDynamicRenderFactory, changes not saved
+<0x1410cc000> Gesture: System gesture gate timed out.
+Received port for identifier response: <(null)> with error:Error Domain=RBSServiceErrorDomain Code=1 "Client not entitled" UserInfo={RBSEntitlement=com.apple.runningboard.process-state, NSLocalizedFailureReason=Client not entitled, RBSPermanent=false}
+elapsedCPUTimeForFrontBoard couldn't generate a task port
+Received port for identifier response: <(null)> with error:Error Domain=RBSServiceErrorDomain Code=1 "Client not entitled" UserInfo={RBSEntitlement=com.apple.runningboard.process-state, NSLocalizedFailureReason=Client not entitled, RBSPermanent=false}
+elapsedCPUTimeForFrontBoard couldn't generate a task port
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+	(Note: If you're seeing NSAutoresizingMaskLayoutConstraints that you don't understand, refer to the documentation for the UIView property translatesAutoresizingMaskIntoConstraints) 
+(
+    "<NSAutoresizingMaskLayoutConstraint:0x1435ea670 h=--& v=--& TUIPredictionViewCell:0x1429b7300.width == 0   (active)>",
+    "<NSLayoutConstraint:0x14344a300 H:|-(6)-[TUICandidateGradientContentLabel:0x14104e800]   (active, names: '|':TUIPredictionViewCell:0x1429b7300 )>",
+    "<NSLayoutConstraint:0x14344a350 TUICandidateGradientContentLabel:0x14104e800.trailing == TUIPredictionViewCell:0x1429b7300.trailing - 6   (active)>",
+    "<NSLayoutConstraint:0x143449d60 'UIScrollView-frameLayoutGuide-width' UILayoutGuide:0x1434316c0'UIScrollView-frameLayoutGuide'.width == TUICandidateGradientContentLabel:0x14104e800.width   (active)>"
+)
+
+Will attempt to recover by breaking constraint 
+<NSLayoutConstraint:0x143449d60 'UIScrollView-frameLayoutGuide-width' UILayoutGuide:0x1434316c0'UIScrollView-frameLayoutGuide'.width == TUICandidateGradientContentLabel:0x14104e800.width   (active)>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+	(Note: If you're seeing NSAutoresizingMaskLayoutConstraints that you don't understand, refer to the documentation for the UIView property translatesAutoresizingMaskIntoConstraints) 
+(
+    "<NSAutoresizingMaskLayoutConstraint:0x1435ea670 h=--& v=--& TUIPredictionViewCell:0x1429b7300.width == 0   (active)>",
+    "<NSLayoutConstraint:0x14344a300 H:|-(6)-[TUICandidateGradientContentLabel:0x14104e800]   (active, names: '|':TUIPredictionViewCell:0x1429b7300 )>",
+    "<NSLayoutConstraint:0x14344a350 TUICandidateGradientContentLabel:0x14104e800.trailing == TUIPredictionViewCell:0x1429b7300.trailing - 6   (active)>"
+)
+
+Will attempt to recover by breaking constraint 
+<NSLayoutConstraint:0x14344a350 TUICandidateGradientContentLabel:0x14104e800.trailing == TUIPredictionViewCell:0x1429b7300.trailing - 6   (active)>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+	(Note: If you're seeing NSAutoresizingMaskLayoutConstraints that you don't understand, refer to the documentation for the UIView property translatesAutoresizingMaskIntoConstraints) 
+(
+    "<NSAutoresizingMaskLayoutConstraint:0x1435eb6b0 h=--& v=--& TUIPredictionViewCell:0x1429b7c00.width == 0   (active)>",
+    "<NSLayoutConstraint:0x14344b3e0 H:|-(6)-[TUICandidateGradientContentLabel:0x143479400]   (active, names: '|':TUIPredictionViewCell:0x1429b7c00 )>",
+    "<NSLayoutConstraint:0x14344b430 TUICandidateGradientContentLabel:0x143479400.trailing == TUIPredictionViewCell:0x1429b7c00.trailing - 6   (active)>",
+    "<NSLayoutConstraint:0x14344ae40 'UIScrollView-frameLayoutGuide-width' UILayoutGuide:0x1434324c0'UIScrollView-frameLayoutGuide'.width == TUICandidateGradientContentLabel:0x143479400.width   (active)>"
+)
+
+Will attempt to recover by breaking constraint 
+<NSLayoutConstraint:0x14344ae40 'UIScrollView-frameLayoutGuide-width' UILayoutGuide:0x1434324c0'UIScrollView-frameLayoutGuide'.width == TUICandidateGradientContentLabel:0x143479400.width   (active)>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+	(Note: If you're seeing NSAutoresizingMaskLayoutConstraints that you don't understand, refer to the documentation for the UIView property translatesAutoresizingMaskIntoConstraints) 
+(
+    "<NSAutoresizingMaskLayoutConstraint:0x1435eb6b0 h=--& v=--& TUIPredictionViewCell:0x1429b7c00.width == 0   (active)>",
+    "<NSLayoutConstraint:0x14344b3e0 H:|-(6)-[TUICandidateGradientContentLabel:0x143479400]   (active, names: '|':TUIPredictionViewCell:0x1429b7c00 )>",
+    "<NSLayoutConstraint:0x14344b430 TUICandidateGradientContentLabel:0x143479400.trailing == TUIPredictionViewCell:0x1429b7c00.trailing - 6   (active)>"
+)
+
+Will attempt to recover by breaking constraint 
+<NSLayoutConstraint:0x14344b430 TUICandidateGradientContentLabel:0x143479400.trailing == TUIPredictionViewCell:0x1429b7c00.trailing - 6   (active)>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+	(Note: If you're seeing NSAutoresizingMaskLayoutConstraints that you don't understand, refer to the documentation for the UIView property translatesAutoresizingMaskIntoConstraints) 
+(
+    "<NSAutoresizingMaskLayoutConstraint:0x1435eae90 h=--& v=--& TUIPredictionViewCell:0x1429b7900.width == 0   (active)>",
+    "<NSLayoutConstraint:0x14344ab70 H:|-(6)-[TUICandidateGradientContentLabel:0x143478000]   (active, names: '|':TUIPredictionViewCell:0x1429b7900 )>",
+    "<NSLayoutConstraint:0x14344abc0 TUICandidateGradientContentLabel:0x143478000.trailing == TUIPredictionViewCell:0x1429b7900.trailing - 6   (active)>",
+    "<NSLayoutConstraint:0x14344a5d0 'UIScrollView-frameLayoutGuide-width' UILayoutGuide:0x143431dc0'UIScrollView-frameLayoutGuide'.width == TUICandidateGradientContentLabel:0x143478000.width   (active)>"
+)
+
+Will attempt to recover by breaking constraint 
+<NSLayoutConstraint:0x14344a5d0 'UIScrollView-frameLayoutGuide-width' UILayoutGuide:0x143431dc0'UIScrollView-frameLayoutGuide'.width == TUICandidateGradientContentLabel:0x143478000.width   (active)>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+	(Note: If you're seeing NSAutoresizingMaskLayoutConstraints that you don't understand, refer to the documentation for the UIView property translatesAutoresizingMaskIntoConstraints) 
+(
+    "<NSAutoresizingMaskLayoutConstraint:0x1435eae90 h=--& v=--& TUIPredictionViewCell:0x1429b7900.width == 0   (active)>",
+    "<NSLayoutConstraint:0x14344ab70 H:|-(6)-[TUICandidateGradientContentLabel:0x143478000]   (active, names: '|':TUIPredictionViewCell:0x1429b7900 )>",
+    "<NSLayoutConstraint:0x14344abc0 TUICandidateGradientContentLabel:0x143478000.trailing == TUIPredictionViewCell:0x1429b7900.trailing - 6   (active)>"
+)
+
+Will attempt to recover by breaking constraint 
+<NSLayoutConstraint:0x14344abc0 TUICandidateGradientContentLabel:0x143478000.trailing == TUIPredictionViewCell:0x1429b7900.trailing - 6   (active)>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+📍 [LocationManagerPhone] init auth=3
+📍 [LocationManagerPhone] request skipped; using cached location
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
 📍 [LocationManagerPhone] authorization changed -> 3
-📍 [LocationManagerPhone] didUpdateLocations lat=51.51636605015712 lng=-0.10568846345248341
+📍 [LocationManagerPhone] requestLocation()
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
 📍 [LocationManagerPhone] cancel active request
-[ClientPerf] savedRoutes.batch.start id=7A439352 routes=5 force=false
-[ClientPerf] planner.http.start id=7C89C1B4 operation=route-boards method=POST
-[ClientPerf] planner.http.end id=7C89C1B4 operation=route-boards elapsedMs=475 status=200 bytes=147514
-[ClientPerf] planner.decode id=7C89C1B4 operation=route-boards elapsedMs=459
-[ClientPerf] savedRoutes.batch.response id=7A439352 elapsedMs=935 boards=planned:ready,planned:ready,direct:refreshing,planned:ready,planned:ready
-[ClientPerf] savedRoutes.firstData route=BIK-ELE elapsedMs=1298 source=planned status=ready
-[ClientPerf] savedRoutes.firstData route=BFR-KTH elapsedMs=1299 source=planned status=ready
-[ClientPerf] savedRoutes.firstData route=LBG-CLK elapsedMs=1299 source=direct status=refreshing
-[ClientPerf] savedRoutes.firstData route=ZFD-KTH elapsedMs=1299 source=planned status=ready
-[ClientPerf] savedRoutes.firstData route=STP-KTH elapsedMs=1299 source=planned status=ready
-[ClientPerf] card.firstDeparture route=BIK-ELE elapsedMs=1185 source=planned
-[ClientPerf] card.spinner route=BIK-ELE active=false board=false serviceDetails=false
-[ClientPerf] card.firstDeparture route=STP-KTH elapsedMs=1183 source=planned
-[ClientPerf] card.spinner route=STP-KTH active=false board=false serviceDetails=false
-[ClientPerf] card.firstDeparture route=LBG-CLK elapsedMs=1192 source=direct
-[ClientPerf] card.firstDeparture route=BFR-KTH elapsedMs=1191 source=planned
-[ClientPerf] card.spinner route=BFR-KTH active=false board=false serviceDetails=false
-[ClientPerf] card.firstDeparture route=ZFD-KTH elapsedMs=1190 source=planned
-[ClientPerf] card.spinner route=ZFD-KTH active=false board=false serviceDetails=false
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40137946943852 lng=-0.045741453322968036
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+-[RTIInputSystemClient remoteTextInputSessionWithID:performInputOperation:]  perform input operation requires a valid sessionID. inputModality = Keyboard, inputOperation = <null selector>, customInfoType = UIEmojiSearchOperations
+isKeyboardMinorEdgeWidth may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardVerticalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardHorizontalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHandBias may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHeight may only be set for UIKBDynamicRenderFactory, changes not saved
+isKeyboardMinorEdgeWidth may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardVerticalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardHorizontalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHandBias may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHeight may only be set for UIKBDynamicRenderFactory, changes not saved
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] departures.refresh.start id=B0D4C5C5 pairs=14 delayed=true
+The variant selector cell index number could not be found.
+[ClientPerf] http.start id=BB864179 operation=departures count=4
+[ClientPerf] http.end id=BB864179 operation=departures elapsedMs=1545 status=200 bytes=20156
+The variant selector cell index number could not be found.
++[UAFCommonUtilities copyBootSessionUUID]_block_invoke Failed to get kern.bootsessionuuid length: [1: Operation not permitted]
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Current boot UUID is empty when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Treating empty boot UUID as current when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Current boot UUID is empty when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Treating empty boot UUID as current when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Current boot UUID is empty when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Treating empty boot UUID as current when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Current boot UUID is empty when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Treating empty boot UUID as current when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Current boot UUID is empty when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Treating empty boot UUID as current when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Current boot UUID is empty when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Treating empty boot UUID as current when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Current boot UUID is empty when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Treating empty boot UUID as current when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Current boot UUID is empty when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Treating empty boot UUID as current when creating consistency token for asset set com.apple.linguisticdata
+[ClientPerf] http.start id=FDD165D5 operation=departures count=4
+The variant selector cell index number could not be found.
+[ClientPerf] http.end id=FDD165D5 operation=departures elapsedMs=139 status=200 bytes=20136
+The variant selector cell index number could not be found.
+[ClientPerf] http.start id=4B27931B operation=departures count=4
+[ClientPerf] http.end id=4B27931B operation=departures elapsedMs=168 status=200 bytes=413
+The variant selector cell index number could not be found.
+[ClientPerf] http.start id=B87336E6 operation=departures count=2
+[ClientPerf] http.end id=B87336E6 operation=departures elapsedMs=93 status=200 bytes=10300
+[ClientPerf] departures.refresh.applied id=B0D4C5C5 elapsedMs=3052 snapshots=14 departures=163
+[ClientPerf] http.start id=5F524BF0 operation=loadingDetails count=50
+[ClientPerf] planner.http.start id=0CDF753E operation=stations method=GET
+[ClientPerf] planner.http.end id=0CDF753E operation=stations elapsedMs=489 status=200 bytes=99
+[ClientPerf] planner.decode id=0CDF753E operation=stations elapsedMs=6
+[ClientPerf] http.end id=5F524BF0 operation=loadingDetails elapsedMs=1482 status=200 bytes=41320
+[ClientPerf] departures.refresh.complete id=B0D4C5C5 elapsedMs=4550
+[ClientPerf] planner.http.start id=E14048DF operation=stations method=GET
+[ClientPerf] planner.http.failed id=E14048DF operation=stations elapsedMs=250 errorType=NSURLError
+The variant selector cell index number could not be found.
+[ClientPerf] planner.http.start id=B081C96D operation=stations method=GET
+[ClientPerf] planner.http.failed id=B081C96D operation=stations elapsedMs=27 errorType=NSURLError
+[ClientPerf] planner.http.start id=5BDDBED5 operation=stations method=GET
+[ClientPerf] planner.http.end id=5BDDBED5 operation=stations elapsedMs=423 status=200 bytes=186
+[ClientPerf] planner.decode id=5BDDBED5 operation=stations elapsedMs=0
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] planner.search.start id=123FE5DF route=KIN-WCY
+[ClientPerf] planner.http.start id=2AA109A5 operation=search-jobs method=POST
+[ClientPerf] planner.http.end id=2AA109A5 operation=search-jobs elapsedMs=464 status=202 bytes=100
+[ClientPerf] planner.decode id=2AA109A5 operation=search-jobs elapsedMs=0
+[ClientPerf] planner.search.queued id=123FE5DF elapsedMs=465 position=1
+[ClientPerf] planner.http.start id=24396A6C operation=search-jobs method=GET
+[ClientPerf] planner.http.end id=24396A6C operation=search-jobs elapsedMs=344 status=200 bytes=98
+[ClientPerf] planner.decode id=24396A6C operation=search-jobs elapsedMs=0
+[ClientPerf] planner.search.running id=123FE5DF elapsedMs=1814
+[ClientPerf] planner.http.start id=89937E4F operation=search-jobs method=GET
+[ClientPerf] planner.http.end id=89937E4F operation=search-jobs elapsedMs=868 status=200 bytes=11296
+[ClientPerf] planner.decode id=89937E4F operation=search-jobs elapsedMs=62
+[ClientPerf] planner.search.end id=123FE5DF elapsedMs=3750 outcome=completed polls=2
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] departures.refresh.start id=E8A4BCDC pairs=14 delayed=true
+[ClientPerf] http.start id=51CB8B31 operation=departures count=4
+[ClientPerf] http.end id=51CB8B31 operation=departures elapsedMs=115 status=200 bytes=20156
+[ClientPerf] http.start id=9E61CA1E operation=departures count=4
+[ClientPerf] http.end id=9E61CA1E operation=departures elapsedMs=120 status=200 bytes=20136
+[ClientPerf] http.start id=CF5D32AD operation=departures count=4
+[ClientPerf] http.end id=CF5D32AD operation=departures elapsedMs=88 status=200 bytes=413
+[ClientPerf] planner.http.start id=C72FCE53 operation=status method=GET
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] http.start id=6BC66397 operation=departures count=2
+[ClientPerf] http.end id=6BC66397 operation=departures elapsedMs=93 status=200 bytes=10300
+[ClientPerf] departures.refresh.applied id=E8A4BCDC elapsedMs=1683 snapshots=14 departures=163
+[ClientPerf] http.start id=2EEDF885 operation=loadingDetails count=50
+[ClientPerf] planner.http.end id=C72FCE53 operation=status elapsedMs=360 status=200 bytes=1273
+[ClientPerf] planner.decode id=C72FCE53 operation=status elapsedMs=0
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+📍 [LocationManagerPhone] init auth=3
+📍 [LocationManagerPhone] request skipped; using cached location
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+📍 [LocationManagerPhone] authorization changed -> 3
+📍 [LocationManagerPhone] requestLocation()
+[ClientPerf] http.end id=2EEDF885 operation=loadingDetails elapsedMs=1056 status=200 bytes=37213
+[ClientPerf] departures.refresh.complete id=E8A4BCDC elapsedMs=2755
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] cancel active request
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40137939848662 lng=-0.04574168360570542
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+-[RTIInputSystemClient remoteTextInputSessionWithID:performInputOperation:]  perform input operation requires a valid sessionID. inputModality = Keyboard, inputOperation = <null selector>, customInfoType = UIEmojiSearchOperations
+isKeyboardMinorEdgeWidth may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardVerticalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardHorizontalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHandBias may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHeight may only be set for UIKBDynamicRenderFactory, changes not saved
+isKeyboardMinorEdgeWidth may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardVerticalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardHorizontalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHandBias may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHeight may only be set for UIKBDynamicRenderFactory, changes not saved
+cannot add handler to 0 from 0 - dropping
+The variant selector cell index number could not be found.
+The variant selector cell index number could not be found.
+The variant selector cell index number could not be found.
+[ClientPerf] planner.http.start id=F4A7D56E operation=stations method=GET
+[ClientPerf] planner.http.end id=F4A7D56E operation=stations elapsedMs=278 status=200 bytes=182
+[ClientPerf] planner.decode id=F4A7D56E operation=stations elapsedMs=0
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+📍 [LocationManagerPhone] init auth=3
+📍 [LocationManagerPhone] request skipped; using cached location
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+📍 [LocationManagerPhone] authorization changed -> 3
+📍 [LocationManagerPhone] requestLocation()
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] cancel active request
+📍 [LocationManagerPhone] didUpdateLocations lat=51.4013794006873 lng=-0.04574168907850924
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
 📍 [LocationManagerPhone] deinit
-[ClientPerf] http.start id=D2BAB671 operation=serviceDetails count=3
-[ClientPerf] departures.refresh.start id=81150C51 pairs=14 delayed=true
-[ClientPerf] http.end id=D2BAB671 operation=serviceDetails elapsedMs=552 status=200 bytes=7584
-[ClientPerf] savedRoutes.batch.start id=7A6AB9B2 routes=1 force=false
-[ClientPerf] planner.http.start id=1D443958 operation=route-boards method=POST
-[ClientPerf] http.start id=D4DC3E99 operation=departures count=4
-[ClientPerf] http.end id=D4DC3E99 operation=departures elapsedMs=143 status=200 bytes=19836
-[ClientPerf] planner.http.end id=1D443958 operation=route-boards elapsedMs=175 status=200 bytes=5244
-[ClientPerf] planner.decode id=1D443958 operation=route-boards elapsedMs=0
-[ClientPerf] savedRoutes.batch.response id=7A6AB9B2 elapsedMs=176 boards=direct:ready
-[ClientPerf] http.start id=7224A66A operation=departures count=4
-[ClientPerf] http.end id=7224A66A operation=departures elapsedMs=169 status=200 bytes=19961
-[ClientPerf] http.start id=6DA8C4E5 operation=departures count=4
-[ClientPerf] http.end id=6DA8C4E5 operation=departures elapsedMs=104 status=200 bytes=413
-[ClientPerf] http.start id=EA637B17 operation=departures count=2
-[ClientPerf] http.end id=EA637B17 operation=departures elapsedMs=62 status=200 bytes=10283
-[ClientPerf] departures.refresh.applied id=81150C51 elapsedMs=1656 snapshots=14 departures=162
-[ClientPerf] http.start id=41510A8C operation=loadingDetails count=50
-[ClientPerf] http.end id=41510A8C operation=loadingDetails elapsedMs=903 status=200 bytes=30760
-[ClientPerf] departures.refresh.complete id=81150C51 elapsedMs=2578
+[ClientPerf] planner.search.start id=C150EFA2 route=OBN-CLK
+[ClientPerf] planner.http.start id=471B4299 operation=search-jobs method=POST
+[ClientPerf] planner.http.end id=471B4299 operation=search-jobs elapsedMs=363 status=202 bytes=100
+[ClientPerf] planner.decode id=471B4299 operation=search-jobs elapsedMs=0
+[ClientPerf] planner.search.queued id=C150EFA2 elapsedMs=364 position=1
+[ClientPerf] planner.http.start id=33283E7D operation=search-jobs method=GET
+[ClientPerf] planner.http.end id=33283E7D operation=search-jobs elapsedMs=252 status=200 bytes=3699
+[ClientPerf] planner.decode id=33283E7D operation=search-jobs elapsedMs=7
+[ClientPerf] planner.search.end id=C150EFA2 elapsedMs=1626 outcome=completed polls=1
+[ClientPerf] planner.search.start id=82D11398 route=OBN-CLK
+[ClientPerf] planner.http.start id=B3F4B709 operation=search-jobs method=POST
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
+[ClientPerf] planner.http.end id=B3F4B709 operation=search-jobs elapsedMs=363 status=202 bytes=100
+[ClientPerf] planner.decode id=B3F4B709 operation=search-jobs elapsedMs=0
+[ClientPerf] planner.search.queued id=82D11398 elapsedMs=364 position=1
 cannot add handler to 0 from 0 - dropping
-[ClientPerf] card.appear route=LBG-CLK spinner=false
-[ClientPerf] card.firstDeparture route=LBG-CLK elapsedMs=3 source=direct
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] planner.search.error id=82D11398 elapsedMs=624 errorType=CancellationError
+[ClientPerf] planner.search.end id=82D11398 elapsedMs=624 outcome=cancelled polls=0
+[ClientPerf] departures.refresh.start id=75C12A2A pairs=14 delayed=true
+[ClientPerf] http.start id=DE2211F9 operation=departures count=4
+[ClientPerf] http.end id=DE2211F9 operation=departures elapsedMs=104 status=200 bytes=20156
+[ClientPerf] http.start id=40A27F5C operation=departures count=4
+[ClientPerf] http.end id=40A27F5C operation=departures elapsedMs=95 status=200 bytes=20136
+[ClientPerf] http.start id=CCDB8FE9 operation=departures count=4
+[ClientPerf] http.end id=CCDB8FE9 operation=departures elapsedMs=94 status=200 bytes=413
+[ClientPerf] http.start id=6E5D64DD operation=departures count=2
+[ClientPerf] http.end id=6E5D64DD operation=departures elapsedMs=97 status=200 bytes=10300
+[ClientPerf] departures.refresh.applied id=75C12A2A elapsedMs=1399 snapshots=14 departures=163
+[ClientPerf] http.start id=0C023047 operation=loadingDetails count=50
+[ClientPerf] http.end id=0C023047 operation=loadingDetails elapsedMs=1188 status=200 bytes=40070
+[ClientPerf] departures.refresh.complete id=75C12A2A elapsedMs=2607
+invalid mode 'kCFRunLoopCommonModes' provided to CFRunLoopRunSpecific - break on _CFRunLoopError_RunCalledWithInvalidMode to debug. This message will only appear once per execution.
+[ClientPerf] planner.search.start id=863E15FD route=OBN-CLK
+[ClientPerf] planner.http.start id=EF68EDF0 operation=search-jobs method=POST
+[ClientPerf] planner.http.end id=EF68EDF0 operation=search-jobs elapsedMs=1477 status=202 bytes=100
+[ClientPerf] planner.decode id=EF68EDF0 operation=search-jobs elapsedMs=0
+[ClientPerf] planner.search.queued id=863E15FD elapsedMs=1478 position=1
+[ClientPerf] planner.http.start id=4F7AC6C5 operation=search-jobs method=GET
+[ClientPerf] planner.http.end id=4F7AC6C5 operation=search-jobs elapsedMs=834 status=200 bytes=13585
+[ClientPerf] planner.decode id=4F7AC6C5 operation=search-jobs elapsedMs=69
+[ClientPerf] planner.search.end id=863E15FD elapsedMs=3384 outcome=completed polls=1
+📍 [LocationManagerPhone] init auth=3
+📍 [LocationManagerPhone] request auth=3
+📍 [LocationManagerPhone] requestLocation()
+📍 [LocationManagerPhone] init auth=3
+📍 [LocationManagerPhone] request auth=3
+📍 [LocationManagerPhone] requestLocation()
 Do not put a navigation destination modifier inside a "lazy” container, like `List` or `LazyVStack`. These containers create child views only when needed to render on screen. Add the navigation destination modifier outside these containers so that the navigation stack can always see the destination. There's a misplaced `navigationDestination(isPresented:destination:)` modifier presenting `Optional<PlannerJourneyDetailView>`. It will be ignored in a future release.
-[ClientPerf] card.appear route=STP-KTH spinner=false
-[ClientPerf] card.firstDeparture route=STP-KTH elapsedMs=0 source=planned
-[ClientPerf] card.appear route=BIK-ELE spinner=false
-[ClientPerf] card.firstDeparture route=BIK-ELE elapsedMs=0 source=planned
+Do not put a navigation destination modifier inside a "lazy” container, like `List` or `LazyVStack`. These containers create child views only when needed to render on screen. Add the navigation destination modifier outside these containers so that the navigation stack can always see the destination. There's a misplaced `navigationDestination(isPresented:destination:)` modifier presenting `Optional<PlannerJourneyDetailView>`. It will be ignored in a future release.
+Do not put a navigation destination modifier inside a "lazy” container, like `List` or `LazyVStack`. These containers create child views only when needed to render on screen. Add the navigation destination modifier outside these containers so that the navigation stack can always see the destination. There's a misplaced `navigationDestination(isPresented:destination:)` modifier presenting `Optional<PlannerJourneyDetailView>`. It will be ignored in a future release.
+Do not put a navigation destination modifier inside a "lazy” container, like `List` or `LazyVStack`. These containers create child views only when needed to render on screen. Add the navigation destination modifier outside these containers so that the navigation stack can always see the destination. There's a misplaced `navigationDestination(isPresented:destination:)` modifier presenting `Optional<PlannerJourneyDetailView>`. It will be ignored in a future release.
+Do not put a navigation destination modifier inside a "lazy” container, like `List` or `LazyVStack`. These containers create child views only when needed to render on screen. Add the navigation destination modifier outside these containers so that the navigation stack can always see the destination. There's a misplaced `navigationDestination(isPresented:destination:)` modifier presenting `Optional<PlannerJourneyDetailView>`. It will be ignored in a future release.
+[ClientPerf] card.appear route=KTH-STP spinner=true
+[ClientPerf] card.appear route=KTH-BFR spinner=true
+[ClientPerf] card.appear route=KTH-ZFD spinner=true
+[ClientPerf] card.appear route=CLK-LBG spinner=true
+[ClientPerf] card.appear route=ELE-BIK spinner=true
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+📍 [LocationManagerPhone] authorization changed -> 3
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] cancel active request
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40137941798057 lng=-0.045741732078120316
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] authorization changed -> 3
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] cancel active request
+[ClientPerf] savedRoutes.batch.start id=6FF2D97A routes=5 force=false
+[ClientPerf] planner.http.start id=8D6425D4 operation=route-boards method=POST
+[ClientPerf] planner.http.end id=8D6425D4 operation=route-boards elapsedMs=348 status=200 bytes=785
+[ClientPerf] planner.decode id=8D6425D4 operation=route-boards elapsedMs=4
+[ClientPerf] savedRoutes.batch.response id=6FF2D97A elapsedMs=352 boards=direct:queued,direct:queued,direct:queued,direct:queued,direct:queued
+📍 [LocationManagerPhone] deinit
+[ClientPerf] departures.refresh.start id=451619E0 pairs=14 delayed=true
+[ClientPerf] http.start id=C425DE8D operation=departures count=4
+[ClientPerf] http.end id=C425DE8D operation=departures elapsedMs=124 status=200 bytes=20448
+[ClientPerf] savedRoutes.batch.start id=1C68735E routes=5 force=false
+[ClientPerf] planner.http.start id=449A4584 operation=route-boards method=POST
+[ClientPerf] http.start id=2A436EC6 operation=departures count=4
+[ClientPerf] http.end id=2A436EC6 operation=departures elapsedMs=133 status=200 bytes=20428
+[ClientPerf] http.start id=31C4EFD7 operation=departures count=4
+[ClientPerf] http.end id=31C4EFD7 operation=departures elapsedMs=82 status=200 bytes=413
+[ClientPerf] http.start id=DE10A5EA operation=departures count=2
+[ClientPerf] http.end id=DE10A5EA operation=departures elapsedMs=82 status=200 bytes=10300
+[ClientPerf] departures.refresh.applied id=451619E0 elapsedMs=1379 snapshots=14 departures=165
+[ClientPerf] http.start id=74DFA96D operation=loadingDetails count=50
+[ClientPerf] planner.http.end id=449A4584 operation=route-boards elapsedMs=1440 status=200 bytes=116916
+[ClientPerf] planner.decode id=449A4584 operation=route-boards elapsedMs=311
+[ClientPerf] savedRoutes.batch.response id=1C68735E elapsedMs=1751 boards=planned:refreshing,direct:ready,planned:refreshing,planned:refreshing,direct:unavailable
+[ClientPerf] savedRoutes.firstData route=KTH-BFR elapsedMs=3628 source=planned status=refreshing
+[ClientPerf] savedRoutes.firstData route=CLK-LBG elapsedMs=3628 source=direct status=ready
+[ClientPerf] savedRoutes.firstData route=ELE-BIK elapsedMs=3628 source=planned status=refreshing
+[ClientPerf] savedRoutes.firstData route=KTH-ZFD elapsedMs=3628 source=planned status=refreshing
+[ClientPerf] card.firstDeparture route=KTH-BFR elapsedMs=3611 source=planned
+[ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=3610 source=planned
+[ClientPerf] card.firstDeparture route=CLK-LBG elapsedMs=3618 source=direct
+[ClientPerf] card.spinner route=CLK-LBG active=false board=false serviceDetails=true
+[ClientPerf] card.firstDeparture route=ELE-BIK elapsedMs=3618 source=planned
+[ClientPerf] card.spinner route=CLK-LBG active=true board=false serviceDetails=true
+[ClientPerf] http.end id=74DFA96D operation=loadingDetails elapsedMs=1523 status=200 bytes=41449
+[ClientPerf] departures.refresh.complete id=451619E0 elapsedMs=2918
+Do not put a navigation destination modifier inside a "lazy” container, like `List` or `LazyVStack`. These containers create child views only when needed to render on screen. Add the navigation destination modifier outside these containers so that the navigation stack can always see the destination. There's a misplaced `navigationDestination(isPresented:destination:)` modifier presenting `Optional<PlannerJourneyDetailView>`. It will be ignored in a future release.
+Do not put a navigation destination modifier inside a "lazy” container, like `List` or `LazyVStack`. These containers create child views only when needed to render on screen. Add the navigation destination modifier outside these containers so that the navigation stack can always see the destination. There's a misplaced `navigationDestination(isPresented:destination:)` modifier presenting `Optional<PlannerJourneyDetailView>`. It will be ignored in a future release.
+[ClientPerf] http.start id=F4BF6D9F operation=serviceDetails count=3
+[ClientPerf] http.end id=F4BF6D9F operation=serviceDetails elapsedMs=449 status=200 bytes=7750
+[ClientPerf] savedRoutes.batch.start id=D3B99408 routes=3 force=false
+[ClientPerf] planner.http.start id=13BDD428 operation=route-boards method=POST
+[ClientPerf] card.spinner route=CLK-LBG active=false board=false serviceDetails=false
+[ClientPerf] planner.http.end id=13BDD428 operation=route-boards elapsedMs=1698 status=200 bytes=132541
+[ClientPerf] planner.decode id=13BDD428 operation=route-boards elapsedMs=327
+[ClientPerf] savedRoutes.batch.response id=D3B99408 elapsedMs=2025 boards=planned:ready,planned:refreshing,planned:ready
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] card.appear route=KTH-ZFD spinner=true
+[ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=0 source=planned
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+Do not put a navigation destination modifier inside a "lazy” container, like `List` or `LazyVStack`. These containers create child views only when needed to render on screen. Add the navigation destination modifier outside these containers so that the navigation stack can always see the destination. There's a misplaced `navigationDestination(isPresented:destination:)` modifier presenting `Optional<PlannerJourneyDetailView>`. It will be ignored in a future release.
+[ClientPerf] card.appear route=KTH-BFR spinner=false
+[ClientPerf] card.firstDeparture route=KTH-BFR elapsedMs=0 source=planned
+[ClientPerf] savedRoutes.batch.start id=DD3616AF routes=2 force=false
+[ClientPerf] planner.http.start id=6B2542C9 operation=route-boards method=POST
+[ClientPerf] card.appear route=KTH-STP spinner=true
+[ClientPerf] planner.http.end id=6B2542C9 operation=route-boards elapsedMs=699 status=200 bytes=38864
+[ClientPerf] planner.decode id=6B2542C9 operation=route-boards elapsedMs=112
+[ClientPerf] savedRoutes.batch.response id=DD3616AF elapsedMs=812 boards=planned:ready,direct:unavailable
+[ClientPerf] card.appear route=KTH-ZFD spinner=true
+[ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=0 source=planned
+[ClientPerf] savedRoutes.batch.start id=B87F1414 routes=1 force=false
+[ClientPerf] planner.http.start id=C9E72F2B operation=route-boards method=POST
+[ClientPerf] planner.http.end id=C9E72F2B operation=route-boards elapsedMs=409 status=200 bytes=269
+[ClientPerf] planner.decode id=C9E72F2B operation=route-boards elapsedMs=1
+[ClientPerf] savedRoutes.batch.response id=B87F1414 elapsedMs=410 boards=direct:queued
+[ClientPerf] savedRoutes.batch.start id=B7E504A1 routes=1 force=false
+[ClientPerf] planner.http.start id=5C2FDC8D operation=route-boards method=POST
+[ClientPerf] planner.http.end id=5C2FDC8D operation=route-boards elapsedMs=1885 status=200 bytes=61019
+[ClientPerf] planner.decode id=5C2FDC8D operation=route-boards elapsedMs=168
+[ClientPerf] savedRoutes.batch.response id=B7E504A1 elapsedMs=2054 boards=planned:ready
+[ClientPerf] savedRoutes.firstData route=KTH-STP elapsedMs=18848 source=planned status=ready
+[ClientPerf] card.firstDeparture route=KTH-STP elapsedMs=9409 source=planned
+[ClientPerf] card.spinner route=KTH-STP active=false board=false serviceDetails=false
+[ClientPerf] departures.refresh.start id=0E155E6B pairs=14 delayed=true
+[ClientPerf] http.start id=A30735FB operation=departures count=4
+[ClientPerf] http.end id=A30735FB operation=departures elapsedMs=106 status=200 bytes=20152
+[ClientPerf] http.start id=66118F27 operation=departures count=4
+[ClientPerf] http.end id=66118F27 operation=departures elapsedMs=84 status=200 bytes=20428
+[ClientPerf] http.start id=676A8DDF operation=departures count=4
+[ClientPerf] http.end id=676A8DDF operation=departures elapsedMs=86 status=200 bytes=413
+[ClientPerf] http.start id=53B35F71 operation=departures count=2
+[ClientPerf] http.end id=53B35F71 operation=departures elapsedMs=90 status=200 bytes=10300
+[ClientPerf] departures.refresh.applied id=0E155E6B elapsedMs=1680 snapshots=14 departures=164
+[ClientPerf] http.start id=A436A5BB operation=loadingDetails count=50
+[ClientPerf] savedRoutes.batch.start id=2F5F1430 routes=1 force=false
+[ClientPerf] planner.http.start id=8DEF581B operation=route-boards method=POST
+[ClientPerf] http.end id=A436A5BB operation=loadingDetails elapsedMs=1195 status=200 bytes=37749
+[ClientPerf] departures.refresh.complete id=0E155E6B elapsedMs=2891

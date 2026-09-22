@@ -23,7 +23,7 @@ test('service smoke exercises authenticated status, searches, detail and queued 
     const fetchImpl = async (url, options) => {
         assert.equal(options.headers.Authorization, `Bearer ${token}`);
         const parsed = new URL(url); calls.push(`${options.method} ${parsed.pathname}`);
-        if (parsed.pathname.endsWith('/internal/planner/v1/health')) return json({ hostId: 'mini-mvp', protocolVersion: 1, ready: false });
+        if (parsed.pathname.endsWith('/internal/planner/v1/health')) return json({ hostId: 'mini-planner', protocolVersion: 1, ready: false });
         if (parsed.pathname.endsWith('/internal/planner/v1/readiness')) return json({ readinessReason: 'ingestion_unavailable', ingestion: { enabled: false } });
         if (parsed.pathname.endsWith('/internal/planner/v1/cache/clear')) return json({ clearedSearches: 1 });
         if (parsed.pathname.endsWith('/internal/planner/metrics')) return new Response('process_resident_memory_bytes{service_name="planner"} 104857600\n');
@@ -45,7 +45,7 @@ test('service smoke exercises authenticated status, searches, detail and queued 
     const report = await runPlannerServiceSmoke({ token, fetchImpl, baseUrl: 'http://planner.test', runs: 1,
         complexRoutes: [{ origin: 'KTH', destination: 'INV' }],
         now: () => Date.parse('2026-09-20T12:00:00Z') });
-    assert.equal(report.hostId, 'mini-mvp');
+    assert.equal(report.hostId, 'mini-planner');
     assert.equal(report.searches.length, 2);
     assert.equal(report.detail.legCount, 1);
     assert.equal(report.queuedSearch.journeyCount, 1);

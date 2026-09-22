@@ -110,10 +110,10 @@ are cached; there is no unsafe force-apply option. Exit codes: 0 completed,
 2 missing update chain (a valid full baseline may have activated), 1 failure,
 130 interrupted.
 
-On the current Mini MVP service, use the pinned Node runtime and its private environment:
+On the current Mini production service, use the pinned Node runtime and its private environment:
 
 ```sh
-ssh mini 'cd /Users/mwagstaff/dev/train-track-planner-mvp && source .static-config-train-track-planner-mvp.env.sh && source .bw-secrets.planner-mvp.env.sh && /Users/mwagstaff/.local/share/train-track-planner/runtime/node24/bin/node --max-old-space-size=512 scripts/planner.js sync --data-dir /Users/mwagstaff/.local/share/train-track-planner/mvp-data'
+ssh mini 'cd /Users/mwagstaff/dev/train-track-planner && source .static-config-train-track-journey-planner.env.sh && source .bw-secrets.planner.env.sh && /Users/mwagstaff/.local/share/train-track-planner/runtime/node24/bin/node --max-old-space-size=512 scripts/planner.js sync --data-dir /Users/mwagstaff/.local/share/train-track-planner/planner'
 ```
 
 Add `--dry-run` for a validation-only activation check. Both environment files

@@ -1216,7 +1216,7 @@ def graph_asset(
         "sourceMetadata": metadata,
         "filter": {
             "railway": "rail",
-            "directionality": "bidirectional MVP",
+            "directionality": "bidirectional",
             "serviceTracks": "retained with routing penalties",
             "stationAnchors": (
                 "corridor-diverse passenger tracks near both OSM and catalogue coordinates"

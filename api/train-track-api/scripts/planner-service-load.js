@@ -39,8 +39,8 @@ export async function readPlannerProcess(pid) {
     const { stdout } = await exec('/bin/ps', ['-p', String(pid), '-o', 'rss=', '-o', 'time=', '-o', 'command='],
         { env: { ...process.env, LC_ALL: 'C' } });
     const match = /^\s*(\d+)\s+(\S+)\s+(.+)$/m.exec(stdout);
-    if (!match || !match[3].includes('/train-track-planner-mvp/planner-server.js')) {
-        throw new Error('PID does not identify the Mini MVP planner process.');
+    if (!match || !match[3].includes('/train-track-planner/planner-server.js')) {
+        throw new Error('PID does not identify the Mini planner process.');
     }
     return { rssBytes: Number(match[1]) * 1024, cpuSeconds: parseCpuTime(match[2]) };
 }

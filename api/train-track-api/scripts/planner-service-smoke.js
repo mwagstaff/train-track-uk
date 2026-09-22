@@ -127,10 +127,10 @@ export async function runPlannerServiceSmoke({ baseUrl = 'http://127.0.0.1:3014'
 
     const runQueuedSearch = async (body, label) => {
         await clearCache(label);
-        const idempotencyKey = `mini-mvp-${randomUUID()}`;
+        const idempotencyKey = `mini-planner-${randomUUID()}`;
         const submitted = await request(`${label} submission`, '/api/v3/journey-planner/search-jobs', {
             method: 'POST', body, accepted: [202], headers: {
-                'X-Planner-Client': 'mini-mvp-smoke', 'Idempotency-Key': idempotencyKey
+                'X-Planner-Client': 'mini-planner-smoke', 'Idempotency-Key': idempotencyKey
             }
         });
         const jobId = submitted.payload?.id;
@@ -142,7 +142,7 @@ export async function runPlannerServiceSmoke({ baseUrl = 'http://127.0.0.1:3014'
             const delay = Math.max(100, Math.min(2000, Number(job.pollAfterMs) || 1000));
             await new Promise(resolve => setTimeout(resolve, delay));
             const polled = await request(`${label} poll`, `/api/v3/journey-planner/search-jobs/${encodeURIComponent(jobId)}`, {
-                headers: { 'X-Planner-Client': 'mini-mvp-smoke' }, timeoutMs: 15000
+                headers: { 'X-Planner-Client': 'mini-planner-smoke' }, timeoutMs: 15000
             });
             polls++;
             job = polled.payload;
@@ -197,7 +197,7 @@ export async function runPlannerServiceSmoke({ baseUrl = 'http://127.0.0.1:3014'
     return { generatedAt: new Date(now()).toISOString(), baseUrl: root, hostId: health.payload?.hostId ?? null,
         protocolVersion: health.payload?.protocolVersion ?? null, processReady: health.payload?.ready === true,
         readinessReason: readiness.payload?.readinessReason ?? null, persistence: readiness.payload?.ingestion?.enabled === true
-            ? 'ingestion-enabled' : 'isolated-mvp', dataset: status.payload.dataset, query: { origin, destination, time: searchTime },
+            ? 'ingestion-enabled' : 'isolated-test', dataset: status.payload.dataset, query: { origin, destination, time: searchTime },
         endpointMs: { health: health.durationMs, readiness: readiness.durationMs, status: status.durationMs,
             stations: stationChecks, detail: detail?.durationMs ?? null, jobSubmit: queuedSearch.submitMs },
         cachePolicy: clearCacheBeforeSearch ? 'clear-before-each-search' : 'normal', cacheClears,
@@ -243,7 +243,7 @@ function printReport(report) {
         }
     }
     if (Number.isFinite(report.residentMemoryBytes)) console.log(`Process RSS after checks: ${(report.residentMemoryBytes / 1048576).toFixed(1)} MiB`);
-    if (!report.processReady) console.log(`Readiness: not production-ready (${report.readinessReason ?? 'unspecified'}); searches still passed in isolated MVP mode.`);
+    if (!report.processReady) console.log(`Readiness: not production-ready (${report.readinessReason ?? 'unspecified'}); searches still passed in isolated test mode.`);
 }
 
 async function main() {

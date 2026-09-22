@@ -14,7 +14,7 @@ The goal is to prove that we can:
 6. Render the route in Apple MapKit.
 7. Estimate and display the train's current position along that polyline.
 
-This is an MVP/proof-of-concept first. Prefer simplicity and observability over premature optimisation.
+This is the railway-routing implementation plan. Prefer simplicity and observability over premature optimisation.
 
 ## Preferred Architecture
 
@@ -152,7 +152,7 @@ oneway
 railway:preferred_direction
 ```
 
-For the MVP, if no reliable directional tag exists, assume bidirectional routing. Do not invent railway directionality from track orientation alone.
+For routing, if no reliable directional tag exists, assume bidirectional routing. Do not invent railway directionality from track orientation alone.
 
 ## Phase 5 – Station Extraction
 
@@ -295,7 +295,7 @@ type=route
 route=railway
 ```
 
-Do not make them mandatory for MVP routing. Treat them as a secondary signal that may later help bias A* to remain on the same railway relation, reduce accidental detours, identify named corridors, and improve route validation.
+Do not make them mandatory for production routing. Treat them as a secondary signal that may later help bias A* to remain on the same railway relation, reduce accidental detours, identify named corridors, and improve route validation.
 
 ## Phase 10 – Polyline Construction
 
@@ -461,7 +461,7 @@ Suggested response:
 }
 ```
 
-## Phase 17 – MVP Success Criteria
+## Phase 17 – Production Success Criteria
 
 The first proof-of-concept is successful if it can take a real TrainTrack service with a known calling pattern, for example:
 
@@ -513,7 +513,7 @@ Save route debug output where practical.
 
 ## Phase 19 – Performance
 
-For MVP:
+For production routing:
 
 - loading/parsing PBF offline is fine
 - preprocessing time is not critical
@@ -552,7 +552,7 @@ Questions to answer:
 4. Can we configure penalties for sidings/freight-only tracks?
 5. Can the resulting deployment remain lightweight enough for TrainTrack UK?
 
-Do not block the MVP on GraphHopper. A small custom A* railway graph is acceptable and may ultimately be simpler.
+Do not make GraphHopper a prerequisite. A small custom A* railway graph is acceptable and may ultimately be simpler.
 
 ## Licensing
 
