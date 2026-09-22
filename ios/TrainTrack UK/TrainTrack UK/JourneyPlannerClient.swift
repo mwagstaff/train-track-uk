@@ -304,9 +304,10 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
         if body != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         let started = ContinuousClock.now
         let trace = String(UUID().uuidString.prefix(8))
+        request.setValue(trace, forHTTPHeaderField: "X-Planner-Trace")
         let operation = path.first ?? "unknown"
         let metrics = ClientTaskMetricsDelegate()
-        ClientPerf.log("planner.http.start id=\(trace) operation=\(operation) method=\(request.httpMethod ?? "GET")")
+        ClientPerf.log("planner.http.start id=\(trace) operation=\(operation) method=\(request.httpMethod ?? "GET") atUnixMs=\(Int(Date().timeIntervalSince1970 * 1000))")
         let timeoutMessage = path.first == "search" || path.first == "search-jobs"
             ? "This search took too long. Try again, or choose a different time."
             : "The journey planner took too long to respond. Please try again."

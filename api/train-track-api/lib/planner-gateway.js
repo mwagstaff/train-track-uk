@@ -25,15 +25,23 @@ function createHandler(namespace, allowed, dependencies) {
         if (!match) return next();
         res.set('Cache-Control', 'no-store');
         const started = performance.now();
+        const trace = req.get('X-Planner-Trace');
+        const diagnostic = match.operation === 'saved-route-boards-v4' && /^[0-9A-F]{8}$/.test(trace ?? '')
+            ? { trace, stage: 'received' } : null;
+        if (diagnostic) console.info('[planner-gateway] route_boards', JSON.stringify({ trace, event: 'received', at: new Date().toISOString() }));
         let recorded = false;
         const record = () => {
             if (recorded) return;
             recorded = true;
-            dependencies.recordRequest(match.operation, res.writableEnded ? res.statusCode : 499, performance.now() - started);
+            const elapsedMs = performance.now() - started;
+            const status = res.writableEnded ? res.statusCode : 499;
+            dependencies.recordRequest(match.operation, status, elapsedMs);
+            if (diagnostic) console.info('[planner-gateway] route_boards', JSON.stringify({ trace, event: 'finished',
+                status, stage: diagnostic.stage, elapsedMs: Math.round(elapsedMs) }));
         };
         res.once('finish', record); res.once('close', record);
         if (!['POST', 'PUT', 'PATCH'].includes(req.method)) {
-            void dispatch(req, res, next, namespace, match, dependencies);
+            void dispatch(req, res, next, namespace, match, dependencies, diagnostic);
             return;
         }
         if (!req.is('application/json')) {
@@ -51,24 +59,28 @@ function createHandler(namespace, allowed, dependencies) {
                 } });
                 return;
             }
-            void dispatch(req, res, next, namespace, match, dependencies);
+            void dispatch(req, res, next, namespace, match, dependencies, diagnostic);
         });
     };
 }
 
-async function dispatch(req, res, next, namespace, match, { targets, ownership }) {
+async function dispatch(req, res, next, namespace, match, { targets, ownership }, diagnostic) {
     try {
+        if (diagnostic) diagnostic.stage = 'selecting';
         const selected = await targets.pin();
         const caller = plannerCaller(req);
+        if (diagnostic) diagnostic.stage = 'ownership';
         const targetId = await ownership.targetFor({ operation: match.operation, artifact: match.artifact,
             cursor: findRequestCursor(req.body), caller: caller.client, idempotencyKey: req.get('Idempotency-Key'),
             requestBody: req.body === undefined ? '' : JSON.stringify(req.body), selectedTargetId: selected.targetId });
         const pin = targetId === selected.targetId ? selected : await targets.pin(targetId);
         if (pin.target.mode === 'embedded') {
+            if (diagnostic) diagnostic.stage = 'embedded';
             rememberLocalResponse(res, ownership, pin.targetId, match.operation);
             req.plannerTrustedCaller = caller;
             return next();
         }
+        if (diagnostic) diagnostic.stage = 'forwarding';
         await forward(req, res, namespace, match.operation, pin.target, caller, ownership);
     } catch (error) { sendGatewayError(res, match.operation, error); }
 }
@@ -115,7 +127,8 @@ async function forward(req, res, namespace, operation, target, caller, ownership
         }
         res.status(response.status);
         if (response.status === 204) res.end();
-        else res.type('application/json').send(JSON.stringify(payload ?? {}));
+        // The body was validated above; resending it avoids re-serialising large boards.
+        else res.type('application/json').send(payload == null ? '{}' : content);
     } catch (error) {
         if (controller.signal.aborted && !res.writableEnded) {
             sendGatewayError(res, operation, new PlannerError('SEARCH_TIMEOUT', 'The planner destination did not respond in time.', 504));

@@ -359,6 +359,33 @@ struct SavedRoutePlannerTests {
         #expect(store.laterState(for: route)?.result != nil)
     }
 
+    @Test func moreDeparturesStopsPollingOnceScheduledOptionsAreAvailable() async throws {
+        let client = RouteBoardStub()
+        client.status = "refreshing"
+        client.result = try result()
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "VIC"])
+
+        await store.searchLater(for: route)
+
+        #expect(client.requests.count == 1)
+        #expect(store.laterState(for: route)?.result != nil)
+        #expect(store.laterState(for: route)?.isPending == true)
+    }
+
+    @Test func moreDeparturesReportsCapacityInsteadOfPollingAnUnadmittedSearch() async {
+        let client = RouteBoardStub()
+        client.source = "direct"
+        client.status = "unavailable"
+        client.boardError = PlannerError(code: "SEARCH_CAPACITY", message: "Journey options are busy. Try again shortly.")
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "VIC"])
+
+        await store.searchLater(for: route)
+        #expect(client.requests.count == 1)
+        #expect(store.laterState(for: route)?.message == "Journey options are busy. Try again shortly.")
+    }
+
     @Test func plannedAndLaterBoardsMergeChronologicallyWithPrimaryCopyOfOverlap() throws {
         let first = try mergeJourney(
             id: "first",

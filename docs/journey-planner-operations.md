@@ -328,8 +328,8 @@ Rebuild the app to enable this flow. The existing `/search` endpoint, v1/v2 rout
 | `PLANNER_WARN_AGE_DAYS` | 35 |
 | `PLANNER_MAX_STALE_DAYS` | 45 |
 | `PLANNER_TIMEOUT_MS` | 30000 including queue time, synchronous requests |
-| `PLANNER_MAX_QUEUE` | 8 requests across the whole routing pool, including active and suspended work |
-| `PLANNER_WORKERS` | 2; accepts 1 or 2, starts workers lazily |
+| `PLANNER_MAX_QUEUE` | 4 per routing worker (minimum 8) across the whole pool, including active and suspended work |
+| `PLANNER_WORKERS` | 2; accepts 1–8, or `auto` for one worker per two CPUs and per 4 GiB of RAM (2–6). Starts workers lazily. Saved-route plans may use all but one worker |
 | `PLANNER_HEAP_MB` | 1024 per routing worker; not a process RSS limit |
 | `PLANNER_DATE_CACHE_SIZE` | 6 |
 | `PLANNER_MAX_OPERATIONS` | 10000000, synchronous searches |

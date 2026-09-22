@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import express from 'express';
 import { pathToFileURL } from 'node:url';
+import { gzipSync } from 'node:zlib';
 import { PlannerService, plannerConfig } from './lib/planner/service.js';
 import { registerPlannerRoutes } from './lib/planner-routes.js';
 import { PlannerRouteBoards } from './lib/planner/route-boards.js';
@@ -44,6 +45,7 @@ export async function createPlannerServer({ env = process.env, service, searchLo
     // service credential. No planner state or internal operation is exposed.
     app.get('/healthcheck', (_req, res) => res.set('Cache-Control', 'no-store').json({ status: 'ok' }));
     app.use(plannerServiceAuthentication(token));
+    app.use(compressLargeResponses);
     app.use((_req, res, next) => {
         if (!draining) return next();
         res.set('Cache-Control', 'no-store').status(503).json({ error: {
@@ -85,6 +87,24 @@ export async function createPlannerServer({ env = process.env, service, searchLo
     };
     return { app, service: planner, searchLog: logger, ingestion, persistenceMode, listen, close,
         get server() { return server; } };
+}
+
+// Saved-route boards reach a few hundred KB and cross Tailscale Funnel to Sky,
+// whose fetch requests gzip and decodes it transparently. Level 1 costs well
+// under a millisecond and shrinks these JSON bodies several-fold.
+export function compressLargeResponses(req, res, next) {
+    if (!/\bgzip\b/i.test(req.get('Accept-Encoding') ?? '')) return next();
+    const send = res.send.bind(res);
+    res.send = body => {
+        if ((typeof body !== 'string' && !Buffer.isBuffer(body)) || Buffer.byteLength(body) < 8192
+            || res.get('Content-Encoding')) return send(body);
+        // Express would otherwise type a string body as HTML itself.
+        if (typeof body === 'string' && !res.get('Content-Type')) res.type('html');
+        res.set('Content-Encoding', 'gzip');
+        res.vary('Accept-Encoding');
+        return send(gzipSync(body, { level: 1 }));
+    };
+    next();
 }
 
 async function main() {

@@ -1,3 +1,7 @@
+// RailData requests are also spaced 100 ms apart per host. At typical provider
+// latency four requests in flight reach that pace; two left most of it unused.
+export const LIVE_CONCURRENCY = 4;
+
 const cancelled = () => Object.assign(new Error('Planner upstream request cancelled'), {
     name: 'AbortError', code: 'ERR_CANCELED'
 });
@@ -13,11 +17,12 @@ async function requestUpstream(options) {
     return getWithRetry(options);
 }
 
-/** Share the existing two-request live limit across routing workers. Only
- * concurrent identical requests share work; observations stay in worker caches. */
+/** Share the live request limit across routing workers. Only concurrent
+ * identical requests share work; observations stay in worker caches. */
 export class PlannerUpstreamBroker {
-    constructor({ request = requestUpstream } = {}) {
+    constructor({ request = requestUpstream, concurrency = LIVE_CONCURRENCY } = {}) {
         this.performRequest = request;
+        this.concurrency = concurrency;
         this.inflight = new Map();
         this.active = new Set();
         this.queue = [];
@@ -53,7 +58,7 @@ export class PlannerUpstreamBroker {
     }
 
     pump() {
-        while (!this.closed && this.active.size < 2 && this.queue.length) {
+        while (!this.closed && this.active.size < this.concurrency && this.queue.length) {
             const flight = this.queue.shift();
             this.active.add(flight);
             void this.run(flight);

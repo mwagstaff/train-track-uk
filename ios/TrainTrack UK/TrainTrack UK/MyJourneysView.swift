@@ -674,7 +674,7 @@ private extension MyJourneysView {
                 plannedBoard: routePlanner.state(for: displayedGroup),
                 laterBoard: routePlanner.laterState(for: displayedGroup),
                 onSearchLater: {
-                    Task { await routePlanner.searchLater(for: displayedGroup) }
+                    await routePlanner.searchLater(for: displayedGroup)
                 },
                 onRetryLater: {
                     Task { await routePlanner.retryLater(for: displayedGroup) }

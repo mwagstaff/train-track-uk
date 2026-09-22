@@ -8,7 +8,11 @@ import WidgetKit
 final class DeparturesStore: ObservableObject {
     static let shared = DeparturesStore()
 
-    @Published private(set) var departuresByPair: [String: [DepartureV2]] = [:]
+    @Published private(set) var departuresByPair: [String: [DepartureV2]] = [:] {
+        didSet { sortedDeparturesByPair.removeAll(keepingCapacity: true) }
+    }
+    /// Cards read sorted departures many times per render; sort once per change.
+    private var sortedDeparturesByPair: [String: [DepartureV2]] = [:]
     @Published private(set) var dataAvailabilityByPair: [String: JourneyDataAvailability] = [:]
     @Published private(set) var serviceDetailsById: [String: ServiceDetails] = [:]
     @Published private(set) var loadingDetailsByServiceId: [String: ServiceLoadingV1] = [:]
@@ -244,6 +248,9 @@ final class DeparturesStore: ObservableObject {
                 pairs: pairs,
                 onBatch: { [weak self] partial in
                     guard let self, !Task.isCancelled else { return }
+                    // Early batches only help routes with nothing to show yet. Otherwise
+                    // each one re-renders every card just before the final apply.
+                    guard partial.keys.contains(where: { self.departuresByPair[$0] == nil }) else { return }
                     _ = self.applyDepartureSnapshots(partial, replacingExistingDepartures: false)
                     ClientPerf.log("departures.refresh.batch id=\(trace) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) snapshots=\(partial.count)")
                 }
@@ -282,6 +289,7 @@ final class DeparturesStore: ObservableObject {
     ) -> [String: [DepartureV2]] {
         var nextDepartures = replacingExistingDepartures ? [:] : departuresByPair
         var nextAvailability = replacingExistingDepartures ? [:] : dataAvailabilityByPair
+        var observed: [(departures: [DepartureV2], fromCRS: String, toCRS: String)] = []
 
         for (key, snapshot) in snapshots {
             let existingDepartures = departuresByPair[key] ?? []
@@ -294,11 +302,7 @@ final class DeparturesStore: ObservableObject {
             )
             let stations = key.split(separator: "_", maxSplits: 1).map(String.init)
             if stations.count == 2 {
-                RecentServiceStore.shared.observe(
-                    nextDepartures[key] ?? fetchedDepartures,
-                    fromCRS: stations[0],
-                    toCRS: stations[1]
-                )
+                observed.append((nextDepartures[key] ?? fetchedDepartures, stations[0], stations[1]))
             }
             nextAvailability[key] = JourneyDataAvailability(
                 status: snapshot.dataStatus,
@@ -308,6 +312,7 @@ final class DeparturesStore: ObservableObject {
             )
         }
 
+        if !observed.isEmpty { RecentServiceStore.shared.observe(observed) }
         departuresByPair = nextDepartures
         dataAvailabilityByPair = nextAvailability
         return nextDepartures
@@ -453,7 +458,10 @@ final class DeparturesStore: ObservableObject {
 
     func departures(for journey: Journey) -> [DepartureV2] {
         let key = pairKey(from: journey.fromStation.crs, to: journey.toStation.crs)
-        return sortDepartures(departuresByPair[key] ?? [])
+        if let sorted = sortedDeparturesByPair[key] { return sorted }
+        let sorted = sortDepartures(departuresByPair[key] ?? [])
+        sortedDeparturesByPair[key] = sorted
+        return sorted
     }
 
     func dataAvailability(for journey: Journey) -> JourneyDataAvailability {
@@ -467,19 +475,18 @@ final class DeparturesStore: ObservableObject {
     }
 
     private func sortDepartures(_ list: [DepartureV2]) -> [DepartureV2] {
-        list.sorted(by: { lhs, rhs in
+        // Parse each time once, not twice per comparison.
+        list.map { ($0, bestComparableTime($0)) }.sorted(by: { lhs, rhs in
             // Sort by estimated time (HH:mm). If unavailable, fall back to scheduled.
-            let l = bestComparableTime(lhs)
-            let r = bestComparableTime(rhs)
-            switch (l, r) {
+            switch (lhs.1, rhs.1) {
             case let (li?, ri?):
-                if li == ri { return lhs.serviceID < rhs.serviceID }
+                if li == ri { return lhs.0.serviceID < rhs.0.serviceID }
                 return li < ri
-            case (nil, nil): return lhs.serviceID < rhs.serviceID
+            case (nil, nil): return lhs.0.serviceID < rhs.0.serviceID
             case (nil, _): return false
             case (_, nil): return true
             }
-        })
+        }).map(\.0)
     }
 
     private func bestComparableTime(_ d: DepartureV2) -> Date? {

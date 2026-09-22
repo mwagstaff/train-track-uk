@@ -1,4 +1,5 @@
 import { getWithRetry } from '../upstream-api-client.js';
+import { LIVE_CONCURRENCY } from './upstream-broker.js';
 
 // Public LDBWS JSON supplies board-relative IDs and clock times, not Darwin
 // UID/RID/origin dates. Preserve these observations for separate strict matching.
@@ -36,13 +37,14 @@ export function createLiveRequestBudget(limit = MAX_REQUESTS) {
  * establish cancellation or a complete live search interval.
  */
 export class PlannerLiveProvider {
-  constructor({ request = getWithRetry, now = Date.now, credentials = () => ({
+  constructor({ request = getWithRetry, now = Date.now, concurrency = LIVE_CONCURRENCY, credentials = () => ({
     board: process.env.LIVE_DEPARTURE_BOARD_API_KEY,
     details: process.env.SERVICE_DETAILS_API_KEY,
     staff: process.env.LIVE_DEPARTURE_BOARD_STAFF_VERSION_API_KEY || process.env.STAFF_DEPARTURES_API_KEY
   }) } = {}) {
     this.request = request;
     this.now = now;
+    this.concurrency = concurrency;
     this.credentials = credentials;
     this.cache = new Map();
     this.active = 0;
@@ -99,9 +101,9 @@ export class PlannerLiveProvider {
       || !Number.isSafeInteger(budget.used) || budget.used < 0 || budget.used > budget.limit) throw new TypeError('Invalid live request budget');
     const result = { [resultKey]: [], errors: [], requestCount: 0, limited: false };
     let cursor = 0;
-    // At most two pending adapter calls per batch; the instance semaphore also
-    // bounds parallel batches. Cached successes do not consume upstream budget.
-    await Promise.all([0, 1].map(async () => {
+    // At most `concurrency` pending adapter calls per batch; the instance semaphore
+    // also bounds parallel batches. Cached successes do not consume upstream budget.
+    await Promise.all(Array.from({ length: this.concurrency }, async () => {
       while (cursor < requests.length) {
         throwIfCancelled(options.signal);
         const request = requests[cursor++];
@@ -183,7 +185,7 @@ export class PlannerLiveProvider {
 
   acquire(signal) {
     signal.throwIfAborted();
-    if (this.active < 2) { this.active++; return Promise.resolve(); }
+    if (this.active < this.concurrency) { this.active++; return Promise.resolve(); }
     return new Promise((resolve, reject) => {
       const waiting = { resolve: () => { signal.removeEventListener('abort', cancelled); resolve(); } };
       const cancelled = () => {

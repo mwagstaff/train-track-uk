@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PlannerUpstreamBroker } from '../lib/planner/upstream-broker.js';
+import { LIVE_CONCURRENCY, PlannerUpstreamBroker } from '../lib/planner/upstream-broker.js';
 
 const turn = () => new Promise(resolve => setImmediate(resolve));
 const options = (name = 'board', extra = {}) => ({ api: 'rail_departure_board', operation: 'get_board',
@@ -8,11 +8,18 @@ const options = (name = 'board', extra = {}) => ({ api: 'rail_departure_board', 
     timeoutMs: 3000, maxRetries: 0, ...extra });
 function fixture() {
     const calls = [];
-    const broker = new PlannerUpstreamBroker({ request: request => new Promise((resolve, reject) => {
+    const broker = new PlannerUpstreamBroker({ concurrency: 2, request: request => new Promise((resolve, reject) => {
         calls.push({ request, resolve, reject });
     }) });
     return { calls, broker };
 }
+
+test('live lookups default to four requests in flight', () => {
+    const broker = new PlannerUpstreamBroker();
+    assert.equal(broker.concurrency, LIVE_CONCURRENCY);
+    assert.equal(LIVE_CONCURRENCY, 4);
+    broker.close();
+});
 
 test('broker limits physical work to two requests and coalesces equivalent queued and active options', async () => {
     const { calls, broker } = fixture();

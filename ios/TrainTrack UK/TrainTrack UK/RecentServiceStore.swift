@@ -37,10 +37,17 @@ final class RecentServiceStore: ObservableObject {
     }
 
     func observe(_ departures: [DepartureV2], fromCRS: String, toCRS: String, now: Date = Date()) {
-        let observations = departures.compactMap { departure in
-            Self.observation(departure, fromCRS: fromCRS, toCRS: toCRS, now: now)
-        }
-        merge(observations)
+        observe([(departures, fromCRS, toCRS)], now: now)
+    }
+
+    /// Record a whole refresh at once: one publish and one persisted write,
+    /// rather than one of each per journey pair.
+    func observe(_ boards: [(departures: [DepartureV2], fromCRS: String, toCRS: String)], now: Date = Date()) {
+        merge(boards.flatMap { board in
+            board.departures.compactMap { departure in
+                Self.observation(departure, fromCRS: board.fromCRS, toCRS: board.toCRS, now: now)
+            }
+        })
     }
 
     static func observation(_ departure: DepartureV2, fromCRS: String, toCRS: String, now: Date) -> RecentDepartureV2? {
@@ -87,17 +94,19 @@ final class RecentServiceStore: ObservableObject {
             prune()
             return
         }
+        // Mutate a copy so observers see one change, not one per departure.
+        var merged = departuresByPair
         for departure in departures {
             let key = pairKey(from: departure.fromCRS, to: departure.toCRS)
-            var current = departuresByPair[key] ?? []
+            var current = merged[key] ?? []
             if let index = current.firstIndex(where: { $0.id == departure.id }) {
                 current[index] = Self.preferred(current[index], departure)
             } else {
                 current.append(departure)
             }
-            departuresByPair[key] = current
+            merged[key] = current
         }
-        prune(persistChanges: false)
+        departuresByPair = Self.pruned(merged, now: Date())
         persist()
     }
 
@@ -132,17 +141,21 @@ final class RecentServiceStore: ObservableObject {
         )
     }
 
-    private func prune(now: Date = Date(), persistChanges: Bool = true) {
-        let lower = now.addingTimeInterval(-Self.lookback)
-        let upper = now.addingTimeInterval(Self.upcomingAllowance)
-        departuresByPair = departuresByPair.compactMapValues { departures in
+    private func prune(now: Date = Date()) {
+        departuresByPair = Self.pruned(departuresByPair, now: now)
+        persist()
+    }
+
+    private static func pruned(_ departuresByPair: [String: [RecentDepartureV2]], now: Date) -> [String: [RecentDepartureV2]] {
+        let lower = now.addingTimeInterval(-lookback)
+        let upper = now.addingTimeInterval(upcomingAllowance)
+        return departuresByPair.compactMapValues { departures in
             let kept = departures.filter { departure in
                 let reference = departure.actualDepartureAt ?? departure.scheduledDepartureAt
                 return (lower...upper).contains(reference)
             }
             return kept.isEmpty ? nil : kept
         }
-        if persistChanges { persist() }
     }
 
     private func persist() {

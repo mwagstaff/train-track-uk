@@ -31,18 +31,23 @@ export class SavedRouteBoards {
     constructor(service, { live = new SavedRouteLive({ tubeProvider: service?.config?.tubeTrackEnabled ? new TubeTrackProvider() : null }), cache = new RouteBoardCache({
         collection: () => getMongoCollection('planner_saved_route_plans_v1'), maxEntries: 64, maxBytes: 8 * 1024 * 1024
     }), now = Date.now, searchLog = noOpPlannerSearchLog, maxEntries = 64, maxLive = 4,
-    maxPending = 8, maxPerClient = 2, maxPerNetwork = 4 } = {}) {
-        Object.assign(this, { service, live, cache, now, searchLog, maxEntries, maxLive, maxPending, maxPerClient, maxPerNetwork });
+    // Plans share the routing pool; keep one worker free for interactive searches.
+    maxActive = Math.max(1, (service?.workerCount ?? 1) - 1),
+    maxPending = 8, maxPerClient = 4, maxPerNetwork = 4 } = {}) {
+        Object.assign(this, { service, live, cache, now, searchLog, maxEntries, maxLive, maxActive, maxPending, maxPerClient, maxPerNetwork });
         this.entries = new Map();
         this.jobs = new Map();
         this.queue = [];
         this.liveQueue = [];
         this.activeLive = new Set();
-        this.active = null;
+        this.running = new Set();
+        this.cacheWrites = Promise.resolve();
         this.closed = false;
         this.sweep = setInterval(() => { this.prune(); this.pumpLive(); this.pump(); }, 10000);
         this.sweep.unref();
     }
+
+    get active() { return this.running.values().next().value ?? null; }
 
     async get(body, { client = 'anonymous', network = client } = {}) {
         const now = this.now();
@@ -55,8 +60,8 @@ export class SavedRouteBoards {
             let entry = this.entries.get(key);
             if (!entry) {
                 if (this.entries.size >= this.maxEntries) {
-                    return { id: route.id, source: 'direct', status: 'queued', pollAfterMs: 5000,
-                        progress: { phase: 'queued', queuedAt: new Date(now).toISOString() } };
+                    return { id: route.id, source: 'direct', status: 'unavailable', pollAfterMs: 15000,
+                        error: { code: 'SEARCH_CAPACITY', message: 'Journey options are busy. Try again shortly.' } };
                 }
                 entry = { key, request: route.request, timeLocked: route.timeLocked, mode: route.realtime, source: 'direct', callers: new Map(),
                     lastRequested: now, nextCheckAt: 0, owner: { client, network } };
@@ -90,7 +95,7 @@ export class SavedRouteBoards {
         const busy = entry.livePending || job;
         const progress = job ? { phase: job.phase, queuedAt: new Date(job.queuedAt).toISOString(),
             ...(job.startedAt != null ? { startedAt: new Date(job.startedAt).toISOString() } : {}),
-            ...(job !== this.active ? { queuePosition: [...this.jobs.values()].filter(value => value !== this.active)
+            ...(!this.running.has(job) ? { queuePosition: [...this.jobs.values()].filter(value => !this.running.has(value))
                 .sort((a, b) => a.queuedAt - b.queuedAt).indexOf(job) + 1 } : {}) }
             : entry.livePending ? { phase: this.activeLive.has(entry) ? 'live' : 'queued', queuedAt: new Date(entry.queuedAt).toISOString() } : null;
         return { id, source: value?.source ?? entry.source,
@@ -197,6 +202,12 @@ export class SavedRouteBoards {
             if (signal.aborted) return;
             if (stored?.expiresAt > this.now() && this.validPlan(stored.profile, version)) {
                 entry.plan = { ...stored, key };
+                const result = this.provisionalResult(stored.profile, entry.mode);
+                this.service.retainResult?.(result);
+                entry.plannedResult = result;
+                entry.value = this.preferredValue(result, entry.directCandidate);
+                entry.source = entry.value.source;
+                entry.error = null;
                 observation = this.searchLog.start({ source: 'saved-route', request,
                     startedAt: new Date(this.now()), datasetVersion: version, cacheStatus: 'hit' });
             }
@@ -237,6 +248,13 @@ export class SavedRouteBoards {
         return { source: 'direct', direct: direct.snapshot, expiresAt: direct.expiresAt, at: this.now() };
     }
 
+    provisionalResult(profile, mode) {
+        const warning = 'Live times are being checked; scheduled times are shown.';
+        return { ...profile.result, search: { ...profile.result.search, provisional: true },
+            warnings: [...new Set([...(profile.result.warnings ?? []), warning])],
+            live: { mode, status: 'unavailable', windowHours: 4, warnings: [warning] } };
+    }
+
     preferredValue(result, direct) {
         if (!result) return this.directValue(direct);
         const now = this.now();
@@ -266,19 +284,21 @@ export class SavedRouteBoards {
 
     pump() {
         if (this.closed) return;
-        const admitted = this.active ? [this.active] : [];
+        const admitted = [...this.running];
         this.queue = [];
         for (const job of [...this.jobs.values()].sort((a, b) => a.queuedAt - b.queuedAt)) {
-            if (job === this.active || job.controller.signal.aborted) continue;
+            if (this.running.has(job) || job.controller.signal.aborted) continue;
             if (admitted.length >= this.maxPending) break;
             if (admitted.filter(value => value.client === job.client).length >= this.maxPerClient
                 || admitted.filter(value => value.network === job.network).length >= this.maxPerNetwork) continue;
             admitted.push(job);
             this.queue.push(job);
         }
-        if (this.active || !this.queue.length) return;
-        const job = this.queue.shift();
-        this.active = job;
+        while (this.running.size < this.maxActive && this.queue.length) this.run(this.queue.shift());
+    }
+
+    run(job) {
+        this.running.add(job);
         const config = this.service.config ?? {};
         job.observation.update({ metricsDelta: { admissionQueueMs: Math.max(0, this.now() - job.queuedAt) } });
         Promise.resolve().then(() => this.service.call('savedRoutePlan', { request: job.request, version: job.version,
@@ -299,16 +319,15 @@ export class SavedRouteBoards {
             }
             const computedAt = this.now();
             const record = { profile, computedAt, expiresAt: computedAt + PLAN_MS };
-            // One planner completion writes at a time, so the shared cache's
-            // bounded Mongo writer is not flooded by concurrent route results.
-            await this.cache.set(job.key, record);
+            // Plans run concurrently, but completions still write one at a time
+            // so the shared cache's bounded Mongo writer is not flooded.
+            const write = this.cacheWrites.then(() => this.cache.set(job.key, record));
+            this.cacheWrites = write.catch(() => {});
+            await write;
             if (job.controller.signal.aborted) return;
             for (const entry of job.entries) {
                 entry.plan = { ...record, key: job.key };
-                const warning = 'Live times are being checked; scheduled times are shown.';
-                const result = { ...profile.result, search: { ...profile.result.search, provisional: true },
-                    warnings: [...new Set([...(profile.result.warnings ?? []), warning])],
-                    live: { mode: entry.mode, status: 'unavailable', windowHours: 4, warnings: [warning] } };
+                const result = this.provisionalResult(profile, entry.mode);
                 this.service.retainResult?.(result);
                 entry.plannedResult = result;
                 entry.value = this.preferredValue(result, entry.directCandidate);
@@ -337,7 +356,7 @@ export class SavedRouteBoards {
                 if (entry.job === job) entry.job = null;
                 if (entry.plan && !entry.error) this.schedule(entry);
             }
-            this.active = null;
+            this.running.delete(job);
             this.pumpLive();
             this.pump();
         });

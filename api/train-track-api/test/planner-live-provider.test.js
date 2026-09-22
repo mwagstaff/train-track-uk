@@ -148,7 +148,7 @@ test('cache is bounded, immutable to consumers, expires after 30 seconds and pre
 
 test('parallel batches share the two-request concurrency limit', async () => {
   let active = 0, peak = 0;
-  const provider = new PlannerLiveProvider({ credentials, request: async ({ url }) => {
+  const provider = new PlannerLiveProvider({ concurrency: 2, credentials, request: async ({ url }) => {
     peak = Math.max(peak, ++active);
     await new Promise(resolve => setTimeout(resolve, 5));
     active--;
@@ -174,7 +174,7 @@ test('missing credentials return immediately without upstream requests or budget
 
 test('caller cancellation reaches active and queued requests without becoming missing live coverage', async () => {
   const controller = new AbortController();
-  const provider = new PlannerLiveProvider({ credentials, request: async ({ signal }) => new Promise((resolve, reject) => {
+  const provider = new PlannerLiveProvider({ concurrency: 2, credentials, request: async ({ signal }) => new Promise((resolve, reject) => {
     signal.addEventListener('abort', () => reject(signal.reason), { once: true });
   }) });
   const first = provider.fetchBoards(['ECR'], { signal: controller.signal });
@@ -276,7 +276,7 @@ test('staff recovery is optional, validates targets and cannot expose suppressed
 
 test('public and staff recovery share concurrency, cancellation and budget limits', async () => {
   const controller = new AbortController();
-  const provider = new PlannerLiveProvider({ credentials: () => ({ ...credentials(), staff: 'test-staff' }),
+  const provider = new PlannerLiveProvider({ concurrency: 2, credentials: () => ({ ...credentials(), staff: 'test-staff' }),
     request: async ({ signal }) => new Promise((resolve, reject) => {
       signal.addEventListener('abort', () => reject(signal.reason), { once: true });
     }) });

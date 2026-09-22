@@ -56,18 +56,16 @@ function rowTime(row, now) {
 }
 
 function currentRows(board, now, realtime = 'apply', allowedModes) {
-    return (board.departures ?? []).filter(row => {
-        if (!mode(row) || allowedModes && !allowedModes.includes(mode(row))) return false;
+    // rowTime formats several Intl clocks; compute it once per row, not per comparison.
+    return (board.departures ?? []).flatMap(row => {
+        if (!mode(row) || allowedModes && !allowedModes.includes(mode(row))) return [];
         const time = rowTime(row, now);
         const departure = realtime === 'ignore' ? time.scheduled : time.expected ?? time.scheduled;
         const delayedWithoutTime = realtime !== 'ignore' && text(row.departure_time?.estimated) === 'delayed'
             && departure >= now - 2 * HOUR;
-        return !time.departed && Number.isFinite(departure) && (departure >= now || delayedWithoutTime) && departure <= now + 4 * HOUR;
-    }).sort((a, b) => {
-        const first = rowTime(a, now), second = rowTime(b, now);
-        return realtime === 'ignore' ? first.scheduled - second.scheduled
-            : (first.expected ?? first.scheduled) - (second.expected ?? second.scheduled);
-    });
+        return !time.departed && Number.isFinite(departure) && (departure >= now || delayedWithoutTime) && departure <= now + 4 * HOUR
+            ? [{ row, departure }] : [];
+    }).sort((a, b) => a.departure - b.departure).map(value => value.row);
 }
 
 function fresh(board) {

@@ -50,18 +50,6 @@ export class PlannerRoutingStore {
         return (await this.find(type, value))?.targetIds?.[0] ?? null;
     }
 
-    async remember(type, value, targetId) {
-        if (!value || !targetId || !this.ttls[type]) return;
-        const key = `${type}:${this.digest(type, value)}`;
-        const now = new Date(this.now()), expiresAt = new Date(this.now() + this.ttls[type]);
-        const db = await this.getCollection();
-        await db.updateOne({ _id: key }, { $set: { type, updatedAt: now, expiresAt },
-            $addToSet: { targetIds: targetId } }, { upsert: true, timeoutMS: 2000 });
-        const existing = this.cache.get(key);
-        this.cacheSet(key, { targetIds: [...new Set([...(existing?.targetIds ?? []), targetId])],
-            requestFingerprint: existing?.requestFingerprint ?? null, expiresAt: expiresAt.getTime() });
-    }
-
     async bindSubmission({ caller, idempotencyKey, requestBody, targetId }) {
         if (!idempotencyKey) return targetId;
         const identity = `${caller}\0${idempotencyKey}`;
@@ -91,8 +79,26 @@ export class PlannerRoutingStore {
     }
 
     async rememberResponse(targetId, operation, payload) {
-        const artifacts = responseArtifacts(operation, payload);
-        await Promise.all([...artifacts.values()].map(([type, value]) => this.remember(type, value, targetId)));
+        // Unrecorded artifacts already resolve to the legacy target. Recording
+        // that owner changes no routing, but saved-route boards carry hundreds
+        // of fresh journey IDs on every poll.
+        if (!targetId || targetId === this.legacyTargetId) return;
+        const now = new Date(this.now()), writes = [], cached = [];
+        for (const [type, value] of responseArtifacts(operation, payload).values()) {
+            if (!this.ttls[type]) continue;
+            const key = `${type}:${this.digest(type, value)}`, expiresAt = new Date(this.now() + this.ttls[type]);
+            writes.push({ updateOne: { filter: { _id: key }, update: { $set: { type, updatedAt: now, expiresAt },
+                $addToSet: { targetIds: targetId } }, upsert: true } });
+            cached.push([key, expiresAt]);
+        }
+        if (!writes.length) return;
+        // One round trip instead of one pooled connection per artifact.
+        await (await this.getCollection()).bulkWrite(writes, { ordered: false, timeoutMS: 2000 });
+        for (const [key, expiresAt] of cached) {
+            const existing = this.cache.get(key);
+            this.cacheSet(key, { targetIds: [...new Set([...(existing?.targetIds ?? []), targetId])],
+                requestFingerprint: existing?.requestFingerprint ?? null, expiresAt: expiresAt.getTime() });
+        }
     }
 
     async targetFor({ operation, artifact, cursor, caller, idempotencyKey, requestBody, selectedTargetId }) {

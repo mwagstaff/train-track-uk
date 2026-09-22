@@ -112,12 +112,19 @@ async function fixture(t, overrides = {}) {
     return service;
 }
 
-test('planner worker count defaults to two, supports one or two, and bounds invalid configuration', () => {
+test('planner worker count defaults to two, supports one to eight or auto, and bounds invalid configuration', () => {
     assert.equal(plannerConfig({}).workerCount, 2);
-    for (const count of ['1', '2']) assert.equal(plannerConfig({ PLANNER_WORKERS: count }).workerCount, Number(count));
-    for (const count of ['', '0', '-1', '3', '1.5', 'Infinity', 'invalid']) {
+    assert.equal(plannerConfig({}).maxQueue, 8);
+    for (const count of ['1', '2', '3', '8']) assert.equal(plannerConfig({ PLANNER_WORKERS: count }).workerCount, Number(count));
+    for (const count of ['', '0', '-1', '9', '1.5', 'Infinity', 'invalid']) {
         assert.equal(plannerConfig({ PLANNER_WORKERS: count }).workerCount, 2);
     }
+    const auto = plannerConfig({ PLANNER_WORKERS: 'auto' }).workerCount;
+    assert.ok(auto >= 2 && auto <= 6);
+    assert.equal(plannerConfig({ PLANNER_WORKERS: '4' }).maxQueue, 16);
+    assert.equal(plannerConfig({ PLANNER_WORKERS: '4', PLANNER_MAX_QUEUE: '10' }).maxQueue, 10);
+    const pool = new PlannerService({ ...plannerConfig({ PLANNER_WORKERS: '4' }), prewarm: false });
+    try { assert.equal(pool.slots.length, 4); } finally { pool.close(); }
     const service = new PlannerService(plannerConfig({}), { metadataOnly: true });
     try {
         assert.equal(service.workerCount, 1);

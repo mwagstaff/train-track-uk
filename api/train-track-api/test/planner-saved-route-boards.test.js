@@ -186,6 +186,31 @@ test('fallback topology is shared across clients, realtime modes and process res
     assert.equal(other.logs.length, 1);
 });
 
+test('cached scheduled journeys are available while live checks are still pending', async t => {
+    const live = deferred();
+    const f = fixture(t, { refresh: async (plan, request) => {
+        await live.promise;
+        return { ...plan.result, live: { mode: request.realtime, status: 'live' } };
+    } });
+    const request = normalizeRouteBoards(body, start)[0].request;
+    f.records.set(savedRoutePlanKey(request, version), {
+        profile: { result: f.result() }, computedAt: start, expiresAt: start + 3600000
+    });
+    await f.manager.get(body);
+    for (let i = 0; i < 20 && !f.refreshCalls.length; i++) await tick();
+    assert.equal(f.refreshCalls.length, 1);
+    const pending = (await f.manager.get(body)).boards[0];
+    assert.equal(pending.status, 'refreshing');
+    assert.equal(pending.source, 'planned');
+    assert.equal(pending.result.search.provisional, true);
+    assert.equal(pending.result.live.status, 'unavailable');
+    assert.equal(f.calls.length, 0);
+    live.resolve(); await idle(f.manager);
+    const ready = (await f.manager.get(body)).boards[0];
+    assert.equal(ready.status, 'ready');
+    assert.equal(ready.result.live.status, 'live');
+});
+
 test('cache identity includes date, dataset and required route options but excludes request time and live policy', () => {
     const request = normalizeRouteBoards(body, start)[0].request;
     const key = savedRoutePlanKey(request, version);
@@ -309,6 +334,31 @@ test('live checks and planner calculations each have bounded concurrency', async
     assert.equal(f.calls.length, 4);
 });
 
+test('saved-route plans use spare routing workers concurrently and still write the cache one at a time', async t => {
+    const plan = deferred();
+    let writing = 0, overlapping = false;
+    const f = fixture(t, { options: { maxActive: 3 },
+        call: async (method, payload, options, result) => { await plan.promise; return { result: result(), connections: {} }; } });
+    f.cache.set = async (key, value) => {
+        overlapping ||= writing > 0; writing++;
+        await tick(); f.records.set(key, value); writing--; return true;
+    };
+    const routes = ['KTH', 'ECR', 'BMS', 'EUS'].map((origin, index) => ({ id: String(index), origin, destination: 'VIC' }));
+    await f.manager.get({ routes });
+    for (let i = 0; i < 20; i++) await tick();
+    assert.equal(f.calls.length, 3);
+    assert.equal(f.manager.running.size, 3);
+    plan.resolve(); await idle(f.manager);
+    assert.equal(f.calls.length, 4);
+    assert.equal(f.records.size, 4);
+    assert.equal(overlapping, false);
+    for (const [workerCount, maxActive] of [[undefined, 1], [2, 1], [4, 3]]) {
+        const manager = new SavedRouteBoards({ workerCount }, { live: {}, cache: {} });
+        assert.equal(manager.maxActive, maxActive);
+        manager.close();
+    }
+});
+
 test('returning direct services cancel unused fallback work and restore the direct source', async t => {
     let available = false;
     const held = deferred();
@@ -417,7 +467,9 @@ test('entry and per-client admission bounds retain finite pending work', async t
     const f = fixture(t, { options: { maxEntries: 3, maxPending: 2, maxPerClient: 1 },
         call: async (method, payload, options, result) => { await held.promise; return { result: result(), connections: {} }; } });
     const routes = ['KTH', 'ECR', 'BMS', 'EUS'].map((origin, index) => ({ id: String(index), origin, destination: 'VIC' }));
-    await f.manager.get({ routes });
+    const response = await f.manager.get({ routes });
+    assert.equal(response.boards[3].status, 'unavailable');
+    assert.equal(response.boards[3].error.code, 'SEARCH_CAPACITY');
     for (let i = 0; i < 20; i++) await tick();
     assert.equal(f.manager.entries.size, 3);
     assert.equal(f.manager.jobs.size, 3);

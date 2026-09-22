@@ -155,13 +155,19 @@ final class SavedRoutePlannerStore {
 
     func searchLater(for group: JourneyGroup) async {
         let routeID = SavedRouteQuery(group: group).id
-        guard laterQueries[routeID] == nil else { return }
-
-        var query = SavedRouteQuery(group: group)
-        // Continue from the end of the primary six-hour timetable window. The
-        // presentation layer merges this result with it and removes overlaps.
-        query.time = PlannerTime.iso8601(now().addingTimeInterval(6 * 60 * 60))
-        laterQueries[routeID] = query
+        let query: SavedRouteQuery
+        if let existing = laterQueries[routeID] {
+            query = existing
+        } else {
+            var created = SavedRouteQuery(group: group)
+            // Continue from the end of the primary six-hour timetable window.
+            created.time = PlannerTime.iso8601(now().addingTimeInterval(6 * 60 * 60))
+            laterQueries[routeID] = created
+            query = created
+        }
+        if let state = states[key(query)] {
+            if state.hasPersistentFailure || state.result != nil || state.direct != nil { return }
+        }
         await performLaterSearch(query)
     }
 
@@ -177,21 +183,25 @@ final class SavedRoutePlannerStore {
 
         for attempt in 0...2 {
             guard !Task.isCancelled else { return }
-            if attempt == 0 { states[queryKey] = SavedRouteBoardState(requestedAt: now()) }
+            if attempt == 0 && states[queryKey] == nil { states[queryKey] = SavedRouteBoardState(requestedAt: now()) }
             if attempt > 0 {
                 do { try await Task.sleep(for: .seconds(1)) }
                 catch { return }
             }
+            var pendingPollDelay: TimeInterval = 5
             while !Task.isCancelled {
                 await refresh(queries: [query], force: true)
-                guard let state = states[queryKey], state.isPending, state.consecutiveFailures == 0 else {
-                    if states[queryKey]?.result != nil && states[queryKey]?.consecutiveFailures == 0 { return }
+                guard let state = states[queryKey] else { break }
+                if state.consecutiveFailures == 0 && (state.result != nil || state.direct != nil) { return }
+                guard state.isPending, state.consecutiveFailures == 0 else {
                     break
                 }
-                let pause = min(5, max(1, state.nextRefresh.timeIntervalSince(now())))
+                let pause = max(pendingPollDelay, state.nextRefresh.timeIntervalSince(now()))
+                pendingPollDelay = min(15, pendingPollDelay * 2)
                 do { try await Task.sleep(for: .seconds(pause)) }
                 catch { return }
             }
+            if states[queryKey]?.hasPersistentFailure == true { return }
         }
     }
 
@@ -272,10 +282,11 @@ final class SavedRoutePlannerStore {
                         }
                         let interval = min(20, max(1, (board.pollAfterMs ?? 20000) / 1000))
                         let waiting = board.error?.code == "SEARCH_BUSY"
+                        let atCapacity = board.error?.code == "SEARCH_CAPACITY"
                         let liveRefreshFailed = board.result?.journeys.contains { journey in
                             PlannerLivePresentation.warnings(for: journey).contains(where: PlannerLivePresentation.isRefreshFailureWarning)
                         } == true || (board.direct.map { $0.dataStatus != .live } ?? false)
-                        let failures = (board.error != nil || liveRefreshFailed) && !waiting
+                        let failures = atCapacity ? 3 : (board.error != nil || liveRefreshFailed) && !waiting
                             ? (self.states[key]?.consecutiveFailures ?? 0) + 1
                             : (board.status == "ready" ? 0 : self.states[key]?.consecutiveFailures ?? 0)
                         if (board.result != nil || board.direct != nil), self.states[key]?.board?.result == nil,

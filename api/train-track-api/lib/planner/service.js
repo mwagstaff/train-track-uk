@@ -7,12 +7,26 @@ import { londonDate } from './time.js';
 import { PlannerUpstreamBroker } from './upstream-broker.js';
 
 const defaultWorkerURL = new URL('./worker.js', import.meta.url);
+const MAX_WORKERS = 8;
+
+// Each routing worker keeps its own national graph and indexes (roughly
+// 0.5 GiB RSS once warm, with a separate V8 heap cap). `auto` allows one
+// worker per two CPUs and per 4 GiB of RAM on this host, from two to six.
+function plannerWorkerCount(value) {
+    if (value === 'auto') {
+        const cpus = os.availableParallelism?.() ?? os.cpus().length;
+        return Math.max(2, Math.min(6, Math.floor(cpus / 2), Math.floor(os.totalmem() / 4 / 1024 ** 3)));
+    }
+    const count = Number(value);
+    return Number.isInteger(count) && count >= 1 && count <= MAX_WORKERS ? count : 2;
+}
 
 export function plannerConfig(env = process.env) {
     function number(name, fallback, min, max) {
         const value = Number(env[name] ?? fallback);
         return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
     }
+    const workerCount = plannerWorkerCount(env.PLANNER_WORKERS);
     return {
         dataDirectory: path.resolve(env.PLANNER_DATA_DIR || path.join(os.homedir(), '.local/share/train-track-api/planner')),
         datasetPath: env.PLANNER_DATASET_PATH ? path.resolve(env.PLANNER_DATASET_PATH) : null,
@@ -23,9 +37,10 @@ export function plannerConfig(env = process.env) {
         warnAgeDays: number('PLANNER_WARN_AGE_DAYS', 35, 1, 365),
         maxStaleDays: number('PLANNER_MAX_STALE_DAYS', 45, 1, 365),
         timeoutMs: number('PLANNER_TIMEOUT_MS', 30000, 100, 120000),
-        maxQueue: number('PLANNER_MAX_QUEUE', 8, 1, 100),
-        // Two independently bounded routing isolates share the immutable SQLite snapshot.
-        workerCount: [1, 2].includes(Number(env.PLANNER_WORKERS)) ? Number(env.PLANNER_WORKERS) : 2,
+        // Admission scales with the pool so extra workers are not left idle.
+        maxQueue: number('PLANNER_MAX_QUEUE', Math.max(8, workerCount * 4), 1, 100),
+        // Independently bounded routing isolates share the immutable SQLite snapshot.
+        workerCount,
         maxOldGenerationSizeMb: number('PLANNER_HEAP_MB', 1024, 128, 8192),
         dateCacheSize: number('PLANNER_DATE_CACHE_SIZE', 6, 1, 14),
         // Broader long-distance searches need more graph work; elapsed time and
@@ -66,7 +81,8 @@ export class PlannerService {
     constructor(config = plannerConfig(), { workerURL = defaultWorkerURL, metadataOnly = false, maintenanceHeadroom } = {}) {
         this.config = config;
         this.workerURL = workerURL;
-        this.workerCount = metadataOnly ? 1 : config.workerCount === 2 ? 2 : 1;
+        this.workerCount = !metadataOnly && Number.isInteger(config.workerCount)
+            && config.workerCount >= 1 && config.workerCount <= MAX_WORKERS ? config.workerCount : 1;
         this.slots = Array.from({ length: this.workerCount }, (_, id) => ({ id,
             worker: null, active: null, parked: new Map(), restarting: false, dateKey: null }));
         this.queue = [];

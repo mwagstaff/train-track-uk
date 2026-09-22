@@ -145,7 +145,7 @@ struct JourneyCard: View {
     var allowsExpansion: Bool = true
     var plannedBoard: SavedRouteBoardState? = nil
     var laterBoard: SavedRouteBoardState? = nil
-    var onSearchLater: (() -> Void)? = nil
+    var onSearchLater: (() async -> Void)? = nil
     var onRetryLater: (() -> Void)? = nil
 
     @EnvironmentObject private var depStore: DeparturesStore
@@ -185,20 +185,37 @@ struct JourneyCard: View {
         }
     }
 
-    private var summaries: [Summary] {
-        upcomingDepartures.compactMap(buildSummary)
+    /// Departure-derived content, built once per render. As computed properties
+    /// these re-sorted departures and rebuilt itineraries for every row reading them.
+    private struct Presentation {
+        let upcomingDepartures: [DepartureV2]
+        let summaries: [Summary]
+        let displayedSummaries: [Summary]
+        let durationComparison: JourneyDurationComparison
+        let canExpand: Bool
     }
 
-    private var displayedSummaries: [Summary] {
-        Array(summaries.prefix(isExpanded ? summaries.count : defaultDepartureCount))
-    }
-
-    private var durationComparison: JourneyDurationComparison {
-        JourneyDurationComparison(durations: displayedSummaries.compactMap(\.durationMinutes))
-    }
-
-    private var canExpand: Bool {
-        allowsExpansion && summaries.count > defaultDepartureCount
+    private func makePresentation() -> Presentation {
+        let upcoming = upcomingDepartures
+        var summaries: [Summary] = []
+        // Planned journeys replace these rows entirely.
+        if !usesPlannedJourneys {
+            let limit = isExpanded ? Int.max : defaultDepartureCount + 1
+            for departure in upcoming {
+                if let summary = buildSummary(startingWith: departure) {
+                    summaries.append(summary)
+                    if summaries.count >= limit { break }
+                }
+            }
+        }
+        let displayed = Array(summaries.prefix(isExpanded ? summaries.count : defaultDepartureCount))
+        return Presentation(
+            upcomingDepartures: upcoming,
+            summaries: summaries,
+            displayedSummaries: displayed,
+            durationComparison: JourneyDurationComparison(durations: displayed.compactMap(\.durationMinutes)),
+            canExpand: allowsExpansion && !usesPlannedJourneys && summaries.count > defaultDepartureCount
+        )
     }
 
     private var usesPlannedJourneys: Bool {
@@ -210,21 +227,21 @@ struct JourneyCard: View {
         return !plannedBoard.usesLegacyDepartures && !plannedBoard.usesDirectDepartures && !plannedBoard.hasPlannedResult
     }
 
-    private var hasVisibleDepartures: Bool {
+    private func hasVisibleDepartures(_ presentation: Presentation) -> Bool {
         if usesPlannedJourneys { return !(plannedBoard?.upcomingJourneys(at: Date()).isEmpty ?? true) }
-        if awaitingPlannedResults && !upcomingDepartures.isEmpty { return true }
-        return !displayedSummaries.isEmpty
+        if awaitingPlannedResults && !presentation.upcomingDepartures.isEmpty { return true }
+        return !presentation.displayedSummaries.isEmpty
     }
 
-    private func reportFirstDepartureIfVisible() {
+    private func reportFirstDepartureIfVisible(_ visible: Bool) {
         guard !appearanceMetrics.reportedFirstDeparture,
               let appearedAt = appearanceMetrics.appearedAt,
-              hasVisibleDepartures else { return }
+              visible else { return }
         appearanceMetrics.reportedFirstDeparture = true
         ClientPerf.log("card.firstDeparture route=\(group.startStation.crs)-\(group.endStation.crs) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: appearedAt)) source=\(usesPlannedJourneys ? "planned" : usesDirectDepartures ? "direct" : "legacy")")
     }
 
-    private var showsLaterDeparturesControl: Bool {
+    private func showsLaterDeparturesControl(canExpand: Bool) -> Bool {
         !awaitingPlannedResults && allowsExpansion && (canExpand || onSearchLater != nil)
     }
 
@@ -237,8 +254,6 @@ struct JourneyCard: View {
         isExpanded && !usesPlannedJourneys && laterBoard?.isPending == true
     }
 
-    private var firstSummary: Summary? { summaries.first }
-
     private var dataAvailability: JourneyDataAvailability {
         if let direct = plannedBoard?.directAvailability() { return direct }
         return group.legs
@@ -248,6 +263,7 @@ struct JourneyCard: View {
     }
 
     var body: some View {
+        let presentation = makePresentation()
         VStack(alignment: .leading, spacing: 0) {
             if showsHeader {
                 header
@@ -268,7 +284,7 @@ struct JourneyCard: View {
                     supplementalState: laterBoard,
                     onRetrySupplemental: onRetryLater)
             } else {
-            if awaitingPlannedResults && !upcomingDepartures.isEmpty {
+            if awaitingPlannedResults && !presentation.upcomingDepartures.isEmpty {
                 Text("Showing available departures while full journey options load")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -284,9 +300,9 @@ struct JourneyCard: View {
             }
 
             VStack(alignment: .leading, spacing: 0) {
-                if displayedSummaries.isEmpty {
-                    if awaitingPlannedResults && !upcomingDepartures.isEmpty {
-                        let fallback = Array(upcomingDepartures.prefix(defaultDepartureCount))
+                if presentation.displayedSummaries.isEmpty {
+                    if awaitingPlannedResults && !presentation.upcomingDepartures.isEmpty {
+                        let fallback = Array(presentation.upcomingDepartures.prefix(defaultDepartureCount))
                         ForEach(Array(fallback.enumerated()), id: \.element.id) { index, departure in
                             firstLegDepartureRow(departure)
                             if index < fallback.count - 1 {
@@ -313,12 +329,14 @@ struct JourneyCard: View {
                         EmptyView()
                     }
                 } else {
-                    ForEach(Array(displayedSummaries.enumerated()), id: \.element.id) { index, summary in
+                    let displayed = presentation.displayedSummaries
+                    ForEach(Array(displayed.enumerated()), id: \.element.id) { index, summary in
                         departureLink(
                             summary,
-                            isLast: index == displayedSummaries.count - 1
+                            isLast: index == displayed.count - 1,
+                            presentation: presentation
                         )
-                        if index < displayedSummaries.count - 1 {
+                        if index < displayed.count - 1 {
                             Divider().padding(.horizontal, 16)
                         }
                     }
@@ -326,7 +344,7 @@ struct JourneyCard: View {
             }
 
             if isExpanded, let laterBoard {
-                if !displayedSummaries.isEmpty && hasVisibleStandaloneLaterJourneys {
+                if !presentation.displayedSummaries.isEmpty && hasVisibleStandaloneLaterJourneys {
                     Divider().padding(.horizontal, 16)
                 }
                 SavedRouteBoardView(
@@ -341,7 +359,7 @@ struct JourneyCard: View {
             }
             }
 
-            if showsLaterDeparturesControl {
+            if showsLaterDeparturesControl(canExpand: presentation.canExpand) {
                 laterDeparturesControl
             }
         }
@@ -351,19 +369,23 @@ struct JourneyCard: View {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(Color.primary.opacity(0.05), lineWidth: 1)
         }
-        .task(id: prefetchTaskID) {
+        .task(id: prefetchTaskID(presentation.upcomingDepartures)) {
             guard plannedBoard == nil || plannedBoard?.usesLegacyDepartures == true || usesDirectDepartures else { return }
-            await prefetchVisibleServiceDetails()
+            await prefetchVisibleServiceDetails(presentation.upcomingDepartures)
         }
         .onAppear {
             appearanceMetrics.appearedAt = .now
             appearanceMetrics.reportedFirstDeparture = false
             ClientPerf.log("card.appear route=\(group.startStation.crs)-\(group.endStation.crs) spinner=\(isRefreshingDepartures)")
-            reportFirstDepartureIfVisible()
+            reportFirstDepartureIfVisible(hasVisibleDepartures(presentation))
         }
-        .onChange(of: hasVisibleDepartures) { _, _ in reportFirstDepartureIfVisible() }
+        .onChange(of: hasVisibleDepartures(presentation)) { _, visible in reportFirstDepartureIfVisible(visible) }
         .onChange(of: isRefreshingDepartures) { _, refreshing in
             ClientPerf.log("card.spinner route=\(group.startStation.crs)-\(group.endStation.crs) active=\(refreshing) board=\(plannedBoard?.showsActivity == true)")
+        }
+        .task(id: isExpanded) {
+            guard isExpanded, let onSearchLater else { return }
+            await onSearchLater()
         }
     }
 
@@ -399,13 +421,8 @@ struct JourneyCard: View {
 
     private var laterDeparturesControl: some View {
         Button {
-            let shouldSearch = !isExpanded
-            withAnimation(.easeInOut(duration: 0.2)) {
-                onToggleExpanded()
-            }
-            if shouldSearch {
-                onSearchLater?()
-            }
+            ClientPerf.log("card.moreDepartures route=\(group.startStation.crs)-\(group.endStation.crs) expanded=\(!isExpanded)")
+            onToggleExpanded()
         } label: {
             HStack(spacing: 6) {
                 Text(isExpanded ? "Fewer departures" : "More departures")
@@ -687,22 +704,22 @@ struct JourneyCard: View {
     }
 
     @ViewBuilder
-    private func departureLink(_ summary: Summary, isLast: Bool) -> some View {
+    private func departureLink(_ summary: Summary, isLast: Bool, presentation: Presentation) -> some View {
         if isInteractive {
             Button {
                 onOpenDeparture(summary.firstLeg, summary.firstDeparture)
             } label: {
-                styledDepartureRow(summary, isLast: isLast)
+                styledDepartureRow(summary, isLast: isLast, presentation: presentation)
             }
             .buttonStyle(.plain)
             .accessibilityHint("Opens live calling points for this service.")
         } else {
-            styledDepartureRow(summary, isLast: isLast)
+            styledDepartureRow(summary, isLast: isLast, presentation: presentation)
         }
     }
 
-    private func styledDepartureRow(_ summary: Summary, isLast: Bool) -> some View {
-        departureRow(summary)
+    private func styledDepartureRow(_ summary: Summary, isLast: Bool, presentation: Presentation) -> some View {
+        departureRow(summary, presentation: presentation)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, 16)
             .padding(.trailing, 16)
@@ -712,7 +729,7 @@ struct JourneyCard: View {
                     .fill(operatorColor(for: summary.firstDeparture))
                     .frame(width: 4)
                     .padding(.top, 2)
-                    .padding(.bottom, isLast && !canExpand ? 16 : 2)
+                    .padding(.bottom, isLast && !presentation.canExpand ? 16 : 2)
                     .accessibilityHidden(true)
                     .allowsHitTesting(false)
             }
@@ -720,7 +737,7 @@ struct JourneyCard: View {
     }
 
     @ViewBuilder
-    private func departureRow(_ summary: Summary) -> some View {
+    private func departureRow(_ summary: Summary, presentation: Presentation) -> some View {
         DepartureSummaryRow {
             departureTiming(summary)
         } platform: {
@@ -732,13 +749,13 @@ struct JourneyCard: View {
         } footer: {
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 8) {
-                    departureNotes(summary)
+                    departureNotes(summary, presentation: presentation)
                     operatorLabel(for: summary.firstDeparture)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                 }
             } else {
                 HStack(alignment: .bottom, spacing: 8) {
-                    departureNotes(summary)
+                    departureNotes(summary, presentation: presentation)
                     Spacer(minLength: 8)
                     operatorLabel(for: summary.firstDeparture)
                 }
@@ -747,18 +764,18 @@ struct JourneyCard: View {
         }
     }
 
-    private func departureNotes(_ summary: Summary) -> some View {
+    private func departureNotes(_ summary: Summary, presentation: Presentation) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let tag = durationComparison.tag(for: summary.durationMinutes) {
+            if let tag = presentation.durationComparison.tag(for: summary.durationMinutes) {
                 JourneyDurationBadge(tag: tag)
             }
-            detailedStatusView(summary)
+            detailedStatusView(summary, isFirst: summary.id == presentation.summaries.first?.id)
         }
     }
 
     @ViewBuilder
-    private func detailedStatusView(_ summary: Summary) -> some View {
-        if summary.id == firstSummary?.id,
+    private func detailedStatusView(_ summary: Summary, isFirst: Bool) -> some View {
+        if isFirst,
            let status = detailedStatus(for: summary) {
             HStack(alignment: .firstTextBaseline, spacing: 7) {
                 Circle()
@@ -1029,7 +1046,7 @@ struct JourneyCard: View {
         departure.serviceType.lowercased() == "bus" || departure.platform?.uppercased() == "BUS"
     }
 
-    private var prefetchTaskID: String {
+    private func prefetchTaskID(_ upcomingDepartures: [DepartureV2]) -> String {
         let visibleCount = isExpanded ? upcomingDepartures.count : defaultDepartureCount
         let ids = upcomingDepartures.prefix(visibleCount).map(\.serviceID).joined(separator: ",")
         let observed = plannedBoard?.direct?.lastSuccessfulUpdate
@@ -1037,7 +1054,7 @@ struct JourneyCard: View {
         return "\(usesDirectDepartures)-\(firstLeg.fromStation.crs)-\(firstLeg.toStation.crs)-\(isExpanded)-\(ids)-\(observed?.timeIntervalSince1970 ?? 0)"
     }
 
-    private func prefetchVisibleServiceDetails() async {
+    private func prefetchVisibleServiceDetails(_ upcomingDepartures: [DepartureV2]) async {
         let visibleCount = isExpanded ? upcomingDepartures.count : defaultDepartureCount
         var ids = upcomingDepartures.prefix(visibleCount).map(\.serviceID)
         for leg in presentationGroup.legs.dropFirst() {

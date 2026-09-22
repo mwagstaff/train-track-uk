@@ -1,4 +1,4 @@
-Couldn't read values in CFPrefsPlistSource<0x102a74000> (Domain: group.dev.skynolimit.traintrack, User: kCFPreferencesAnyUser, ByHost: Yes, Container: (null), Contents Need Refresh: Yes (Cached: 0, Newest: 0, Index: 0): Using kCFPreferencesAnyUser with a container is only allowed for System Containers, detaching from cfprefsd
+Couldn't read values in CFPrefsPlistSource<0x1066845a0> (Domain: group.dev.skynolimit.traintrack, User: kCFPreferencesAnyUser, ByHost: Yes, Container: (null), Contents Need Refresh: Yes (Cached: 0, Newest: 0, Index: 0): Using kCFPreferencesAnyUser with a container is only allowed for System Containers, detaching from cfprefsd
 [Scheduled] App launch
 Device: 3DEE2ED2-4B35-4ED1-8693-D50AB0AA8794
 API: https://api.skynolimit.dev/train-track/api/v2
@@ -6,38 +6,46 @@ Notification APNs sandbox: true
 📊 [LiveActivity] State updated: isActive=false, activeJourneys=[]
 [JourneyHistory] Journey history store ready with 45 record(s)
 [ClientPerf] advance.sync.start revision=1
-{"msg":"#Warning Error reading file", "file":"\/\/private\/var\/Managed Preferences\/mobile\/com.apple.CoreMotion.plist", "error":"Error Domain=NSCocoaErrorDomain Code=257 \"The file “com.apple.CoreMotion.plist” couldn’t be opened because you don’t have permission to view it.\" UserInfo={NSFilePath=\/\/private\/var\/Managed Preferences\/mobile\/com.apple.CoreMotion.plist, NSURL=file:\/\/\/\/private\/var\/Managed%20Preferences\/mobile\/com.apple.CoreMotion.plist, NSUnderlyingError=0x11341ca80 {Error Domain=NSPOSIXErrorDomain Code=1 \"Operation not permitted\"}}"}
-📍 [LocationManagerPhone] init auth=3
-📍 [LocationManagerPhone] request auth=3
-📍 [LocationManagerPhone] requestLocation()
-Error -17102 decompressing image -- possibly corrupt
+{"msg":"#Warning Error reading file", "file":"\/\/private\/var\/Managed Preferences\/mobile\/com.apple.CoreMotion.plist", "error":"Error Domain=NSCocoaErrorDomain Code=257 \"The file “com.apple.CoreMotion.plist” couldn’t be opened because you don’t have permission to view it.\" UserInfo={NSFilePath=\/\/private\/var\/Managed Preferences\/mobile\/com.apple.CoreMotion.plist, NSURL=file:\/\/\/\/private\/var\/Managed%20Preferences\/mobile\/com.apple.CoreMotion.plist, NSUnderlyingError=0x117024c90 {Error Domain=NSPOSIXErrorDomain Code=1 \"Operation not permitted\"}}"}
+quic_crypto_queue_append not enqueing more packets (max 5 reached)
+quic_crypto_queue_append not enqueing more packets (max 5 reached)
+quic_crypto_queue_append not enqueing more packets (max 5 reached)
+quic_crypto_queue_append not enqueing more packets (max 5 reached)
 nw_connection_copy_protocol_metadata_internal_block_invoke [C4] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
 nw_connection_copy_protocol_metadata_internal_block_invoke [C4] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
 nw_connection_copy_protocol_metadata_internal_block_invoke [C4] Client called nw_connection_copy_protocol_metadata_internal on unconnected nw_connection
 nw_connection_copy_connected_local_endpoint_block_invoke [C4] Client called nw_connection_copy_connected_local_endpoint on unconnected nw_connection
 nw_connection_copy_connected_remote_endpoint_block_invoke [C4] Client called nw_connection_copy_connected_remote_endpoint on unconnected nw_connection
+📍 [LocationManagerPhone] init auth=3
+📍 [LocationManagerPhone] request auth=3
+📍 [LocationManagerPhone] requestLocation()
+Error -17102 decompressing image -- possibly corrupt
 [ClientPerf] card.appear route=KTH-VIC spinner=true
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 [ActivityMonitor] Activity.activityUpdates stream started
-📍 [GeofenceManager] init auth=3 monitored=12
+📍 [GeofenceManager] init auth=3 monitored=0
 Reading from public effective user settings.
 📍 [GeofenceManager] Started CLServiceSession(.always)
 non-launching port is incompatible with service identifier "com.apple.PointerUI.pointeruid.default-service"
 [ClientPerf] departures.initial.start favourites=2 others=14
-[ClientPerf] departures.refresh.start id=100A5DEA pairs=2 batching=parallel
+[ClientPerf] departures.refresh.start id=CEC49515 pairs=2 batching=parallel
 [ClientPerf] advance.http.start monitors=12
+⚙️ [ServerConfig] maxSubscriptionsPerDevice = 3
+⚙️ [ServerConfig] maxLiveSessionsPerDevice = 3
+⚙️ [ServerConfig] operator branding version = 2026-09-16
 📍 [LocationManagerPhone] authorization changed -> 3
 📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
 📍 [LocationManagerPhone] cancel active request
 📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
-📍 [LocationManagerPhone] didUpdateLocations lat=51.401375921187615 lng=-0.04573386222732242
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40137874743794 lng=-0.04574212178770345
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
 📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
 📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
 📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
 🔄 [App] App became active - triggering Live Activity refresh
 📍 [App] App became active - refreshing notification subscriptions & geofences
-[ClientPerf] http.start id=D597BA6B operation=departures count=2
+[ClientPerf] http.start id=7691A040 operation=departures count=2
 [Geofence] Location authorization changed: status=authorizedAlways
 [Scheduled] Live Activity scan: tracked=0, system=0, unregistered=0, scheduled=0
 [LiveActivity] Skipping check-in because no activities are active
@@ -48,28 +56,33 @@ non-launching port is incompatible with service identifier "com.apple.PointerUI.
 [ClientPerf] advance.sync.coalesced revision=2
 📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
 📍 [LocationManagerPhone] cancel active request
-📍 [LocationManagerPhone] didUpdateLocations lat=51.40137681706521 lng=-0.045736350843145306
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40137857925293 lng=-0.04574198573463307
 📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
 📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-[LiveActivity] Push-to-start token registered successfully
-[ClientPerf] http.end id=D597BA6B operation=departures elapsedMs=3809 status=200 bytes=8924
-[ClientPerf] http.metrics id=D597BA6B operation=departures totalMs=2776 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=887 transferMs=0 reused=true protocol=h2 redirects=0
 ⚙️ [ServerConfig] maxSubscriptionsPerDevice = 3
 ⚙️ [ServerConfig] maxLiveSessionsPerDevice = 3
 ⚙️ [ServerConfig] operator branding version = 2026-09-16
-[ClientPerf] savedRoutes.batch.start id=489B161D routes=1 force=false
-[ClientPerf] planner.http.start id=129AD893 operation=route-boards method=POST
-[ClientPerf] departures.refresh.batch id=100A5DEA elapsedMs=3841 snapshots=2
+[LiveActivity] Push-to-start token registered successfully
+[ClientPerf] advance.http.metrics totalMs=3502 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=3501 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] advance.http.end elapsedMs=5257 status=200 bytes=1682
+[ClientPerf] advance.http.start monitors=12
+[ClientPerf] http.end id=7691A040 operation=departures elapsedMs=5236 status=200 bytes=6524
+[ClientPerf] http.metrics id=7691A040 operation=departures totalMs=3481 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=1616 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] savedRoutes.batch.start id=AF22D883 routes=1 force=false
+[ClientPerf] planner.http.start id=9C4F6CA8 operation=route-boards method=POST atUnixMs=1790108166995
+[ClientPerf] departures.refresh.batch id=CEC49515 elapsedMs=5280 snapshots=2
+[ClientPerf] card.firstDeparture route=KTH-VIC elapsedMs=5365 source=legacy
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
 [JourneyHistory] Restored 0 journey candidate(s); active journey none
-[ClientPerf] departures.refresh.applied id=100A5DEA elapsedMs=3859 snapshots=2 departures=29
-[ClientPerf] departures.refresh.complete id=100A5DEA elapsedMs=3859
-[ClientPerf] departures.refresh.start id=03C53696 pairs=12 batching=parallel
-[ClientPerf] http.start id=9914621A operation=loadingDetails count=6
-[ClientPerf] http.start id=E6264993 operation=departures count=4
-[ClientPerf] http.start id=07F126A9 operation=departures count=4
-[ClientPerf] http.start id=69AE5810 operation=departures count=4
+[ClientPerf] advance.sync.coalesced revision=3
+[ClientPerf] departures.refresh.applied id=CEC49515 elapsedMs=5400 snapshots=2 departures=21
+[ClientPerf] departures.refresh.complete id=CEC49515 elapsedMs=5400
+[ClientPerf] departures.refresh.start id=0E9F0279 pairs=12 batching=parallel
+[ClientPerf] http.start id=DB014DFB operation=loadingDetails count=6
+[ClientPerf] http.start id=5F1D6096 operation=departures count=4
+[ClientPerf] http.start id=4A658695 operation=departures count=4
+[ClientPerf] http.start id=84780B1D operation=departures count=4
 📍 [GeofenceManager] updateBackgroundLocationState active=true allowsBackground=false
 📍 [GeofenceManager] Stopped CLBackgroundActivitySession
 📍 [GeofenceManager] updateBackgroundLocationState active=true allowsBackground=false
@@ -88,368 +101,171 @@ cannot add handler to 0 from 0 - dropping
 📍 [GeofenceManager] Stopped CLBackgroundActivitySession
 📍 [GeofenceManager] updateBackgroundLocationState active=true allowsBackground=false
 📍 [GeofenceManager] Stopped CLBackgroundActivitySession
-[Scheduled] Live Activity scan: tracked=0, system=0, unregistered=0, scheduled=0
 [LiveActivity] Push-to-start token registered successfully
-[ClientPerf] planner.http.end id=129AD893 operation=route-boards elapsedMs=266 status=200 bytes=177
-[ClientPerf] planner.http.metrics id=129AD893 operation=route-boards totalMs=266 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=266 transferMs=0 reused=true protocol=h2 redirects=0
-[ClientPerf] planner.decode id=129AD893 operation=route-boards elapsedMs=3
-[ClientPerf] savedRoutes.batch.response id=489B161D elapsedMs=271 boards=direct:queued
-[ClientPerf] http.end id=9914621A operation=loadingDetails elapsedMs=764 status=200 bytes=6365
-[ClientPerf] http.metrics id=9914621A operation=loadingDetails totalMs=765 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=762 transferMs=0 reused=true protocol=h2 redirects=0
-[Scheduled] Live Activity scan: tracked=0, system=0, unregistered=0, scheduled=0
-[ClientPerf] http.end id=07F126A9 operation=departures elapsedMs=1035 status=200 bytes=9199
-[ClientPerf] http.metrics id=07F126A9 operation=departures totalMs=1036 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=1031 transferMs=2 reused=true protocol=h2 redirects=0
-[ClientPerf] departures.refresh.batch id=03C53696 elapsedMs=1055 snapshots=4
-[ClientPerf] savedRoutes.batch.start id=2DBD6333 routes=1 force=false
-[ClientPerf] planner.http.start id=8CE1525E operation=route-boards method=POST
-⚙️ [ServerConfig] maxSubscriptionsPerDevice = 3
-⚙️ [ServerConfig] maxLiveSessionsPerDevice = 3
-⚙️ [ServerConfig] operator branding version = 2026-09-16
-[ClientPerf] http.end id=E6264993 operation=departures elapsedMs=1867 status=200 bytes=17740
-[ClientPerf] http.metrics id=E6264993 operation=departures totalMs=1868 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=1853 transferMs=12 reused=true protocol=h2 redirects=0
-[ClientPerf] departures.refresh.batch id=03C53696 elapsedMs=1887 snapshots=4
-[Scheduled] Live Activity scan: tracked=0, system=0, unregistered=0, scheduled=0
-[ClientPerf] planner.http.end id=8CE1525E operation=route-boards elapsedMs=1121 status=200 bytes=4349
-[ClientPerf] planner.http.metrics id=8CE1525E operation=route-boards totalMs=1122 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=1113 transferMs=8 reused=true protocol=h2 redirects=0
-[ClientPerf] planner.decode id=8CE1525E operation=route-boards elapsedMs=0
-[ClientPerf] savedRoutes.batch.response id=2DBD6333 elapsedMs=1122 boards=direct:ready
-[ClientPerf] savedRoutes.firstData route=KTH-VIC elapsedMs=3487 source=direct status=ready
-[ClientPerf] card.firstDeparture route=KTH-VIC elapsedMs=6517 source=direct
-[ClientPerf] card.spinner route=KTH-VIC active=false board=false
-[ClientPerf] http.end id=69AE5810 operation=departures elapsedMs=2621 status=200 bytes=8943
-[ClientPerf] http.metrics id=69AE5810 operation=departures totalMs=2592 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=2589 transferMs=0 reused=true protocol=h2 redirects=0
-[ClientPerf] departures.refresh.batch id=03C53696 elapsedMs=2641 snapshots=4
-[ClientPerf] http.start id=523752C4 operation=serviceDetails count=5
-[ClientPerf] departures.refresh.applied id=03C53696 elapsedMs=2646 snapshots=12 departures=143
-[ClientPerf] departures.refresh.complete id=03C53696 elapsedMs=2646
-[ClientPerf] departures.initial.end elapsedMs=6506
-[ClientPerf] http.start id=790959F3 operation=loadingDetails count=18
-[ClientPerf] http.end id=523752C4 operation=serviceDetails elapsedMs=2967 status=200 bytes=13049
-[ClientPerf] http.metrics id=523752C4 operation=serviceDetails totalMs=2967 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=2555 transferMs=411 reused=true protocol=h2 redirects=0
-[ClientPerf] http.end id=790959F3 operation=loadingDetails elapsedMs=2693 status=200 bytes=11134
-[ClientPerf] http.metrics id=790959F3 operation=loadingDetails totalMs=2686 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=2685 transferMs=0 reused=true protocol=h2 redirects=0
-[ClientPerf] departures.refresh.start id=92411861 pairs=14 batching=parallel
-[ClientPerf] http.start id=DD2D0380 operation=departures count=4
-[ClientPerf] http.start id=CF2E5D2A operation=departures count=4
-[ClientPerf] http.start id=8A75B871 operation=departures count=4
-[ClientPerf] http.start id=480C83DD operation=departures count=2
-[ClientPerf] advance.http.metrics totalMs=15862 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=15860 transferMs=1 reused=true protocol=h2 redirects=0
-[ClientPerf] advance.http.end elapsedMs=15862 status=200 bytes=1682
+[ClientPerf] advance.http.metrics totalMs=312 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=310 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] advance.http.end elapsedMs=312 status=200 bytes=1682
 [ClientPerf] advance.http.start monitors=12
-[ClientPerf] http.end id=CF2E5D2A operation=departures elapsedMs=376 status=200 bytes=17513
-[ClientPerf] http.metrics id=CF2E5D2A operation=departures totalMs=375 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=346 transferMs=21 reused=true protocol=h2 redirects=0
-[ClientPerf] departures.refresh.batch id=92411861 elapsedMs=392 snapshots=4
-[ClientPerf] advance.sync.coalesced revision=3
-[ClientPerf] http.end id=DD2D0380 operation=departures elapsedMs=7046 status=200 bytes=18143
-[ClientPerf] http.metrics id=DD2D0380 operation=departures totalMs=7046 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=738 transferMs=6300 reused=true protocol=h2 redirects=0
-[ClientPerf] http.end id=8A75B871 operation=departures elapsedMs=7054 status=200 bytes=413
-[ClientPerf] http.metrics id=8A75B871 operation=departures totalMs=7045 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=7036 transferMs=2 reused=true protocol=h2 redirects=0
-[ClientPerf] http.end id=480C83DD operation=departures elapsedMs=7057 status=200 bytes=8737
-[ClientPerf] http.metrics id=480C83DD operation=departures totalMs=7045 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=7035 transferMs=2 reused=true protocol=h2 redirects=0
-[ClientPerf] departures.refresh.batch id=92411861 elapsedMs=7068 snapshots=4
-[ClientPerf] departures.refresh.batch id=92411861 elapsedMs=7072 snapshots=4
-[ClientPerf] departures.refresh.batch id=92411861 elapsedMs=7074 snapshots=2
-[ClientPerf] departures.refresh.applied id=92411861 elapsedMs=7087 snapshots=14 departures=143
-[ClientPerf] departures.refresh.complete id=92411861 elapsedMs=7087
-[ClientPerf] savedRoutes.batch.start id=81E7E6EB routes=1 force=false
-[ClientPerf] planner.http.start id=BB5A9E84 operation=route-boards method=POST
-[ClientPerf] card.spinner route=KTH-VIC active=true board=true
-📍 [LocationManagerPhone] init auth=3
-📍 [LocationManagerPhone] request auth=3
-📍 [LocationManagerPhone] requestLocation()
-📍 [LocationManagerPhone] init auth=3
-📍 [LocationManagerPhone] request auth=3
-📍 [LocationManagerPhone] requestLocation()
-[ClientPerf] card.appear route=KTH-STP spinner=true
-[ClientPerf] card.appear route=KTH-BFR spinner=true
-[ClientPerf] card.appear route=KTH-ZFD spinner=true
-[ClientPerf] card.appear route=CLK-LBG spinner=true
-[ClientPerf] card.appear route=ELE-BIK spinner=true
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-📍 [LocationManagerPhone] authorization changed -> 3
-📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
-📍 [LocationManagerPhone] cancel active request
-📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
-📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
-📍 [LocationManagerPhone] authorization changed -> 3
-📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
-📍 [LocationManagerPhone] cancel active request
-[ClientPerf] savedRoutes.batch.start id=5F89CD43 routes=5 force=false
-[ClientPerf] planner.http.start id=B35B395C operation=route-boards method=POST
+[Scheduled] Live Activity scan: tracked=0, system=0, unregistered=0, scheduled=0
 [Geofence] Geofence eligibility
 Scheduled: 1
 Live sessions: 0
 Eligible: 1
 Skipped: expired=0, noEnabledLegs=0
 Sessions: none
+[ClientPerf] http.end id=84780B1D operation=departures elapsedMs=264 status=200 bytes=6448
+[ClientPerf] http.metrics id=84780B1D operation=departures totalMs=234 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=226 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=4A658695 operation=departures elapsedMs=265 status=200 bytes=6927
+[ClientPerf] http.metrics id=4A658695 operation=departures totalMs=251 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=242 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=5F1D6096 operation=departures elapsedMs=266 status=200 bytes=13371
+[ClientPerf] http.metrics id=5F1D6096 operation=departures totalMs=254 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=246 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] departures.refresh.batch id=0E9F0279 elapsedMs=273 snapshots=4
+[ClientPerf] departures.refresh.batch id=0E9F0279 elapsedMs=275 snapshots=4
+[ClientPerf] departures.refresh.batch id=0E9F0279 elapsedMs=276 snapshots=4
 📍 [GeofenceManager] requestAlwaysAuthorizationIfNeeded auth=3
+[ClientPerf] departures.refresh.applied id=0E9F0279 elapsedMs=341 snapshots=12 departures=104
+[ClientPerf] departures.refresh.complete id=0E9F0279 elapsedMs=341
+[ClientPerf] departures.initial.end elapsedMs=5741
 📍 [GeofenceManager] updateBackgroundLocationState active=true allowsBackground=false
 📍 [GeofenceManager] Stopped CLBackgroundActivitySession
 📍 [GeofenceManager] updateBackgroundLocationState active=true allowsBackground=false
 📍 [GeofenceManager] Stopped CLBackgroundActivitySession
 📍 Geofence sync: 12 desired, +0 added, -0 removed, tracking=2
+[ClientPerf] http.start id=73400F7D operation=loadingDetails count=18
+[ClientPerf] http.failed id=DB014DFB operation=loadingDetails elapsedMs=407 errorType=URLError urlCode=-999 urlName=Code(rawValue: -999) cancelled=true
 [Geofence] Geofence sync: 12 desired, +0 added, -0 removed, tracking=2
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-[ClientPerf] departures.refresh.start id=46992C72 pairs=14 batching=parallel
-[ClientPerf] http.start id=D98561B6 operation=departures count=4
-[ClientPerf] http.start id=C7E8A6D7 operation=departures count=4
-[ClientPerf] http.start id=4AD8471A operation=departures count=4
-[ClientPerf] http.start id=26A0869A operation=departures count=2
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-Task <2DB15166-CD76-4098-90ED-6AB1C961DC0F>.<25> finished with error [-1001] Error Domain=NSURLErrorDomain Code=-1001 "The request timed out." UserInfo={_kCFStreamErrorCodeKey=-2102, NSUnderlyingError=0x11fb125e0 {Error Domain=kCFErrorDomainCFNetwork Code=-1001 "(null)" UserInfo={_kCFStreamErrorCodeKey=-2102, _kCFStreamErrorDomainKey=4}}, _NSURLErrorFailingURLSessionTaskErrorKey=LocalDataTask <2DB15166-CD76-4098-90ED-6AB1C961DC0F>.<25>, _NSURLErrorRelatedURLSessionTaskErrorKey=(
-    "LocalDataTask <2DB15166-CD76-4098-90ED-6AB1C961DC0F>.<25>"
-), NSLocalizedDescription=The request timed out., NSErrorFailingURLStringKey=https://api.skynolimit.dev/train-track/api/v4/journey-planner/route-boards, NSErrorFailingURLKey=https://api.skynolimit.dev/train-track/api/v4/journey-planner/route-boards, _kCFStreamErrorDomainKey=4}
-[ClientPerf] planner.http.failed id=BB5A9E84 operation=route-boards elapsedMs=15999 error=timeout
-[ClientPerf] savedRoutes.batch.failed id=81E7E6EB elapsedMs=16000 errorType=PlannerError
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-Task <64EB0B02-A35B-4FC9-80C0-97B01F4E87E7>.<23> finished with error [-1001] Error Domain=NSURLErrorDomain Code=-1001 "The request timed out." UserInfo={_kCFStreamErrorCodeKey=-2102, NSUnderlyingError=0x11fb13030 {Error Domain=kCFErrorDomainCFNetwork Code=-1001 "(null)" UserInfo={_kCFStreamErrorCodeKey=-2102, _kCFStreamErrorDomainKey=4}}, _NSURLErrorFailingURLSessionTaskErrorKey=LocalDataTask <64EB0B02-A35B-4FC9-80C0-97B01F4E87E7>.<23>, _NSURLErrorRelatedURLSessionTaskErrorKey=(
-    "LocalDataTask <64EB0B02-A35B-4FC9-80C0-97B01F4E87E7>.<23>"
-), NSLocalizedDescription=The request timed out., NSErrorFailingURLStringKey=https://api.skynolimit.dev/train-track/api/v2/disruptions/monitors, NSErrorFailingURLKey=https://api.skynolimit.dev/train-track/api/v2/disruptions/monitors, _kCFStreamErrorDomainKey=4}
-[ClientPerf] advance.http.failed elapsedMs=31000 errorType=URLError urlCode=-1001 urlName=Code(rawValue: -1001) cancelled=false
-[ClientPerf] advance.sync.failed elapsedMs=51177 errorType=NSURLError
-[ClientPerf] advance.sync.end elapsedMs=51177 revision=3
-Task <24DB84F3-75D6-435E-9185-3E0E3AC73F08>.<26> finished with error [-1001] Error Domain=NSURLErrorDomain Code=-1001 "The request timed out." UserInfo={_kCFStreamErrorCodeKey=-2102, NSUnderlyingError=0x11fb13390 {Error Domain=kCFErrorDomainCFNetwork Code=-1001 "(null)" UserInfo={_kCFStreamErrorCodeKey=-2102, _kCFStreamErrorDomainKey=4}}, _NSURLErrorFailingURLSessionTaskErrorKey=LocalDataTask <24DB84F3-75D6-435E-9185-3E0E3AC73F08>.<26>, _NSURLErrorRelatedURLSessionTaskErrorKey=(
-    "LocalDataTask <24DB84F3-75D6-435E-9185-3E0E3AC73F08>.<26>"
-), NSLocalizedDescription=The request timed out., NSErrorFailingURLStringKey=https://api.skynolimit.dev/train-track/api/v4/journey-planner/route-boards, NSErrorFailingURLKey=https://api.skynolimit.dev/train-track/api/v4/journey-planner/route-boards, _kCFStreamErrorDomainKey=4}
-[ClientPerf] planner.http.failed id=B35B395C operation=route-boards elapsedMs=15036 error=timeout
-[ClientPerf] savedRoutes.batch.failed id=5F89CD43 elapsedMs=15036 errorType=PlannerError
-📍 [LocationManagerPhone] deinit
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-[ClientPerf] departures.refresh.start id=CB03694C pairs=14 batching=parallel
-[ClientPerf] http.start id=44A208D7 operation=departures count=4
-[ClientPerf] http.start id=0C4179CD operation=departures count=4
-[ClientPerf] http.start id=FCB6ECA4 operation=departures count=4
-[ClientPerf] http.start id=14C5B803 operation=departures count=2
-[ClientPerf] http.end id=14C5B803 operation=departures elapsedMs=467 status=200 bytes=8737
-[ClientPerf] http.metrics id=14C5B803 operation=departures totalMs=467 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=464 transferMs=1 reused=true protocol=h2 redirects=0
-[ClientPerf] http.end id=4AD8471A operation=departures elapsedMs=20471 status=200 bytes=413
-[ClientPerf] http.metrics id=4AD8471A operation=departures totalMs=20466 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=20462 transferMs=0 reused=true protocol=h2 redirects=0
-[ClientPerf] departures.refresh.batch id=CB03694C elapsedMs=486 snapshots=2
-[ClientPerf] departures.refresh.batch id=46992C72 elapsedMs=20493 snapshots=4
-[ClientPerf] http.end id=0C4179CD operation=departures elapsedMs=817 status=200 bytes=17513
-[ClientPerf] http.metrics id=0C4179CD operation=departures totalMs=618 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=616 transferMs=0 reused=true protocol=h2 redirects=0
-[ClientPerf] departures.refresh.batch id=CB03694C elapsedMs=825 snapshots=4
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-[ClientPerf] http.end id=D98561B6 operation=departures elapsedMs=21339 status=200 bytes=18143
-[ClientPerf] http.metrics id=D98561B6 operation=departures totalMs=21339 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=21334 transferMs=0 reused=true protocol=h2 redirects=0
-[ClientPerf] departures.refresh.batch id=46992C72 elapsedMs=21350 snapshots=4
-[ClientPerf] http.end id=FCB6ECA4 operation=departures elapsedMs=1559 status=200 bytes=413
-[ClientPerf] http.metrics id=FCB6ECA4 operation=departures totalMs=1356 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=1353 transferMs=1 reused=true protocol=h2 redirects=0
-[ClientPerf] http.end id=C7E8A6D7 operation=departures elapsedMs=21560 status=200 bytes=17513
-[ClientPerf] http.metrics id=C7E8A6D7 operation=departures totalMs=21358 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=21354 transferMs=0 reused=true protocol=h2 redirects=0
-[ClientPerf] http.end id=26A0869A operation=departures elapsedMs=21561 status=200 bytes=8737
-[ClientPerf] http.metrics id=26A0869A operation=departures totalMs=21358 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=21354 transferMs=0 reused=true protocol=h2 redirects=0
-[ClientPerf] http.end id=44A208D7 operation=departures elapsedMs=1563 status=200 bytes=18143
-[ClientPerf] http.metrics id=44A208D7 operation=departures totalMs=1367 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=1364 transferMs=0 reused=true protocol=h2 redirects=0
-[ClientPerf] departures.refresh.batch id=CB03694C elapsedMs=1568 snapshots=4
-[ClientPerf] departures.refresh.batch id=CB03694C elapsedMs=1570 snapshots=4
-[ClientPerf] departures.refresh.batch id=46992C72 elapsedMs=21571 snapshots=4
-[ClientPerf] departures.refresh.batch id=46992C72 elapsedMs=21572 snapshots=2
-[ClientPerf] departures.refresh.applied id=CB03694C elapsedMs=1766 snapshots=14 departures=143
-[ClientPerf] departures.refresh.complete id=CB03694C elapsedMs=1766
-[ClientPerf] departures.refresh.applied id=46992C72 elapsedMs=21771 snapshots=14 departures=143
-[ClientPerf] departures.refresh.complete id=46992C72 elapsedMs=21771
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-[ClientPerf] card.appear route=KTH-VIC spinner=true
-[ClientPerf] card.firstDeparture route=KTH-VIC elapsedMs=3 source=direct
-📍 [LocationManagerPhone] request auth=3
-📍 [LocationManagerPhone] requestLocation()
+[ClientPerf] advance.http.metrics totalMs=396 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=395 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] advance.http.end elapsedMs=396 status=200 bytes=1682
+[ClientPerf] advance.sync.applied elapsedMs=9677 mode=shadow monitors=12
+[ClientPerf] advance.sync.end elapsedMs=9678 revision=3
+[Scheduled] Live Activity scan: tracked=0, system=0, unregistered=0, scheduled=0
+[ClientPerf] planner.http.end id=9C4F6CA8 operation=route-boards elapsedMs=1541 status=200 bytes=177
+[ClientPerf] planner.http.metrics id=9C4F6CA8 operation=route-boards totalMs=1541 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=1540 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=9C4F6CA8 operation=route-boards elapsedMs=3
+[ClientPerf] savedRoutes.batch.response id=AF22D883 elapsedMs=1546 boards=direct:queued
+[ClientPerf] savedRoutes.batch.start id=87B8B03B routes=1 force=false
+[ClientPerf] planner.http.start id=C6EC281D operation=route-boards method=POST atUnixMs=1790108169586
+[Scheduled] Live Activity scan: tracked=0, system=0, unregistered=0, scheduled=0
 📍 [LocationManagerPhone] init auth=3
 📍 [LocationManagerPhone] request auth=3
 📍 [LocationManagerPhone] requestLocation()
 📍 [LocationManagerPhone] init auth=3
 📍 [LocationManagerPhone] request auth=3
 📍 [LocationManagerPhone] requestLocation()
-[ClientPerf] card.appear route=KTH-VIC spinner=true
-[ClientPerf] card.firstDeparture route=KTH-VIC elapsedMs=3 source=direct
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-[ClientPerf] savedRoutes.batch.start id=2A2452D3 routes=1 force=false
-[ClientPerf] planner.http.start id=E9AAF7E8 operation=route-boards method=POST
-📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
-📍 [LocationManagerPhone] cancel active request
-📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
-📍 [LocationManagerPhone] authorization changed -> 3
-📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
-📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
-📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
-📍 [LocationManagerPhone] cancel active request
-📍 [LocationManagerPhone] authorization changed -> 3
-📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
-📍 [LocationManagerPhone] cancel active request
-[ClientPerf] http.start id=D2DECB2B operation=serviceDetails count=5
-[ClientPerf] planner.http.end id=E9AAF7E8 operation=route-boards elapsedMs=444 status=200 bytes=4349
-[ClientPerf] planner.http.metrics id=E9AAF7E8 operation=route-boards totalMs=444 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=416 transferMs=26 reused=true protocol=h2 redirects=0
-[ClientPerf] planner.decode id=E9AAF7E8 operation=route-boards elapsedMs=2
-[ClientPerf] savedRoutes.batch.response id=2A2452D3 elapsedMs=447 boards=direct:ready
-📍 [LocationManagerPhone] deinit
-[ClientPerf] card.spinner route=KTH-VIC active=false board=false
-[ClientPerf] http.end id=D2DECB2B operation=serviceDetails elapsedMs=1259 status=200 bytes=13050
-[ClientPerf] http.metrics id=D2DECB2B operation=serviceDetails totalMs=1259 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=1234 transferMs=24 reused=true protocol=h2 redirects=0
-📍 [LocationManagerPhone] deinit
-[ClientPerf] card.appear route=KTH-STP spinner=true
-[ClientPerf] card.appear route=KTH-BFR spinner=true
 [ClientPerf] card.appear route=KTH-ZFD spinner=true
+[ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=0 source=legacy
 [ClientPerf] card.appear route=CLK-LBG spinner=true
-[ClientPerf] card.appear route=ELE-BIK spinner=true
-📍 [LocationManagerPhone] request auth=3
-📍 [LocationManagerPhone] requestLocation()
-📍 [LocationManagerPhone] init auth=3
-📍 [LocationManagerPhone] request auth=3
-📍 [LocationManagerPhone] requestLocation()
-📍 [LocationManagerPhone] init auth=3
-📍 [LocationManagerPhone] request auth=3
-📍 [LocationManagerPhone] requestLocation()
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-[ClientPerf] card.appear route=KTH-STP spinner=true
-[ClientPerf] card.appear route=KTH-BFR spinner=true
-[ClientPerf] card.appear route=KTH-ZFD spinner=true
-[ClientPerf] card.appear route=CLK-LBG spinner=true
+[ClientPerf] card.firstDeparture route=CLK-LBG elapsedMs=0 source=legacy
 [ClientPerf] card.appear route=ELE-BIK spinner=true
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
+📍 [LocationManagerPhone] authorization changed -> 3
 📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
 📍 [LocationManagerPhone] cancel active request
 📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
 📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
 📍 [LocationManagerPhone] authorization changed -> 3
 📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
-📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
 📍 [LocationManagerPhone] cancel active request
-📍 [LocationManagerPhone] authorization changed -> 3
-📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
-📍 [LocationManagerPhone] cancel active request
+[ClientPerf] savedRoutes.batch.start id=CC452DF6 routes=5 force=false
+[ClientPerf] planner.http.start id=9FDAEE20 operation=route-boards method=POST atUnixMs=1790108170229
+[ClientPerf] http.end id=73400F7D operation=loadingDetails elapsedMs=2693 status=200 bytes=11520
+[ClientPerf] http.metrics id=73400F7D operation=loadingDetails totalMs=2602 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=2600 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.http.end id=C6EC281D operation=route-boards elapsedMs=881 status=200 bytes=3165
+[ClientPerf] planner.http.metrics id=C6EC281D operation=route-boards totalMs=881 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=880 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=C6EC281D operation=route-boards elapsedMs=0
+[ClientPerf] savedRoutes.batch.response id=87B8B03B elapsedMs=881 boards=direct:ready
+[ClientPerf] savedRoutes.firstData route=KTH-VIC elapsedMs=5226 source=direct status=ready
+[ClientPerf] planner.http.end id=9FDAEE20 operation=route-boards elapsedMs=754 status=200 bytes=785
+[ClientPerf] planner.http.metrics id=9FDAEE20 operation=route-boards totalMs=754 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=752 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=9FDAEE20 operation=route-boards elapsedMs=2
+[ClientPerf] savedRoutes.batch.response id=CC452DF6 elapsedMs=756 boards=direct:queued,direct:queued,direct:queued,direct:queued,direct:queued
 📍 [LocationManagerPhone] deinit
-📍 [LocationManagerPhone] deinit
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-[ClientPerf] savedRoutes.batch.start id=0713515A routes=5 force=false
-[ClientPerf] planner.http.start id=1537BB0A operation=route-boards method=POST
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-[ClientPerf] planner.http.end id=1537BB0A operation=route-boards elapsedMs=2040 status=200 bytes=182349
-[ClientPerf] planner.http.metrics id=1537BB0A operation=route-boards totalMs=2041 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=1362 transferMs=678 reused=true protocol=h2 redirects=0
-[ClientPerf] planner.decode id=1537BB0A operation=route-boards elapsedMs=143
-[ClientPerf] savedRoutes.batch.response id=0713515A elapsedMs=2185 boards=planned:ready,planned:ready,planned:ready,direct:ready,planned:ready
-[ClientPerf] savedRoutes.firstData route=KTH-STP elapsedMs=37617 source=planned status=ready
-[ClientPerf] savedRoutes.firstData route=KTH-ZFD elapsedMs=37617 source=planned status=ready
-[ClientPerf] savedRoutes.firstData route=KTH-BFR elapsedMs=37617 source=planned status=ready
-[ClientPerf] savedRoutes.firstData route=CLK-LBG elapsedMs=37617 source=direct status=ready
-[ClientPerf] savedRoutes.firstData route=ELE-BIK elapsedMs=37617 source=planned status=ready
-[ClientPerf] card.firstDeparture route=KTH-STP elapsedMs=4379 source=planned
-[ClientPerf] card.spinner route=KTH-STP active=false board=false
-[ClientPerf] card.firstDeparture route=KTH-BFR elapsedMs=4378 source=planned
-[ClientPerf] card.spinner route=KTH-BFR active=false board=false
-[ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=4378 source=planned
-[ClientPerf] card.spinner route=KTH-ZFD active=false board=false
-[ClientPerf] card.firstDeparture route=CLK-LBG elapsedMs=4383 source=direct
+[ClientPerf] savedRoutes.batch.start id=B909606A routes=5 force=false
+[ClientPerf] planner.http.start id=5B6B55DF operation=route-boards method=POST atUnixMs=1790108172264
+[ClientPerf] planner.http.end id=5B6B55DF operation=route-boards elapsedMs=372 status=200 bytes=3776
+[ClientPerf] planner.http.metrics id=5B6B55DF operation=route-boards totalMs=372 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=368 transferMs=2 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=5B6B55DF operation=route-boards elapsedMs=4
+[ClientPerf] savedRoutes.batch.response id=B909606A elapsedMs=377 boards=direct:ready,planned:queued,planned:queued,planned:queued,planned:queued
+[ClientPerf] savedRoutes.firstData route=CLK-LBG elapsedMs=2511 source=direct status=ready
 [ClientPerf] card.spinner route=CLK-LBG active=false board=false
-[ClientPerf] card.firstDeparture route=ELE-BIK elapsedMs=4382 source=planned
-[ClientPerf] card.spinner route=ELE-BIK active=false board=false
-[ClientPerf] http.start id=34006ED9 operation=serviceDetails count=3
-[ClientPerf] http.end id=34006ED9 operation=serviceDetails elapsedMs=745 status=200 bytes=7572
-[ClientPerf] http.metrics id=34006ED9 operation=serviceDetails totalMs=745 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=744 transferMs=1 reused=true protocol=h2 redirects=0
+[ClientPerf] http.start id=6E1F094A operation=serviceDetails count=3
+[ClientPerf] http.end id=6E1F094A operation=serviceDetails elapsedMs=834 status=200 bytes=7750
+[ClientPerf] http.metrics id=6E1F094A operation=serviceDetails totalMs=834 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=833 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] savedRoutes.batch.start id=AA2BA1A3 routes=4 force=false
+[ClientPerf] planner.http.start id=AE4EE427 operation=route-boards method=POST atUnixMs=1790108173966
+[ClientPerf] planner.http.end id=AE4EE427 operation=route-boards elapsedMs=738 status=200 bytes=89613
+[ClientPerf] planner.http.metrics id=AE4EE427 operation=route-boards totalMs=738 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=718 transferMs=20 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=AE4EE427 operation=route-boards elapsedMs=105
+[ClientPerf] savedRoutes.batch.response id=AA2BA1A3 elapsedMs=845 boards=planned:queued,planned:refreshing,planned:refreshing,planned:queued
+[ClientPerf] savedRoutes.firstData route=KTH-ZFD elapsedMs=4681 source=planned status=refreshing
+[ClientPerf] savedRoutes.firstData route=KTH-STP elapsedMs=4681 source=planned status=refreshing
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] savedRoutes.batch.start id=C149BC20 routes=4 force=false
+[ClientPerf] planner.http.start id=3910C624 operation=route-boards method=POST atUnixMs=1790108176119
+[ClientPerf] card.appear route=KTH-BFR spinner=true
+[ClientPerf] card.appear route=KTH-STP spinner=true
+[ClientPerf] card.firstDeparture route=KTH-STP elapsedMs=0 source=planned
+[ClientPerf] departures.refresh.start id=10AF0279 pairs=14 batching=parallel
+[ClientPerf] http.start id=9D24E882 operation=departures count=4
+[ClientPerf] http.start id=78C7E23E operation=departures count=4
+[ClientPerf] http.start id=09065129 operation=departures count=4
+[ClientPerf] http.start id=604EC527 operation=departures count=2
+[ClientPerf] http.end id=604EC527 operation=departures elapsedMs=352 status=200 bytes=6242
+[ClientPerf] http.metrics id=604EC527 operation=departures totalMs=352 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=342 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=09065129 operation=departures elapsedMs=355 status=200 bytes=413
+[ClientPerf] http.metrics id=09065129 operation=departures totalMs=354 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=343 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=9D24E882 operation=departures elapsedMs=358 status=200 bytes=13349
+[ClientPerf] http.metrics id=9D24E882 operation=departures totalMs=355 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=346 transferMs=2 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=78C7E23E operation=departures elapsedMs=364 status=200 bytes=13266
+[ClientPerf] http.metrics id=78C7E23E operation=departures totalMs=355 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=347 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] departures.refresh.batch id=10AF0279 elapsedMs=372 snapshots=2
+[ClientPerf] departures.refresh.batch id=10AF0279 elapsedMs=377 snapshots=4
+[ClientPerf] departures.refresh.batch id=10AF0279 elapsedMs=381 snapshots=4
+[ClientPerf] departures.refresh.batch id=10AF0279 elapsedMs=385 snapshots=4
+[ClientPerf] departures.refresh.applied id=10AF0279 elapsedMs=522 snapshots=14 departures=104
+[ClientPerf] departures.refresh.complete id=10AF0279 elapsedMs=522
+[ClientPerf] planner.http.end id=3910C624 operation=route-boards elapsedMs=2422 status=200 bytes=281397
+[ClientPerf] planner.http.metrics id=3910C624 operation=route-boards totalMs=2336 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=2266 transferMs=69 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=3910C624 operation=route-boards elapsedMs=422
+[ClientPerf] savedRoutes.batch.response id=C149BC20 elapsedMs=2845 boards=planned:refreshing,planned:ready,planned:ready,planned:ready
+[ClientPerf] savedRoutes.firstData route=ELE-BIK elapsedMs=8835 source=planned status=refreshing
+[ClientPerf] savedRoutes.firstData route=KTH-BFR elapsedMs=8835 source=planned status=ready
+[ClientPerf] card.spinner route=KTH-STP active=false board=false
+[ClientPerf] card.firstDeparture route=KTH-BFR elapsedMs=2290 source=planned
+[ClientPerf] card.spinner route=KTH-BFR active=false board=false
+[ClientPerf] card.spinner route=KTH-ZFD active=false board=false
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] savedRoutes.batch.start id=2B9E5A2F routes=1 force=false
+[ClientPerf] planner.http.start id=47E80B6C operation=route-boards method=POST atUnixMs=1790108180508
+[ClientPerf] planner.http.end id=47E80B6C operation=route-boards elapsedMs=618 status=200 bytes=54796
+[ClientPerf] planner.http.metrics id=47E80B6C operation=route-boards totalMs=619 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=600 transferMs=18 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=47E80B6C operation=route-boards elapsedMs=64
+[ClientPerf] savedRoutes.batch.response id=2B9E5A2F elapsedMs=683 boards=planned:ready
+[ClientPerf] card.appear route=KTH-ZFD spinner=false
+[ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=0 source=planned
+[ClientPerf] card.appear route=CLK-LBG spinner=false
+[ClientPerf] card.firstDeparture route=CLK-LBG elapsedMs=1 source=direct
+[ClientPerf] card.appear route=ELE-BIK spinner=false
+[ClientPerf] card.firstDeparture route=ELE-BIK elapsedMs=0 source=planned
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
@@ -467,58 +283,630 @@ cannot add handler to 0 from 0 - dropping
 [ClientPerf] card.appear route=KTH-ZFD spinner=false
 [ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=0 source=planned
 [ClientPerf] card.appear route=CLK-LBG spinner=false
-[ClientPerf] card.firstDeparture route=CLK-LBG elapsedMs=3 source=direct
+[ClientPerf] card.firstDeparture route=CLK-LBG elapsedMs=1 source=direct
 [ClientPerf] card.appear route=ELE-BIK spinner=false
 [ClientPerf] card.firstDeparture route=ELE-BIK elapsedMs=0 source=planned
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
-[ClientPerf] departures.refresh.start id=272D70C8 pairs=14 batching=parallel
-[ClientPerf] http.start id=CD2801F6 operation=departures count=4
-[ClientPerf] http.start id=ABE3D40F operation=departures count=4
-[ClientPerf] http.start id=7C6BC410 operation=departures count=4
-[ClientPerf] http.start id=ABDB3B3C operation=departures count=2
-[ClientPerf] http.end id=7C6BC410 operation=departures elapsedMs=217 status=200 bytes=413
-[ClientPerf] http.metrics id=7C6BC410 operation=departures totalMs=217 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=215 transferMs=0 reused=true protocol=h2 redirects=0
-[ClientPerf] departures.refresh.batch id=272D70C8 elapsedMs=228 snapshots=4
-[ClientPerf] http.end id=CD2801F6 operation=departures elapsedMs=687 status=200 bytes=18143
-[ClientPerf] http.metrics id=CD2801F6 operation=departures totalMs=228 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=215 transferMs=11 reused=true protocol=h2 redirects=0
-[ClientPerf] http.end id=ABE3D40F operation=departures elapsedMs=714 status=200 bytes=17752
-[ClientPerf] http.metrics id=ABE3D40F operation=departures totalMs=456 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=362 transferMs=91 reused=true protocol=h2 redirects=0
-[ClientPerf] http.end id=ABDB3B3C operation=departures elapsedMs=715 status=200 bytes=8737
-[ClientPerf] http.metrics id=ABDB3B3C operation=departures totalMs=494 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=454 transferMs=38 reused=true protocol=h2 redirects=0
-[ClientPerf] departures.refresh.batch id=272D70C8 elapsedMs=719 snapshots=4
-[ClientPerf] departures.refresh.batch id=272D70C8 elapsedMs=721 snapshots=4
-[ClientPerf] departures.refresh.batch id=272D70C8 elapsedMs=722 snapshots=2
-[ClientPerf] departures.refresh.applied id=272D70C8 elapsedMs=1295 snapshots=14 departures=143
-[ClientPerf] departures.refresh.complete id=272D70C8 elapsedMs=1295
-[ClientPerf] card.spinner route=ELE-BIK active=true board=true
 [ClientPerf] card.spinner route=CLK-LBG active=true board=true
-[ClientPerf] savedRoutes.batch.start id=883EE5AD routes=5 force=false
-[ClientPerf] planner.http.start id=4D419E1F operation=route-boards method=POST
+[ClientPerf] savedRoutes.batch.start id=E65174D7 routes=1 force=false
+[ClientPerf] planner.http.start id=0477BEDD operation=route-boards method=POST atUnixMs=1790108193047
+[ClientPerf] planner.http.end id=0477BEDD operation=route-boards elapsedMs=579 status=200 bytes=3068
+[ClientPerf] planner.http.metrics id=0477BEDD operation=route-boards totalMs=579 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=578 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=0477BEDD operation=route-boards elapsedMs=2
+[ClientPerf] savedRoutes.batch.response id=E65174D7 elapsedMs=582 boards=direct:ready
+[ClientPerf] card.spinner route=CLK-LBG active=false board=false
+[ClientPerf] card.moreDepartures route=ELE-BIK expanded=true
+[ClientPerf] card.spinner route=ELE-BIK active=true board=false
+[ClientPerf] savedRoutes.batch.start id=36F6A48E routes=1 force=true
+[ClientPerf] planner.http.start id=C4A5F24E operation=route-boards method=POST atUnixMs=1790108195679
+[ClientPerf] planner.http.end id=C4A5F24E operation=route-boards elapsedMs=172 status=200 bytes=203
+[ClientPerf] planner.http.metrics id=C4A5F24E operation=route-boards totalMs=172 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=171 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=C4A5F24E operation=route-boards elapsedMs=1
+[ClientPerf] savedRoutes.batch.response id=36F6A48E elapsedMs=173 boards=direct:queued
+[ClientPerf] card.appear route=CLK-LBG spinner=false
+[ClientPerf] card.firstDeparture route=CLK-LBG elapsedMs=2 source=direct
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
+[ClientPerf] card.appear route=KTH-ZFD spinner=false
+[ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=0 source=planned
+[ClientPerf] departures.refresh.start id=604DA6B4 pairs=14 batching=parallel
+[ClientPerf] http.start id=90AE2166 operation=departures count=4
+[ClientPerf] http.start id=98C5C1C2 operation=departures count=4
+[ClientPerf] http.start id=1132CE47 operation=departures count=4
+[ClientPerf] http.start id=1C63928A operation=departures count=2
+[ClientPerf] card.moreDepartures route=CLK-LBG expanded=true
+[ClientPerf] card.spinner route=CLK-LBG active=true board=false
+[ClientPerf] http.end id=1C63928A operation=departures elapsedMs=864 status=200 bytes=6242
+[ClientPerf] http.metrics id=1C63928A operation=departures totalMs=125 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=120 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=1132CE47 operation=departures elapsedMs=865 status=200 bytes=413
+[ClientPerf] http.metrics id=1132CE47 operation=departures totalMs=138 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=133 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=90AE2166 operation=departures elapsedMs=867 status=200 bytes=13349
+[ClientPerf] http.metrics id=90AE2166 operation=departures totalMs=140 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=137 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=98C5C1C2 operation=departures elapsedMs=868 status=200 bytes=13266
+[ClientPerf] http.metrics id=98C5C1C2 operation=departures totalMs=142 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=138 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] savedRoutes.batch.start id=56F4ED76 routes=1 force=true
+[ClientPerf] planner.http.start id=A09E46E9 operation=route-boards method=POST atUnixMs=1790108198889
+[ClientPerf] departures.refresh.batch id=604DA6B4 elapsedMs=881 snapshots=2
+[ClientPerf] departures.refresh.batch id=604DA6B4 elapsedMs=882 snapshots=4
+[ClientPerf] departures.refresh.batch id=604DA6B4 elapsedMs=884 snapshots=4
+[ClientPerf] departures.refresh.batch id=604DA6B4 elapsedMs=885 snapshots=4
+[ClientPerf] http.start id=C1BE8B8A operation=serviceDetails count=6
+[ClientPerf] departures.refresh.applied id=604DA6B4 elapsedMs=1768 snapshots=14 departures=104
+[ClientPerf] departures.refresh.complete id=604DA6B4 elapsedMs=1768
+[ClientPerf] planner.http.end id=A09E46E9 operation=route-boards elapsedMs=1059 status=200 bytes=203
+[ClientPerf] planner.http.metrics id=A09E46E9 operation=route-boards totalMs=277 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=276 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=C1BE8B8A operation=serviceDetails elapsedMs=1045 status=200 bytes=14855
+[ClientPerf] http.metrics id=C1BE8B8A operation=serviceDetails totalMs=799 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=799 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] savedRoutes.batch.start id=3182C584 routes=3 force=false
+[ClientPerf] planner.http.start id=1CC3FF67 operation=route-boards method=POST atUnixMs=1790108200160
+[ClientPerf] planner.decode id=A09E46E9 operation=route-boards elapsedMs=212
+[ClientPerf] savedRoutes.batch.response id=56F4ED76 elapsedMs=1271 boards=direct:queued
+[ClientPerf] planner.http.end id=1CC3FF67 operation=route-boards elapsedMs=1072 status=200 bytes=245162
+[ClientPerf] planner.http.metrics id=1CC3FF67 operation=route-boards totalMs=485 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=474 transferMs=10 reused=true protocol=h3 redirects=0
+[ClientPerf] savedRoutes.batch.start id=D7312540 routes=1 force=true
+[ClientPerf] planner.http.start id=9C257FF7 operation=route-boards method=POST atUnixMs=1790108202477
+[ClientPerf] planner.decode id=1CC3FF67 operation=route-boards elapsedMs=1245
+[ClientPerf] savedRoutes.batch.response id=3182C584 elapsedMs=2317 boards=planned:ready,planned:ready,planned:ready
+[ClientPerf] card.appear route=KTH-ZFD spinner=false
+[ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=0 source=planned
+[ClientPerf] planner.http.end id=9C257FF7 operation=route-boards elapsedMs=753 status=200 bytes=203
+[ClientPerf] planner.http.metrics id=9C257FF7 operation=route-boards totalMs=754 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=753 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=9C257FF7 operation=route-boards elapsedMs=0
+[ClientPerf] savedRoutes.batch.response id=D7312540 elapsedMs=754 boards=direct:queued
+[ClientPerf] savedRoutes.batch.start id=647501F1 routes=1 force=false
+[ClientPerf] planner.http.start id=124AA16C operation=route-boards method=POST atUnixMs=1790108203658
+[ClientPerf] planner.http.end id=124AA16C operation=route-boards elapsedMs=405 status=200 bytes=54796
+[ClientPerf] planner.http.metrics id=124AA16C operation=route-boards totalMs=405 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=390 transferMs=15 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=124AA16C operation=route-boards elapsedMs=44
+[ClientPerf] savedRoutes.batch.response id=647501F1 elapsedMs=450 boards=planned:ready
+[ClientPerf] card.appear route=KTH-BFR spinner=false
+[ClientPerf] card.firstDeparture route=KTH-BFR elapsedMs=0 source=planned
+[ClientPerf] savedRoutes.batch.start id=5A52FA3C routes=1 force=true
+[ClientPerf] planner.http.start id=8A8ABB6F operation=route-boards method=POST atUnixMs=1790108206529
+[ClientPerf] planner.http.end id=8A8ABB6F operation=route-boards elapsedMs=252 status=200 bytes=203
+[ClientPerf] planner.http.metrics id=8A8ABB6F operation=route-boards totalMs=197 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=196 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=8A8ABB6F operation=route-boards elapsedMs=4
+[ClientPerf] savedRoutes.batch.response id=5A52FA3C elapsedMs=256 boards=direct:queued
+[ClientPerf] card.appear route=KTH-STP spinner=false
+[ClientPerf] card.firstDeparture route=KTH-STP elapsedMs=0 source=planned
+[ClientPerf] card.appear route=KTH-ZFD spinner=false
+[ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=0 source=planned
+[ClientPerf] card.appear route=CLK-LBG spinner=true
+[ClientPerf] card.firstDeparture route=CLK-LBG elapsedMs=4 source=direct
+[ClientPerf] savedRoutes.batch.start id=CAA40667 routes=1 force=true
+[ClientPerf] planner.http.start id=0B3C91AA operation=route-boards method=POST atUnixMs=1790108212313
+[ClientPerf] http.start id=5DC29BAB operation=serviceDetails count=3
+[ClientPerf] card.appear route=ELE-BIK spinner=true
+[ClientPerf] card.firstDeparture route=ELE-BIK elapsedMs=0 source=planned
+[ClientPerf] savedRoutes.batch.start id=604ED96D routes=1 force=true
+[ClientPerf] planner.http.start id=422A701F operation=route-boards method=POST atUnixMs=1790108213004
+[ClientPerf] planner.http.end id=0B3C91AA operation=route-boards elapsedMs=713 status=200 bytes=203
+[ClientPerf] planner.http.metrics id=0B3C91AA operation=route-boards totalMs=489 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=488 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=5DC29BAB operation=serviceDetails elapsedMs=698 status=200 bytes=7750
+[ClientPerf] http.metrics id=5DC29BAB operation=serviceDetails totalMs=478 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=478 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=0B3C91AA operation=route-boards elapsedMs=1
+[ClientPerf] savedRoutes.batch.response id=CAA40667 elapsedMs=715 boards=direct:queued
+[ClientPerf] planner.http.end id=422A701F operation=route-boards elapsedMs=363 status=200 bytes=203
+[ClientPerf] planner.http.metrics id=422A701F operation=route-boards totalMs=189 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=189 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=422A701F operation=route-boards elapsedMs=942
+[ClientPerf] savedRoutes.batch.response id=604ED96D elapsedMs=1305 boards=direct:queued
+[ClientPerf] savedRoutes.batch.start id=050054EB routes=1 force=false
+[ClientPerf] planner.http.start id=C0AC01BD operation=route-boards method=POST atUnixMs=1790108214655
+[ClientPerf] planner.http.end id=C0AC01BD operation=route-boards elapsedMs=258 status=200 bytes=3140
+[ClientPerf] planner.http.metrics id=C0AC01BD operation=route-boards totalMs=258 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=257 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=C0AC01BD operation=route-boards elapsedMs=1
+[ClientPerf] savedRoutes.batch.response id=050054EB elapsedMs=259 boards=direct:refreshing
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] savedRoutes.batch.start id=49E3D9FB routes=1 force=false
+[ClientPerf] planner.http.start id=FFA45E98 operation=route-boards method=POST atUnixMs=1790108216425
+[ClientPerf] planner.http.end id=FFA45E98 operation=route-boards elapsedMs=632 status=200 bytes=3068
+[ClientPerf] planner.http.metrics id=FFA45E98 operation=route-boards totalMs=632 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=627 transferMs=3 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=FFA45E98 operation=route-boards elapsedMs=2
+[ClientPerf] savedRoutes.batch.response id=49E3D9FB elapsedMs=634 boards=direct:ready
+[ClientPerf] departures.refresh.start id=6620DEED pairs=14 batching=parallel
+[ClientPerf] http.start id=6B83B297 operation=departures count=4
+[ClientPerf] http.start id=E4FACD37 operation=departures count=4
+[ClientPerf] http.start id=E46473F1 operation=departures count=4
+[ClientPerf] http.start id=1AE427DB operation=departures count=2
+[ClientPerf] http.end id=E46473F1 operation=departures elapsedMs=165 status=200 bytes=413
+[ClientPerf] http.metrics id=E46473F1 operation=departures totalMs=163 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=157 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=E4FACD37 operation=departures elapsedMs=169 status=200 bytes=13266
+[ClientPerf] http.metrics id=E4FACD37 operation=departures totalMs=164 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=157 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=1AE427DB operation=departures elapsedMs=174 status=200 bytes=6242
+[ClientPerf] http.metrics id=1AE427DB operation=departures totalMs=164 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=158 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] departures.refresh.batch id=6620DEED elapsedMs=184 snapshots=4
+[ClientPerf] departures.refresh.batch id=6620DEED elapsedMs=191 snapshots=4
+[ClientPerf] departures.refresh.batch id=6620DEED elapsedMs=193 snapshots=2
+[ClientPerf] http.end id=6B83B297 operation=departures elapsedMs=904 status=200 bytes=13349
+[ClientPerf] http.metrics id=6B83B297 operation=departures totalMs=904 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=898 transferMs=2 reused=true protocol=h3 redirects=0
+[ClientPerf] departures.refresh.batch id=6620DEED elapsedMs=920 snapshots=4
+[ClientPerf] departures.refresh.applied id=6620DEED elapsedMs=1342 snapshots=14 departures=104
+[ClientPerf] departures.refresh.complete id=6620DEED elapsedMs=1342
+[ClientPerf] savedRoutes.batch.start id=EF79E1C1 routes=1 force=true
+[ClientPerf] planner.http.start id=DE71546F operation=route-boards method=POST atUnixMs=1790108220306
+[ClientPerf] savedRoutes.batch.start id=9BB4F227 routes=3 force=false
+[ClientPerf] planner.http.start id=6DFD3DDF operation=route-boards method=POST atUnixMs=1790108222943
+Task <4E04C026-05A6-47C3-B0E3-48E3D020F0B0>.<54> finished with error [-1001] Error Domain=NSURLErrorDomain Code=-1001 "The request timed out." UserInfo={_kCFStreamErrorCodeKey=-2102, NSUnderlyingError=0x1215dfc90 {Error Domain=kCFErrorDomainCFNetwork Code=-1001 "(null)" UserInfo={_kCFStreamErrorCodeKey=-2102, _kCFStreamErrorDomainKey=4}}, _NSURLErrorFailingURLSessionTaskErrorKey=LocalDataTask <4E04C026-05A6-47C3-B0E3-48E3D020F0B0>.<54>, _NSURLErrorRelatedURLSessionTaskErrorKey=(
+    "LocalDataTask <4E04C026-05A6-47C3-B0E3-48E3D020F0B0>.<54>"
+), NSLocalizedDescription=The request timed out., NSErrorFailingURLStringKey=https://api.skynolimit.dev/train-track/api/v4/journey-planner/route-boards, NSErrorFailingURLKey=https://api.skynolimit.dev/train-track/api/v4/journey-planner/route-boards, _kCFStreamErrorDomainKey=4}
+[ClientPerf] planner.http.failed id=DE71546F operation=route-boards elapsedMs=10002 error=timeout
+[ClientPerf] savedRoutes.batch.failed id=EF79E1C1 elapsedMs=10002 errorType=PlannerError
+[ClientPerf] savedRoutes.batch.start id=8ACEA100 routes=1 force=true
+[ClientPerf] planner.http.start id=BA699111 operation=route-boards method=POST atUnixMs=1790108231624
+Task <7734443A-A65B-4EAD-9EFB-A99EA62574B1>.<55> finished with error [-1001] Error Domain=NSURLErrorDomain Code=-1001 "The request timed out." UserInfo={_kCFStreamErrorCodeKey=-2102, NSUnderlyingError=0x1215df030 {Error Domain=kCFErrorDomainCFNetwork Code=-1001 "(null)" UserInfo={_kCFStreamErrorCodeKey=-2102, _kCFStreamErrorDomainKey=4}}, _NSURLErrorFailingURLSessionTaskErrorKey=LocalDataTask <7734443A-A65B-4EAD-9EFB-A99EA62574B1>.<55>, _NSURLErrorRelatedURLSessionTaskErrorKey=(
+    "LocalDataTask <7734443A-A65B-4EAD-9EFB-A99EA62574B1>.<55>"
+), NSLocalizedDescription=The request timed out., NSErrorFailingURLStringKey=https://api.skynolimit.dev/train-track/api/v4/journey-planner/route-boards, NSErrorFailingURLKey=https://api.skynolimit.dev/train-track/api/v4/journey-planner/route-boards, _kCFStreamErrorDomainKey=4}
+[ClientPerf] planner.http.failed id=6DFD3DDF operation=route-boards elapsedMs=10002 error=timeout
+[ClientPerf] savedRoutes.batch.failed id=9BB4F227 elapsedMs=10002 errorType=PlannerError
+[ClientPerf] planner.http.end id=BA699111 operation=route-boards elapsedMs=2129 status=200 bytes=203
+[ClientPerf] planner.http.metrics id=BA699111 operation=route-boards totalMs=2129 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=2127 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=BA699111 operation=route-boards elapsedMs=2
+[ClientPerf] savedRoutes.batch.response id=8ACEA100 elapsedMs=2131 boards=direct:queued
+[ClientPerf] savedRoutes.batch.start id=1497D17B routes=1 force=false
+[ClientPerf] planner.http.start id=C3618BAD operation=route-boards method=POST atUnixMs=1790108234305
+[ClientPerf] planner.http.end id=C3618BAD operation=route-boards elapsedMs=462 status=200 bytes=54868
+[ClientPerf] planner.http.metrics id=C3618BAD operation=route-boards totalMs=462 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=441 transferMs=21 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=C3618BAD operation=route-boards elapsedMs=68
+[ClientPerf] savedRoutes.batch.response id=1497D17B elapsedMs=531 boards=planned:refreshing
+[ClientPerf] savedRoutes.batch.start id=ECD0F8FF routes=1 force=true
+[ClientPerf] planner.http.start id=D4CD5228 operation=route-boards method=POST atUnixMs=1790108235269
+[ClientPerf] planner.http.end id=D4CD5228 operation=route-boards elapsedMs=548 status=200 bytes=203
+[ClientPerf] planner.http.metrics id=D4CD5228 operation=route-boards totalMs=548 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=546 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=D4CD5228 operation=route-boards elapsedMs=1
+[ClientPerf] savedRoutes.batch.response id=ECD0F8FF elapsedMs=549 boards=direct:queued
+[ClientPerf] savedRoutes.batch.start id=61610838 routes=4 force=false
+[ClientPerf] planner.http.start id=06B419DB operation=route-boards method=POST atUnixMs=1790108236391
+[ClientPerf] planner.http.end id=06B419DB operation=route-boards elapsedMs=473 status=200 bytes=953
+[ClientPerf] planner.http.metrics id=06B419DB operation=route-boards totalMs=473 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=472 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=06B419DB operation=route-boards elapsedMs=4
+[ClientPerf] savedRoutes.batch.response id=61610838 elapsedMs=478 boards=planned:queued,planned:queued,planned:queued,planned:queued
+[ClientPerf] departures.refresh.start id=663C2342 pairs=14 batching=parallel
+[ClientPerf] http.start id=E1711323 operation=departures count=4
+[ClientPerf] http.start id=0A86DDA6 operation=departures count=4
+[ClientPerf] http.start id=611A4A28 operation=departures count=4
+[ClientPerf] http.start id=88F272E8 operation=departures count=2
+[ClientPerf] savedRoutes.batch.start id=F647AB05 routes=5 force=false
+[ClientPerf] planner.http.start id=352416A9 operation=route-boards method=POST atUnixMs=1790108238262
+[ClientPerf] http.end id=88F272E8 operation=departures elapsedMs=461 status=200 bytes=6242
+[ClientPerf] http.metrics id=88F272E8 operation=departures totalMs=146 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=141 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=E1711323 operation=departures elapsedMs=463 status=200 bytes=13055
+[ClientPerf] http.metrics id=E1711323 operation=departures totalMs=147 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=144 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=611A4A28 operation=departures elapsedMs=463 status=200 bytes=413
+[ClientPerf] http.metrics id=611A4A28 operation=departures totalMs=149 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=142 transferMs=4 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=0A86DDA6 operation=departures elapsedMs=465 status=200 bytes=12972
+[ClientPerf] http.metrics id=0A86DDA6 operation=departures totalMs=161 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=157 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] departures.refresh.batch id=663C2342 elapsedMs=469 snapshots=2
+[ClientPerf] departures.refresh.batch id=663C2342 elapsedMs=471 snapshots=4
+[ClientPerf] departures.refresh.batch id=663C2342 elapsedMs=472 snapshots=4
+[ClientPerf] departures.refresh.batch id=663C2342 elapsedMs=474 snapshots=4
+[ClientPerf] departures.refresh.applied id=663C2342 elapsedMs=809 snapshots=14 departures=102
+[ClientPerf] departures.refresh.complete id=663C2342 elapsedMs=809
+[ClientPerf] http.start id=B5A127B6 operation=loadingDetails count=1
+[ClientPerf] planner.http.end id=352416A9 operation=route-boards elapsedMs=959 status=200 bytes=1124
+[ClientPerf] planner.http.metrics id=352416A9 operation=route-boards totalMs=676 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=675 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=352416A9 operation=route-boards elapsedMs=391
+[ClientPerf] savedRoutes.batch.response id=F647AB05 elapsedMs=1351 boards=direct:queued,planned:queued,planned:queued,planned:unavailable,planned:queued
+[ClientPerf] http.end id=B5A127B6 operation=loadingDetails elapsedMs=552 status=200 bytes=237
+[ClientPerf] http.metrics id=B5A127B6 operation=loadingDetails totalMs=436 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=434 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] savedRoutes.batch.start id=E55045B9 routes=4 force=false
+[ClientPerf] planner.http.start id=7EB58B74 operation=route-boards method=POST atUnixMs=1790108240887
+[ClientPerf] planner.http.end id=7EB58B74 operation=route-boards elapsedMs=1925 status=200 bytes=3756
+[ClientPerf] planner.http.metrics id=7EB58B74 operation=route-boards totalMs=1925 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=1923 transferMs=2 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=7EB58B74 operation=route-boards elapsedMs=6
+[ClientPerf] savedRoutes.batch.response id=E55045B9 elapsedMs=1932 boards=direct:ready,planned:queued,planned:queued,planned:queued
+[ClientPerf] savedRoutes.batch.start id=33162B69 routes=3 force=false
+[ClientPerf] planner.http.start id=7D9838BB operation=route-boards method=POST atUnixMs=1790108244169
+Task <9D47A859-C196-48C0-89C5-C4A200BFE576>.<67> finished with error [-1001] Error Domain=NSURLErrorDomain Code=-1001 "The request timed out." UserInfo={_kCFStreamErrorCodeKey=-2102, NSUnderlyingError=0x1215deb80 {Error Domain=kCFErrorDomainCFNetwork Code=-1001 "(null)" UserInfo={_kCFStreamErrorCodeKey=-2102, _kCFStreamErrorDomainKey=4}}, _NSURLErrorFailingURLSessionTaskErrorKey=LocalDataTask <9D47A859-C196-48C0-89C5-C4A200BFE576>.<67>, _NSURLErrorRelatedURLSessionTaskErrorKey=(
+    "LocalDataTask <9D47A859-C196-48C0-89C5-C4A200BFE576>.<67>"
+), NSLocalizedDescription=The request timed out., NSErrorFailingURLStringKey=https://api.skynolimit.dev/train-track/api/v4/journey-planner/route-boards, NSErrorFailingURLKey=https://api.skynolimit.dev/train-track/api/v4/journey-planner/route-boards, _kCFStreamErrorDomainKey=4}
+[ClientPerf] planner.http.failed id=7D9838BB operation=route-boards elapsedMs=10001 error=timeout
+[ClientPerf] savedRoutes.batch.failed id=33162B69 elapsedMs=10001 errorType=PlannerError
+[ClientPerf] savedRoutes.batch.start id=60B4835A routes=1 force=false
+[ClientPerf] planner.http.start id=7C701F94 operation=route-boards method=POST atUnixMs=1790108255489
+[ClientPerf] departures.refresh.start id=7A8DACF2 pairs=14 batching=parallel
+[ClientPerf] http.start id=1DB06C28 operation=departures count=4
+[ClientPerf] http.start id=3614E645 operation=departures count=4
+[ClientPerf] http.start id=ED62700F operation=departures count=4
+[ClientPerf] http.start id=E13FB33C operation=departures count=2
+[ClientPerf] http.end id=E13FB33C operation=departures elapsedMs=132 status=200 bytes=6242
+[ClientPerf] http.metrics id=E13FB33C operation=departures totalMs=132 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=128 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=3614E645 operation=departures elapsedMs=137 status=200 bytes=12972
+[ClientPerf] http.metrics id=3614E645 operation=departures totalMs=134 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=131 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] departures.refresh.batch id=7A8DACF2 elapsedMs=148 snapshots=2
+[ClientPerf] departures.refresh.batch id=7A8DACF2 elapsedMs=155 snapshots=4
+[ClientPerf] http.end id=ED62700F operation=departures elapsedMs=528 status=200 bytes=413
+[ClientPerf] http.metrics id=ED62700F operation=departures totalMs=155 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=150 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=1DB06C28 operation=departures elapsedMs=530 status=200 bytes=13055
+[ClientPerf] http.metrics id=1DB06C28 operation=departures totalMs=156 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=152 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] departures.refresh.batch id=7A8DACF2 elapsedMs=534 snapshots=4
+[ClientPerf] departures.refresh.batch id=7A8DACF2 elapsedMs=536 snapshots=4
+[ClientPerf] departures.refresh.applied id=7A8DACF2 elapsedMs=908 snapshots=14 departures=102
+[ClientPerf] departures.refresh.complete id=7A8DACF2 elapsedMs=908
+[ClientPerf] planner.http.end id=7C701F94 operation=route-boards elapsedMs=6029 status=200 bytes=349
+[ClientPerf] planner.http.metrics id=7C701F94 operation=route-boards totalMs=6030 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=6028 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=7C701F94 operation=route-boards elapsedMs=1
+[ClientPerf] savedRoutes.batch.response id=60B4835A elapsedMs=6031 boards=planned:queued
+[ClientPerf] savedRoutes.batch.start id=6840A9D5 routes=4 force=false
+[ClientPerf] planner.http.start id=37B308E3 operation=route-boards method=POST atUnixMs=1790108262967
+[ClientPerf] card.appear route=CLK-LBG spinner=true
+[ClientPerf] card.firstDeparture route=CLK-LBG elapsedMs=4 source=direct
+[ClientPerf] savedRoutes.batch.start id=71EEC961 routes=1 force=true
+[ClientPerf] planner.http.start id=686186B2 operation=route-boards method=POST atUnixMs=1790108263552
+[ClientPerf] http.start id=640698DF operation=serviceDetails count=9
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] http.end id=640698DF operation=serviceDetails elapsedMs=1127 status=200 bytes=22602
+[ClientPerf] http.metrics id=640698DF operation=serviceDetails totalMs=1118 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=1118 transferMs=0 reused=true protocol=h3 redirects=0
 [ClientPerf] card.spinner route=KTH-ZFD active=true board=true
 [ClientPerf] card.appear route=KTH-ZFD spinner=true
 [ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=0 source=planned
-[ClientPerf] planner.http.end id=4D419E1F operation=route-boards elapsedMs=629 status=200 bytes=182349
-[ClientPerf] planner.http.metrics id=4D419E1F operation=route-boards totalMs=629 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=527 transferMs=101 reused=true protocol=h2 redirects=0
-[ClientPerf] planner.decode id=4D419E1F operation=route-boards elapsedMs=110
-[ClientPerf] savedRoutes.batch.response id=883EE5AD elapsedMs=739 boards=planned:ready,planned:ready,planned:ready,direct:ready,planned:ready
+[ClientPerf] card.spinner route=KTH-BFR active=true board=true
+[ClientPerf] card.appear route=KTH-BFR spinner=true
+[ClientPerf] card.firstDeparture route=KTH-BFR elapsedMs=0 source=planned
+[ClientPerf] card.appear route=KTH-STP spinner=true
+[ClientPerf] card.firstDeparture route=KTH-STP elapsedMs=0 source=planned
+[ClientPerf] planner.http.end id=686186B2 operation=route-boards elapsedMs=2830 status=200 bytes=203
+[ClientPerf] planner.http.metrics id=686186B2 operation=route-boards totalMs=2830 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=2830 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=686186B2 operation=route-boards elapsedMs=0
+[ClientPerf] savedRoutes.batch.response id=71EEC961 elapsedMs=2831 boards=direct:queued
+[ClientPerf] planner.http.end id=37B308E3 operation=route-boards elapsedMs=5008 status=200 bytes=299931
+[ClientPerf] planner.http.metrics id=37B308E3 operation=route-boards totalMs=5005 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=5001 transferMs=3 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=37B308E3 operation=route-boards elapsedMs=194
+[ClientPerf] savedRoutes.batch.response id=6840A9D5 elapsedMs=5203 boards=planned:ready,planned:ready,planned:ready,planned:ready
+[ClientPerf] card.spinner route=KTH-STP active=false board=false
+[ClientPerf] card.spinner route=KTH-BFR active=false board=false
+[ClientPerf] card.moreDepartures route=KTH-STP expanded=true
+[ClientPerf] card.spinner route=KTH-STP active=true board=false
+[ClientPerf] savedRoutes.batch.start id=3669FFEB routes=1 force=true
+[ClientPerf] planner.http.start id=2E597AB2 operation=route-boards method=POST atUnixMs=1790108269070
+[ClientPerf] savedRoutes.batch.start id=FC0E3EF3 routes=1 force=false
+[ClientPerf] planner.http.start id=6FB1EA64 operation=route-boards method=POST atUnixMs=1790108269424
+[ClientPerf] planner.http.end id=2E597AB2 operation=route-boards elapsedMs=631 status=200 bytes=207
+[ClientPerf] planner.http.metrics id=2E597AB2 operation=route-boards totalMs=524 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=524 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=2E597AB2 operation=route-boards elapsedMs=0
+[ClientPerf] savedRoutes.batch.response id=3669FFEB elapsedMs=631 boards=direct:queued
+[ClientPerf] card.appear route=KTH-BFR spinner=false
+[ClientPerf] card.firstDeparture route=KTH-BFR elapsedMs=0 source=planned
 [ClientPerf] card.spinner route=KTH-ZFD active=false board=false
-[ClientPerf] card.spinner route=ELE-BIK active=false board=false
-[ClientPerf] card.spinner route=CLK-LBG active=false board=false
-[ClientPerf] card.appear route=KTH-BFR spinner=false
-[ClientPerf] card.firstDeparture route=KTH-BFR elapsedMs=0 source=planned
-[ClientPerf] card.appear route=KTH-STP spinner=false
-[ClientPerf] card.firstDeparture route=KTH-STP elapsedMs=0 source=planned
-[ClientPerf] card.appear route=CLK-LBG spinner=false
-[ClientPerf] card.firstDeparture route=CLK-LBG elapsedMs=3 source=direct
-[ClientPerf] card.appear route=ELE-BIK spinner=false
+[ClientPerf] card.appear route=KTH-ZFD spinner=false
+[ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=0 source=planned
+[ClientPerf] card.appear route=CLK-LBG spinner=true
+[ClientPerf] card.firstDeparture route=CLK-LBG elapsedMs=4 source=direct
+[ClientPerf] savedRoutes.batch.start id=5246373A routes=1 force=true
+[ClientPerf] planner.http.start id=7016768A operation=route-boards method=POST atUnixMs=1790108270992
+[ClientPerf] planner.http.end id=6FB1EA64 operation=route-boards elapsedMs=1591 status=200 bytes=3140
+[ClientPerf] planner.http.metrics id=6FB1EA64 operation=route-boards totalMs=1512 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=1511 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=6FB1EA64 operation=route-boards elapsedMs=0
+[ClientPerf] savedRoutes.batch.response id=FC0E3EF3 elapsedMs=1592 boards=direct:refreshing
+[ClientPerf] card.appear route=ELE-BIK spinner=true
 [ClientPerf] card.firstDeparture route=ELE-BIK elapsedMs=0 source=planned
+[ClientPerf] savedRoutes.batch.start id=5A146439 routes=1 force=true
+[ClientPerf] planner.http.start id=005E2238 operation=route-boards method=POST atUnixMs=1790108271901
+[ClientPerf] planner.http.end id=7016768A operation=route-boards elapsedMs=932 status=200 bytes=203
+[ClientPerf] planner.http.metrics id=7016768A operation=route-boards totalMs=576 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=575 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=7016768A operation=route-boards elapsedMs=0
+[ClientPerf] savedRoutes.batch.response id=5246373A elapsedMs=934 boards=direct:queued
+[ClientPerf] planner.http.end id=005E2238 operation=route-boards elapsedMs=391 status=200 bytes=203
+[ClientPerf] planner.http.metrics id=005E2238 operation=route-boards totalMs=186 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=185 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=005E2238 operation=route-boards elapsedMs=0
+[ClientPerf] savedRoutes.batch.response id=5A146439 elapsedMs=392 boards=direct:queued
+[ClientPerf] savedRoutes.batch.start id=2632A850 routes=1 force=false
+[ClientPerf] planner.http.start id=C3BE0D8C operation=route-boards method=POST atUnixMs=1790108272740
+[ClientPerf] planner.http.start id=09C190DB operation=status method=GET atUnixMs=1790108273298
+[ClientPerf] planner.http.start id=293437A6 operation=status method=GET atUnixMs=1790108273408
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] planner.http.end id=C3BE0D8C operation=route-boards elapsedMs=774 status=200 bytes=3068
+[ClientPerf] planner.http.metrics id=C3BE0D8C operation=route-boards totalMs=228 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=227 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.http.failed id=09C190DB operation=status elapsedMs=473 errorType=URLError urlCode=-999 urlName=Code(rawValue: -999) cancelled=true
+[ClientPerf] planner.decode id=C3BE0D8C operation=route-boards elapsedMs=262
+[ClientPerf] savedRoutes.batch.response id=2632A850 elapsedMs=1037 boards=direct:ready
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] planner.http.end id=293437A6 operation=status elapsedMs=768 status=200 bytes=1273
+[ClientPerf] planner.http.metrics id=293437A6 operation=status totalMs=706 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=705 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=293437A6 operation=status elapsedMs=1
+📍 [LocationManagerPhone] init auth=3
+📍 [LocationManagerPhone] request skipped; using cached location
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+📍 [LocationManagerPhone] authorization changed -> 3
+📍 [LocationManagerPhone] requestLocation()
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] cancel active request
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+isKeyboardMinorEdgeWidth may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardVerticalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardHorizontalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHandBias may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHeight may only be set for UIKBDynamicRenderFactory, changes not saved
+isKeyboardMinorEdgeWidth may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardVerticalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardHorizontalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHandBias may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHeight may only be set for UIKBDynamicRenderFactory, changes not saved
+isKeyboardMinorEdgeWidth may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardVerticalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardHorizontalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHandBias may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHeight may only be set for UIKBDynamicRenderFactory, changes not saved
+Received port for identifier response: <(null)> with error:Error Domain=RBSServiceErrorDomain Code=1 "Client not entitled" UserInfo={RBSEntitlement=com.apple.runningboard.process-state, NSLocalizedFailureReason=Client not entitled, RBSPermanent=false}
+elapsedCPUTimeForFrontBoard couldn't generate a task port
+Received port for identifier response: <(null)> with error:Error Domain=RBSServiceErrorDomain Code=1 "Client not entitled" UserInfo={RBSEntitlement=com.apple.runningboard.process-state, NSLocalizedFailureReason=Client not entitled, RBSPermanent=false}
+elapsedCPUTimeForFrontBoard couldn't generate a task port
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+	(Note: If you're seeing NSAutoresizingMaskLayoutConstraints that you don't understand, refer to the documentation for the UIView property translatesAutoresizingMaskIntoConstraints) 
+(
+    "<NSAutoresizingMaskLayoutConstraint:0x129aef110 h=--& v=--& TUIPredictionViewCell:0x128d8d500.width == 0   (active)>",
+    "<NSLayoutConstraint:0x1299b6e40 H:|-(6)-[TUICandidateGradientContentLabel:0x10703f200]   (active, names: '|':TUIPredictionViewCell:0x128d8d500 )>",
+    "<NSLayoutConstraint:0x1299b6e90 TUICandidateGradientContentLabel:0x10703f200.trailing == TUIPredictionViewCell:0x128d8d500.trailing - 6   (active)>",
+    "<NSLayoutConstraint:0x1299b68a0 'UIScrollView-frameLayoutGuide-width' UILayoutGuide:0x12995e3e0'UIScrollView-frameLayoutGuide'.width == TUICandidateGradientContentLabel:0x10703f200.width   (active)>"
+)
+
+Will attempt to recover by breaking constraint 
+<NSLayoutConstraint:0x1299b68a0 'UIScrollView-frameLayoutGuide-width' UILayoutGuide:0x12995e3e0'UIScrollView-frameLayoutGuide'.width == TUICandidateGradientContentLabel:0x10703f200.width   (active)>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+	(Note: If you're seeing NSAutoresizingMaskLayoutConstraints that you don't understand, refer to the documentation for the UIView property translatesAutoresizingMaskIntoConstraints) 
+(
+    "<NSAutoresizingMaskLayoutConstraint:0x129aef110 h=--& v=--& TUIPredictionViewCell:0x128d8d500.width == 0   (active)>",
+    "<NSLayoutConstraint:0x1299b6e40 H:|-(6)-[TUICandidateGradientContentLabel:0x10703f200]   (active, names: '|':TUIPredictionViewCell:0x128d8d500 )>",
+    "<NSLayoutConstraint:0x1299b6e90 TUICandidateGradientContentLabel:0x10703f200.trailing == TUIPredictionViewCell:0x128d8d500.trailing - 6   (active)>"
+)
+
+Will attempt to recover by breaking constraint 
+<NSLayoutConstraint:0x1299b6e90 TUICandidateGradientContentLabel:0x10703f200.trailing == TUIPredictionViewCell:0x128d8d500.trailing - 6   (active)>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+	(Note: If you're seeing NSAutoresizingMaskLayoutConstraints that you don't understand, refer to the documentation for the UIView property translatesAutoresizingMaskIntoConstraints) 
+(
+    "<NSAutoresizingMaskLayoutConstraint:0x129b08190 h=--& v=--& TUIPredictionViewCell:0x128d8de00.width == 0   (active)>",
+    "<NSLayoutConstraint:0x1299b7f20 H:|-(6)-[TUICandidateGradientContentLabel:0x1299d5e00]   (active, names: '|':TUIPredictionViewCell:0x128d8de00 )>",
+    "<NSLayoutConstraint:0x1299b7f70 TUICandidateGradientContentLabel:0x1299d5e00.trailing == TUIPredictionViewCell:0x128d8de00.trailing - 6   (active)>",
+    "<NSLayoutConstraint:0x1299b7980 'UIScrollView-frameLayoutGuide-width' UILayoutGuide:0x12995f1e0'UIScrollView-frameLayoutGuide'.width == TUICandidateGradientContentLabel:0x1299d5e00.width   (active)>"
+)
+
+Will attempt to recover by breaking constraint 
+<NSLayoutConstraint:0x1299b7980 'UIScrollView-frameLayoutGuide-width' UILayoutGuide:0x12995f1e0'UIScrollView-frameLayoutGuide'.width == TUICandidateGradientContentLabel:0x1299d5e00.width   (active)>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+	(Note: If you're seeing NSAutoresizingMaskLayoutConstraints that you don't understand, refer to the documentation for the UIView property translatesAutoresizingMaskIntoConstraints) 
+(
+    "<NSAutoresizingMaskLayoutConstraint:0x129b08190 h=--& v=--& TUIPredictionViewCell:0x128d8de00.width == 0   (active)>",
+    "<NSLayoutConstraint:0x1299b7f20 H:|-(6)-[TUICandidateGradientContentLabel:0x1299d5e00]   (active, names: '|':TUIPredictionViewCell:0x128d8de00 )>",
+    "<NSLayoutConstraint:0x1299b7f70 TUICandidateGradientContentLabel:0x1299d5e00.trailing == TUIPredictionViewCell:0x128d8de00.trailing - 6   (active)>"
+)
+
+Will attempt to recover by breaking constraint 
+<NSLayoutConstraint:0x1299b7f70 TUICandidateGradientContentLabel:0x1299d5e00.trailing == TUIPredictionViewCell:0x128d8de00.trailing - 6   (active)>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+	(Note: If you're seeing NSAutoresizingMaskLayoutConstraints that you don't understand, refer to the documentation for the UIView property translatesAutoresizingMaskIntoConstraints) 
+(
+    "<NSAutoresizingMaskLayoutConstraint:0x129aef930 h=--& v=--& TUIPredictionViewCell:0x128d8db00.width == 0   (active)>",
+    "<NSLayoutConstraint:0x1299b76b0 H:|-(6)-[TUICandidateGradientContentLabel:0x1299d4a00]   (active, names: '|':TUIPredictionViewCell:0x128d8db00 )>",
+    "<NSLayoutConstraint:0x1299b7700 TUICandidateGradientContentLabel:0x1299d4a00.trailing == TUIPredictionViewCell:0x128d8db00.trailing - 6   (active)>",
+    "<NSLayoutConstraint:0x1299b7110 'UIScrollView-frameLayoutGuide-width' UILayoutGuide:0x12995eae0'UIScrollView-frameLayoutGuide'.width == TUICandidateGradientContentLabel:0x1299d4a00.width   (active)>"
+)
+
+Will attempt to recover by breaking constraint 
+<NSLayoutConstraint:0x1299b7110 'UIScrollView-frameLayoutGuide-width' UILayoutGuide:0x12995eae0'UIScrollView-frameLayoutGuide'.width == TUICandidateGradientContentLabel:0x1299d4a00.width   (active)>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+Unable to simultaneously satisfy constraints.
+	Probably at least one of the constraints in the following list is one you don't want. 
+	Try this: 
+		(1) look at each constraint and try to figure out which you don't expect; 
+		(2) find the code that added the unwanted constraint or constraints and fix it. 
+	(Note: If you're seeing NSAutoresizingMaskLayoutConstraints that you don't understand, refer to the documentation for the UIView property translatesAutoresizingMaskIntoConstraints) 
+(
+    "<NSAutoresizingMaskLayoutConstraint:0x129aef930 h=--& v=--& TUIPredictionViewCell:0x128d8db00.width == 0   (active)>",
+    "<NSLayoutConstraint:0x1299b76b0 H:|-(6)-[TUICandidateGradientContentLabel:0x1299d4a00]   (active, names: '|':TUIPredictionViewCell:0x128d8db00 )>",
+    "<NSLayoutConstraint:0x1299b7700 TUICandidateGradientContentLabel:0x1299d4a00.trailing == TUIPredictionViewCell:0x128d8db00.trailing - 6   (active)>"
+)
+
+Will attempt to recover by breaking constraint 
+<NSLayoutConstraint:0x1299b7700 TUICandidateGradientContentLabel:0x1299d4a00.trailing == TUIPredictionViewCell:0x128d8db00.trailing - 6   (active)>
+
+Make a symbolic breakpoint at UIViewAlertForUnsatisfiableConstraints to catch this in the debugger.
+The methods in the UIConstraintBasedLayoutDebugging category on UIView listed in <UIKitCore/UIView.h> may also be helpful.
+[ClientPerf] departures.refresh.start id=388D0EBE pairs=14 batching=parallel
+[ClientPerf] http.start id=BD3F6515 operation=departures count=4
+[ClientPerf] http.start id=5BF8F031 operation=departures count=4
+[ClientPerf] http.start id=A433D538 operation=departures count=4
+[ClientPerf] http.start id=374D7549 operation=departures count=2
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] http.end id=374D7549 operation=departures elapsedMs=123 status=200 bytes=6242
+[ClientPerf] http.metrics id=374D7549 operation=departures totalMs=123 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=120 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] departures.refresh.batch id=388D0EBE elapsedMs=128 snapshots=2
+[ClientPerf] http.end id=5BF8F031 operation=departures elapsedMs=1288 status=200 bytes=12678
+[ClientPerf] http.metrics id=5BF8F031 operation=departures totalMs=140 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=137 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=A433D538 operation=departures elapsedMs=1289 status=200 bytes=413
+[ClientPerf] http.metrics id=A433D538 operation=departures totalMs=140 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=137 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=BD3F6515 operation=departures elapsedMs=1290 status=200 bytes=13055
+[ClientPerf] http.metrics id=BD3F6515 operation=departures totalMs=141 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=139 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] departures.refresh.batch id=388D0EBE elapsedMs=1557 snapshots=4
+[ClientPerf] departures.refresh.batch id=388D0EBE elapsedMs=1558 snapshots=4
+[ClientPerf] departures.refresh.batch id=388D0EBE elapsedMs=1560 snapshots=4
+The variant selector cell index number could not be found.
+[ClientPerf] departures.refresh.applied id=388D0EBE elapsedMs=2066 snapshots=14 departures=101
+[ClientPerf] departures.refresh.complete id=388D0EBE elapsedMs=2066
+[ClientPerf] http.start id=1C1AC6B7 operation=loadingDetails count=1
+The variant selector cell index number could not be found.
+The variant selector cell index number could not be found.
+[ClientPerf] planner.http.start id=07EEE8EE operation=stations method=GET atUnixMs=1790108282587
+[ClientPerf] http.end id=1C1AC6B7 operation=loadingDetails elapsedMs=570 status=200 bytes=90
+[ClientPerf] http.metrics id=1C1AC6B7 operation=loadingDetails totalMs=568 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=567 transferMs=0 reused=true protocol=h3 redirects=0
+The variant selector cell index number could not be found.
+[ClientPerf] planner.http.failed id=07EEE8EE operation=stations elapsedMs=890 errorType=URLError urlCode=-999 urlName=Code(rawValue: -999) cancelled=true
+[ClientPerf] planner.http.start id=E5637D16 operation=stations method=GET atUnixMs=1790108283486
+[ClientPerf] planner.http.failed id=E5637D16 operation=stations elapsedMs=5 errorType=URLError urlCode=-999 urlName=Code(rawValue: -999) cancelled=true
+The variant selector cell index number could not be found.
++[UAFCommonUtilities copyBootSessionUUID]_block_invoke Failed to get kern.bootsessionuuid length: [1: Operation not permitted]
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Current boot UUID is empty when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Treating empty boot UUID as current when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Current boot UUID is empty when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Treating empty boot UUID as current when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Current boot UUID is empty when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Treating empty boot UUID as current when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Current boot UUID is empty when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Treating empty boot UUID as current when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Current boot UUID is empty when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Treating empty boot UUID as current when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Current boot UUID is empty when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Treating empty boot UUID as current when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Current boot UUID is empty when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Treating empty boot UUID as current when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Current boot UUID is empty when creating consistency token for asset set com.apple.linguisticdata
+-[UAFAssetSetConsistencyToken initWithUUID:assetSetName:atomicInstance:experiment:preinstalledAssetsSummary:rootsV2InstanceId:bootUUID:experimentActivated:] Treating empty boot UUID as current when creating consistency token for asset set com.apple.linguisticdata
+The variant selector cell index number could not be found.
+[ClientPerf] planner.http.start id=E09B5604 operation=stations method=GET atUnixMs=1790108286027
+[ClientPerf] planner.http.failed id=E09B5604 operation=stations elapsedMs=8 errorType=URLError urlCode=-999 urlName=Code(rawValue: -999) cancelled=true
+[ClientPerf] planner.http.start id=46B884BB operation=stations method=GET atUnixMs=1790108286295
+[ClientPerf] planner.http.failed id=46B884BB operation=stations elapsedMs=116 errorType=URLError urlCode=-999 urlName=Code(rawValue: -999) cancelled=true
+[ClientPerf] planner.http.start id=C12A6549 operation=stations method=GET atUnixMs=1790108287006
+[ClientPerf] planner.http.end id=C12A6549 operation=stations elapsedMs=520 status=200 bytes=762
+[ClientPerf] planner.http.metrics id=C12A6549 operation=stations totalMs=520 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=518 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=C12A6549 operation=stations elapsedMs=6
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+📍 [LocationManagerPhone] init auth=3
+📍 [LocationManagerPhone] request skipped; using cached location
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+📍 [LocationManagerPhone] authorization changed -> 3
+📍 [LocationManagerPhone] requestLocation()
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] cancel active request
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40137890072323 lng=-0.045741711691033166
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+📍 [LocationManagerPhone] didUpdateLocations lat=51.40141512916631 lng=-0.04573477235888891
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+-[RTIInputSystemClient remoteTextInputSessionWithID:performInputOperation:]  perform input operation requires a valid sessionID. inputModality = Keyboard, inputOperation = <null selector>, customInfoType = UIEmojiSearchOperations
+isKeyboardMinorEdgeWidth may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardVerticalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardHorizontalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHandBias may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHeight may only be set for UIKBDynamicRenderFactory, changes not saved
+isKeyboardMinorEdgeWidth may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardVerticalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+keyboardHorizontalSizeClass may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHandBias may only be set for UIKBDynamicRenderFactory, changes not saved
+currentHeight may only be set for UIKBDynamicRenderFactory, changes not saved
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+The variant selector cell index number could not be found.
+The variant selector cell index number could not be found.
+[ClientPerf] planner.http.start id=A69BD8FF operation=stations method=GET atUnixMs=1790108294325
+[ClientPerf] planner.http.failed id=A69BD8FF operation=stations elapsedMs=147 errorType=URLError urlCode=-999 urlName=Code(rawValue: -999) cancelled=true
+The variant selector cell index number could not be found.
+[ClientPerf] planner.http.start id=791707C6 operation=stations method=GET atUnixMs=1790108295682
+[ClientPerf] planner.http.end id=791707C6 operation=stations elapsedMs=425 status=200 bytes=186
+[ClientPerf] planner.http.metrics id=791707C6 operation=stations totalMs=425 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=422 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=791707C6 operation=stations elapsedMs=0
+cannot add handler to 0 from 0 - dropping
+cannot add handler to 0 from 0 - dropping
+[ClientPerf] departures.refresh.start id=812A66C8 pairs=14 batching=parallel
+[ClientPerf] http.start id=327A467B operation=departures count=4
+[ClientPerf] http.start id=1E2174E6 operation=departures count=4
+[ClientPerf] http.start id=FF5D74B7 operation=departures count=4
+[ClientPerf] http.start id=3112A054 operation=departures count=2
+[ClientPerf] http.end id=1E2174E6 operation=departures elapsedMs=221 status=200 bytes=12678
+[ClientPerf] http.metrics id=1E2174E6 operation=departures totalMs=221 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=216 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] departures.refresh.batch id=812A66C8 elapsedMs=238 snapshots=4
+[ClientPerf] http.end id=327A467B operation=departures elapsedMs=613 status=200 bytes=13055
+[ClientPerf] http.metrics id=327A467B operation=departures totalMs=239 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=236 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=FF5D74B7 operation=departures elapsedMs=614 status=200 bytes=413
+[ClientPerf] http.metrics id=FF5D74B7 operation=departures totalMs=243 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=239 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=3112A054 operation=departures elapsedMs=615 status=200 bytes=6242
+[ClientPerf] http.metrics id=3112A054 operation=departures totalMs=243 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=238 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] departures.refresh.batch id=812A66C8 elapsedMs=619 snapshots=4
+[ClientPerf] departures.refresh.batch id=812A66C8 elapsedMs=621 snapshots=4
+[ClientPerf] departures.refresh.batch id=812A66C8 elapsedMs=621 snapshots=2
+[ClientPerf] departures.refresh.applied id=812A66C8 elapsedMs=980 snapshots=14 departures=101
+[ClientPerf] departures.refresh.complete id=812A66C8 elapsedMs=980
+[ClientPerf] http.start id=4A374B25 operation=loadingDetails count=22
+[ClientPerf] planner.search.start id=6B6EEA24 route=CDF-ABD
+[ClientPerf] planner.http.start id=0D27B16E operation=search-jobs method=POST atUnixMs=1790108299372
+[ClientPerf] planner.http.end id=0D27B16E operation=search-jobs elapsedMs=423 status=202 bytes=100
+[ClientPerf] planner.http.metrics id=0D27B16E operation=search-jobs totalMs=424 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=423 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=0D27B16E operation=search-jobs elapsedMs=1
+[ClientPerf] planner.search.queued id=6B6EEA24 elapsedMs=426 position=1
+[ClientPerf] http.end id=4A374B25 operation=loadingDetails elapsedMs=1167 status=200 bytes=16250
+[ClientPerf] http.metrics id=4A374B25 operation=loadingDetails totalMs=1162 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=1160 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.http.start id=469A29E3 operation=search-jobs method=GET atUnixMs=1790108301042
+[ClientPerf] planner.http.end id=469A29E3 operation=search-jobs elapsedMs=180 status=200 bytes=98
+[ClientPerf] planner.http.metrics id=469A29E3 operation=search-jobs totalMs=180 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=179 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=469A29E3 operation=search-jobs elapsedMs=0
+[ClientPerf] planner.search.running id=6B6EEA24 elapsedMs=1851
+[ClientPerf] planner.http.start id=E33D3A1B operation=search-jobs method=GET atUnixMs=1790108302246
+[ClientPerf] planner.http.end id=E33D3A1B operation=search-jobs elapsedMs=318 status=200 bytes=98
+[ClientPerf] planner.http.metrics id=E33D3A1B operation=search-jobs totalMs=318 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=315 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=E33D3A1B operation=search-jobs elapsedMs=0
+[ClientPerf] planner.http.start id=B402D0C1 operation=search-jobs method=GET atUnixMs=1790108303589
+[ClientPerf] planner.http.end id=B402D0C1 operation=search-jobs elapsedMs=387 status=200 bytes=98
+[ClientPerf] planner.http.metrics id=B402D0C1 operation=search-jobs totalMs=387 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=384 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=B402D0C1 operation=search-jobs elapsedMs=0
+[ClientPerf] planner.http.start id=59438C9B operation=search-jobs method=GET atUnixMs=1790108304987
+[ClientPerf] planner.http.end id=59438C9B operation=search-jobs elapsedMs=359 status=200 bytes=98
+[ClientPerf] planner.http.metrics id=59438C9B operation=search-jobs totalMs=359 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=357 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=59438C9B operation=search-jobs elapsedMs=0
+[ClientPerf] planner.http.start id=238DDD3A operation=search-jobs method=GET atUnixMs=1790108306412
+[ClientPerf] planner.http.end id=238DDD3A operation=search-jobs elapsedMs=1397 status=200 bytes=46977
+[ClientPerf] planner.http.metrics id=238DDD3A operation=search-jobs totalMs=1397 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=1389 transferMs=6 reused=true protocol=h3 redirects=0
+[ClientPerf] planner.decode id=238DDD3A operation=search-jobs elapsedMs=66
+[ClientPerf] planner.search.end id=6B6EEA24 elapsedMs=8504 outcome=completed polls=5
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
@@ -527,84 +915,43 @@ cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
-[ClientPerf] card.appear route=KTH-ZFD spinner=false
-[ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=0 source=planned
-[ClientPerf] card.appear route=KTH-BFR spinner=false
-[ClientPerf] card.firstDeparture route=KTH-BFR elapsedMs=0 source=planned
-[ClientPerf] card.appear route=KTH-STP spinner=false
-[ClientPerf] card.firstDeparture route=KTH-STP elapsedMs=0 source=planned
-[ClientPerf] card.appear route=KTH-ZFD spinner=false
-[ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=0 source=planned
-[ClientPerf] card.appear route=CLK-LBG spinner=false
-[ClientPerf] card.firstDeparture route=CLK-LBG elapsedMs=3 source=direct
-[ClientPerf] card.appear route=ELE-BIK spinner=false
-[ClientPerf] card.firstDeparture route=ELE-BIK elapsedMs=0 source=planned
-[ClientPerf] departures.refresh.start id=85514F03 pairs=14 batching=parallel
-[ClientPerf] http.start id=71C656BD operation=departures count=4
-[ClientPerf] http.start id=0E78EDCD operation=departures count=4
-[ClientPerf] http.start id=9D55DB12 operation=departures count=4
-[ClientPerf] http.start id=8DA60041 operation=departures count=2
 cannot add handler to 0 from 0 - dropping
 cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-[ClientPerf] http.end id=71C656BD operation=departures elapsedMs=347 status=200 bytes=18143
-[ClientPerf] http.metrics id=71C656BD operation=departures totalMs=347 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=345 transferMs=0 reused=true protocol=h2 redirects=0
-[ClientPerf] http.end id=9D55DB12 operation=departures elapsedMs=351 status=200 bytes=413
-[ClientPerf] http.metrics id=9D55DB12 operation=departures totalMs=348 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=347 transferMs=0 reused=true protocol=h2 redirects=0
-[ClientPerf] http.end id=8DA60041 operation=departures elapsedMs=353 status=200 bytes=8737
-[ClientPerf] http.metrics id=8DA60041 operation=departures totalMs=350 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=349 transferMs=0 reused=true protocol=h2 redirects=0
-[ClientPerf] departures.refresh.batch id=85514F03 elapsedMs=360 snapshots=4
-[ClientPerf] departures.refresh.batch id=85514F03 elapsedMs=363 snapshots=4
-[ClientPerf] departures.refresh.batch id=85514F03 elapsedMs=365 snapshots=2
-[ClientPerf] http.end id=0E78EDCD operation=departures elapsedMs=794 status=200 bytes=17752
-[ClientPerf] http.metrics id=0E78EDCD operation=departures totalMs=353 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=352 transferMs=0 reused=true protocol=h2 redirects=0
-[ClientPerf] departures.refresh.batch id=85514F03 elapsedMs=827 snapshots=4
-[ClientPerf] departures.refresh.applied id=85514F03 elapsedMs=1404 snapshots=14 departures=143
-[ClientPerf] departures.refresh.complete id=85514F03 elapsedMs=1404
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-[ClientPerf] card.appear route=KTH-ZFD spinner=false
-[ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=0 source=planned
-[ClientPerf] card.appear route=KTH-BFR spinner=false
-[ClientPerf] card.firstDeparture route=KTH-BFR elapsedMs=0 source=planned
-[ClientPerf] card.appear route=KTH-STP spinner=false
-[ClientPerf] card.firstDeparture route=KTH-STP elapsedMs=0 source=planned
-[ClientPerf] card.appear route=KTH-ZFD spinner=false
-[ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=0 source=planned
-[ClientPerf] card.appear route=CLK-LBG spinner=false
-[ClientPerf] card.firstDeparture route=CLK-LBG elapsedMs=3 source=direct
-[ClientPerf] http.start id=284FBBBE operation=serviceDetails count=3
-[ClientPerf] card.appear route=ELE-BIK spinner=false
-[ClientPerf] card.firstDeparture route=ELE-BIK elapsedMs=0 source=planned
-[ClientPerf] http.end id=284FBBBE operation=serviceDetails elapsedMs=568 status=200 bytes=7573
-[ClientPerf] http.metrics id=284FBBBE operation=serviceDetails totalMs=563 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=559 transferMs=2 reused=true protocol=h2 redirects=0
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-[ClientPerf] card.appear route=KTH-ZFD spinner=false
-[ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=0 source=planned
-[ClientPerf] card.appear route=KTH-BFR spinner=false
-[ClientPerf] card.firstDeparture route=KTH-BFR elapsedMs=0 source=planned
-[ClientPerf] card.appear route=KTH-STP spinner=false
-[ClientPerf] card.firstDeparture route=KTH-STP elapsedMs=0 source=planned
-[ClientPerf] card.appear route=KTH-ZFD spinner=false
-[ClientPerf] card.firstDeparture route=KTH-ZFD elapsedMs=0 source=planned
-[ClientPerf] card.appear route=CLK-LBG spinner=false
-[ClientPerf] card.firstDeparture route=CLK-LBG elapsedMs=3 source=direct
-[ClientPerf] card.appear route=ELE-BIK spinner=false
-[ClientPerf] card.firstDeparture route=ELE-BIK elapsedMs=0 source=planned
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
-cannot add handler to 0 from 0 - dropping
+[ClientPerf] departures.refresh.start id=CE556A90 pairs=14 batching=parallel
+[ClientPerf] http.start id=24CAF145 operation=departures count=4
+[ClientPerf] http.start id=32E0F16C operation=departures count=4
+[ClientPerf] http.start id=84DB9C1F operation=departures count=4
+[ClientPerf] http.start id=E8B314AF operation=departures count=2
+[ClientPerf] http.end id=E8B314AF operation=departures elapsedMs=262 status=200 bytes=6242
+[ClientPerf] http.metrics id=E8B314AF operation=departures totalMs=262 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=254 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] departures.refresh.batch id=CE556A90 elapsedMs=273 snapshots=2
+[ClientPerf] http.end id=84DB9C1F operation=departures elapsedMs=662 status=200 bytes=413
+[ClientPerf] http.metrics id=84DB9C1F operation=departures totalMs=282 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=271 transferMs=5 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=24CAF145 operation=departures elapsedMs=664 status=200 bytes=13055
+[ClientPerf] http.metrics id=24CAF145 operation=departures totalMs=283 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=272 transferMs=6 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=32E0F16C operation=departures elapsedMs=665 status=200 bytes=12678
+[ClientPerf] http.metrics id=32E0F16C operation=departures totalMs=290 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=285 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] departures.refresh.batch id=CE556A90 elapsedMs=672 snapshots=4
+[ClientPerf] departures.refresh.batch id=CE556A90 elapsedMs=674 snapshots=4
+[ClientPerf] departures.refresh.batch id=CE556A90 elapsedMs=676 snapshots=4
+[ClientPerf] departures.refresh.applied id=CE556A90 elapsedMs=1036 snapshots=14 departures=101
+[ClientPerf] departures.refresh.complete id=CE556A90 elapsedMs=1036
+[ClientPerf] departures.refresh.start id=F98E0CB7 pairs=14 batching=parallel
+[ClientPerf] http.start id=63BC1048 operation=departures count=4
+[ClientPerf] http.start id=B4CCB838 operation=departures count=4
+[ClientPerf] http.start id=982E49F9 operation=departures count=2
+[ClientPerf] http.start id=90585787 operation=departures count=4
+[ClientPerf] http.end id=B4CCB838 operation=departures elapsedMs=162 status=200 bytes=413
+[ClientPerf] http.metrics id=B4CCB838 operation=departures totalMs=162 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=148 transferMs=6 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=982E49F9 operation=departures elapsedMs=166 status=200 bytes=6242
+[ClientPerf] http.metrics id=982E49F9 operation=departures totalMs=162 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=157 transferMs=1 reused=true protocol=h3 redirects=0
+[ClientPerf] departures.refresh.batch id=F98E0CB7 elapsedMs=174 snapshots=4
+[ClientPerf] departures.refresh.batch id=F98E0CB7 elapsedMs=176 snapshots=2
+[ClientPerf] http.end id=90585787 operation=departures elapsedMs=323 status=200 bytes=12678
+[ClientPerf] http.metrics id=90585787 operation=departures totalMs=170 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=165 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] http.end id=63BC1048 operation=departures elapsedMs=325 status=200 bytes=13055
+[ClientPerf] http.metrics id=63BC1048 operation=departures totalMs=173 dnsMs=-1 connectMs=-1 tlsMs=-1 ttfbMs=170 transferMs=0 reused=true protocol=h3 redirects=0
+[ClientPerf] departures.refresh.batch id=F98E0CB7 elapsedMs=563 snapshots=4
+[ClientPerf] departures.refresh.batch id=F98E0CB7 elapsedMs=565 snapshots=4
+[ClientPerf] departures.refresh.applied id=F98E0CB7 elapsedMs=1015 snapshots=14 departures=101
+[ClientPerf] departures.refresh.complete id=F98E0CB7 elapsedMs=1015

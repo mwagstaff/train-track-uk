@@ -5,7 +5,8 @@ import { registerPlannerGateway } from '../lib/planner-gateway.js';
 import { PlannerRoutingStore } from '../lib/planner-routing-store.js';
 import { plannerServiceAuthentication, registerPlannerInternalRoutes } from '../lib/planner-internal-routes.js';
 import { PlannerTargetManager } from '../lib/planner-targets.js';
-import { createPlannerServer } from '../planner-server.js';
+import { compressLargeResponses, createPlannerServer } from '../planner-server.js';
+import http from 'node:http';
 import { noOpPlannerSearchLog } from '../lib/planner-search-log.js';
 import { PlannerService, plannerConfig } from '../lib/planner/service.js';
 
@@ -31,9 +32,28 @@ function memoryCollection() {
             }
             rows.set(row._id, row);
             return { matchedCount: 1 };
+        },
+        async bulkWrite(operations) {
+            this.bulkWrites = (this.bulkWrites ?? 0) + 1;
+            for (const { updateOne } of operations) await this.updateOne(updateOne.filter, updateOne.update, { upsert: updateOne.upsert });
+            return { ok: 1 };
         }
     };
 }
+
+test('ownership skips legacy-target artifacts and records other targets in one batch', async () => {
+    const db = memoryCollection();
+    const ownership = new PlannerRoutingStore({ secret, getCollection: async () => db, legacyTargetId: 'mini' });
+    const journeys = Array.from({ length: 40 }, (_, index) => ({ id: `${index.toString(16).padStart(64, '0')}.${'a'.repeat(32)}` }));
+    const payload = { apiVersion: 4, boards: [{ result: { journeys } }] };
+    await ownership.rememberResponse('mini', 'saved-route-boards-v4', payload);
+    assert.equal(db.rows.size, 0);
+    assert.equal(await ownership.targetFor({ operation: 'journey', artifact: journeys[0].id }), 'mini');
+    await ownership.rememberResponse('sky', 'saved-route-boards-v4', payload);
+    assert.equal(db.bulkWrites, 1);
+    assert.equal(db.rows.size, 40);
+    assert.equal(await ownership.targetFor({ operation: 'journey', artifact: journeys[39].id }), 'sky');
+});
 
 async function listen(t, app) {
     const server = app.listen(0, '127.0.0.1');
@@ -96,6 +116,39 @@ test('gateway keeps jobs and idempotent retries on their issuing target after se
     assert.equal(submissions, 2);
     assert.equal(polls, 1);
     assert.equal(localCalls, 1);
+});
+
+test('large planner responses cross the gateway gzipped and arrive unchanged', async t => {
+    const journeys = Array.from({ length: 200 }, (_, index) => ({ id: `${index.toString(16).padStart(64, '0')}.${'b'.repeat(32)}`,
+        departure: '2026-09-22T21:18:19.000Z', legs: [{ kind: 'vehicle', from: { crs: 'KTH' }, to: { crs: 'VIC' } }] }));
+    const board = { apiVersion: 4, boards: [{ id: 'saved', status: 'ready', result: { journeys } }] };
+    const remoteApp = express();
+    remoteApp.use((req, res, next) => req.get('Authorization') === `Bearer ${token}` ? next() : res.sendStatus(401));
+    remoteApp.use(compressLargeResponses);
+    remoteApp.post('/api/v4/journey-planner/route-boards', (_req, res) => res.json(board));
+    remoteApp.get('/small', (_req, res) => res.json({ ok: true }));
+    const remoteUrl = await listen(t, remoteApp);
+    const encodingOf = (method, path, acceptEncoding) => new Promise((resolve, reject) => {
+        const request = http.request(`${remoteUrl}${path}`, { method,
+            headers: { Authorization: `Bearer ${token}`, 'Accept-Encoding': acceptEncoding } }, response => {
+            response.resume(); response.once('end', () => resolve(response.headers['content-encoding'] ?? null));
+        });
+        request.once('error', reject); request.end();
+    });
+    const targets = { async pin() { return { targetId: 'mini', revision: 1,
+        target: { id: 'mini', mode: 'remote', baseUrl: remoteUrl, token } }; } };
+    const ownership = new PlannerRoutingStore({ secret, getCollection: async () => memoryCollection(), legacyTargetId: 'mini' });
+    const gatewayApp = express();
+    registerPlannerGateway(gatewayApp, { targets, ownership });
+    const gatewayUrl = await listen(t, gatewayApp);
+    const response = await fetch(`${gatewayUrl}/api/v4/journey-planner/route-boards`, { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ routes: [{ id: 'saved', origin: 'KTH', destination: 'VIC' }] }) });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), board);
+    const boards = '/api/v4/journey-planner/route-boards';
+    assert.equal(await encodingOf('POST', boards, 'gzip'), 'gzip');
+    assert.equal(await encodingOf('POST', boards, 'identity'), null);
+    assert.equal(await encodingOf('GET', '/small', 'gzip'), null);
 });
 
 test('standalone operations authenticate before planner work and return sanitized readiness', async t => {

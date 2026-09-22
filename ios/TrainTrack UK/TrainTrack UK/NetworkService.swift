@@ -238,6 +238,20 @@ final class NetworkServicePhone {
         return d
     }
 
+    /// This service is main-actor isolated; decoding refreshed boards there
+    /// stalls scrolling and delays every other response waiting to resume.
+    /// Mirrors `JourneyPlannerClient.decode`.
+    private nonisolated static func decodeOffMain<Response: Decodable>(
+        _ type: Response.Type,
+        from data: Data
+    ) async throws -> Response {
+        try await Task.detached(priority: .userInitiated) {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return try decoder.decode(type, from: data)
+        }.value
+    }
+
     // Maximum number of service IDs per request when batching.
     // Configurable via setter below. Defaults to 50 as requested.
     private var maxIdsPerRequest: Int = 50
@@ -343,14 +357,14 @@ final class NetworkServicePhone {
         guard let http = response as? HTTPURLResponse else { throw PhoneNetworkError.noData }
         guard (200..<300).contains(http.statusCode) else { throw PhoneNetworkError.httpStatus(http.statusCode) }
 
-        if let items = try? jsonDecoder.decode([[String: JourneyDeparturesSnapshot]].self, from: data) {
+        if let items = try? await Self.decodeOffMain([[String: JourneyDeparturesSnapshot]].self, from: data) {
             return items.reduce(into: [:]) { result, item in
                 for (key, snapshot) in item {
                     result[key] = snapshot
                 }
             }
         }
-        return try jsonDecoder.decode([String: JourneyDeparturesSnapshot].self, from: data)
+        return try await Self.decodeOffMain([String: JourneyDeparturesSnapshot].self, from: data)
     }
 
     func fetchRecentDepartures(
@@ -368,12 +382,12 @@ final class NetworkServicePhone {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw PhoneNetworkError.noData
         }
-        if let items = try? jsonDecoder.decode([[String: [RecentDepartureV2]]].self, from: data) {
+        if let items = try? await Self.decodeOffMain([[String: [RecentDepartureV2]]].self, from: data) {
             return items.reduce(into: [:]) { result, item in
                 for (key, departures) in item { result[key] = departures }
             }
         }
-        return try jsonDecoder.decode([String: [RecentDepartureV2]].self, from: data)
+        return try await Self.decodeOffMain([String: [RecentDepartureV2]].self, from: data)
     }
 
     func fetchServiceDetailsAggregated(
@@ -394,21 +408,31 @@ final class NetworkServicePhone {
         let (data, response) = try await measuredData(for: request, operation: "serviceDetails", count: ids.count)
         guard let http = response as? HTTPURLResponse else { throw PhoneNetworkError.noData }
         guard (200..<300).contains(http.statusCode) else { throw PhoneNetworkError.httpStatus(http.statusCode) }
-        let arrAny = try JSONSerialization.jsonObject(with: data, options: [])
-        let arr = arrAny as? [[String: Any]] ?? []
+        let items = try await Self.decodeOffMain([[String: ServiceDetailsEntry]].self, from: data)
         var result: [String: ServiceDetails] = [:]
-        for item in arr {
-            if let key = item.keys.first, let val = item[key] {
-                let valData = try JSONSerialization.data(withJSONObject: val, options: [])
-                // Allow empty objects -> skip
-                if let dict = try JSONSerialization.jsonObject(with: valData) as? [String: Any], dict.isEmpty {
-                    continue
-                }
-                let details = try jsonDecoder.decode(ServiceDetails.self, from: valData)
-                result[key] = details
+        for item in items {
+            for (key, entry) in item {
+                if let details = entry.details { result[key] = details }
             }
         }
         return result
+    }
+
+    /// The server returns `{}` for a service it could not describe; skip those.
+    private struct ServiceDetailsEntry: Decodable {
+        let details: ServiceDetails?
+
+        private struct AnyKey: CodingKey {
+            let stringValue: String
+            var intValue: Int? { nil }
+            init?(stringValue: String) { self.stringValue = stringValue }
+            init?(intValue: Int) { return nil }
+        }
+
+        init(from decoder: Decoder) throws {
+            let isEmpty = try decoder.container(keyedBy: AnyKey.self).allKeys.isEmpty
+            details = isEmpty ? nil : try ServiceDetails(from: decoder)
+        }
     }
 
     // Chunk the service IDs and fetch in parallel, merging results.
@@ -458,6 +482,6 @@ final class NetworkServicePhone {
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw PhoneNetworkError.noData
         }
-        return try jsonDecoder.decode(LoadingDetailsBatchResponseV1.self, from: data).services
+        return try await Self.decodeOffMain(LoadingDetailsBatchResponseV1.self, from: data).services
     }
 }
