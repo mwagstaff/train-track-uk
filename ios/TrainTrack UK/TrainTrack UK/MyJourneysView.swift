@@ -29,6 +29,7 @@ struct MyJourneysView: View {
     @State private var expandedJourneyIDs: Set<UUID> = []
     @State private var reversedJourneyIDs: Set<UUID> = []
     @State private var cardDestination: JourneyCardNavigationDestination?
+    @State private var scrollMotionPauseID = UUID()
     @AppStorage("showClosestJourneyLegOnly") private var showClosestJourneyLegOnly: Bool = true
     @AppStorage("distanceVeryCloseMiles") private var veryCloseMiles: Double = 3
     @AppStorage("distanceModeratelyCloseMiles") private var moderatelyCloseMiles: Double = 5
@@ -142,6 +143,9 @@ struct MyJourneysView: View {
                     .refreshable { await manualRefresh() }
                     .listStyle(.plain)
                     .scrollContentBackground(.hidden)
+                    .onScrollPhaseChange { _, phase in
+                        RailwayBackgroundMotionModel.shared.setScrollPaused(phase.isScrolling, id: scrollMotionPauseID)
+                    }
             }
         )
     }
@@ -168,6 +172,7 @@ struct MyJourneysView: View {
                 location.request(forceFresh: true)
             }
             .onDisappear {
+                RailwayBackgroundMotionModel.shared.setScrollPaused(false, id: scrollMotionPauseID)
                 searchFocused = false
                 isSelecting = false
                 selectedJourneyIds.removeAll()

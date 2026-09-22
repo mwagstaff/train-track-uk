@@ -111,6 +111,7 @@ struct SavedRouteBoardState {
     var result: PlannerSearchResponse? { board?.result }
     var direct: JourneyDeparturesSnapshot? { board?.source == "direct" ? board?.direct : nil }
     var usesDirectDepartures: Bool { direct != nil }
+    var hasPlannedResult: Bool { !usesLegacyDepartures && !usesDirectDepartures && result != nil }
     var isPending: Bool { (consecutiveFailures > 0 && !hasPersistentFailure) || board?.progress?.phase == "retrying" || waitingForCapacity || (board == nil && message == nil) || board?.status == "queued" || board?.status == "refreshing" }
     var isStale: Bool { board?.status != "ready" || consecutiveFailures > 0 || message != nil }
 
@@ -320,7 +321,8 @@ final class SavedRoutePlannerStore {
         state.consecutiveFailures += 1
         state.message = state.hasPersistentFailure ? message : nil
         state.waitingForCapacity = false
-        state.nextRefresh = now().addingTimeInterval(20)
+        let retryDelay = min(20, 3 * (1 << min(state.consecutiveFailures - 1, 3)))
+        state.nextRefresh = now().addingTimeInterval(TimeInterval(retryDelay))
         states[key] = state
     }
 }

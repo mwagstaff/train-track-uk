@@ -141,13 +141,17 @@ struct DisruptionMonitoringTests {
         let routes = Routes([group(["KTH", "VIC"])])
         var requests: [DisruptionMonitorSnapshot] = []
         var releaseUpload: CheckedContinuation<Void, Never>?
+        var authorizationChecks = 0
         let store = DisruptionMonitoringStore(defaults: defaults, replace: { snapshot in
             requests.append(snapshot)
             if requests.count == 1 {
                 await withCheckedContinuation { releaseUpload = $0 }
             }
             return emptyResponse()
-        }, groups: { routes.values }, subscriptions: { [] }, schedulesLoaded: { true }, pushAuthorized: { false })
+        }, groups: { routes.values }, subscriptions: { [] }, schedulesLoaded: { true }, pushAuthorized: {
+            authorizationChecks += 1
+            return false
+        })
         let first = Task { await store.refresh() }
         while releaseUpload == nil { await Task.yield() }
         routes.values = []
@@ -157,6 +161,7 @@ struct DisruptionMonitoringTests {
         await first.value
         #expect(requests.count == 2)
         #expect(requests.last?.monitors.isEmpty == true)
+        #expect(authorizationChecks == 1)
     }
 
     @Test func deletedDeviceSuspensionSurvivesRestartAndDoesNotUploadAgain() async throws {

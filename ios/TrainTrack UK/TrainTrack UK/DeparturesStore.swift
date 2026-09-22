@@ -17,8 +17,11 @@ final class DeparturesStore: ObservableObject {
     private var timerCancellable: AnyCancellable?
     private var journeysCancellable: AnyCancellable?
     private var initialRefreshTask: Task<Void, Never>?
+    private var periodicRefreshTask: Task<Void, Never>?
+    private var periodicRefreshID: UUID?
+    private var loadingRefreshTask: Task<Void, Never>?
     private var lastWidgetReloadAt: Date? = nil
-    private var loadingRefreshInProgress = false
+    private var loadingDetailsAttemptedAt: [String: Date] = [:]
     private var serviceDetailsFetchedAt: [String: Date] = [:]
     private var serviceDetailsRequestsByID: [String: ServiceDetailsRequest] = [:]
 
@@ -71,8 +74,16 @@ final class DeparturesStore: ObservableObject {
         timerCancellable = Timer.publish(every: 20, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
-                guard let self else { return }
-                Task { await self.refresh(for: journeyStore.journeys) }
+                guard let self, !self.isInitialLoadInProgress, self.periodicRefreshTask == nil else { return }
+                let refreshID = UUID()
+                self.periodicRefreshID = refreshID
+                self.periodicRefreshTask = Task {
+                    await self.refresh(for: journeyStore.journeys)
+                    if self.periodicRefreshID == refreshID {
+                        self.periodicRefreshTask = nil
+                        self.periodicRefreshID = nil
+                    }
+                }
             }
     }
 
@@ -83,6 +94,11 @@ final class DeparturesStore: ObservableObject {
         journeysCancellable = nil
         initialRefreshTask?.cancel()
         initialRefreshTask = nil
+        periodicRefreshTask?.cancel()
+        periodicRefreshTask = nil
+        periodicRefreshID = nil
+        loadingRefreshTask?.cancel()
+        loadingRefreshTask = nil
     }
 
     func refreshNow(journeyStore: JourneyStore) {
@@ -95,7 +111,7 @@ final class DeparturesStore: ObservableObject {
         do {
             let snapshots = try await NetworkServicePhone.shared.fetchDeparturesAggregated(pairs: pairs)
             let departures = applyDepartureSnapshots(snapshots, replacingExistingDepartures: false)
-            await refreshLoading(for: departures)
+            scheduleLoadingRefresh(for: departures)
         } catch {
             markDepartureRefreshFailed(for: pairs)
         }
@@ -176,8 +192,7 @@ final class DeparturesStore: ObservableObject {
     private func refresh(for journeys: [Journey]) async {
         await refresh(
             for: journeys,
-            replacingExistingDepartures: true,
-            delayBeforeEachBatch: true
+            replacingExistingDepartures: true
         )
     }
 
@@ -193,8 +208,7 @@ final class DeparturesStore: ObservableObject {
 
         await refresh(
             for: favouriteJourneys,
-            replacingExistingDepartures: false,
-            delayBeforeEachBatch: false
+            replacingExistingDepartures: false
         )
         guard !Task.isCancelled else { return }
 
@@ -205,15 +219,13 @@ final class DeparturesStore: ObservableObject {
 
         await refresh(
             for: remainingJourneys,
-            replacingExistingDepartures: false,
-            delayBeforeEachBatch: false
+            replacingExistingDepartures: false
         )
     }
 
     private func refresh(
         for journeys: [Journey],
-        replacingExistingDepartures: Bool,
-        delayBeforeEachBatch: Bool
+        replacingExistingDepartures: Bool
     ) async {
         let pairs = uniquePairs(journeyPairs(from: journeys))
         if pairs.isEmpty {
@@ -226,21 +238,27 @@ final class DeparturesStore: ObservableObject {
         }
         let started = ContinuousClock.now
         let trace = String(UUID().uuidString.prefix(8))
-        ClientPerf.log("departures.refresh.start id=\(trace) pairs=\(pairs.count) delayed=\(delayBeforeEachBatch)")
+        ClientPerf.log("departures.refresh.start id=\(trace) pairs=\(pairs.count) batching=parallel")
         do {
             let snapshots = try await NetworkServicePhone.shared.fetchDeparturesAggregated(
                 pairs: pairs,
-                delayBeforeEachBatch: delayBeforeEachBatch
+                onBatch: { [weak self] partial in
+                    guard let self, !Task.isCancelled else { return }
+                    _ = self.applyDepartureSnapshots(partial, replacingExistingDepartures: false)
+                    ClientPerf.log("departures.refresh.batch id=\(trace) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) snapshots=\(partial.count)")
+                }
             )
+            guard !Task.isCancelled else { return }
             let departures = applyDepartureSnapshots(
                 snapshots,
                 replacingExistingDepartures: replacingExistingDepartures
             )
             ClientPerf.log("departures.refresh.applied id=\(trace) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) snapshots=\(snapshots.count) departures=\(departures.values.reduce(0) { $0 + $1.count })")
             reloadClosestFavouriteWidgetIfNeeded()
-            await refreshLoading(for: departures)
+            scheduleLoadingRefresh(for: departures)
             ClientPerf.log("departures.refresh.complete id=\(trace) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started))")
         } catch {
+            guard !Task.isCancelled else { return }
             markDepartureRefreshFailed(for: pairs)
             ClientPerf.log("departures.refresh.failed id=\(trace) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) errorType=\(type(of: error))")
         }
@@ -488,32 +506,49 @@ final class DeparturesStore: ObservableObject {
         return candidate
     }
 
+    private func scheduleLoadingRefresh(for departures: [String: [DepartureV2]]) {
+        loadingRefreshTask?.cancel()
+        loadingRefreshTask = Task { [weak self] in
+            await self?.refreshLoading(for: departures)
+        }
+    }
+
     private func refreshLoading(for departures: [String: [DepartureV2]]) async {
-        guard !loadingRefreshInProgress else { return }
         let requests = loadingRequests(for: departures)
         pruneLoadingDetailsToCurrentDepartures()
         guard !requests.isEmpty else { return }
-        loadingRefreshInProgress = true
-        defer { loadingRefreshInProgress = false }
+        let attemptedAt = Date()
+        for request in requests {
+            loadingDetailsAttemptedAt[request.serviceID] = attemptedAt
+        }
         do {
             let response = try await NetworkServicePhone.shared.fetchLoadingDetails(requests: requests)
+            try Task.checkCancellation()
             for (serviceID, details) in response {
                 loadingDetailsByServiceId[serviceID] = details
             }
             pruneLoadingDetailsToCurrentDepartures()
+        } catch is CancellationError {
+            return
         } catch {
             // Loading is an optional enhancement. Existing departure data remains usable.
         }
     }
 
     private func loadingRequests(for departures: [String: [DepartureV2]]) -> [LoadingDetailsRequestV1] {
+        let now = Date()
+        let refreshInterval: TimeInterval = 2 * 60
         var seenServiceIDs = Set<String>()
         var requests: [LoadingDetailsRequestV1] = []
         for (key, services) in departures {
             let stations = key.split(separator: "_", maxSplits: 1).map(String.init)
             guard stations.count == 2 else { continue }
-            for departure in services.prefix(8) where departure.serviceType.lowercased() != "bus" {
+            for departure in services.prefix(3) where departure.serviceType.lowercased() != "bus" {
                 guard seenServiceIDs.insert(departure.serviceID).inserted else { continue }
+                if let attemptedAt = loadingDetailsAttemptedAt[departure.serviceID],
+                   now.timeIntervalSince(attemptedAt) < refreshInterval {
+                    continue
+                }
                 requests.append(LoadingDetailsRequestV1(
                     serviceID: departure.serviceID,
                     from: stations[0],
@@ -524,7 +559,7 @@ final class DeparturesStore: ObservableObject {
                 ))
             }
         }
-        return Array(requests.prefix(50))
+        return Array(requests.prefix(24))
     }
 
     private func scheduledDepartureISO(for departure: DepartureV2) -> String {
@@ -537,6 +572,7 @@ final class DeparturesStore: ObservableObject {
     private func pruneLoadingDetailsToCurrentDepartures() {
         let activeServiceIDs = Set(departuresByPair.values.flatMap { $0.map(\.serviceID) })
         loadingDetailsByServiceId = loadingDetailsByServiceId.filter { activeServiceIDs.contains($0.key) }
+        loadingDetailsAttemptedAt = loadingDetailsAttemptedAt.filter { activeServiceIDs.contains($0.key) }
     }
 
 }

@@ -108,7 +108,7 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
             do {
                 return try await send(path: ["route-boards"], body: body,
                                       base: Self.routeBoardsBaseURL(from: server), headers: ["X-Planner-Client": clientID],
-                                      timeout: 15, preserveHTTPStatus: true)
+                                      timeout: 10, preserveHTTPStatus: true)
             } catch let failure as HTTPFailure {
                 guard failure.status == 404 else { throw failure.error }
                 unavailableV4Until[server] = timing.now() + 300
@@ -117,7 +117,7 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
         let base = try Self.plannerBaseURL(from: server)
         do {
             return try await send(path: ["route-boards"], body: body,
-                                  base: base, headers: ["X-Planner-Client": clientID], timeout: 15, preserveHTTPStatus: true)
+                                  base: base, headers: ["X-Planner-Client": clientID], timeout: 10, preserveHTTPStatus: true)
         } catch let failure as HTTPFailure {
             if failure.status == 404 { throw SavedRouteBoardError.unsupported }
             throw failure.error
@@ -305,6 +305,7 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
         let started = ContinuousClock.now
         let trace = String(UUID().uuidString.prefix(8))
         let operation = path.first ?? "unknown"
+        let metrics = ClientTaskMetricsDelegate()
         ClientPerf.log("planner.http.start id=\(trace) operation=\(operation) method=\(request.httpMethod ?? "GET")")
         let timeoutMessage = path.first == "search" || path.first == "search-jobs"
             ? "This search took too long. Try again, or choose a different time."
@@ -312,17 +313,20 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
         let data: Data
         let response: URLResponse
         do {
-            (data, response) = try await session.data(for: request)
+            (data, response) = try await session.data(for: request, delegate: metrics)
         } catch let error as URLError where error.code == .timedOut {
             ClientPerf.log("planner.http.failed id=\(trace) operation=\(operation) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) error=timeout")
             try Task.checkCancellation()
             throw PlannerError(code: "NETWORK_TIMEOUT", message: timeoutMessage)
         } catch {
-            ClientPerf.log("planner.http.failed id=\(trace) operation=\(operation) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) errorType=\(type(of: error))")
+            ClientPerf.log("planner.http.failed id=\(trace) operation=\(operation) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) \(ClientPerf.errorMetadata(error))")
             throw error
         }
         try Task.checkCancellation()
         ClientPerf.log("planner.http.end id=\(trace) operation=\(operation) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) status=\((response as? HTTPURLResponse)?.statusCode ?? 0) bytes=\(data.count)")
+        if let summary = metrics.summary() {
+            ClientPerf.log("planner.http.metrics id=\(trace) operation=\(operation) \(summary)")
+        }
         guard let http = response as? HTTPURLResponse else {
             throw PlannerError(code: "UNAVAILABLE", message: "The journey planner is unavailable. Please try again.")
         }
@@ -340,12 +344,21 @@ final class JourneyPlannerClient: JourneyPlannerServing, SavedRouteBoardServing 
         }
         let decodingStarted = ContinuousClock.now
         do {
-            let value = try PlannerTime.decoder().decode(Response.self, from: data)
+            let value = try await Self.decode(Response.self, from: data)
             ClientPerf.log("planner.decode id=\(trace) operation=\(operation) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: decodingStarted))")
             return value
         } catch {
             ClientPerf.log("planner.decode.failed id=\(trace) operation=\(operation) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: decodingStarted))")
             throw PlannerError(code: "INVALID_RESPONSE", message: "The journey planner returned an unreadable response. Please try again.")
         }
+    }
+
+    private nonisolated static func decode<Response: Decodable>(
+        _ type: Response.Type,
+        from data: Data
+    ) async throws -> Response {
+        try await Task.detached(priority: .userInitiated) {
+            try PlannerTime.decoder().decode(type, from: data)
+        }.value
     }
 }

@@ -152,9 +152,12 @@ struct JourneyCard: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject private var serverConfig = ServerConfigStore.shared
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
-    @State private var isLoadingServiceDetails = false
-    @State private var appearedAt: ContinuousClock.Instant?
-    @State private var reportedFirstDeparture = false
+    private final class AppearanceMetrics {
+        var appearedAt: ContinuousClock.Instant?
+        var reportedFirstDeparture = false
+    }
+
+    @State private var appearanceMetrics = AppearanceMetrics()
 
     private struct Summary: Identifiable {
         let firstLeg: Journey
@@ -199,23 +202,30 @@ struct JourneyCard: View {
     }
 
     private var usesPlannedJourneys: Bool {
+        plannedBoard?.hasPlannedResult == true
+    }
+
+    private var awaitingPlannedResults: Bool {
         guard let plannedBoard else { return false }
-        return !plannedBoard.usesLegacyDepartures && !plannedBoard.usesDirectDepartures
+        return !plannedBoard.usesLegacyDepartures && !plannedBoard.usesDirectDepartures && !plannedBoard.hasPlannedResult
     }
 
     private var hasVisibleDepartures: Bool {
         if usesPlannedJourneys { return !(plannedBoard?.upcomingJourneys(at: Date()).isEmpty ?? true) }
+        if awaitingPlannedResults && !upcomingDepartures.isEmpty { return true }
         return !displayedSummaries.isEmpty
     }
 
     private func reportFirstDepartureIfVisible() {
-        guard hasVisibleDepartures, !reportedFirstDeparture, let appearedAt else { return }
-        reportedFirstDeparture = true
+        guard !appearanceMetrics.reportedFirstDeparture,
+              let appearedAt = appearanceMetrics.appearedAt,
+              hasVisibleDepartures else { return }
+        appearanceMetrics.reportedFirstDeparture = true
         ClientPerf.log("card.firstDeparture route=\(group.startStation.crs)-\(group.endStation.crs) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: appearedAt)) source=\(usesPlannedJourneys ? "planned" : usesDirectDepartures ? "direct" : "legacy")")
     }
 
     private var showsLaterDeparturesControl: Bool {
-        allowsExpansion && (canExpand || onSearchLater != nil)
+        !awaitingPlannedResults && allowsExpansion && (canExpand || onSearchLater != nil)
     }
 
     private var hasVisibleStandaloneLaterJourneys: Bool {
@@ -251,26 +261,46 @@ struct JourneyCard: View {
                     .padding(.horizontal, 16)
             }
 
-            if let plannedBoard, !plannedBoard.usesLegacyDepartures, !plannedBoard.usesDirectDepartures {
+            if usesPlannedJourneys, let plannedBoard {
                 SavedRouteBoardView(state: plannedBoard, routeKey: group.stationSequence.map(\.crs).joined(separator: "-"), departureCount: defaultDepartureCount,
                     isInteractive: isInteractive, isExpanded: isExpanded,
                     onRetry: nil,
                     supplementalState: laterBoard,
                     onRetrySupplemental: onRetryLater)
             } else {
+            if awaitingPlannedResults && !upcomingDepartures.isEmpty {
+                Text("Showing available departures while full journey options load")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+            }
             if let message = plannedBoard?.message {
                 Text(message).font(.caption).foregroundStyle(.secondary).padding(16)
             }
-            if dataAvailability.status != .live && (plannedBoard == nil || plannedBoard?.hasPersistentFailure == true) {
+            if dataAvailability.status != .live && (awaitingPlannedResults || plannedBoard == nil || plannedBoard?.hasPersistentFailure == true) {
                 dataAvailabilityNotice
                 Divider().padding(.horizontal, 16)
             }
 
             VStack(alignment: .leading, spacing: 0) {
                 if displayedSummaries.isEmpty {
-                    if hasVisibleStandaloneLaterJourneys || isFindingStandaloneLaterJourneys {
+                    if awaitingPlannedResults && !upcomingDepartures.isEmpty {
+                        let fallback = Array(upcomingDepartures.prefix(defaultDepartureCount))
+                        ForEach(Array(fallback.enumerated()), id: \.element.id) { index, departure in
+                            firstLegDepartureRow(departure)
+                            if index < fallback.count - 1 {
+                                Divider().padding(.horizontal, 16)
+                            }
+                        }
+                    } else if hasVisibleStandaloneLaterJourneys || isFindingStandaloneLaterJourneys {
                         EmptyView()
-                    } else if depStore.isInitialLoadInProgress || isLoadingServiceDetails {
+                    } else if awaitingPlannedResults && !depStore.isInitialLoadInProgress && plannedBoard?.message == nil {
+                        Text("Finding journey options…")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .padding(16)
+                    } else if depStore.isInitialLoadInProgress {
                         EmptyView()
                     } else if dataAvailability.status == .live {
                         Text("No upcoming departures found")
@@ -326,15 +356,45 @@ struct JourneyCard: View {
             await prefetchVisibleServiceDetails()
         }
         .onAppear {
-            appearedAt = .now
-            reportedFirstDeparture = false
+            appearanceMetrics.appearedAt = .now
+            appearanceMetrics.reportedFirstDeparture = false
             ClientPerf.log("card.appear route=\(group.startStation.crs)-\(group.endStation.crs) spinner=\(isRefreshingDepartures)")
             reportFirstDepartureIfVisible()
         }
         .onChange(of: hasVisibleDepartures) { _, _ in reportFirstDepartureIfVisible() }
         .onChange(of: isRefreshingDepartures) { _, refreshing in
-            ClientPerf.log("card.spinner route=\(group.startStation.crs)-\(group.endStation.crs) active=\(refreshing) board=\(plannedBoard?.showsActivity == true) serviceDetails=\(isLoadingServiceDetails)")
+            ClientPerf.log("card.spinner route=\(group.startStation.crs)-\(group.endStation.crs) active=\(refreshing) board=\(plannedBoard?.showsActivity == true)")
         }
+    }
+
+    private func firstLegDepartureRow(_ departure: DepartureV2) -> some View {
+        let cancellation = JourneyItineraryBuilder.cancellation(
+            for: departure,
+            at: firstLeg.toStation.crs,
+            serviceDetailsByID: depStore.serviceDetailsById
+        )
+        let status = compactStatus(for: departure, cancellation: cancellation)
+        return HStack(spacing: 12) {
+            Text(departureDisplayTime(departure))
+                .font(.headline)
+                .monospacedDigit()
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(firstLeg.fromStation.name) → \(firstLeg.toStation.name)")
+                    .font(.subheadline)
+                Text(status.text)
+                    .font(.caption)
+                    .foregroundStyle(status.color)
+            }
+            Spacer(minLength: 4)
+            if let platform = departure.platform, !platform.isEmpty {
+                Text("Platform \(platform)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .accessibilityElement(children: .combine)
     }
 
     private var laterDeparturesControl: some View {
@@ -504,7 +564,6 @@ struct JourneyCard: View {
         plannedBoard?.showsActivity == true
             || (isExpanded && laterBoard?.showsActivity == true)
             || (plannedBoard == nil && depStore.isInitialLoadInProgress)
-            || isLoadingServiceDetails
     }
 
     private var routeTitle: some View {
@@ -979,7 +1038,6 @@ struct JourneyCard: View {
     }
 
     private func prefetchVisibleServiceDetails() async {
-        let requestedTaskID = prefetchTaskID
         let visibleCount = isExpanded ? upcomingDepartures.count : defaultDepartureCount
         var ids = upcomingDepartures.prefix(visibleCount).map(\.serviceID)
         for leg in presentationGroup.legs.dropFirst() {
@@ -987,12 +1045,6 @@ struct JourneyCard: View {
         }
         let uniqueIDs = Array(Set(ids))
         guard !uniqueIDs.isEmpty else { return }
-        isLoadingServiceDetails = true
-        defer {
-            if requestedTaskID == prefetchTaskID {
-                isLoadingServiceDetails = false
-            }
-        }
         let context = usesDirectDepartures ? ServiceDetailsLookupContext(fromCRS: firstLeg.fromStation.crs,
             toCRS: firstLeg.toStation.crs, originCRS: nil, operator: nil,
             destinationCRSs: [firstLeg.toStation.crs], length: nil) : nil

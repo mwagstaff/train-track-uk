@@ -99,7 +99,7 @@ import SwiftUI
         let selectedServer = ApiHostPreference.currentBaseURL
         let network = NetworkServicePhone.shared
         let boards = try await network.fetchDeparturesAggregated(pairs: [(leg.from.crs, leg.to.crs)],
-            delayBeforeEachBatch: false, requireFresh: true, timeout: 8)
+            requireFresh: true, timeout: 8)
         try Task.checkCancellation()
         guard selectedServer == ApiHostPreference.currentBaseURL else { throw unavailable }
         let candidates = (boards["\(leg.from.crs)_\(leg.to.crs)"]?.departures ?? []).filter {

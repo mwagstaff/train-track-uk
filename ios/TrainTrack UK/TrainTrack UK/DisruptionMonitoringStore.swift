@@ -29,9 +29,13 @@ enum DisruptionMonitoringClient {
         ClientPerf.log("advance.http.start monitors=\(snapshot.monitors.count)")
         let (data, response): (Data, URLResponse)
         do {
-            (data, response) = try await URLSession.shared.data(for: request)
+            let metrics = ClientTaskMetricsDelegate()
+            (data, response) = try await URLSession.shared.data(for: request, delegate: metrics)
+            if let summary = metrics.summary() {
+                ClientPerf.log("advance.http.metrics \(summary)")
+            }
         } catch {
-            ClientPerf.log("advance.http.failed elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) errorType=\(type(of: error))")
+            ClientPerf.log("advance.http.failed elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) \(ClientPerf.errorMetadata(error))")
             throw error
         }
         ClientPerf.log("advance.http.end elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) status=\((response as? HTTPURLResponse)?.statusCode ?? 0) bytes=\(data.count)")
@@ -159,10 +163,12 @@ final class DisruptionMonitoringStore {
             isRefreshing = false
             ClientPerf.log("advance.sync.end elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) revision=\(revision)")
         }
+        let authorized = await pushAuthorized()
         while needsSync && !isSuspended && !Task.isCancelled {
-            needsSync = false
-            let authorized = await pushAuthorized()
             guard !Task.isCancelled, !isSuspended else { return }
+            // Revisions received while checking notification permission are already
+            // represented in this snapshot and must not force a duplicate upload.
+            needsSync = false
             let currentRevision = revision
             let currentHost = ApiHostPreference.currentBaseURL
             if responseHost != currentHost { response = nil }

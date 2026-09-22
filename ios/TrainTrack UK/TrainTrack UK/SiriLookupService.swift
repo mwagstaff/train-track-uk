@@ -26,7 +26,7 @@ final class SiriLookupService {
         deadlineSeconds: Double = 8,
         fetchBoard: @escaping @MainActor (Station, Station) async throws -> JourneyDeparturesSnapshot = { from, to in
             let response = try await NetworkServicePhone.shared.fetchDeparturesAggregated(
-                pairs: [(from.crs, to.crs)], delayBeforeEachBatch: false, requireFresh: true, timeout: 8
+                pairs: [(from.crs, to.crs)], requireFresh: true, timeout: 8
             )
             guard let snapshot = response["\(from.crs)_\(to.crs)"] else { throw SiriLookupError.unavailable }
             return snapshot

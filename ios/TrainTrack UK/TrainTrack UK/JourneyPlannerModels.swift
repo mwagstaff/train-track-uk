@@ -435,7 +435,7 @@ struct PlannerRecentSearch: Codable, Identifiable {
     let searchedAt: Date
 }
 
-enum PlannerTime {
+nonisolated enum PlannerTime {
     static let zone = TimeZone(identifier: "Europe/London")!
     static var calendar: Calendar {
         var value = Calendar(identifier: .gregorian)
@@ -533,15 +533,40 @@ enum PlannerTime {
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             let value = try container.decode(String.self)
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let date = formatter.date(from: value) { return date }
-            formatter.formatOptions = [.withInternetDateTime]
-            guard let date = formatter.date(from: value) else {
+            guard let date = parseISO8601(value) else {
                 throw DecodingError.dataCorruptedError(in: container, debugDescription: "Expected an offset-aware timetable timestamp")
             }
             return date
         }
         return decoder
+    }
+
+    private static func parseISO8601(_ value: String) -> Date? {
+        let key = "traintrack.planner.iso8601.\(value.contains(".") ? "fractional" : "standard")"
+        let formatter: ISO8601DateFormatter
+        if let cached = Thread.current.threadDictionary[key] as? ISO8601DateFormatter {
+            formatter = cached
+        } else {
+            formatter = ISO8601DateFormatter()
+            formatter.formatOptions = value.contains(".")
+                ? [.withInternetDateTime, .withFractionalSeconds]
+                : [.withInternetDateTime]
+            Thread.current.threadDictionary[key] = formatter
+        }
+        if let date = formatter.date(from: value) { return date }
+
+        // Some providers mix fractional and whole-second timestamps in one response.
+        let fallbackKey = "traintrack.planner.iso8601.\(value.contains(".") ? "standard" : "fractional")"
+        let fallback: ISO8601DateFormatter
+        if let cached = Thread.current.threadDictionary[fallbackKey] as? ISO8601DateFormatter {
+            fallback = cached
+        } else {
+            fallback = ISO8601DateFormatter()
+            fallback.formatOptions = value.contains(".")
+                ? [.withInternetDateTime]
+                : [.withInternetDateTime, .withFractionalSeconds]
+            Thread.current.threadDictionary[fallbackKey] = fallback
+        }
+        return fallback.date(from: value)
     }
 }

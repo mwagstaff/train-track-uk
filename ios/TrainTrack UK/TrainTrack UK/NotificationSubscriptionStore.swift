@@ -938,7 +938,7 @@ final class NotificationSubscriptionStore: ObservableObject {
             let missingRoutes = routes.filter { (boards[$0.key] ?? []).isEmpty }.map(\.value)
             if !missingRoutes.isEmpty,
                let snapshots = try? await NetworkServicePhone.shared.fetchDeparturesAggregated(
-                   pairs: missingRoutes, delayBeforeEachBatch: false
+                   pairs: missingRoutes
                ) {
                 for (key, snapshot) in snapshots { boards[key] = snapshot.departures }
             }

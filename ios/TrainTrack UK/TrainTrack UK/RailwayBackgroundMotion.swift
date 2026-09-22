@@ -203,6 +203,7 @@ final class RailwayBackgroundMotionModel: ObservableObject {
         return queue
     }()
     private var activeViews: Set<UUID> = []
+    private var scrollPauses: Set<UUID> = []
     private var orientation: UIInterfaceOrientation = .portrait
     private var generation = UUID()
 
@@ -215,12 +216,12 @@ final class RailwayBackgroundMotionModel: ObservableObject {
         activeViews.insert(viewID)
         if self.orientation != orientation {
             self.orientation = orientation
-            if !wasInactive {
+            if !wasInactive && scrollPauses.isEmpty {
                 restartUpdates()
                 return
             }
         }
-        if wasInactive {
+        if wasInactive && scrollPauses.isEmpty {
             startUpdates()
         }
     }
@@ -234,8 +235,22 @@ final class RailwayBackgroundMotionModel: ObservableObject {
     func updateOrientation(_ orientation: UIInterfaceOrientation) {
         guard self.orientation != orientation else { return }
         self.orientation = orientation
-        guard !activeViews.isEmpty else { return }
+        guard !activeViews.isEmpty, scrollPauses.isEmpty else { return }
         restartUpdates()
+    }
+
+    func setScrollPaused(_ paused: Bool, id: UUID) {
+        if paused {
+            guard scrollPauses.insert(id).inserted else { return }
+            if scrollPauses.count == 1 && !activeViews.isEmpty {
+                stopUpdates(centresImage: false)
+            }
+        } else {
+            guard scrollPauses.remove(id) != nil else { return }
+            if scrollPauses.isEmpty && !activeViews.isEmpty {
+                startUpdates()
+            }
+        }
     }
 
     private func restartUpdates() {

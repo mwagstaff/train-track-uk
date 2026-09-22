@@ -102,7 +102,6 @@ struct SavedRouteBoardView: View {
     var supplementalState: SavedRouteBoardState? = nil
     var onRetrySupplemental: (() -> Void)? = nil
     var showsEmptyState = true
-    @State private var selectedJourney: PlannerJourneyResponse?
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 20)) { context in
@@ -128,12 +127,8 @@ struct SavedRouteBoardView: View {
                     let comparison = JourneyDurationComparison(journeys: visible.map(\.journey))
                     ForEach(visible) { option in
                         if isInteractive {
-                            Button {
-                                selectedJourney = PlannerJourneyResponse(
-                                    journey: option.journey,
-                                    dataset: option.response.dataset,
-                                    live: option.response.live
-                                )
+                            NavigationLink {
+                                journeyDetail(option)
                             } label: {
                                 summary(
                                     option.journey,
@@ -162,18 +157,16 @@ struct SavedRouteBoardView: View {
                     if !disrupted.isEmpty {
                         DisclosureGroup("Disrupted journeys") {
                             ForEach(disrupted) { option in
-                                Button {
-                                    selectedJourney = PlannerJourneyResponse(
-                                        journey: option.journey,
-                                        dataset: option.response.dataset,
-                                        live: option.response.live
-                                    )
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Text("Unavailable option").font(.caption.weight(.semibold)).foregroundStyle(.red)
-                                        summary(option.journey, at: context.date, live: option.response.live)
+                                if isInteractive {
+                                    NavigationLink {
+                                        journeyDetail(option)
+                                    } label: {
+                                        disruptedSummary(option, at: context.date)
                                     }
-                                }.buttonStyle(.plain).disabled(!isInteractive)
+                                    .buttonStyle(.plain)
+                                } else {
+                                    disruptedSummary(option, at: context.date)
+                                }
                             }
                         }
                         .disclosureGroupStyle(NavigationChevronDisclosureStyle())
@@ -201,11 +194,25 @@ struct SavedRouteBoardView: View {
                 }
             }
         }
-        .navigationDestination(isPresented: Binding(get: { selectedJourney != nil }, set: { if !$0 { selectedJourney = nil } })) {
-            if let selectedJourney {
-                PlannerJourneyDetailView(id: selectedJourney.journey.id, client: JourneyPlannerClient(),
-                    initialResponse: selectedJourney, allowsTrainTracking: true)
-            }
+    }
+
+    private func journeyDetail(_ option: SavedRouteJourneyOption) -> some View {
+        PlannerJourneyDetailView(
+            id: option.journey.id,
+            client: JourneyPlannerClient(),
+            initialResponse: PlannerJourneyResponse(
+                journey: option.journey,
+                dataset: option.response.dataset,
+                live: option.response.live
+            ),
+            allowsTrainTracking: true
+        )
+    }
+
+    private func disruptedSummary(_ option: SavedRouteJourneyOption, at now: Date) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Unavailable option").font(.caption.weight(.semibold)).foregroundStyle(.red)
+            summary(option.journey, at: now, live: option.response.live)
         }
     }
 

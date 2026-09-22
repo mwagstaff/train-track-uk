@@ -227,7 +227,7 @@ struct PlannerMapLiveService {
         let key = "\(leg.from.crs)_\(leg.to.crs)"
         var serviceID = previous?.serviceID
         if serviceID == nil {
-            let boards = try await network.fetchDeparturesAggregated(pairs: [(leg.from.crs, leg.to.crs)], delayBeforeEachBatch: false, timeout: 8)
+            let boards = try await network.fetchDeparturesAggregated(pairs: [(leg.from.crs, leg.to.crs)], timeout: 8)
             try Task.checkCancellation()
             let matchingDepartures = (boards[key]?.departures ?? []).filter { matches($0, leg: leg, at: now) }
             if matchingDepartures.count == 1 { serviceID = matchingDepartures[0].serviceID }

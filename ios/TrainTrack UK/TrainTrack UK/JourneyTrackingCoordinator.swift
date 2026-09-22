@@ -1077,8 +1077,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
         ])
         do {
             let snapshot = try await NetworkServicePhone.shared.fetchDeparturesAggregated(
-                pairs: [(from: first.crs, to: second.crs)],
-                delayBeforeEachBatch: false
+                pairs: [(from: first.crs, to: second.crs)]
             )
             let departures = snapshot[pairKey(from: first.crs, to: second.crs)]?.departures ?? []
             RecentServiceStore.shared.observe(departures, fromCRS: first.crs, toCRS: second.crs)
@@ -1942,7 +1941,6 @@ final class JourneyTrackingCoordinator: ObservableObject {
             do {
                 let snapshots = try await NetworkServicePhone.shared.fetchDeparturesAggregated(
                     pairs: [(from: from.crs, to: to.crs)],
-                    delayBeforeEachBatch: false,
                     requireFresh: true,
                     timeout: 8
                 )
@@ -2344,8 +2342,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
         let departures: [DepartureV2]
         do {
             let snapshots = try await NetworkServicePhone.shared.fetchDeparturesAggregated(
-                pairs: [(from: station.crs, to: destination.crs)],
-                delayBeforeEachBatch: false
+                pairs: [(from: station.crs, to: destination.crs)]
             )
             departures = snapshots[pairKey(from: station.crs, to: destination.crs)]?.departures ?? []
         } catch {

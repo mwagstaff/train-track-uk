@@ -209,31 +209,34 @@ final class NetworkServicePhone {
     private func measuredData(for request: URLRequest, operation: String, count: Int) async throws -> (Data, URLResponse) {
         let started = ContinuousClock.now
         let trace = String(UUID().uuidString.prefix(8))
+        let metrics = ClientTaskMetricsDelegate()
         ClientPerf.log("http.start id=\(trace) operation=\(operation) count=\(count)")
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request, delegate: metrics)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             ClientPerf.log("http.end id=\(trace) operation=\(operation) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) status=\(status) bytes=\(data.count)")
+            if let summary = metrics.summary() {
+                ClientPerf.log("http.metrics id=\(trace) operation=\(operation) \(summary)")
+            }
             return (data, response)
         } catch {
-            ClientPerf.log("http.failed id=\(trace) operation=\(operation) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) errorType=\(type(of: error))")
+            ClientPerf.log("http.failed id=\(trace) operation=\(operation) elapsedMs=\(ClientPerf.elapsedMilliseconds(since: started)) \(ClientPerf.errorMetadata(error))")
             throw error
         }
     }
 
     private let maxDeparturePairsPerRequest = 4
-    private let departureBatchDelayRangeMs: ClosedRange<UInt64> = 0...500
 
     // Read the current host selection (production by default) from shared settings.
     private var base: String { ApiHostPreference.currentBaseURL }
     private var loadingBase: String { ApiHostPreference.currentLoadingBaseURL }
     private var deviceToken: String { DeviceIdentity.deviceToken }
 
-    private let jsonDecoder: JSONDecoder = {
+    private var jsonDecoder: JSONDecoder {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .iso8601
         return d
-    }()
+    }
 
     // Maximum number of service IDs per request when batching.
     // Configurable via setter below. Defaults to 50 as requested.
@@ -285,27 +288,34 @@ final class NetworkServicePhone {
 
     func fetchDeparturesAggregated(
         pairs: [(from: String, to: String)],
-        delayBeforeEachBatch: Bool = true,
         requireFresh: Bool = false,
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        onBatch: (@MainActor ([String: JourneyDeparturesSnapshot]) -> Void)? = nil
     ) async throws -> [String: JourneyDeparturesSnapshot] {
         guard !pairs.isEmpty else { return [:] }
         let chunkSize = max(1, maxDeparturePairsPerRequest)
+        let chunks = stride(from: 0, to: pairs.count, by: chunkSize).map { startIndex in
+            Array(pairs[startIndex..<min(startIndex + chunkSize, pairs.count)])
+        }
         var combined: [String: JourneyDeparturesSnapshot] = [:]
-        var startIndex = 0
-
-        while startIndex < pairs.count {
-            let endIndex = min(startIndex + chunkSize, pairs.count)
-            let chunk = Array(pairs[startIndex..<endIndex])
-            if delayBeforeEachBatch {
-                try await sleepBeforeDepartureBatch()
+        // Parallel batches avoid multiplying network latency for saved routes.
+        try await withThrowingTaskGroup(of: [String: JourneyDeparturesSnapshot].self) { group in
+            for chunk in chunks {
+                group.addTask { [self] in
+                    try Task.checkCancellation()
+                    return try await fetchDeparturesBatch(
+                        pairs: chunk,
+                        requireFresh: requireFresh,
+                        timeout: timeout
+                    )
+                }
             }
-            try Task.checkCancellation()
-            let partial = try await fetchDeparturesBatch(pairs: chunk, requireFresh: requireFresh, timeout: timeout)
-            for (key, value) in partial {
-                combined[key] = value
+            for try await partial in group {
+                for (key, value) in partial {
+                    combined[key] = value
+                }
+                onBatch?(partial)
             }
-            startIndex = endIndex
         }
 
         return combined
@@ -364,14 +374,6 @@ final class NetworkServicePhone {
             }
         }
         return try jsonDecoder.decode([String: [RecentDepartureV2]].self, from: data)
-    }
-
-    private func sleepBeforeDepartureBatch() async throws {
-        let delayMs = UInt64.random(in: departureBatchDelayRangeMs)
-        if delayMs == 0 {
-            return
-        }
-        try await Task.sleep(nanoseconds: delayMs * 1_000_000)
     }
 
     func fetchServiceDetailsAggregated(

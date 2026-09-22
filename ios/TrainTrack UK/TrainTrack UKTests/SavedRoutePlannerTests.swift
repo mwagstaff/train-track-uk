@@ -172,6 +172,25 @@ struct SavedRoutePlannerTests {
         #expect(store.state(for: route).usesLegacyDepartures)
     }
 
+    @Test func missingPlannedResultAllowsDepartureFallbackAndRetriesPromptly() async throws {
+        let client = RouteBoardStub()
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "STP"])
+        #expect(!store.state(for: route).hasPlannedResult)
+
+        client.failure = PlannerError(code: "NETWORK_TIMEOUT", message: "Timed out")
+        await store.refresh(groups: [route])
+        #expect(!store.state(for: route).hasPlannedResult)
+        #expect(store.state(for: route).nextRefresh == now.addingTimeInterval(3))
+        await store.refresh(groups: [route], force: true)
+        #expect(store.state(for: route).nextRefresh == now.addingTimeInterval(6))
+
+        client.failure = nil
+        client.result = try result()
+        await store.refresh(groups: [route], force: true)
+        #expect(store.state(for: route).hasPlannedResult)
+    }
+
     @Test func boardFailuresOnlyShowAfterRepeatedFailuresAndResetAfterRecovery() async throws {
         let client = RouteBoardStub()
         client.result = try result()

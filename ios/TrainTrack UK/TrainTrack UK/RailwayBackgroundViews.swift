@@ -95,10 +95,14 @@ actor RailwayBackgroundImageCache {
         session: URLSession
     ) async -> UIImage? {
         let fileURL = cacheDirectory.appendingPathComponent("\(asset.sha256).\(asset.cacheFileExtension)")
-        if let data = try? Data(contentsOf: fileURL), validate(data: data, asset: asset),
-           let image = displayImage(from: data) {
-            try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: fileURL.path)
-            return image
+        if let data = try? Data(contentsOf: fileURL) {
+            if validatePayload(data: data, asset: asset),
+               let image = displayImage(from: data, asset: asset) {
+                try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: fileURL.path)
+                return image
+            }
+            try? FileManager.default.removeItem(at: fileURL)
+            ClientPerf.log("background.cache.invalid hash=\(asset.sha256.prefix(12)) bytes=\(data.count)")
         }
         guard let remoteURL = asset.remoteURL(apiBaseURL: apiBaseURL) else { return nil }
         do {
@@ -107,8 +111,11 @@ actor RailwayBackgroundImageCache {
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode),
                   responseContentTypeIsValid(http.mimeType, asset: asset),
-                  validate(data: data, asset: asset),
-                  let image = displayImage(from: data) else { return nil }
+                  validatePayload(data: data, asset: asset),
+                  let image = displayImage(from: data, asset: asset) else {
+                ClientPerf.log("background.download.invalid hash=\(asset.sha256.prefix(12)) bytes=\(data.count) mime=\(response.mimeType ?? "unknown")")
+                return nil
+            }
             try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
             try data.write(to: fileURL, options: .atomic)
             return image
@@ -122,18 +129,14 @@ actor RailwayBackgroundImageCache {
         }
     }
 
-    private nonisolated static func validate(data: Data, asset: RailwayBackgroundAsset) -> Bool {
-        guard !data.isEmpty,
-              data.count <= maximumDownloadBytes,
-              let image = UIImage(data: data) else { return false }
-        let width = image.cgImage?.width ?? Int(image.size.width * image.scale)
-        let height = image.cgImage?.height ?? Int(image.size.height * image.scale)
+    private nonisolated static func validatePayload(data: Data, asset: RailwayBackgroundAsset) -> Bool {
+        guard !data.isEmpty, data.count <= maximumDownloadBytes else { return false }
         guard let byteSize = asset.byteSize,
               data.count == byteSize,
               SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == asset.sha256 else {
             return false
         }
-        return width == asset.width && height == asset.height
+        return true
     }
 
     private nonisolated static func responseContentTypeIsValid(
@@ -143,8 +146,11 @@ actor RailwayBackgroundImageCache {
         mimeType?.lowercased() == "image/webp"
     }
 
-    private nonisolated static func displayImage(from data: Data) -> UIImage? {
+    private nonisolated static func displayImage(from data: Data, asset: RailwayBackgroundAsset) -> UIImage? {
         guard let image = UIImage(data: data) else { return nil }
+        let width = image.cgImage?.width ?? Int(image.size.width * image.scale)
+        let height = image.cgImage?.height ?? Int(image.size.height * image.scale)
+        guard width == asset.width, height == asset.height else { return nil }
         return image.preparingForDisplay() ?? image
     }
 }
