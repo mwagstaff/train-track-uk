@@ -678,6 +678,9 @@ private extension FavouritesView {
                 },
                 onRetryLater: {
                     Task { await routePlanner.retryLater(for: displayedGroup) }
+                },
+                onOpenPlannedJourney: { response in
+                    cardDestination = .plannedJourney(response)
                 }
             )
         }
@@ -717,6 +720,10 @@ private extension FavouritesView {
                 .onAppear { searchFocused = false }
         case .itinerary(let group, let firstDeparture):
             JourneyItineraryView(group: group, firstDeparture: firstDeparture)
+                .onAppear { searchFocused = false }
+        case .plannedJourney(let response):
+            PlannerJourneyDetailView(id: response.journey.id, client: JourneyPlannerClient(),
+                initialResponse: response, allowsTrainTracking: true)
                 .onAppear { searchFocused = false }
         }
     }

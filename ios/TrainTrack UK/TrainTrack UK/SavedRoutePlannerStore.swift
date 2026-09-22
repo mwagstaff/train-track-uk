@@ -113,14 +113,22 @@ struct SavedRouteBoardState {
     var usesDirectDepartures: Bool { direct != nil }
     var hasPlannedResult: Bool { !usesLegacyDepartures && !usesDirectDepartures && result != nil }
     var isPending: Bool { (consecutiveFailures > 0 && !hasPersistentFailure) || board?.progress?.phase == "retrying" || waitingForCapacity || (board == nil && message == nil) || board?.status == "queued" || board?.status == "refreshing" }
-    var isStale: Bool { board?.status != "ready" || consecutiveFailures > 0 || message != nil }
+
+    /// Boards pass through "refreshing" every live check, single requests fail, and routine
+    /// refreshes leave data up to ~80s old. None of that is an outage: only failing refreshes
+    /// that leave data on screen past this age are worth telling the traveller about.
+    static let outageDataAge: TimeInterval = 120
+
+    func hasSustainedOutage(observedAt observed: Date?, at now: Date) -> Bool {
+        guard consecutiveFailures > 0 else { return false }
+        return observed.map { now.timeIntervalSince($0) >= Self.outageDataAge } ?? hasPersistentFailure
+    }
 
     func directAvailability(at now: Date = Date()) -> JourneyDataAvailability? {
         guard let direct else { return nil }
         let observed = direct.lastSuccessfulUpdate ?? direct.departures.compactMap(\.evidenceObservedAt).min()
-        let expired = observed.map { now.timeIntervalSince($0) >= 90 } ?? false
-        let status: JourneyDataStatus = (isStale || expired) && direct.dataStatus.severity < JourneyDataStatus.stale.severity
-            ? .stale : direct.dataStatus
+        let status: JourneyDataStatus = hasSustainedOutage(observedAt: observed, at: now)
+            && direct.dataStatus.severity < JourneyDataStatus.stale.severity ? .stale : direct.dataStatus
         return JourneyDataAvailability(status: status, lastSuccessfulUpdate: observed)
     }
 }

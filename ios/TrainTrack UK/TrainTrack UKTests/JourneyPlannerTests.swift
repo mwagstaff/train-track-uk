@@ -460,6 +460,24 @@ struct JourneyPlannerTests {
         #expect(summary([rail(onTime)]) == "Train on time")
     }
 
+    @Test func partlyConfirmedJourneyHeadlinesTheFirstTrainsStatus() {
+        let place = PlannedJourney.Place(crs: "ELE", name: "Elmers End")
+        let onTime = PlannerLiveAnnotation(status: "onTime", departure: now, arrival: now.addingTimeInterval(600))
+        func rail(_ live: PlannerLiveAnnotation?) -> PlannedJourney.Leg {
+            PlannedJourney.Leg(kind: "vehicle", mode: "rail", from: place, to: place,
+                departure: now, arrival: now.addingTimeInterval(600), operator: nil,
+                serviceId: nil, originDate: nil, callingPoints: nil, transfer: nil, warnings: nil, live: live)
+        }
+        func status(_ legs: [PlannedJourney.Leg]) -> String {
+            PlannerJourneySummary(journey: PlannedJourney(id: "status", departure: now,
+                arrival: now.addingTimeInterval(3600), durationMinutes: 60, changes: 1, legs: legs)).status.text
+        }
+        #expect(status([rail(onTime), rail(nil)]) == "On time")
+        #expect(status([rail(onTime), rail(onTime)]) == "On time")
+        #expect(status([rail(PlannerLiveAnnotation(status: "unknown")), rail(onTime)]) == "Unknown")
+        #expect(status([rail(onTime), rail(PlannerLiveAnnotation(status: "delayed", departureDelayMinutes: 5))]) == "Delayed")
+    }
+
     @Test func genericTransferInformationDoesNotHideActualTravelWarnings() {
         let generic = "This is a supplied generic transfer; detailed local departures and stops are not available."
         let place = PlannedJourney.Place(crs: "VIC", name: "London Victoria")

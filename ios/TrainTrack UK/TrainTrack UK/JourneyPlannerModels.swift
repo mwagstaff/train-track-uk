@@ -351,10 +351,12 @@ struct PlannerSearchJob: Decodable {
     let error: PlannerError?
 }
 
-struct PlannerJourneyResponse: Decodable {
+struct PlannerJourneyResponse: Decodable, Hashable {
     let journey: PlannedJourney
     let dataset: PlannerDataset
     var live: PlannerLiveContext? = nil
+
+    func hash(into hasher: inout Hasher) { hasher.combine(journey.id) }
 }
 
 struct PlannerSearchRequest: Encodable, Equatable {

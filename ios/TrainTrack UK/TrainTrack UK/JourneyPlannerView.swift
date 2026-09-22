@@ -952,7 +952,7 @@ struct PlannerJourneySummary: View {
 
     private var cancelled: Bool { journey.legs.contains { $0.live?.isCancelled == true } }
     private var departureLeg: PlannedJourney.Leg? { journey.legs.first }
-    private var status: (text: String, color: Color) {
+    var status: (text: String, color: Color) {
         let annotations = journey.legs.compactMap(\.live)
         if cancelled { return ("Cancelled", .plannerDestructiveText) }
         if annotations.contains(where: \.isDelayed) {
@@ -965,9 +965,12 @@ struct PlannerJourneySummary: View {
         if liveIsStale, !PlannerLivePresentation.timingEvidence(for: journey).isEmpty {
             return ("Live times out of date", .plannerSecondaryText)
         }
-        if let summary = PlannerLivePresentation.onTimeSummary(for: journey) {
-            return summary == "Train on time" || summary == "All trains on time"
-                ? ("On time", .plannerOnTimeText) : ("Some live times", .plannerSecondaryText)
+        // Disruption on any train is reported above. Otherwise headline the first train, as
+        // single-train cards do; the details line says how many trains are confirmed.
+        if let summary = PlannerLivePresentation.onTimeSummary(for: journey),
+           summary == "Train on time" || summary == "All trains on time"
+            || journey.legs.first(where: { $0.kind == "vehicle" && $0.mode == "rail" })?.live?.status == "onTime" {
+            return ("On time", .plannerOnTimeText)
         }
         if journey.legs.contains(where: { $0.localJourney?.isAvailable == true }),
            !journey.legs.contains(where: { $0.kind == "vehicle" }) {
@@ -1322,6 +1325,11 @@ struct PlannerJourneyDetailView: View {
                         .accessibilityIdentifier("planner.detail.summary")
                     ForEach(Array(PlannerLivePresentation.warnings(for: response.journey).dropFirst(2)), id: \.self) { warning in
                         Text(warning).font(.caption)
+                    }
+                    let interchanges = response.journey.legs.filter { $0.kind == "transfer" }.map(\.heading)
+                    if !interchanges.isEmpty {
+                        Text(interchanges.joined(separator: " · "))
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 ForEach(Array(response.journey.legs.enumerated()), id: \.offset) { index, leg in

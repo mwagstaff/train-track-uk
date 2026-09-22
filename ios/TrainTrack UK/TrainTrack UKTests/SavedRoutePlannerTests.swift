@@ -36,7 +36,8 @@ struct SavedRoutePlannerTests {
         client.failure = PlannerError(code: "NETWORK", message: "Offline")
         await store.refresh(groups: [route], force: true)
         #expect(store.state(for: route).usesDirectDepartures)
-        #expect(store.state(for: route).directAvailability(at: now)?.status == .stale)
+        #expect(store.state(for: route).directAvailability(at: now)?.status == .live)
+        #expect(store.state(for: route).directAvailability(at: now.addingTimeInterval(120))?.status == .stale)
         client.failure = nil
         client.source = "planned"
         client.direct = nil
@@ -55,9 +56,45 @@ struct SavedRoutePlannerTests {
                 computedAt: now.addingTimeInterval(500), expiresAt: nil, error: nil, source: "direct", direct: direct)
             let state = SavedRouteBoardState(board: board)
             #expect(state.directAvailability(at: now)?.status == .live)
-            #expect(state.directAvailability(at: now.addingTimeInterval(91))?.status == .stale)
-            #expect(state.directAvailability(at: now.addingTimeInterval(91))?.lastSuccessfulUpdate == now)
+            #expect(state.directAvailability(at: now.addingTimeInterval(600))?.status == .live)
+            let failing = SavedRouteBoardState(board: board, consecutiveFailures: 1)
+            #expect(failing.directAvailability(at: now.addingTimeInterval(119))?.status == .live)
+            #expect(failing.directAvailability(at: now.addingTimeInterval(120))?.status == .stale)
+            #expect(failing.directAvailability(at: now.addingTimeInterval(120))?.lastSuccessfulUpdate == now)
         }
+    }
+
+    @Test func routineRefreshesAndBriefFailuresDoNotReportDirectUpdatesUnavailable() async {
+        var clock = now
+        let client = RouteBoardStub()
+        client.apiVersion = 4
+        client.source = "direct"
+        client.direct = JourneyDeparturesSnapshot(departures: [], dataStatus: .live, lastSuccessfulUpdate: now)
+        let store = SavedRoutePlannerStore(client: client, now: { clock })
+        let route = group(["KTH", "VIC"])
+        await store.refresh(groups: [route])
+        #expect(store.state(for: route).directAvailability(at: clock)?.status == .live)
+
+        // Every live check briefly reports "refreshing" while the previous snapshot is served.
+        client.status = "refreshing"
+        await store.refresh(groups: [route], force: true)
+        #expect(store.state(for: route).directAvailability(at: clock)?.status == .live)
+
+        // A single upstream failure with recent data is not an outage.
+        client.boardError = PlannerError(code: "LIVE_UNAVAILABLE", message: "Live departures could not be refreshed.")
+        await store.refresh(groups: [route], force: true)
+        #expect(store.state(for: route).directAvailability(at: clock)?.status == .live)
+
+        // Failures that continue until the shown data is two minutes old are.
+        clock = now.addingTimeInterval(120)
+        await store.refresh(groups: [route], force: true)
+        #expect(store.state(for: route).directAvailability(at: clock)?.status == .stale)
+
+        client.status = "ready"
+        client.boardError = nil
+        client.direct = JourneyDeparturesSnapshot(departures: [], dataStatus: .live, lastSuccessfulUpdate: clock)
+        await store.refresh(groups: [route], force: true)
+        #expect(store.state(for: route).directAvailability(at: clock)?.status == .live)
     }
 
     @Test func verifiedDirectServiceViaRequiredStopsPresentsOneTrainWithoutChangingSavedLegs() {
@@ -141,7 +178,6 @@ struct SavedRoutePlannerTests {
         await store.refresh(groups: [route], force: true)
         #expect(store.state(for: route).result != nil)
         #expect(store.state(for: route).isPending)
-        #expect(store.state(for: route).isStale)
         client.failure = PlannerError(code: "NETWORK", message: "Offline")
         await store.refresh(groups: [route], force: true)
         #expect(store.state(for: route).result != nil)

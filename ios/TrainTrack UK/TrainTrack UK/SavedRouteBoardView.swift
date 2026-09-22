@@ -102,6 +102,9 @@ struct SavedRouteBoardView: View {
     var supplementalState: SavedRouteBoardState? = nil
     var onRetrySupplemental: (() -> Void)? = nil
     var showsEmptyState = true
+    /// Cards live inside List rows, where a row's NavigationLinks all fire together and each
+    /// gains a List chevron. The hosting screen pushes the chosen journey instead.
+    var onOpenJourney: ((PlannerJourneyResponse) -> Void)? = nil
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 20)) { context in
@@ -126,9 +129,9 @@ struct SavedRouteBoardView: View {
                     let visible = Array(options.prefix(isExpanded ? options.count : departureCount))
                     let comparison = JourneyDurationComparison(journeys: visible.map(\.journey))
                     ForEach(visible) { option in
-                        if isInteractive {
-                            NavigationLink {
-                                journeyDetail(option)
+                        if isInteractive, let onOpenJourney {
+                            Button {
+                                onOpenJourney(detailResponse(option))
                             } label: {
                                 summary(
                                     option.journey,
@@ -157,9 +160,9 @@ struct SavedRouteBoardView: View {
                     if !disrupted.isEmpty {
                         DisclosureGroup("Disrupted journeys") {
                             ForEach(disrupted) { option in
-                                if isInteractive {
-                                    NavigationLink {
-                                        journeyDetail(option)
+                                if isInteractive, let onOpenJourney {
+                                    Button {
+                                        onOpenJourney(detailResponse(option))
                                     } label: {
                                         disruptedSummary(option, at: context.date)
                                     }
@@ -196,17 +199,8 @@ struct SavedRouteBoardView: View {
         }
     }
 
-    private func journeyDetail(_ option: SavedRouteJourneyOption) -> some View {
-        PlannerJourneyDetailView(
-            id: option.journey.id,
-            client: JourneyPlannerClient(),
-            initialResponse: PlannerJourneyResponse(
-                journey: option.journey,
-                dataset: option.response.dataset,
-                live: option.response.live
-            ),
-            allowsTrainTracking: true
-        )
+    private func detailResponse(_ option: SavedRouteJourneyOption) -> PlannerJourneyResponse {
+        PlannerJourneyResponse(journey: option.journey, dataset: option.response.dataset, live: option.response.live)
     }
 
     private func disruptedSummary(_ option: SavedRouteJourneyOption, at now: Date) -> some View {
@@ -277,17 +271,14 @@ struct SavedRouteBoardView: View {
         live: PlannerLiveContext?,
         durationTag: JourneyDurationTag? = nil
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            PlannerJourneySummary(journey: journey, showsChevron: isInteractive,
-                liveIsStale: PlannerLivePresentation.hasExpiredEvidence(for: journey, context: live, at: date),
-                durationTag: durationTag,
-                showsRefreshWarnings: state.hasPersistentFailure || supplementalState?.hasPersistentFailure == true,
-                showsTravelNotes: false)
-            let interchanges = journey.legs.filter { $0.kind == "transfer" }.map(\.heading)
-            if !interchanges.isEmpty {
-                Text(interchanges.joined(separator: " · "))
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-        }.padding(.horizontal, 16).padding(.vertical, 12)
+        // Evidence ages past 90s during routine refreshes too, so only call it out of date
+        // while refreshes are actually failing.
+        let refreshIsFailing = state.consecutiveFailures > 0 || (supplementalState?.consecutiveFailures ?? 0) > 0
+        return PlannerJourneySummary(journey: journey, showsChevron: isInteractive,
+            liveIsStale: refreshIsFailing && PlannerLivePresentation.hasExpiredEvidence(for: journey, context: live, at: date),
+            durationTag: durationTag,
+            showsRefreshWarnings: state.hasPersistentFailure || supplementalState?.hasPersistentFailure == true,
+            showsTravelNotes: false)
+            .padding(.horizontal, 16).padding(.vertical, 12)
     }
 }

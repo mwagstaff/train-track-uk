@@ -132,7 +132,8 @@ final class JourneyPlannerUITests: XCTestCase {
         journey.tap()
         XCTAssertTrue(app.navigationBars["Journey details"].waitForExistence(timeout: 5))
         let track = app.buttons["planner.track.KTH.VIC"]
-        scrollTo(track, in: app)
+        // The summary now ends with interchange notes; full-page swipes can skip past this lazy row.
+        _ = scrollDurationElement(track, in: app)
         XCTAssertTrue(track.isHittable)
         track.tap()
         let failure = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "could not be confirmed for tracking")).firstMatch
@@ -189,7 +190,7 @@ final class JourneyPlannerUITests: XCTestCase {
         journey.tap()
         XCTAssertTrue(app.navigationBars["Journey details"].waitForExistence(timeout: 5))
         let track = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "planner.track.")).firstMatch
-        scrollTo(track, in: app)
+        _ = scrollDurationElement(track, in: app)
         XCTAssertTrue(track.isHittable)
         attach("favourite-planned-detail-dark-large-text", app: app)
         // The separate text-clipping audit currently reports an unidentified element
@@ -555,6 +556,22 @@ final class JourneyPlannerUITests: XCTestCase {
         // the existing header also has 30pt controls. Check changed row targets
         // explicitly below, while retaining the whole-screen clipping audit.
         try app.performAccessibilityAudit(for: [.textClipped])
+    }
+
+    @MainActor
+    func testSavedRouteJourneyOpensOnceAndReturnsWithOneBackTap() async throws {
+        _ = try await fixtureCancellationCount(profile: "saved-durations")
+        let app = launch(plannerEnabled: false, apiBase: "http://127.0.0.1:3014/saved-durations/api/v2")
+        saveFixtureRoute(in: app, destination: ("VIC", "London Victoria"))
+        // A card row holding several journeys must open only the tapped one.
+        // Duration badges currently hide row identifiers, so find the card's rows by content.
+        let second = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Direct")).element(boundBy: 1)
+        XCTAssertTrue(second.waitForExistence(timeout: 15))
+        second.tap()
+        XCTAssertTrue(app.navigationBars["Journey details"].waitForExistence(timeout: 5))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.navigationBars["Journey details"].exists)
     }
 
     @MainActor

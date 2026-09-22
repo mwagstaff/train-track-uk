@@ -110,6 +110,7 @@ enum JourneyCardNavigationDestination: Hashable, Identifiable {
         destinationName: String
     )
     case itinerary(group: JourneyGroup, firstDeparture: DepartureV2)
+    case plannedJourney(PlannerJourneyResponse)
 
     var id: String {
         switch self {
@@ -117,6 +118,8 @@ enum JourneyCardNavigationDestination: Hashable, Identifiable {
             return "service-\(serviceID)-\(fromCRS)-\(toCRS)"
         case .itinerary(let group, let firstDeparture):
             return "itinerary-\(group.id)-\(firstDeparture.serviceID)"
+        case .plannedJourney(let response):
+            return "planned-\(response.journey.id)"
         }
     }
 }
@@ -147,6 +150,7 @@ struct JourneyCard: View {
     var laterBoard: SavedRouteBoardState? = nil
     var onSearchLater: (() async -> Void)? = nil
     var onRetryLater: (() -> Void)? = nil
+    var onOpenPlannedJourney: ((PlannerJourneyResponse) -> Void)? = nil
 
     @EnvironmentObject private var depStore: DeparturesStore
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -282,7 +286,8 @@ struct JourneyCard: View {
                     isInteractive: isInteractive, isExpanded: isExpanded,
                     onRetry: nil,
                     supplementalState: laterBoard,
-                    onRetrySupplemental: onRetryLater)
+                    onRetrySupplemental: onRetryLater,
+                    onOpenJourney: onOpenPlannedJourney)
             } else {
             if awaitingPlannedResults && !presentation.upcomingDepartures.isEmpty {
                 Text("Showing available departures while full journey options load")
@@ -354,7 +359,8 @@ struct JourneyCard: View {
                     isInteractive: isInteractive,
                     isExpanded: true,
                     onRetry: onRetryLater,
-                    showsEmptyState: false
+                    showsEmptyState: false,
+                    onOpenJourney: onOpenPlannedJourney
                 )
             }
             }
