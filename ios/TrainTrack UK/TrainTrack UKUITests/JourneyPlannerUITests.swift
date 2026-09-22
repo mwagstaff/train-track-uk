@@ -479,7 +479,8 @@ final class JourneyPlannerUITests: XCTestCase {
         let onTime = app.buttons["planner.journey.departure-row-onTime"]
         XCTAssertTrue(onTime.waitForExistence(timeout: 10))
         XCTAssertTrue(onTime.label.contains("On time"))
-        XCTAssertTrue(onTime.label.contains("10 car train"))
+        // Train formations only show for short trains or known coach loading.
+        XCTAssertFalse(onTime.label.contains("car train"))
         XCTAssertTrue(onTime.label.contains("Platform 2"))
         assertJourneyTimeRange(onTime)
         XCTAssertFalse(onTime.label.contains("Fastest"))
@@ -569,6 +570,11 @@ final class JourneyPlannerUITests: XCTestCase {
         XCTAssertTrue(second.waitForExistence(timeout: 15))
         second.tap()
         XCTAssertTrue(app.navigationBars["Journey details"].waitForExistence(timeout: 5))
+        // Live-data status is one line at the foot of the page, not a summary section.
+        XCTAssertFalse(app.staticTexts["Scheduled times only"].exists)
+        let status = app.staticTexts["planner.detail.live-status"]
+        _ = scrollDurationElement(status, in: app)
+        XCTAssertEqual(status.label, "Scheduled times until 4h before departure")
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.navigationBars["Journey details"].exists)
@@ -767,7 +773,9 @@ final class JourneyPlannerUITests: XCTestCase {
             return
         }
         let tubeMap = app.buttons["planner.route-map.1"]
-        scrollTo(tubeMap, in: app)
+        // Swipe until the lazy row exists, then settle it clear of the bars.
+        for _ in 0..<8 where !tubeMap.exists { app.swipeUp() }
+        _ = scrollDurationElement(tubeMap, in: app)
         XCTAssertTrue(tubeMap.isHittable)
         app.swipeDown()
         attach("planner-detail-tube-large-text", app: app)
@@ -841,7 +849,8 @@ final class JourneyPlannerUITests: XCTestCase {
             return
         }
         let warning = app.descendants(matching: .any)["planner.transfer-warning.1"].firstMatch
-        scrollTo(warning, in: app)
+        // Full-page swipes can skip past rows in the lazily built details list.
+        _ = scrollDurationElement(warning, in: app)
         guard warning.exists else {
             XCTFail("Generic-transfer warning did not appear in journey details.")
             return

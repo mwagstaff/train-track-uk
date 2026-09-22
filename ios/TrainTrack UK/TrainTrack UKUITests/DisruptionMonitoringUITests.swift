@@ -19,10 +19,17 @@ final class DisruptionMonitoringUITests: XCTestCase {
 
             for tab in ["Favourites", "My Journeys"] {
                 app.tabBars.buttons[tab].tap()
-                let warning = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "disruptions.row.")).firstMatch
-                XCTAssertTrue(warning.waitForExistence(timeout: 5))
-                reveal(warning, in: app)
-                warning.tap()
+                // Cards only show a row for found disruptions; settings stay in the journey menu.
+                XCTAssertFalse(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "disruptions.row.")).firstMatch.exists)
+                let menu = app.buttons["Journey actions"].firstMatch
+                XCTAssertTrue(menu.waitForExistence(timeout: 5))
+                reveal(menu, in: app)
+                menu.tap()
+                let settingsItem = app.buttons["Advance warning settings"]
+                // Large-text menus are still animating when their items first exist.
+                let ready = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: settingsItem)
+                wait(for: [ready], timeout: 5)
+                settingsItem.tap()
                 XCTAssertTrue(app.navigationBars["Advance warnings"].waitForExistence(timeout: 5))
                 let attachment = XCTAttachment(screenshot: app.screenshot())
                 attachment.name = "\(tab)-advance-warnings-\(largeText ? "dark-large" : "light")"

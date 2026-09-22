@@ -1300,30 +1300,37 @@ struct PlannerJourneyDetailView: View {
     let client: any JourneyPlannerServing
     var initialResponse: PlannerJourneyResponse? = nil
     var allowsTrainTracking = false
+    var savedRoute: SavedRouteJourneyReference? = nil
     @State private var response: PlannerJourneyResponse?
     @State private var error: String?
     @State private var retry = UUID()
     @State private var displayDate = Date()
+    @State private var routePlanner = SavedRoutePlannerStore.shared
+    @Environment(\.scenePhase) private var scenePhase
+
+    /// Saved-route details follow the route's board as it refreshes; others are a snapshot.
+    private var liveResponse: PlannerJourneyResponse? {
+        savedRoute.flatMap { routePlanner.currentJourney(for: $0) }
+    }
 
     private var liveIsStale: Bool {
-        guard let response else { return false }
-        return PlannerLivePresentation.hasExpiredEvidence(for: response.journey, context: response.live, at: displayDate)
+        guard let response = liveResponse ?? response else { return false }
+        let expired = PlannerLivePresentation.hasExpiredEvidence(for: response.journey, context: response.live, at: displayDate)
+        guard let savedRoute else { return expired }
+        // Evidence ages past 90s during routine refreshes, so only failing refreshes make it out of date.
+        return expired && routePlanner.state(for: savedRoute.group).consecutiveFailures > 0
     }
 
     var body: some View {
         List {
-            if let response {
+            if let response = liveResponse ?? response {
                 Section {
                     Text("Summary").font(.headline)
-                    if response.journey.legs.contains(where: { $0.localJourney?.isAvailable == true }),
-                       !response.journey.legs.contains(where: { $0.kind == "vehicle" }) {
-                        Label("Estimated London transport times", systemImage: "clock")
-                    } else {
-                        PlannerLiveContextView(live: PlannerLivePresentation.context(for: response.journey, from: response.live, at: displayDate))
-                    }
-                    PlannerJourneySummary(journey: response.journey, liveIsStale: liveIsStale)
+                    PlannerJourneySummary(journey: response.journey, liveIsStale: liveIsStale, showsTravelNotes: false)
                         .accessibilityIdentifier("planner.detail.summary")
-                    ForEach(Array(PlannerLivePresentation.warnings(for: response.journey).dropFirst(2)), id: \.self) { warning in
+                    // Live-data notes are summarised by the status line at the foot of the page.
+                    ForEach(PlannerLivePresentation.searchResultWarnings(for: response.journey)
+                        .filter { !PlannerLivePresentation.isRefreshFailureWarning($0) }, id: \.self) { warning in
                         Text(warning).font(.caption)
                     }
                     let interchanges = response.journey.legs.filter { $0.kind == "transfer" }.map(\.heading)
@@ -1422,6 +1429,13 @@ struct PlannerJourneyDetailView: View {
                         Text("\(index + 1). \(leg.heading)")
                             .textCase(nil)
                             .fixedSize(horizontal: false, vertical: true)
+                    } footer: {
+                        if index == response.journey.legs.count - 1 {
+                            Text(PlannerLivePresentation.statusLine(for: response.journey, context: response.live,
+                                liveIsStale: liveIsStale, at: displayDate))
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier("planner.detail.live-status")
+                        }
                     }
                 }
             } else if let error {
@@ -1439,6 +1453,14 @@ struct PlannerJourneyDetailView: View {
                 displayDate = Date()
                 do { try await Task.sleep(for: .seconds(20)) } catch { return }
             }
+        }
+        .task(id: savedRoute.map { "\($0.semanticKey)-\(scenePhase == .active)" }) {
+            guard let savedRoute, scenePhase == .active else { return }
+            await routePlanner.watch(groups: [savedRoute.group])
+        }
+        .onChange(of: liveResponse?.journey) { _, journey in
+            // Keep the latest copy on screen once a departed journey leaves the board.
+            if journey != nil { response = liveResponse }
         }
         .task(id: retry) {
             response = initialResponse

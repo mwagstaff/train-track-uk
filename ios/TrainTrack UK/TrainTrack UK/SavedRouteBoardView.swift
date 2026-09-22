@@ -23,6 +23,25 @@ struct SavedRouteJourneyOption: Identifiable {
     var id: String { semanticKey }
 }
 
+/// Lets journey details follow the saved route's board as it refreshes.
+struct SavedRouteJourneyReference: Hashable {
+    let group: JourneyGroup
+    let semanticKey: String
+}
+
+extension SavedRoutePlannerStore {
+    func currentJourney(for reference: SavedRouteJourneyReference) -> PlannerJourneyResponse? {
+        for response in [state(for: reference.group).result, laterState(for: reference.group)?.result].compactMap({ $0 }) {
+            if let journey = (response.journeys + (response.disruptedJourneys ?? [])).first(where: {
+                SavedRouteJourneyPresentation.semanticKey(for: $0) == reference.semanticKey
+            }) {
+                return PlannerJourneyResponse(journey: journey, dataset: response.dataset, live: response.live)
+            }
+        }
+        return nil
+    }
+}
+
 enum SavedRouteJourneyPresentation {
     static func merged(
         primary: PlannerSearchResponse?,
@@ -51,6 +70,19 @@ enum SavedRouteJourneyPresentation {
             }
             return $0.semanticKey < $1.semanticKey
         }
+    }
+
+    /// Options taking far longer than the fastest (such as overnight connections) are rarely
+    /// wanted, so they sit behind a disclosure rather than taking a place on the card.
+    static func splitMuchSlower(_ options: [SavedRouteJourneyOption]) -> (usual: [SavedRouteJourneyOption], muchSlower: [SavedRouteJourneyOption]) {
+        guard let fastest = options.compactMap({ JourneyDurationComparison.durationMinutes($0.journey) }).min() else {
+            return (options, [])
+        }
+        func isMuchSlower(_ option: SavedRouteJourneyOption) -> Bool {
+            guard let duration = JourneyDurationComparison.durationMinutes(option.journey) else { return false }
+            return duration >= 2 * fastest && duration - fastest >= 60
+        }
+        return (options.filter { !isMuchSlower($0) }, options.filter(isMuchSlower))
     }
 
     static func semanticKey(for journey: PlannedJourney) -> String {
@@ -103,8 +135,8 @@ struct SavedRouteBoardView: View {
     var onRetrySupplemental: (() -> Void)? = nil
     var showsEmptyState = true
     /// Cards live inside List rows, where a row's NavigationLinks all fire together and each
-    /// gains a List chevron. The hosting screen pushes the chosen journey instead.
-    var onOpenJourney: ((PlannerJourneyResponse) -> Void)? = nil
+    /// gains a List chevron. The hosting screen pushes the chosen journey (and its semantic key) instead.
+    var onOpenJourney: ((PlannerJourneyResponse, String) -> Void)? = nil
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 20)) { context in
@@ -126,12 +158,17 @@ struct SavedRouteBoardView: View {
                         Text("No journeys found in this time window.")
                             .font(.subheadline).foregroundStyle(.secondary).padding(16)
                     }
-                    let visible = Array(options.prefix(isExpanded ? options.count : departureCount))
+                    let split = SavedRouteJourneyPresentation.splitMuchSlower(options)
+                    let visible = Array(split.usual.prefix(isExpanded ? split.usual.count : departureCount))
+                    // Only mention slow options that would otherwise have appeared on the card.
+                    let hiddenSlower = isExpanded ? split.muchSlower : split.muchSlower.filter {
+                        $0.journey.departure <= (visible.last?.journey.departure ?? .distantFuture)
+                    }
                     let comparison = JourneyDurationComparison(journeys: visible.map(\.journey))
                     ForEach(visible) { option in
                         if isInteractive, let onOpenJourney {
                             Button {
-                                onOpenJourney(detailResponse(option))
+                                onOpenJourney(detailResponse(option), option.semanticKey)
                             } label: {
                                 summary(
                                     option.journey,
@@ -152,6 +189,33 @@ struct SavedRouteBoardView: View {
                         }
                         if option.id != visible.last?.id { Divider().padding(.horizontal, 16) }
                     }
+                    if !hiddenSlower.isEmpty {
+                        Divider().padding(.horizontal, 16)
+                        DisclosureGroup("\(hiddenSlower.count) much slower \(hiddenSlower.count == 1 ? "journey" : "journeys")") {
+                            Text("Hidden because they take far longer than the fastest option, for example overnight connections.")
+                                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            ForEach(hiddenSlower) { option in
+                                Group {
+                                    if isInteractive, let onOpenJourney {
+                                        Button {
+                                            onOpenJourney(detailResponse(option), option.semanticKey)
+                                        } label: {
+                                            summary(option.journey, at: context.date, live: option.response.live)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .accessibilityIdentifier("saved-route.journey.\(option.journey.id)")
+                                    } else {
+                                        summary(option.journey, at: context.date, live: option.response.live)
+                                    }
+                                }
+                                // Rows carry their own inset; align them with the card's other rows.
+                                .padding(.horizontal, -16)
+                            }
+                        }
+                        .disclosureGroupStyle(NavigationChevronDisclosureStyle())
+                        .font(.subheadline).padding(16).disabled(!isInteractive)
+                        .accessibilityIdentifier("saved-route.slower-journeys")
+                    }
                     let disrupted = mergedDisruptedJourneys(
                         primary: state.result,
                         supplemental: supplemental?.result,
@@ -162,7 +226,7 @@ struct SavedRouteBoardView: View {
                             ForEach(disrupted) { option in
                                 if isInteractive, let onOpenJourney {
                                     Button {
-                                        onOpenJourney(detailResponse(option))
+                                        onOpenJourney(detailResponse(option), option.semanticKey)
                                     } label: {
                                         disruptedSummary(option, at: context.date)
                                     }

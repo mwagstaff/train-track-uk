@@ -97,6 +97,39 @@ struct SavedRoutePlannerTests {
         #expect(store.state(for: route).directAvailability(at: clock)?.status == .live)
     }
 
+    @Test func journeyDetailsFollowTheSavedRouteBoardAcrossRefreshes() async throws {
+        let client = RouteBoardStub()
+        let scheduled = now.addingTimeInterval(600)
+        client.result = try result(journeys: [try mergeJourney(id: "first", serviceID: "service", departure: scheduled)])
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "VIC"])
+        await store.refresh(groups: [route])
+        let option = try #require(SavedRouteJourneyPresentation.merged(primary: store.state(for: route).result, supplemental: nil, at: now).first)
+        let reference = SavedRouteJourneyReference(group: route, semanticKey: option.semanticKey)
+        // A refreshed board may renumber the journey as well as move its live time.
+        client.result = try result(journeys: [try mergeJourney(id: "refreshed", serviceID: "service",
+            departure: scheduled.addingTimeInterval(120), scheduledDeparture: scheduled)])
+        await store.refresh(groups: [route], force: true)
+        #expect(store.currentJourney(for: reference)?.journey.departure == scheduled.addingTimeInterval(120))
+        client.result = try result(journeys: [])
+        await store.refresh(groups: [route], force: true)
+        #expect(store.currentJourney(for: reference) == nil)
+    }
+
+    @Test func muchSlowerOptionsSuchAsOvernightConnectionsLeaveTheCard() throws {
+        let response = try result()
+        func option(_ id: String, minutes: Double) -> SavedRouteJourneyOption {
+            let journey = PlannedJourney(id: id, departure: now, arrival: now.addingTimeInterval(minutes * 60),
+                durationMinutes: minutes, changes: 1, legs: [])
+            return SavedRouteJourneyOption(journey: journey, response: response, semanticKey: id)
+        }
+        let split = SavedRouteJourneyPresentation.splitMuchSlower([option("a", minutes: 68), option("overnight", minutes: 505), option("b", minutes: 53)])
+        #expect(split.usual.map(\.id) == ["a", "b"])
+        #expect(split.muchSlower.map(\.id) == ["overnight"])
+        // Twice as long but less than an hour extra is still a reasonable choice.
+        #expect(SavedRouteJourneyPresentation.splitMuchSlower([option("a", minutes: 20), option("b", minutes: 45)]).muchSlower.isEmpty)
+    }
+
     @Test func verifiedDirectServiceViaRequiredStopsPresentsOneTrainWithoutChangingSavedLegs() {
         let route = group(["KTH", "BMS", "VIC"])
         let presented = SavedRouteDirectPresentation.throughGroup(route)

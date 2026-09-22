@@ -460,6 +460,50 @@ struct JourneyPlannerTests {
         #expect(summary([rail(onTime)]) == "Train on time")
     }
 
+    @Test func journeyDetailsSummariseLiveDataInOneLine() {
+        let place = PlannedJourney.Place(crs: "KTH", name: "Kent House")
+        let onTime = PlannerLiveAnnotation(status: "onTime", departure: now, arrival: now.addingTimeInterval(600))
+        let leg = PlannedJourney.Leg(kind: "vehicle", mode: "rail", from: place, to: place,
+            departure: now, arrival: now.addingTimeInterval(600), operator: nil,
+            serviceId: nil, originDate: nil, callingPoints: nil, transfer: nil, warnings: nil, live: onTime)
+        let journey = PlannedJourney(id: "status", departure: now, arrival: now.addingTimeInterval(600),
+            durationMinutes: 10, changes: 0, legs: [leg])
+        let checked = "checked \(PlannerTime.display(now, includeDate: false))"
+        func line(_ context: PlannerLiveContext?, stale: Bool = false) -> String {
+            PlannerLivePresentation.statusLine(for: journey, context: context, liveIsStale: stale, at: now)
+        }
+        #expect(line(PlannerLiveContext(mode: "apply", status: "live", updatedAt: now)) == "Live times · \(checked)")
+        #expect(line(PlannerLiveContext(mode: "apply", status: "partial", updatedAt: now)) == "Some live times unavailable · \(checked)")
+        #expect(line(PlannerLiveContext(mode: "apply", status: "live", updatedAt: now), stale: true) == "Live times out of date · \(checked)")
+        #expect(line(PlannerLiveContext(mode: "ignore", status: "live", updatedAt: now)) == "Using scheduled times")
+        #expect(line(nil) == "Scheduled times only")
+    }
+
+    @Test func cardRowsNameTheDestinationAndDoNotContradictAnOnTimeForecast() {
+        func departure(_ destinations: [String]) -> DepartureV2 {
+            DepartureV2(departureTime: .init(scheduled: "22:12", estimated: "On time"), serviceType: "train", platform: "2",
+                isCancelled: false, length: 8, destination: destinations.map { PlaceInfoV2(crs: nil, locationName: $0, via: nil) },
+                origin: nil, serviceID: "s", delayReason: nil, cancelReason: nil, timestamp: nil)
+        }
+        #expect(JourneyCardPresentation.destinationLabel(for: departure(["London Cannon Street"])) == "Destination: London Cannon Street")
+        #expect(JourneyCardPresentation.destinationLabel(for: departure(["Ashford", "Ramsgate"])) == "Destination: Ashford & Ramsgate")
+        #expect(JourneyCardPresentation.destinationLabel(for: departure([])) == nil)
+        let late = LiveStatusInfo(text: "Currently 2 minutes late, between Petts Wood and Bickley", delayMinutes: 2)
+        #expect(JourneyCardPresentation.liveProgressLabel(late) == "Running 2 min late, due on time")
+        let onTime = LiveStatusInfo(text: "Currently on time, at Bickley", delayMinutes: 0)
+        #expect(JourneyCardPresentation.liveProgressLabel(onTime) == onTime.text)
+    }
+
+    @Test func trainFormationOnlyShowsForShortTrainsOrKnownLoading() {
+        #expect(!TrainLengthIndicator(cars: 8, warningThreshold: 4).isNotable)
+        #expect(TrainLengthIndicator(cars: 4, warningThreshold: 4).isNotable)
+        #expect(!TrainLengthIndicator(cars: nil, warningThreshold: 4).isNotable)
+        let unknown = CoachLoadingV1(number: "1", position: 1, percentage: nil, band: nil, coachClass: nil)
+        let known = CoachLoadingV1(number: "2", position: 2, percentage: 40, band: nil, coachClass: nil)
+        #expect(!TrainLengthIndicator(cars: 8, warningThreshold: 4, carriageLoading: [unknown]).isNotable)
+        #expect(TrainLengthIndicator(cars: 8, warningThreshold: 4, carriageLoading: [unknown, known]).isNotable)
+    }
+
     @Test func partlyConfirmedJourneyHeadlinesTheFirstTrainsStatus() {
         let place = PlannedJourney.Place(crs: "ELE", name: "Elmers End")
         let onTime = PlannerLiveAnnotation(status: "onTime", departure: now, arrival: now.addingTimeInterval(600))

@@ -679,8 +679,9 @@ private extension FavouritesView {
                 onRetryLater: {
                     Task { await routePlanner.retryLater(for: displayedGroup) }
                 },
-                onOpenPlannedJourney: { response in
-                    cardDestination = .plannedJourney(response)
+                onOpenPlannedJourney: { response, semanticKey in
+                    cardDestination = .plannedJourney(response,
+                        SavedRouteJourneyReference(group: displayedGroup, semanticKey: semanticKey))
                 }
             )
         }
@@ -721,9 +722,9 @@ private extension FavouritesView {
         case .itinerary(let group, let firstDeparture):
             JourneyItineraryView(group: group, firstDeparture: firstDeparture)
                 .onAppear { searchFocused = false }
-        case .plannedJourney(let response):
+        case .plannedJourney(let response, let reference):
             PlannerJourneyDetailView(id: response.journey.id, client: JourneyPlannerClient(),
-                initialResponse: response, allowsTrainTracking: true)
+                initialResponse: response, allowsTrainTracking: true, savedRoute: reference)
                 .onAppear { searchFocused = false }
         }
     }

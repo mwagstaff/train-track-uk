@@ -58,14 +58,18 @@ enum JourneyCardPresentation {
             ? PlannerTime.calendar.date(byAdding: .day, value: 1, to: arrival) : arrival
     }
 
-    static func serviceLabel(for departure: DepartureV2, details: ServiceDetails?) -> String? {
-        guard let operatorName = details?.operator?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !operatorName.isEmpty else { return nil }
+    static func destinationLabel(for departure: DepartureV2) -> String? {
         let destinations = departure.destination
             .map { $0.locationName.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         guard !destinations.isEmpty else { return nil }
-        return "\(operatorName) service to \(destinations.joined(separator: " & "))"
+        return "Destination: \(destinations.joined(separator: " & "))"
+    }
+
+    /// Only called when the departure is forecast on time at the traveller's station, so a
+    /// train running late further back must not read as contradicting that headline.
+    static func liveProgressLabel(_ live: LiveStatusInfo) -> String {
+        live.delayMinutes > 0 ? "Running \(live.delayMinutes) min late, due on time" : live.text
     }
 
     static func cancellationStatusText(_ reason: String?) -> String {
@@ -110,7 +114,7 @@ enum JourneyCardNavigationDestination: Hashable, Identifiable {
         destinationName: String
     )
     case itinerary(group: JourneyGroup, firstDeparture: DepartureV2)
-    case plannedJourney(PlannerJourneyResponse)
+    case plannedJourney(PlannerJourneyResponse, SavedRouteJourneyReference)
 
     var id: String {
         switch self {
@@ -118,7 +122,7 @@ enum JourneyCardNavigationDestination: Hashable, Identifiable {
             return "service-\(serviceID)-\(fromCRS)-\(toCRS)"
         case .itinerary(let group, let firstDeparture):
             return "itinerary-\(group.id)-\(firstDeparture.serviceID)"
-        case .plannedJourney(let response):
+        case .plannedJourney(let response, _):
             return "planned-\(response.journey.id)"
         }
     }
@@ -150,7 +154,7 @@ struct JourneyCard: View {
     var laterBoard: SavedRouteBoardState? = nil
     var onSearchLater: (() async -> Void)? = nil
     var onRetryLater: (() -> Void)? = nil
-    var onOpenPlannedJourney: ((PlannerJourneyResponse) -> Void)? = nil
+    var onOpenPlannedJourney: ((PlannerJourneyResponse, String) -> Void)? = nil
 
     @EnvironmentObject private var depStore: DeparturesStore
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -873,11 +877,8 @@ struct JourneyCard: View {
                     .padding(.top, 1)
             }
 
-            if let service = JourneyCardPresentation.serviceLabel(
-                for: summary.firstDeparture,
-                details: depStore.serviceDetailsById[summary.firstDeparture.serviceID]
-            ) {
-                Text(service)
+            if let destination = JourneyCardPresentation.destinationLabel(for: summary.firstDeparture) {
+                Text(destination)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -980,8 +981,7 @@ struct JourneyCard: View {
         }
         if let details = depStore.serviceDetailsById[departure.serviceID],
            let live = computeLiveStatus(from: details, within: firstLeg.fromStation.crs, toCRS: firstLeg.toStation.crs) {
-            let color: Color = live.delayMinutes >= 5 ? .red : (live.delayMinutes > 0 ? .yellow : .green)
-            return (live.text, color)
+            return (JourneyCardPresentation.liveProgressLabel(live), live.delayMinutes > 0 ? .yellow : .green)
         }
         return ("Scheduled to depart on time", .green)
     }
@@ -1099,8 +1099,15 @@ struct TrainLengthIndicator: View {
         }
     }
 
+    /// A full formation on every row is noise; it earns its space for short trains or when
+    /// coach loading is known.
+    var isNotable: Bool {
+        guard let carCount else { return false }
+        return carCount <= warningThreshold || orderedLoading.contains { $0.percentage != nil }
+    }
+
     var body: some View {
-        if let carCount {
+        if let carCount, isNotable {
             HStack(spacing: 2) {
                 ViewThatFits(in: .horizontal) {
                     formation(carCount)

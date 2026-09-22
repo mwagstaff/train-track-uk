@@ -5,37 +5,40 @@ struct DisruptionMonitoringRow: View {
     @State private var store = DisruptionMonitoringStore.shared
 
     var body: some View {
+        // Routine check status stays in the journey menu; the card only shows a found disruption.
         let warnings = store.advisories(for: group)
-        Button {
-            store.presentedGroup = group
-        } label: {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: warnings.isEmpty ? "calendar.badge.clock" : "exclamationmark.triangle.fill")
-                    .foregroundStyle(warnings.isEmpty ? Color.secondary : Color.orange)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(store.summary(for: group))
-                        .font(.caption.weight(warnings.isEmpty ? .regular : .semibold))
-                        .foregroundStyle(.primary)
-                    if let first = warnings.first {
-                        Text(first.nextAffectedPeriod()?.startAt ?? first.startAt,
-                             format: .dateTime.weekday(.abbreviated).day().month(.abbreviated).hour().minute())
-                            .font(.caption).foregroundStyle(.secondary)
+        if !warnings.isEmpty {
+            Button {
+                store.presentedGroup = group
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(Color.orange)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(store.summary(for: group))
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        if let first = warnings.first {
+                            Text(first.nextAffectedPeriod()?.startAt ?? first.startAt,
+                                 format: .dateTime.weekday(.abbreviated).day().month(.abbreviated).hour().minute())
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
+                    .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
                 }
-                .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .environment(\.timeZone, PlannerTime.displayZone)
+            .accessibilityHint("Shows upcoming disruptions and monitoring settings for this direction.")
+            .accessibilityIdentifier("disruptions.row.\(group.stationSequence.map(\.crs).joined(separator: "-"))")
         }
-        .buttonStyle(.plain)
-        .environment(\.timeZone, PlannerTime.displayZone)
-        .accessibilityHint("Shows upcoming disruptions and monitoring settings for this direction.")
-        .accessibilityIdentifier("disruptions.row.\(group.stationSequence.map(\.crs).joined(separator: "-"))")
     }
 }
 

@@ -31,6 +31,28 @@ enum PlannerLivePresentation {
             windowHours: context.windowHours, warnings: context.warnings)
     }
 
+    /// One line saying where the journey's times come from, for the foot of journey details.
+    static func statusLine(for journey: PlannedJourney, context: PlannerLiveContext?, liveIsStale: Bool, at now: Date) -> String {
+        func checked(_ title: String, _ date: Date?) -> String {
+            guard let date else { return title }
+            let sameDay = PlannerTime.displayCalendar.isDate(date, inSameDayAs: now)
+            return "\(title) · checked \(PlannerTime.display(date, includeDate: !sameDay))"
+        }
+        let local = journey.legs.compactMap(\.localJourney)
+        if !journey.legs.contains(where: { $0.kind == "vehicle" }), local.contains(where: \.isAvailable) {
+            return checked("Estimated London transport times", local.compactMap(\.updatedAt).max())
+        }
+        guard let live = self.context(for: journey, from: context, at: now) else { return "Scheduled times only" }
+        if live.mode == "ignore" { return "Using scheduled times" }
+        if liveIsStale { return checked("Live times out of date", live.updatedAt) }
+        switch live.status {
+        case "live": return checked("Live times", live.updatedAt)
+        case "partial": return checked("Some live times unavailable", live.updatedAt)
+        case "outsideWindow": return "Scheduled times until \(live.windowHours ?? 4)h before departure"
+        default: return checked("Live times unavailable", live.updatedAt)
+        }
+    }
+
     static func title(for live: PlannerLiveAnnotation) -> String {
         if live.isCancelled { return "Cancelled" }
         if live.isDelayed { return "Delayed" }
@@ -114,69 +136,6 @@ struct PlannerLiveBadge: View {
             if !live.isCancelled && live.isDelayed && live.status == "unknown" {
                 Text("Some live times are unknown").font(.caption).foregroundStyle(.secondary)
             }
-        }
-    }
-}
-
-struct PlannerLiveContextView: View {
-    let live: PlannerLiveContext?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let live {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Image(systemName: live.mode == "ignore" || live.status == "outsideWindow" ? "calendar" : "antenna.radiowaves.left.and.right")
-                        .foregroundStyle(Color.plannerActionText)
-                        .accessibilityHidden(true)
-                    Text(title(live))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if live.mode == "ignore" {
-                    Text("Journey times use the timetable. Live disruption warnings are still shown.")
-                        .font(.caption)
-                }
-                if live.status == "unavailable" {
-                    Text("Live updates could not be checked. These times do not confirm that trains are running on time.")
-                        .font(.caption)
-                } else if live.status == "partial" {
-                    Text("Some trains could not be checked. Scheduled times are shown where live times are unavailable.")
-                        .font(.caption)
-                } else if live.status == "outsideWindow" {
-                    Text("Live updates cover journeys in the next \(live.windowHours ?? 4) hours.")
-                        .font(.caption)
-                }
-                if let updatedAt = live.updatedAt {
-                    Text("Live information checked \(PlannerTime.display(updatedAt))")
-                        .font(.caption).foregroundStyle(Color.primary.opacity(0.65))
-                }
-                if let expiresAt = live.expiresAt, expiresAt < Date() {
-                    Label("Live information may be out of date. Search again for an update.", systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                }
-                ForEach(PlannerLivePresentation.visibleWarnings(live.warnings ?? []), id: \.self) { warning in
-                    Text(warning).font(.caption)
-                }
-            } else {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Image(systemName: "calendar")
-                        .foregroundStyle(Color.plannerActionText)
-                        .accessibilityHidden(true)
-                    Text("Scheduled times only")
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Text("Live updates are not available for this search.").font(.caption)
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
-
-    private func title(_ live: PlannerLiveContext) -> String {
-        if live.mode == "ignore" { return "Using scheduled times" }
-        switch live.status {
-        case "live": return "Using live times"
-        case "partial": return "Some live times unavailable"
-        case "outsideWindow": return "Scheduled times only"
-        default: return "Live times unavailable"
         }
     }
 }
