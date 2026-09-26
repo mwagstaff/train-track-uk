@@ -133,6 +133,11 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		A190B2412FF0100000000001 /* WatchShared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = WatchShared;
+			sourceTree = "<group>";
+		};
 		E7186E2D2EBAB5E70038C96B /* TrainTrack UK */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = "TrainTrack UK";
@@ -287,6 +292,7 @@
 				E7F5ED722EBCC0BF002DE37A /* JourneyActivityShared */,
 				E7D47A002EBB4B27002D81D7 /* Phone WidgetExtension.entitlements */,
 				E7186E2D2EBAB5E70038C96B /* TrainTrack UK */,
+				A190B2412FF0100000000001 /* WatchShared */,
 				E7186E3B2EBAB5E90038C96B /* TrainTrack UKTests */,
 				E7186E452EBAB5E90038C96B /* TrainTrack UKUITests */,
 				E7D479EA2EBB4B10002D81D7 /* Phone Widget */,
@@ -357,6 +363,7 @@
 				E75AE13F2F3272D200591535 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
+				A190B2412FF0100000000001 /* WatchShared */,
 				E7186E2D2EBAB5E70038C96B /* TrainTrack UK */,
 			);
 			name = "TrainTrack UK";
@@ -495,6 +502,7 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
+				A190B2412FF0100000000001 /* WatchShared */,
 				E7D47A8D2EBBDBCA002D81D7 /* TrainTrack UK Watch App */,
 			);
 			name = "TrainTrack UK Watch App";
@@ -1297,13 +1305,13 @@
 				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
 				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = dev.skynolimit.traintrack;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.skynolimit.traintrack;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.skynolimit.traintrack.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;
@@ -1331,13 +1339,13 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "TrainTrack UK";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
-				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = dev.skynolimit.traintrack;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.skynolimit.traintrack;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.skynolimit.traintrack.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
 				SKIP_INSTALL = YES;

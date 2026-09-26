@@ -18,6 +18,10 @@ struct TrainTrackUKApp: App {
     // Track when app went to background for auto-return feature
     @State private var backgroundedAt: Date?
 
+    init() {
+        WatchLibrarySync.shared.start()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -54,6 +58,7 @@ struct TrainTrackUKApp: App {
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
             if newPhase == .active {
+                WatchLibrarySync.shared.publish()
                 debugLog("🔄 [App] App became active - triggering Live Activity refresh")
                 Task {
                     await LiveActivityManager.shared.registerAnyUnregisteredActivities()

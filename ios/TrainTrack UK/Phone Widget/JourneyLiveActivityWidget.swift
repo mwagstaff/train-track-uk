@@ -25,8 +25,9 @@ struct Live_ActivityLiveActivity: Widget {
 
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: JourneyActivityAttributes.self) { context in
-            // Lock screen/banner UI
-            LiveActivityLockScreenView(state: context.state, attributes: context.attributes)
+            // Choose the full Lock Screen layout or the compact Smart Stack layout.
+            LiveActivityContentView(state: context.state, attributes: context.attributes)
+                .widgetURL(deepLinkURL(for: context))
 
         } dynamicIsland: { context in
             DynamicIsland {
@@ -115,6 +116,127 @@ struct Live_ActivityLiveActivity: Widget {
             .keylineTint(primaryAccentColor(for: context.state))
             .widgetURL(deepLinkURL(for: context))
         }
+        .supplementalActivityFamilies([.small, .medium])
+    }
+}
+
+// MARK: - Smart Stack View
+private struct LiveActivityContentView: View {
+    @Environment(\.activityFamily) private var activityFamily
+    let state: JourneyActivityAttributes.ContentState
+    let attributes: JourneyActivityAttributes
+
+    var body: some View {
+        switch activityFamily {
+        case .small:
+            LiveActivitySmartStackView(state: state, attributes: attributes)
+        default:
+            LiveActivityLockScreenView(state: state, attributes: attributes)
+        }
+    }
+}
+
+private struct LiveActivitySmartStackView: View {
+    let state: JourneyActivityAttributes.ContentState
+    let attributes: JourneyActivityAttributes
+    @ScaledMetric(relativeTo: .caption2) private var detailSize = 10
+    @ScaledMetric(relativeTo: .caption2) private var upcomingSize = 10
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Text(state.routeTitle ?? attributes.displayName)
+                .font(.system(size: min(detailSize, 12), weight: .semibold))
+                .minimumScaleFactor(0.75)
+                .truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 6) {
+                PrimaryDepartureTimeText(state: state, font: .title, weight: .bold)
+                    .minimumScaleFactor(0.5)
+                    .accessibilityLabel("\(primaryTimeLabel(for: state)) \(state.isCancelled ? state.scheduledDeparture ?? state.estimated : state.estimated)")
+
+                VStack(alignment: .leading, spacing: 2) {
+                    if state.journeyPhase.showsInProgressService {
+                        Text(primaryTimeLabel(for: state))
+                    } else if let arrivalLabel = state.arrivalLabel, !state.isCancelled {
+                        Text(arrivalLabel)
+                            .monospacedDigit()
+                    }
+                    if state.isCancelled {
+                        Text("Cancelled")
+                            .foregroundStyle(.red)
+                    } else if let length = state.length, length > 0 {
+                        Text("\(length) cars")
+                    }
+                }
+                .font(.system(size: min(detailSize, 12)))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                PlatformPill(platform: state.platform, font: .system(size: 20),
+                             horizontalPadding: 6, verticalPadding: 2)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .accessibilityLabel("Platform \(state.platform.isEmpty ? "TBC" : state.platform)")
+            }
+            .accessibilityElement(children: .combine)
+
+            if state.journeyPhase.showsInProgressService {
+                Text(state.destinationTitle)
+                    .font(.system(size: detailSize, weight: .semibold))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .minimumScaleFactor(0.8)
+            } else if !state.upcomingDepartures.isEmpty {
+                HStack(spacing: 6) {
+                    ForEach(Array(state.upcomingDepartures.prefix(2).enumerated()), id: \.offset) { _, departure in
+                        HStack(spacing: 2) {
+                            if departure.isCancelled {
+                                StruckThroughTimeText(
+                                    time: departure.time, color: .red, isStruckThrough: true,
+                                    font: .system(size: min(upcomingSize, 11)), weight: .bold
+                                )
+                            } else {
+                                // Scale both times together so neither loses its final digits.
+                                (Text(departure.time)
+                                    .bold()
+                                    .foregroundColor(estimatedTimeColor(departure.delayMinutes))
+                                 + Text(departure.arrivalTime.map { " →\($0)" } ?? "")
+                                    .foregroundColor(.secondary))
+                                    .font(.system(size: min(upcomingSize, 11)))
+                                    .monospacedDigit()
+                            }
+                            PlatformPill(platform: departure.platform ?? "TBC",
+                                         font: .system(size: 9),
+                                         horizontalPadding: 2, verticalPadding: 0.5)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                        .minimumScaleFactor(0.7)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(upcomingAccessibilityLabel(departure))
+                    }
+                }
+            }
+        }
+        .lineLimit(1)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+    }
+
+    private func upcomingAccessibilityLabel(_ departure: JourneyActivityAttributes.UpcomingDeparture) -> String {
+        if departure.isCancelled {
+            return "Departure \(departure.time), cancelled"
+        }
+        var label = "Departs \(departure.time)"
+        if let arrival = departure.arrivalTime {
+            label += ", arrives \(arrival)"
+        }
+        let platform = departure.platform?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        label += ", platform \(platform.isEmpty ? "TBC" : platform)"
+        if departure.delayMinutes > 0 {
+            label += ", \(departure.delayMinutes) minutes late"
+        }
+        return label
     }
 }
 
@@ -577,4 +699,20 @@ extension JourneyActivityAttributes.ContentState {
 } contentStates: {
     JourneyActivityAttributes.ContentState.onTime
     JourneyActivityAttributes.ContentState.delayed
+}
+
+#Preview("Smart Stack — compact", traits: .fixedLayout(width: 172, height: 76)) {
+    LiveActivitySmartStackView(state: .onTime, attributes: JourneyActivityAttributes(displayName: "London Victoria → Kent House"))
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Smart Stack — delayed", traits: .fixedLayout(width: 172, height: 76)) {
+    LiveActivitySmartStackView(state: .delayed, attributes: JourneyActivityAttributes(displayName: "London Victoria → Kent House"))
+        .preferredColorScheme(.dark)
+}
+
+#Preview("Smart Stack — large text", traits: .fixedLayout(width: 172, height: 76)) {
+    LiveActivitySmartStackView(state: .onTime, attributes: JourneyActivityAttributes(displayName: "London Victoria → Kent House"))
+        .environment(\.dynamicTypeSize, .xxxLarge)
+        .preferredColorScheme(.dark)
 }
