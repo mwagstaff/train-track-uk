@@ -100,7 +100,7 @@ test('London clocks handle summer, winter, midnight and ambiguous clock-change h
     assert.throws(() => londonInstant('2026-10-25', 90));
     assert.equal(isQuietTime(Date.parse('2026-09-21T21:00:00Z')), true);
     assert.equal(isQuietTime(Date.parse('2026-09-21T06:00:00Z')), false);
-    assert.equal(disruptionConfig({}).mode, 'shadow');
+    assert.equal(disruptionConfig({}).mode, 'off');
 });
 
 test('official holiday calendar fails closed and excludes regional holidays from baselines', async () => {

@@ -1,9 +1,10 @@
 # Advance saved-journey disruption monitoring
 
-The API and iOS app support automatic monitoring of saved directions in
-Favourites and My Journeys. The API is deployed on `sky` in shadow mode with the
-subscribed engineering feed connected. An iOS release and repair of the missing
-timetable amendment chain remain separate rollout steps.
+Automatic monitoring of saved directions is currently disabled on the deployed
+API. The updated iOS source hides its controls and stops registration; installed
+apps receive this UI change with their next release. Manual **View future
+disruptions** browsing remains available and reads published notices without
+running timetable searches.
 
 ## Behaviour
 
@@ -69,6 +70,9 @@ seven days after the affected period. Identical completed calculations are not
 repeated on every timer tick. Multiple installations reuse shared work.
 
 Admission checks use free memory and load average, not OS-enforced isolation.
+On macOS, free memory includes inactive and speculative pages reported by
+`vm_stat`; if that reading fails, admission falls back to the stricter raw
+free-page count.
 Index preparation and routing still consume CPU and memory. Pure spare-capacity
 execution cannot guarantee completion by a deadline during sustained demand.
 The performance report records actual measurements and their limits:
@@ -76,7 +80,7 @@ The performance report records actual measurements and their limits:
 
 ## Data readiness and rollout
 
-`DISRUPTION_MONITOR_MODE` defaults to `shadow`. In this mode the backend evaluates
+`DISRUPTION_MONITOR_MODE` defaults to `off`, which stops background work. In `shadow` mode the backend evaluates
 and persists results, but returns no user advisories and sends no pushes. The
 app explains that monitoring is being prepared. `off` stops background work;
 `active` exposes advisories and permits explicitly opted-in pushes.
@@ -154,7 +158,7 @@ records; this partial-feed policy applies to the background provider.
 
 | Setting | Default / purpose |
 | --- | --- |
-| `DISRUPTION_MONITOR_MODE` | `shadow`; `active` or `off` |
+| `DISRUPTION_MONITOR_MODE` | `off`; `shadow` or `active` require an explicit opt-in |
 | `DISRUPTION_CHECK_INTERVAL_SECONDS` | 1; delay between bounded work iterations |
 | `DISRUPTION_DEMAND_REFRESH_SECONDS` | 300; source and demand refresh interval |
 | `DISRUPTION_MAX_SOURCE_AGE_HOURS` | 48 |

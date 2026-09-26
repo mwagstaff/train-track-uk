@@ -17,7 +17,7 @@ final class FutureDisruptionsUITests: XCTestCase {
                 let menu = app.buttons["Journey actions"].firstMatch
                 XCTAssertTrue(menu.waitForExistence(timeout: 5))
                 menu.tap()
-                XCTAssertTrue(app.buttons["Advance warning settings"].waitForExistence(timeout: 3))
+                XCTAssertFalse(app.buttons["Advance warning settings"].exists)
                 app.buttons["View future disruptions"].tap()
                 XCTAssertTrue(app.navigationBars["Future disruptions"].waitForExistence(timeout: 5))
                 let first = app.staticTexts["futureDisruptions.notice.earlier"]

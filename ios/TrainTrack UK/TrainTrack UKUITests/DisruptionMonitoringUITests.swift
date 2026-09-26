@@ -4,7 +4,7 @@ final class DisruptionMonitoringUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
-    func testWarningsAndSettingsAreAccessibleFromBothSavedTabsAtLargeText() {
+    func testAutomaticWarningsAreHiddenFromBothSavedTabsAtLargeText() {
         for largeText in [false, true] {
             let app = XCUIApplication()
             app.launchEnvironment["APP_STORE_SCREENSHOTS"] = "1"
@@ -19,31 +19,23 @@ final class DisruptionMonitoringUITests: XCTestCase {
 
             for tab in ["Favourites", "My Journeys"] {
                 app.tabBars.buttons[tab].tap()
-                // Cards only show a row for found disruptions; settings stay in the journey menu.
                 XCTAssertFalse(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "disruptions.row.")).firstMatch.exists)
                 let menu = app.buttons["Journey actions"].firstMatch
                 XCTAssertTrue(menu.waitForExistence(timeout: 5))
                 reveal(menu, in: app)
                 menu.tap()
-                let settingsItem = app.buttons["Advance warning settings"]
-                // Large-text menus are still animating when their items first exist.
-                let ready = expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: settingsItem)
-                wait(for: [ready], timeout: 5)
-                settingsItem.tap()
-                XCTAssertTrue(app.navigationBars["Advance warnings"].waitForExistence(timeout: 5))
+                XCTAssertFalse(app.buttons["Advance warning settings"].exists)
+                let futureItem = app.buttons["View future disruptions"]
+                XCTAssertTrue(futureItem.waitForExistence(timeout: 5))
+                futureItem.tap()
+                XCTAssertTrue(app.navigationBars["Future disruptions"].waitForExistence(timeout: 5))
                 let attachment = XCTAttachment(screenshot: app.screenshot())
-                attachment.name = "\(tab)-advance-warnings-\(largeText ? "dark-large" : "light")"
+                attachment.name = "\(tab)-manual-future-disruptions-\(largeText ? "dark-large" : "light")"
                 attachment.lifetime = .keepAlways
                 add(attachment)
-                XCTAssertTrue(app.buttons["disruptions.save"].exists)
-                let monitor = app.switches["Monitor this direction"]
-                reveal(monitor, in: app)
-                XCTAssertTrue(monitor.isHittable)
-                let pushes = app.switches["Push notifications"]
-                reveal(pushes, in: app)
-                XCTAssertEqual(pushes.value as? String, "0")
-                XCTAssertTrue(app.buttons["disruptions.save"].isHittable)
-                app.buttons["Cancel"].tap()
+                XCTAssertFalse(app.switches["Monitor this direction"].exists)
+                XCTAssertFalse(app.switches["Push notifications"].exists)
+                app.buttons["Done"].tap()
                 XCTAssertTrue(app.navigationBars[tab].waitForExistence(timeout: 5))
             }
             app.terminate()

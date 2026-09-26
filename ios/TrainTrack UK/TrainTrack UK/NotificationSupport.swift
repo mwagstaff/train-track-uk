@@ -124,7 +124,6 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
             "token_suffix": String(token.suffix(8))
         ])
         Task { @MainActor in
-            await DisruptionMonitoringStore.shared.refresh()
             DebugLogStore.shared.log(
                 """
                 Remote notification token registered
@@ -151,8 +150,7 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
     ) {
         Task { @MainActor in
             if userInfo["alert_type"] as? String == "upcoming_disruption" {
-                await DisruptionMonitoringStore.shared.refresh()
-                completionHandler(.newData)
+                completionHandler(.noData)
                 return
             }
             ClientDiagnosticsLogger.log("notifications", "did_receive_remote_notification", metadata: [

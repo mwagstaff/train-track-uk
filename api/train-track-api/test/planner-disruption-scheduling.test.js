@@ -4,7 +4,22 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { PlannerService, plannerConfig } from '../lib/planner/service.js';
+import { PlannerService, availableMemoryBytes, plannerConfig } from '../lib/planner/service.js';
+
+test('macOS maintenance headroom includes reclaimable pages but fails closed on unreadable stats', () => {
+    const vmStat = () => `Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free: 10000.
+Pages inactive: 30000.
+Pages speculative: 5000.
+`;
+    assert.equal(availableMemoryBytes({ platform: 'darwin', freeBytes: 10000 * 16384, vmStat }), 45000 * 16384);
+    assert.equal(availableMemoryBytes({ platform: 'darwin', freeBytes: 10000 * 16384,
+        vmStat: () => 'Pages free: 10000.\n' }), 10000 * 16384);
+    assert.equal(availableMemoryBytes({ platform: 'darwin', freeBytes: 10000 * 16384,
+        vmStat: () => { throw new Error('vm_stat unavailable'); } }), 10000 * 16384);
+    assert.equal(availableMemoryBytes({ platform: 'linux', freeBytes: 42,
+        vmStat: () => { throw new Error('must not run'); } }), 42);
+});
 
 const waitFor = async predicate => {
     const until = Date.now() + 2500;

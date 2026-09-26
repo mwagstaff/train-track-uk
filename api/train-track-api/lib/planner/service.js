@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads';
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { PlannerError, normalizeRequest, decodeCursor } from './contract.js';
@@ -8,6 +9,21 @@ import { PlannerUpstreamBroker } from './upstream-broker.js';
 
 const defaultWorkerURL = new URL('./worker.js', import.meta.url);
 const MAX_WORKERS = 8;
+
+export function availableMemoryBytes({ platform = process.platform, freeBytes = os.freemem(),
+    vmStat = () => execFileSync('/usr/bin/vm_stat', { encoding: 'utf8', timeout: 500, maxBuffer: 16384 }) } = {}) {
+    if (platform !== 'darwin') return freeBytes;
+    try {
+        // macOS reports only unused pages through os.freemem(); inactive and
+        // speculative pages can also be reclaimed before admitting a job.
+        const output = vmStat();
+        const pageSize = Number(output.match(/page size of (\d+) bytes/)?.[1]);
+        const pages = ['free', 'inactive', 'speculative'].map(name =>
+            Number(output.match(new RegExp(`^Pages ${name}:\\s+(\\d+)\\.`, 'm'))?.[1]));
+        if (!pageSize || pages.some(count => !Number.isFinite(count))) return freeBytes;
+        return Math.max(freeBytes, pageSize * pages.reduce((sum, count) => sum + count, 0));
+    } catch { return freeBytes; }
+}
 
 // Each routing worker keeps its own national graph and indexes (roughly
 // 0.5 GiB RSS once warm, with a separate V8 heap cap). `auto` allows one
@@ -98,8 +114,12 @@ export class PlannerService {
         this.supportsIOYield = this.standardWorker && !metadataOnly;
         this.metadataService = null;
         this.journeys = new Map();
-        this.maintenanceHeadroom = maintenanceHeadroom ?? (() => os.freemem() >= (config.maintenanceMinFreeMemoryMb ?? 512) * 1048576
-            && os.loadavg()[0] / (os.availableParallelism?.() ?? os.cpus().length) < (config.maintenanceMaxLoadPerCpu ?? 0.8));
+        this.maintenanceHeadroom = maintenanceHeadroom ?? (() => {
+            const freeBytes = os.freemem();
+            const minimumBytes = (config.maintenanceMinFreeMemoryMb ?? 512) * 1048576;
+            return (freeBytes >= minimumBytes || availableMemoryBytes({ freeBytes }) >= minimumBytes)
+                && os.loadavg()[0] / (os.availableParallelism?.() ?? os.cpus().length) < (config.maintenanceMaxLoadPerCpu ?? 0.8);
+        });
         this.loadAdmissionOverride = null;
     }
 

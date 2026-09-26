@@ -143,9 +143,6 @@ struct ContentView: View {
         .fullScreenCover(item: $deepLink.routeMapDestination) { destination in
             JourneyRouteMapDeepLinkView(destination: destination)
         }
-        .sheet(item: $disruptions.presentedGroup) { group in
-            DisruptionMonitoringView(group: group)
-        }
         .sheet(item: $disruptions.presentedFutureGroup) { group in
             FutureDisruptionsView(group: group)
         }

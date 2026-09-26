@@ -27,7 +27,7 @@ export function disruptionConfig(env = process.env) {
         }
     } catch { /* The provider reports invalid endpoint configuration. */ }
     return {
-        mode: ['off', 'shadow', 'active'].includes(env.DISRUPTION_MONITOR_MODE) ? env.DISRUPTION_MONITOR_MODE : 'shadow',
+        mode: ['off', 'shadow', 'active'].includes(env.DISRUPTION_MONITOR_MODE) ? env.DISRUPTION_MONITOR_MODE : 'off',
         intervalMs: number('DISRUPTION_CHECK_INTERVAL_SECONDS', 1, 1, 300) * 1000,
         refreshMs: number('DISRUPTION_DEMAND_REFRESH_SECONDS', 300, 30, 3600) * 1000,
         maxSourceAgeHours: number('DISRUPTION_MAX_SOURCE_AGE_HOURS', 48, 1, 168),
