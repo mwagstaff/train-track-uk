@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A190B2412FF0100000000002 /* TrainTrack UK Watch App.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = E7D47A8C2EBBDBCA002D81D7 /* TrainTrack UK Watch App.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		E75AE1402F3272D200591535 /* NotificationServiceExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E75AE1392F3272D200591535 /* NotificationServiceExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		E75AE1452F32999900591535 /* JourneyActivityShared in Frameworks */ = {isa = PBXBuildFile; productRef = E75AE1462F32999900591535 /* JourneyActivityShared */; };
 		E7AC215B3055D53200F9B5EC /* JourneyActivityShared in Frameworks */ = {isa = PBXBuildFile; productRef = E75AE1462F32999900591535 /* JourneyActivityShared */; };
@@ -85,6 +86,7 @@
 			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
 			dstSubfolderSpec = 16;
 			files = (
+				A190B2412FF0100000000002 /* TrainTrack UK Watch App.app in Embed Watch Content */,
 			);
 			name = "Embed Watch Content";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -359,6 +361,7 @@
 			buildRules = (
 			);
 			dependencies = (
+				A190B2412FF0100000000003 /* PBXTargetDependency */,
 				E7D479F92EBB4B11002D81D7 /* PBXTargetDependency */,
 				E75AE13F2F3272D200591535 /* PBXTargetDependency */,
 			);
@@ -764,6 +767,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		A190B2412FF0100000000003 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E7D47A8B2EBBDBCA002D81D7 /* TrainTrack UK Watch App */;
+			targetProxy = E7D47A992EBBDBCB002D81D7 /* PBXContainerItemProxy */;
+		};
 		E7186E3A2EBAB5E90038C96B /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = E7186E2A2EBAB5E70038C96B /* TrainTrack UK */;
@@ -1297,7 +1305,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "TrainTrack UK Watch App/TrainTrack UK Watch App.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = SJ8X4DLAN9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1310,7 +1318,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 5.21;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.skynolimit.traintrack.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;
@@ -1333,7 +1341,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "TrainTrack UK Watch App/TrainTrack UK Watch App.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 4;
 				DEVELOPMENT_TEAM = SJ8X4DLAN9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -1344,7 +1352,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 5.21;
 				PRODUCT_BUNDLE_IDENTIFIER = dev.skynolimit.traintrack.watchkitapp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = watchos;

@@ -28,12 +28,30 @@ final class WatchRoutesUITests: XCTestCase {
         app.buttons["My Journeys"].tap()
         XCTAssertTrue(app.staticTexts["Via London Victoria"].waitForExistence(timeout: 5))
         capture("My Journeys")
+        app.buttons.containing(.staticText, identifier: "Kent House").firstMatch.tap()
+        let connection = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "1 change")).firstMatch
+        XCTAssertTrue(connection.waitForExistence(timeout: 10))
+        capture("Journey with a change")
         app.terminate()
         app.launchArguments = ["-watch-preview-data", "-watch-empty-routes"]
         app.launch()
         app.buttons["Favourites"].tap()
         XCTAssertTrue(app.staticTexts["No favourites yet"].waitForExistence(timeout: 5))
         capture("No favourites")
+    }
+
+    @MainActor
+    func testLargeTextRoutesRemainAccessible() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-watch-preview-data", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryXXXL"]
+        app.launch()
+        app.buttons["Favourites"].tap()
+        let route = app.buttons.containing(.staticText, identifier: "Kent House").firstMatch
+        XCTAssertTrue(route.waitForExistence(timeout: 5))
+        capture("Large text routes")
+        route.tap()
+        XCTAssertTrue(app.staticTexts["On time"].waitForExistence(timeout: 10))
+        capture("Large text departures")
     }
 
     @MainActor
