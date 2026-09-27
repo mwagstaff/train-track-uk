@@ -554,6 +554,23 @@ struct SavedRoutePlannerTests {
         #expect(client.requests[0] == client.requests[1])
     }
 
+    @Test func movingLiveWindowCannotCreateAnEndlessSeriesOfOverlappingSearches() async throws {
+        let client = RouteBoardStub()
+        client.result = try result(hours: 4)
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["ELE", "BIK"])
+        await store.refresh(groups: [route])
+        // The old API refreshed a six-hour future search into now...now+4h.
+        // Its endpoint advanced a few seconds on every response.
+        client.result = try result(from: now.addingTimeInterval(6), hours: 4)
+        await store.searchLater(for: route)
+        #expect(client.requests.count == 2)
+        #expect(store.laterState(for: route)?.isPending == false)
+        #expect(store.laterState(for: route)?.message != nil)
+        #expect(store.laterState(for: route)?.reachedSearchLimit == false)
+        #expect(store.laterState(for: route)?.searchedWindow?.to == now.addingTimeInterval(4 * 3600))
+    }
+
     @Test func laterSearchCoverageIsIsolatedByServer() async throws {
         let client = RouteBoardStub()
         client.resultForQuery = { query in try self.result(from: self.queryDate(query)) }

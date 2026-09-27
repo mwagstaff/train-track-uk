@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { SavedRouteBoards, savedRoutePlanKey } from '../lib/planner/saved-route-boards.js';
 import { normalizeRouteBoards } from '../lib/planner/route-boards.js';
 import { PlannerError } from '../lib/planner/contract.js';
+import { SavedRouteLive } from '../lib/planner/saved-route-live.js';
 
 const start = Date.parse('2026-09-17T12:10:00Z');
 const version = 'a'.repeat(64);
@@ -149,6 +150,37 @@ test('polling a future-day window retains its active job and ready result until 
     f.advance(120001);
     f.manager.prune();
     assert.equal(f.manager.entries.size, 0, 'future windows still release resources when polling stops');
+});
+
+test('real live refresh and saved boards advance empty windows across midnight to the first departure', async t => {
+    const hour = 3600000;
+    const iso = value => new Date(value).toISOString();
+    const live = new SavedRouteLive({ now: () => start,
+        getDepartures: async () => { assert.fail('future-only searches need no live board requests'); } });
+    const f = fixture(t, { options: { live }, call: async (_method, { request }, _options, result) => {
+        const from = Date.parse(request.time);
+        const journey = { id: 'overnight', departure: iso(from + hour), arrival: iso(from + 2 * hour), changes: 0,
+            legs: [{ kind: 'vehicle', mode: 'rail', operator: 'SE', serviceId: 'scheduled:overnight',
+                from: { crs: 'KTH', name: 'Kent House' }, to: { crs: 'VIC', name: 'London Victoria' },
+                departure: iso(from + hour), arrival: iso(from + 2 * hour) }] };
+        return { result: { ...result(), journeys: from >= start + 18 * hour ? [journey] : [],
+            search: { ...request, window: { from: iso(from), to: iso(from + 6 * hour) }, searchTruncated: false } },
+        connections: { stations: [], rules: { tsi: [], links: [] } } };
+    } });
+    let from = start + 6 * hour, found;
+    for (let window = 0; window < 3; window++) {
+        const query = { routes: [{ ...body.routes[0], id: `later-${window}`, time: iso(from) }] };
+        await f.manager.get(query);
+        await idle(f.manager);
+        const board = (await f.manager.get(query)).boards[0];
+        assert.equal(board.status, 'ready');
+        assert.equal(board.result.search.window.from, iso(from));
+        assert.equal(board.result.search.window.to, iso(from + 6 * hour));
+        if (board.result.journeys.length) { found = board.result.journeys[0]; break; }
+        from = Date.parse(board.result.search.window.to);
+    }
+    assert.equal(found?.departure, iso(start + 19 * hour));
+    assert.equal(f.calls.length, 3, 'each six-hour timetable window is planned exactly once');
 });
 
 test('unknown, stale, partial and failed direct lookups cannot start a planner fallback', async t => {

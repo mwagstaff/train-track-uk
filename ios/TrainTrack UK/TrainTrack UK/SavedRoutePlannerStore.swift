@@ -232,10 +232,12 @@ final class SavedRoutePlannerStore {
         defer { laterQueries[routeID]?.isSearching = false }
         while !Task.isCancelled, client.routeBoardsServerIdentity == server,
               var search = laterQueries[routeID] {
+            ClientPerf.log("savedRoutes.later.window.start route=\(search.query.origin)-\(search.query.destination) from=\(search.query.time ?? "now") limit=\(PlannerTime.iso8601(search.limit))")
             await performLaterSearch(search.query, before: search.limit)
             guard !Task.isCancelled, client.routeBoardsServerIdentity == server,
                   let state = states[key(search.query)], state.consecutiveFailures == 0,
                   state.message == nil, let result = state.result else { return }
+            ClientPerf.log("savedRoutes.later.window.end route=\(search.query.origin)-\(search.query.destination) from=\(PlannerTime.iso8601(result.search.window.from)) to=\(PlannerTime.iso8601(result.search.window.to)) journeys=\(result.journeys.count)")
             if result.journeys.contains(where: { $0.departure >= now() && $0.departure < search.limit }) {
                 laterQueries[routeID]?.finished = true
                 return
