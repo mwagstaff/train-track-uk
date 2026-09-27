@@ -79,7 +79,7 @@ export class RecentDeparturesRepository {
                 serviceType: { $literal: normalizeString(departure?.serviceType) || 'train' },
                 scheduledDepartureAt,
                 scheduledDeparture: scheduledDisplay,
-                isCancelled: latest('isCancelled', Boolean(departure?.isCancelled)),
+                isCancelled: latest('isCancelled', Boolean(departure?.isCancelled || departure?.filterLocationCancelled)),
                 providerObservedAt: latest('providerObservedAt', providerObservedAt),
                 estimatedDeparture: latest('estimatedDeparture', estimatedDisplay || null),
                 estimatedDepartureAt: latest('estimatedDepartureAt', estimatedDepartureAt),

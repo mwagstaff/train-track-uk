@@ -137,6 +137,7 @@ struct SavedRouteBoardView: View {
     /// Cards live inside List rows, where a row's NavigationLinks all fire together and each
     /// gains a List chevron. The hosting screen pushes the chosen journey (and its semantic key) instead.
     var onOpenJourney: ((PlannerJourneyResponse, String) -> Void)? = nil
+    var onNewJourney: (() -> Void)? = nil
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 20)) { context in
@@ -155,8 +156,27 @@ struct SavedRouteBoardView: View {
                 if hasResult {
                     if options.isEmpty && showsEmptyState && !state.isPending
                         && supplemental?.isPending != true && state.message == nil && supplemental?.message == nil {
-                        Text("No journeys found in this time window.")
-                            .font(.subheadline).foregroundStyle(.secondary).padding(16)
+                        let searched = supplemental ?? state
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text(searched.emptySearchMessage)
+                                .foregroundStyle(.secondary)
+                            if searched.reachedSearchLimit {
+                                Text("Use New journey to search for the specific date and time you’re interested in.")
+                                    .foregroundStyle(.secondary)
+                                if let onNewJourney, isInteractive {
+                                    Button(action: onNewJourney) {
+                                        Label("New journey", systemImage: "plus")
+                                            .frame(minHeight: 44)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(Color.accentColor)
+                                    .accessibilityIdentifier("saved-route.new-journey")
+                                }
+                            }
+                        }
+                        .font(.subheadline)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(16)
                     }
                     let split = SavedRouteJourneyPresentation.splitMuchSlower(options)
                     let visible = Array(split.usual.prefix(isExpanded ? split.usual.count : departureCount))
@@ -244,6 +264,8 @@ struct SavedRouteBoardView: View {
                         Text("Journey options are temporarily unavailable.")
                             .font(.subheadline).foregroundStyle(.secondary).padding(16)
                     }
+                }
+                if (!hasResult || state.message != nil) && !state.isPending {
                     if let onRetry, isInteractive {
                         Button(action: onRetry) {
                             Label("Try again", systemImage: "arrow.clockwise")

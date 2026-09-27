@@ -81,6 +81,9 @@ enum JourneyCardPresentation {
     }
 
     static func cancellationStatusText(_ cancellation: JourneyCancellation) -> String {
+        if let terminus = cancellation.terminatesAt, let destination = cancellation.destinationName {
+            return "Cancelled to \(destination) · Terminates at \(terminus)"
+        }
         guard cancellation.isPartial,
               let cancelledFrom = cancellation.cancelledFrom,
               let destinationName = cancellation.destinationName else {
@@ -155,6 +158,7 @@ struct JourneyCard: View {
     var onSearchLater: (() async -> Void)? = nil
     var onRetryLater: (() -> Void)? = nil
     var onOpenPlannedJourney: ((PlannerJourneyResponse, String) -> Void)? = nil
+    var onNewJourney: (() -> Void)? = nil
 
     @EnvironmentObject private var depStore: DeparturesStore
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -258,10 +262,6 @@ struct JourneyCard: View {
         return !laterBoard.upcomingJourneys(at: Date()).isEmpty
     }
 
-    private var isFindingStandaloneLaterJourneys: Bool {
-        isExpanded && !usesPlannedJourneys && laterBoard?.isPending == true
-    }
-
     private var dataAvailability: JourneyDataAvailability {
         if let direct = plannedBoard?.directAvailability() { return direct }
         return group.legs
@@ -287,7 +287,8 @@ struct JourneyCard: View {
                     onRetry: nil,
                     supplementalState: laterBoard,
                     onRetrySupplemental: onRetryLater,
-                    onOpenJourney: onOpenPlannedJourney)
+                    onOpenJourney: onOpenPlannedJourney,
+                    onNewJourney: onNewJourney)
             } else {
             if awaitingPlannedResults && !presentation.upcomingDepartures.isEmpty {
                 Text("Showing available departures while full journey options load")
@@ -314,7 +315,7 @@ struct JourneyCard: View {
                                 Divider().padding(.horizontal, 16)
                             }
                         }
-                    } else if hasVisibleStandaloneLaterJourneys || isFindingStandaloneLaterJourneys {
+                    } else if isExpanded && laterBoard != nil {
                         EmptyView()
                     } else if awaitingPlannedResults && !depStore.isInitialLoadInProgress && plannedBoard?.message == nil {
                         Text("Finding journey options…")
@@ -359,8 +360,9 @@ struct JourneyCard: View {
                     isInteractive: isInteractive,
                     isExpanded: true,
                     onRetry: onRetryLater,
-                    showsEmptyState: false,
-                    onOpenJourney: onOpenPlannedJourney
+                    showsEmptyState: presentation.displayedSummaries.isEmpty,
+                    onOpenJourney: onOpenPlannedJourney,
+                    onNewJourney: onNewJourney
                 )
             }
             }
@@ -389,7 +391,7 @@ struct JourneyCard: View {
         .onChange(of: isRefreshingDepartures) { _, refreshing in
             ClientPerf.log("card.spinner route=\(group.startStation.crs)-\(group.endStation.crs) active=\(refreshing) board=\(plannedBoard?.showsActivity == true)")
         }
-        .task(id: isExpanded) {
+        .task(id: "\(isExpanded)-\(SavedRouteQuery(group: group).id)-\(ApiHostPreference.currentBaseURL)") {
             guard isExpanded, let onSearchLater else { return }
             await onSearchLater()
         }
@@ -776,7 +778,7 @@ struct JourneyCard: View {
 
     @ViewBuilder
     private func detailedStatusView(_ summary: Summary, isFirst: Bool) -> some View {
-        if isFirst,
+        if isFirst || summary.cancellation != nil,
            let status = detailedStatus(for: summary) {
             HStack(alignment: .firstTextBaseline, spacing: 7) {
                 Circle()
@@ -842,7 +844,8 @@ struct JourneyCard: View {
     private func departureTiming(_ summary: Summary) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             JourneyTimesView(
-                departure: departureDisplayTime(summary.firstDeparture),
+                departure: summary.cancellation != nil ? summary.firstDeparture.departureTime.scheduled
+                    : departureDisplayTime(summary.firstDeparture),
                 arrival: JourneyCardPresentation.arrivalTimeLabel(summary.finalArrivalTime, departure: summary.departureDate),
                 departureColor: summary.cancellation != nil ? (usesDirectDepartures ? .red : .secondary)
                     : (usesDirectDepartures && isRunningLate(summary.firstDeparture) ? .yellow : .primary),

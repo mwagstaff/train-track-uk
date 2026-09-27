@@ -1,5 +1,10 @@
 import Foundation
 
+struct ServiceDetailsBatch {
+    var details: [String: ServiceDetails] = [:]
+    var unavailableIDs: Set<String> = []
+}
+
 struct ServiceDetailsLookupContext: Equatable {
     let fromCRS: String
     let toCRS: String
@@ -395,12 +400,18 @@ final class NetworkServicePhone {
         context: ServiceDetailsLookupContext? = nil,
         timeout: TimeInterval? = nil
     ) async throws -> [String: ServiceDetails] {
-        guard !ids.isEmpty else { return [:] }
+        try await fetchServiceDetailsBatch(ids: ids, context: context, timeout: timeout).details
+    }
+
+    private func fetchServiceDetailsBatch(
+        ids: [String], context: ServiceDetailsLookupContext? = nil, timeout: TimeInterval? = nil
+    ) async throws -> ServiceDetailsBatch {
+        guard !ids.isEmpty else { return ServiceDetailsBatch() }
         let path = ids.joined(separator: "/")
         guard var components = URLComponents(string: "\(base)/service_details/\(path)") else {
             throw PhoneNetworkError.invalidURL
         }
-        components.queryItems = context?.queryItems
+        components.queryItems = (context?.queryItems ?? []) + [URLQueryItem(name: "includeStatus", value: "true")]
         guard let url = components.url else { throw PhoneNetworkError.invalidURL }
         var request = URLRequest(url: url)
         request.timeoutInterval = timeout ?? 10
@@ -409,18 +420,20 @@ final class NetworkServicePhone {
         guard let http = response as? HTTPURLResponse else { throw PhoneNetworkError.noData }
         guard (200..<300).contains(http.statusCode) else { throw PhoneNetworkError.httpStatus(http.statusCode) }
         let items = try await Self.decodeOffMain([[String: ServiceDetailsEntry]].self, from: data)
-        var result: [String: ServiceDetails] = [:]
+        var result = ServiceDetailsBatch()
         for item in items {
             for (key, entry) in item {
-                if let details = entry.details { result[key] = details }
+                if let details = entry.details { result.details[key] = details }
+                if entry.unavailable { result.unavailableIDs.insert(key) }
             }
         }
         return result
     }
 
     /// The server returns `{}` for a service it could not describe; skip those.
-    private struct ServiceDetailsEntry: Decodable {
+    struct ServiceDetailsEntry: Decodable {
         let details: ServiceDetails?
+        let unavailable: Bool
 
         private struct AnyKey: CodingKey {
             let stringValue: String
@@ -430,8 +443,10 @@ final class NetworkServicePhone {
         }
 
         init(from decoder: Decoder) throws {
-            let isEmpty = try decoder.container(keyedBy: AnyKey.self).allKeys.isEmpty
-            details = isEmpty ? nil : try ServiceDetails(from: decoder)
+            let container = try decoder.container(keyedBy: AnyKey.self)
+            let hasError = container.contains(AnyKey(stringValue: "error")!)
+            unavailable = try container.decodeIfPresent(Bool.self, forKey: AnyKey(stringValue: "unavailable")!) ?? false
+            details = container.allKeys.isEmpty || hasError ? nil : try ServiceDetails(from: decoder)
         }
     }
 
@@ -440,7 +455,13 @@ final class NetworkServicePhone {
         ids: [String],
         context: ServiceDetailsLookupContext? = nil
     ) async throws -> [String: ServiceDetails] {
-        guard !ids.isEmpty else { return [:] }
+        try await fetchServiceDetailsBatchChunked(ids: ids, context: context).details
+    }
+
+    func fetchServiceDetailsBatchChunked(
+        ids: [String], context: ServiceDetailsLookupContext? = nil
+    ) async throws -> ServiceDetailsBatch {
+        guard !ids.isEmpty else { return ServiceDetailsBatch() }
         let chunkSize = max(1, maxIdsPerRequest)
         var chunks: [[String]] = []
         var i = 0
@@ -450,18 +471,19 @@ final class NetworkServicePhone {
             i = end
         }
 
-        var combined: [String: ServiceDetails] = [:]
-        try await withThrowingTaskGroup(of: [String: ServiceDetails].self) { group in
+        var combined = ServiceDetailsBatch()
+        try await withThrowingTaskGroup(of: ServiceDetailsBatch.self) { group in
             for chunk in chunks {
                 group.addTask { [chunk] in
-                    return try await self.fetchServiceDetailsAggregated(
+                    return try await self.fetchServiceDetailsBatch(
                         ids: chunk,
                         context: context
                     )
                 }
             }
             for try await partial in group {
-                for (k, v) in partial { combined[k] = v }
+                for (k, v) in partial.details { combined.details[k] = v }
+                combined.unavailableIDs.formUnion(partial.unavailableIDs)
             }
         }
         return combined

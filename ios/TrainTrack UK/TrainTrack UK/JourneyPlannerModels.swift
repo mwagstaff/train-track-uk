@@ -275,6 +275,7 @@ struct PlannerSearchResponse: Decodable {
         let timeType: String
         let window: Window
         let searchTruncated: Bool
+        var provisional: Bool? = nil
         var maxChanges: Int? = nil
         var realtime: String? = nil
         var algorithm: String? = nil

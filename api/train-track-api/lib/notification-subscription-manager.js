@@ -2309,7 +2309,7 @@ async function getDeparturesSnapshot(fromStation, toStation) {
         scheduled: dep.departure_time?.scheduled,
         estimated: dep.departure_time?.estimated || dep.departure_time?.scheduled,
         platform: dep.platform,
-        isCancelled: dep.isCancelled,
+        isCancelled: dep.isCancelled || dep.filterLocationCancelled === true,
         length: dep.length,
         destination: dep.destination
     }));

@@ -1,6 +1,7 @@
 import moment from 'moment';
 import { getWithRetry } from './upstream-api-client.js';
 import { testServiceHarness } from './test-service-harness.js';
+import { staffDepartures } from './staff-departures.js';
 
 import { recentDeparturesRepository } from './recent-departures-repository.js';
 import {
@@ -208,10 +209,17 @@ function normalizedJourneyRefreshConcurrency() {
 
 async function fetchJourneyResult(from, to, options = {}) {
     // Only fetch now and future; past cache refresh is handled separately
-    const [departuresNow, departuresFuture] = await Promise.all([
+    let [departuresNow, departuresFuture] = await Promise.all([
         getLiveDepartureBoard(from, to, 0, options),
         getLiveDepartureBoard(from, to, 119, options)
     ]);
+
+    // A fallback in just one window must not duplicate a train under staff and
+    // public IDs. Keep both windows on the same provider for this snapshot.
+    if (departuresNow.provider && departuresFuture.provider && departuresNow.provider !== departuresFuture.provider) {
+        if (departuresNow.provider === 'staff') departuresNow = await getLiveDepartureBoard(from, to, 0, { ...options, preferPublic: true });
+        if (departuresFuture.provider === 'staff') departuresFuture = await getLiveDepartureBoard(from, to, 119, { ...options, preferPublic: true });
+    }
 
     const result = mergeJourneyDepartureResponses(departuresNow, departuresFuture);
     if (result.dataStatus === JOURNEY_DATA_STATUS.UNAVAILABLE) {
@@ -279,9 +287,27 @@ export function mergeJourneyDepartureResponses(
 }
 
 // Fetches data from the live departure board API to provide upcoming departures
-async function getLiveDepartureBoard(from, to, offset, { requireFresh = false, signal } = {}) {
+// Legacy public IDs for dividing services must be resolved on a public board,
+// even after the normal departure path switches to staff identities.
+export async function getPublicTrainTimes(from, to) {
+    const boards = await Promise.all([0, 119].map(offset => getLiveDepartureBoard(from, to, offset, { preferPublic: true })));
+    return mergeJourneyDepartureResponses(...boards);
+}
+
+async function getLiveDepartureBoard(from, to, offset, { requireFresh = false, signal, preferPublic = false } = {}) {
     if (!from || !to) {
         return { error: `Missing from (${from}) or to (${to}) parameter` };
+    }
+    if (!preferPublic && staffDepartures.enabled) {
+        try {
+            const board = await staffDepartures.getBoard(from.toUpperCase(), to.toUpperCase(), offset, { signal });
+            const parsed = await parseResponseDataLiveDepartureBoard(board, { requestedOffsetMinutes: offset });
+            if (parsed.error) throw new Error(parsed.error);
+            return { ...parsed, provider: 'staff' };
+        } catch (error) {
+            if (signal?.aborted) return { error: 'Departure lookup cancelled', failureReason: 'cancelled' };
+            console.warn(`Staff departures unavailable for ${from}->${to}; using public board: ${error.message}`);
+        }
     }
     const url = to && to.length > 0 ? `https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120/GetDepartureBoard/${from}?filterCrs=${to}&filterType=to&timeOffset=${offset}` : `https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120/GetDepartureBoard/${from}?timeOffset=${offset}`;
     try {
@@ -300,7 +326,7 @@ async function getLiveDepartureBoard(from, to, offset, { requireFresh = false, s
         if (elapsed > 5000) {
             console.warn(`Slow upstream: ${from}->${to} offset=${offset} took ${elapsed}ms`);
         }
-        return parseResponseDataLiveDepartureBoard(response.data, { requestedOffsetMinutes: offset });
+        return { ...await parseResponseDataLiveDepartureBoard(response.data, { requestedOffsetMinutes: offset }), provider: 'public' };
     } catch (error) {
         const status = error?.response?.status;
         const statusText = error?.response?.statusText;
@@ -349,12 +375,18 @@ export async function parseResponseDataLiveDepartureBoard(data, {
                     delayReason: trainService.delayReason,
                     cancelReason: trainService.cancelReason,
                     platform: trainService.platform,
+                    platformIsHidden: trainService.platformIsHidden,
                     isCancelled: trainService.isCancelled,
+                    filterLocationCancelled: trainService.filterLocationCancelled,
+                    filterCRS: data.filtercrs,
+                    filterLocationName: data.filterLocationName,
+                    futureCancellation: trainService.futureCancellation,
+                    operatorCode: trainService.operatorCode,
                     length: trainService.length,
                     destination: normalizedDestinations(trainService.destination),
                     origin: {
-                        crs: trainService.origin[0].crs,
-                        locationName: trainService.origin[0].locationName
+                        crs: trainService.origin?.[0]?.crs,
+                        locationName: trainService.origin?.[0]?.locationName
                     },
                     serviceID: trainService.serviceID,
                     siri: departureObservation(trainService, siri)
@@ -376,6 +408,10 @@ export async function parseResponseDataLiveDepartureBoard(data, {
                     cancelReason: busService.cancelReason,
                     platform: busService.platform,
                     isCancelled: busService.isCancelled,
+                    filterLocationCancelled: busService.filterLocationCancelled,
+                    filterCRS: data.filtercrs,
+                    filterLocationName: data.filterLocationName,
+                    futureCancellation: busService.futureCancellation,
                     length: busService.length,
                     destination: {
                         locationName: busService.destination[0].locationName
@@ -603,6 +639,11 @@ function applyPlatformFallbackCache(departures, from, to) {
         }
 
         const key = platformCacheKey(from, to, departure.serviceID);
+        if (departure.platformIsHidden === true) {
+            platformFallbackCache.delete(key);
+            delete departure.platform;
+            return;
+        }
         const currentPlatform = normalizePlatform(departure.platform);
         const cached = platformFallbackCache.get(key);
 

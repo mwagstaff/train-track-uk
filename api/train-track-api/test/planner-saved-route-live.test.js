@@ -44,6 +44,37 @@ function fixture({ clock = now } = {}) {
     return { helper, board, details, calls, boards, records };
 }
 
+test('empty future searches retain their timetable window through live refresh', async () => {
+    const from = now + 6 * 3600000, to = from + 6 * 3600000;
+    const original = plan([leg('ORG', 'DST', '18:05', '18:30')]);
+    original.result.journeys = [];
+    original.result.search = { time: new Date(from).toISOString(), searchTruncated: false,
+        window: { from: new Date(from).toISOString(), to: new Date(to).toISOString() } };
+    const query = { ...request, time: new Date(from).toISOString(), windowMinutes: 360 };
+    for (const elapsed of [0, 6000, 30000]) {
+        const f = fixture({ clock: now + elapsed });
+        const refreshed = await f.helper.refresh(original, query, { timeLocked: true });
+        assert.deepEqual(refreshed.search.window, original.result.search.window);
+        assert.equal(refreshed.search.time, query.time);
+        assert.equal(refreshed.journeys.length, 0);
+        assert.equal(f.calls.boards.length, 0);
+    }
+});
+
+test('live substitutions cannot move a time-locked search outside its requested departure window', async () => {
+    const f = fixture();
+    const original = plan([leg('ORG', 'DST', '12:30', '12:50')]);
+    original.result.search = { time: utc('12:20'), searchTruncated: false,
+        window: { from: utc('12:20'), to: utc('13:00') } };
+    f.board('ORG', 'DST', [row('EARLY', '12:05'), row('WITHIN', '12:30'), row('LATE', '13:05')]);
+    for (const [id, departure, arrival] of [['EARLY', '12:05', '12:25'], ['WITHIN', '12:30', '12:50'], ['LATE', '13:05', '13:25']]) {
+        f.details('ORG', id, departure, [point('DST', arrival)]);
+    }
+    const result = await f.helper.refresh(original, { ...request, time: utc('12:20') }, { timeLocked: true });
+    assert.deepEqual(result.journeys.map(journey => journey.departure), [utc('12:30')]);
+    assert.deepEqual(result.search.window, original.result.search.window);
+});
+
 test('direct departures use the shared fresh pair lookup without detail requests', async () => {
     const f = fixture();
     f.board('ORG', 'DST', [row('D1', '12:05')]);

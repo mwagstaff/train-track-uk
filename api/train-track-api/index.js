@@ -1536,7 +1536,9 @@ app.get('/api/v2/service_details/:serviceId*', async (req, res) => {
                 if (!serviceDetails.unavailable) {
                     console.error(`Failed to get service details for ID ${serviceId}: ${serviceDetails.error}`);
                 }
-                return { [serviceId]: {} };
+                return { [serviceId]: shouldIncludeDepartureStatus(req.query.includeStatus)
+                    ? { error: serviceDetails.error, unavailable: serviceDetails.unavailable === true }
+                    : {} };
             }
             return { [serviceId]: serviceDetails };
         })

@@ -1,4 +1,4 @@
-import { MODES } from './contract.js';
+import { MAX_CONNECTION_WAIT_MINUTES, MODES } from './contract.js';
 
 // RSPS5046 5.11 describes ALF links between endpoint pairs; its layout has no
 // direction field. The supplied feed contains no separately reversed pairs.
@@ -9,7 +9,7 @@ import { MODES } from './contract.js';
 // stated clock minute, inclusively. A fixed link from/to a journey endpoint does
 // not require an allowance outside the journey; boarding/alighting elsewhere
 // still uses the supplied station allowances.
-export const CONNECTION_POLICY = 'alf-pairs-endpoint-allowances-v4';
+export const CONNECTION_POLICY = 'alf-pairs-bounded-wait-v5';
 const MINUTE = 60_000;
 const DAY = 86_400_000;
 // Europe/London since 1996: BST runs from 01:00 UTC on the last Sunday of March
@@ -266,11 +266,17 @@ export function resolveConnection(index, {
         const start = direction === 'latest' ? movementStart - exit : arrival;
         const end = movementStart + travel + entry;
         if ((arrival != null && start < arrival) || (departure != null && end > departure)) continue;
+        // Opening-window waits are part of the connection, even when folded
+        // into the transfer leg. Reverse searches must also bound the wait
+        // between the last available transfer and the onward train.
+        const waitingMinutes = (movementStart - start - exit) / MINUTE;
+        if (waitingMinutes > MAX_CONNECTION_WAIT_MINUTES
+            || !destinationIsEndpoint && departure != null && departure - end > MAX_CONNECTION_WAIT_MINUTES * MINUTE) continue;
         const candidate = {
             from, to, mode: rule.mode, start, end, movementStart, movementEnd: movementStart + travel,
             minutes: (end - start) / MINUTE, ruleId: rule.id, sourceRef: rule.sourceRef,
             boardings: rule.mode === 'walk' ? 0 : 1, policy: CONNECTION_POLICY,
-            breakdown: { exitMinutes, travelMinutes: rule.minutes, entryMinutes, extraMinutes: extra, waitingMinutes: (movementStart - start - exit) / MINUTE }
+            breakdown: { exitMinutes, travelMinutes: rule.minutes, entryMinutes, extraMinutes: extra, waitingMinutes }
         };
         if (!best || (direction === 'latest' ? candidate.start > best.start : candidate.end < best.end)) best = candidate;
     }
@@ -289,6 +295,7 @@ export function validateFixedLink(index, connection, extraConnectionMinutes = 0,
     if (!window || !applicable(index, window.rule, movementStart)) return false;
     return movementEnd - movementStart === window.rule.minutes * MINUTE
         && movementStart >= start + exitMinutes * MINUTE
+        && movementStart - start - exitMinutes * MINUTE <= MAX_CONNECTION_WAIT_MINUTES * MINUTE
         && end === movementEnd + (entryMinutes + extraConnectionMinutes) * MINUTE
         && breakdown?.exitMinutes === exitMinutes && breakdown?.entryMinutes === entryMinutes
         && breakdown?.travelMinutes === window.rule.minutes && breakdown?.extraMinutes === extraConnectionMinutes

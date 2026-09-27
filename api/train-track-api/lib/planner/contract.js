@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 
 export const API_VERSION = 3;
-export const POLICY_VERSION = 'scheduled-v9-metro-wait-limit';
-export const LIVE_POLICY_VERSION = 'live-v7-metro-wait-limit';
-export const RAPTOR_POLICY_VERSION = 'raptor-poc-v3-metro-wait-limit';
+export const POLICY_VERSION = 'scheduled-v11-journey-quality';
+export const LIVE_POLICY_VERSION = 'live-v9-journey-quality';
+export const RAPTOR_POLICY_VERSION = 'raptor-poc-v5-journey-quality';
 export const LIVE_WINDOW_HOURS = 4;
 export const MAX_CHANGES = 5;
 export const DEFAULT_WINDOW_MINUTES = 360;

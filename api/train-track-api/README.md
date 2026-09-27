@@ -2,6 +2,44 @@
 
 API for the [TrainTrack UK](https://apps.apple.com/gb/app/traintrack-uk/id6504205950) app.
 
+## Staff-first departures
+
+When `LIVE_DEPARTURE_BOARD_STAFF_VERSION_API_KEY` (or `STAFF_DEPARTURES_API_KEY`)
+is configured, saved-journey departure boards use the staff `GetDepBoardWithDetails`
+product first. Train and replacement-bus queries run together. Calling points are
+cached for 30 seconds, so a subsequent map lookup normally needs no upstream call.
+References contain the RID, boarding station, dated scheduled departure and mode;
+they can be refreshed directly from a staff board after a restart or cache eviction.
+
+Public boards remain the fallback when staff data is unavailable, truncated or
+contains dividing/joining services that require the existing public branch resolver.
+Both windows of a journey snapshot use the same provider to avoid duplicate rows
+under different IDs. Existing public service references still use the public detail
+endpoint. The separate journey planner's provider is unchanged.
+
+`filterLocationCancelled`, `filterCRS` and `filterLocationName` describe cancellation
+at the requested destination independently of `isCancelled` at the boarding station.
+Clients must not infer cancellation from a different train terminus alone. Staff
+platform suppression is retained as `platformIsHidden`; cached platforms must not
+override it. Unknown staff forecasts remain unknown rather than becoming on time.
+
+The current subscription supplies onward calling points, not the full service route
+before boarding. Full staff service-detail access is not assumed. Numeric staff
+reason codes are not exposed as passenger-facing reason text; only supplied text is
+used. Staff data is filtered to exclude passing, operational and suppressed calls.
+
+`/api/v2/service_details/...` keeps legacy empty-object errors by default. Clients
+requesting `?includeStatus=true` receive `{error, unavailable}` for failed entries.
+`unavailable: true` stops automatic map retries; generic provider failures, including
+HTTP 500, are not classified as permanent expiry. The iOS map makes at most three
+attempts before leaving a manual refresh action.
+
+Regression fixtures for the Brighton short terminations are in
+`test/fixtures/brighton-short-terminations.json`. For the iOS visual check, run
+`node "ios/TrainTrack UK/TrainTrack UKUITests/staff_departures_ui_fixture.mjs"` from
+the repository root, then run
+`JourneyPlannerUITests/testStaffDestinationCancellationsAndUnavailableMapInLightAndLargeDarkText`.
+
 ## Railway Background Photos
 
 See [Add or update background photos](../../BACKGROUND_PHOTOS.md) for the step-by-step image optimisation and deployment process.

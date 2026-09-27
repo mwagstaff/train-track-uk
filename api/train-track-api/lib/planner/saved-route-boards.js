@@ -219,7 +219,7 @@ export class SavedRouteBoards {
         }
         this.detach(entry, 'superseded');
         try {
-            const result = await this.live.refresh(entry.plan.profile, request, { signal });
+            const result = await this.live.refresh(entry.plan.profile, request, { signal, timeLocked: entry.timeLocked });
             if (signal.aborted) {
                 observation?.finish({ status: 'other', outcome: 'cancelled', finishedAt: new Date(this.now()) });
                 return;
@@ -378,7 +378,7 @@ export class SavedRouteBoards {
         const now = this.now();
         for (const entry of this.entries.values()) {
             for (const [client, caller] of entry.callers) if (now - caller.at > LEASE_MS) entry.callers.delete(client);
-            if (now - entry.lastRequested <= LEASE_MS && londonDate(entry.request.time) === londonDate(now)) continue;
+            if (now - entry.lastRequested <= LEASE_MS && (entry.timeLocked || londonDate(entry.request.time) === londonDate(now))) continue;
             entry.liveController?.abort();
             this.detach(entry, 'expired');
             this.entries.delete(entry.key);

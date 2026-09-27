@@ -104,6 +104,9 @@ struct SavedRouteBoardState {
     var waitingForCapacity = false
     var consecutiveFailures = 0
     var isRefreshing = false
+    var searchedWindow: PlannerSearchResponse.Window? = nil
+    var reachedSearchLimit = false
+    var isSearchingLater = false
 
     var hasPersistentFailure: Bool { consecutiveFailures >= 3 }
     var showsActivity: Bool { isRefreshing || isPending }
@@ -112,7 +115,22 @@ struct SavedRouteBoardState {
     var direct: JourneyDeparturesSnapshot? { board?.source == "direct" ? board?.direct : nil }
     var usesDirectDepartures: Bool { direct != nil }
     var hasPlannedResult: Bool { !usesLegacyDepartures && !usesDirectDepartures && result != nil }
-    var isPending: Bool { (consecutiveFailures > 0 && !hasPersistentFailure) || board?.progress?.phase == "retrying" || waitingForCapacity || (board == nil && message == nil) || board?.status == "queued" || board?.status == "refreshing" }
+    var isPending: Bool { isSearchingLater || (consecutiveFailures > 0 && !hasPersistentFailure) || board?.progress?.phase == "retrying" || waitingForCapacity || (board == nil && message == nil) || board?.status == "queued" || board?.status == "refreshing" }
+
+    var emptySearchMessage: String {
+        let window = searchedWindow ?? result.map {
+            PlannerSearchResponse.Window(from: max($0.search.time, $0.search.window.from), to: $0.search.window.to)
+        }
+        guard result?.search.searchTruncated != true, let window, window.to > window.from else {
+            return "The search could not check the full time window. Try again."
+        }
+        let minutes = Int((window.to.timeIntervalSince(window.from) / 60).rounded(.up))
+        let hours = minutes / 60
+        let remainder = minutes % 60
+        let duration = remainder == 0 ? "\(hours) \(hours == 1 ? "hour" : "hours")"
+            : hours == 0 ? "\(minutes) minutes" : "\(hours)h \(remainder)m"
+        return "No journeys found in the next \(duration)."
+    }
 
     /// Boards pass through "refreshing" every live check, single requests fail, and routine
     /// refreshes leave data up to ~80s old. None of that is an outage: only failing refreshes
@@ -138,11 +156,19 @@ struct SavedRouteBoardState {
 final class SavedRoutePlannerStore {
     static let shared = SavedRoutePlannerStore()
     private(set) var states: [String: SavedRouteBoardState] = [:]
-    private var laterQueries: [String: SavedRouteQuery] = [:]
+    private struct LaterSearch {
+        var query: SavedRouteQuery
+        let from: Date
+        var searchedUntil: Date
+        var isSearching = false
+        var finished = false
+        var message: String? = nil
+        var limit: Date { from.addingTimeInterval(24 * 60 * 60) }
+    }
+    private var laterQueries: [String: LaterSearch] = [:]
     @ObservationIgnored private let client: any SavedRouteBoardServing
     @ObservationIgnored private var flights: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var firstRequestStarted: [String: ContinuousClock.Instant] = [:]
-    @ObservationIgnored private var laterSearches: Set<String> = []
     @ObservationIgnored private let now: () -> Date
 
     init(client: (any SavedRouteBoardServing)? = nil, now: @escaping () -> Date = Date.init) {
@@ -157,37 +183,81 @@ final class SavedRoutePlannerStore {
     }
 
     func laterState(for group: JourneyGroup) -> SavedRouteBoardState? {
-        guard let query = laterQueries[SavedRouteQuery(group: group).id] else { return nil }
-        return states[key(query)]
+        guard let search = laterQueries[key(SavedRouteQuery(group: group))] else { return nil }
+        var state = states[key(search.query)] ?? SavedRouteBoardState()
+        state.isSearchingLater = search.isSearching
+        state.searchedWindow = .init(from: search.from, to: search.searchedUntil)
+        state.reachedSearchLimit = search.searchedUntil >= search.limit
+        state.message = search.message ?? state.message
+        if let result = state.result {
+            // The last server window may extend past our 24-hour departure limit.
+            state.board?.result = PlannerSearchResponse(
+                journeys: result.journeys.filter { $0.departure < search.limit },
+                dataset: result.dataset, search: result.search, warnings: result.warnings,
+                pagination: result.pagination, live: result.live,
+                disruptedJourneys: result.disruptedJourneys?.filter { $0.departure < search.limit })
+        }
+        return state
     }
 
     func searchLater(for group: JourneyGroup) async {
-        let routeID = SavedRouteQuery(group: group).id
-        let query: SavedRouteQuery
-        if let existing = laterQueries[routeID] {
-            query = existing
-        } else {
+        let routeID = key(SavedRouteQuery(group: group))
+        if laterQueries[routeID] == nil {
+            let primary = state(for: group)
+            let window = primary.result?.search.window
+            let canContinue = primary.result?.search.searchTruncated == false && primary.result?.search.provisional != true
+                && window.map { $0.from <= now() && $0.to > now() } == true
+            // Shared board profiles include past hours. Count 24 hours from the
+            // requested departure time, not the beginning of that cache bucket.
+            let from = canContinue ? max(window!.from, primary.result!.search.time) : now()
+            let until = canContinue ? min(window!.to, from.addingTimeInterval(24 * 60 * 60))
+                : primary.direct?.departures.isEmpty == false ? from.addingTimeInterval(6 * 60 * 60) : from
             var created = SavedRouteQuery(group: group)
-            // Continue from the end of the primary six-hour timetable window.
-            created.time = PlannerTime.iso8601(now().addingTimeInterval(6 * 60 * 60))
-            laterQueries[routeID] = created
-            query = created
+            created.time = PlannerTime.iso8601(until)
+            laterQueries[routeID] = LaterSearch(query: created, from: from, searchedUntil: until)
         }
-        if let state = states[key(query)] {
-            if state.hasPersistentFailure || state.result != nil || state.direct != nil { return }
-        }
-        await performLaterSearch(query)
+        guard laterState(for: group)?.hasPersistentFailure != true else { return }
+        await continueLaterSearch(routeID)
     }
 
     func retryLater(for group: JourneyGroup) async {
-        guard let query = laterQueries[SavedRouteQuery(group: group).id] else { return }
-        await performLaterSearch(query)
+        await continueLaterSearch(key(SavedRouteQuery(group: group)))
     }
 
-    private func performLaterSearch(_ query: SavedRouteQuery) async {
+    private func continueLaterSearch(_ routeID: String) async {
+        guard let search = laterQueries[routeID], !search.isSearching, !search.finished else { return }
+        let server = client.routeBoardsServerIdentity
+        laterQueries[routeID]?.isSearching = true
+        laterQueries[routeID]?.message = nil
+        defer { laterQueries[routeID]?.isSearching = false }
+        while !Task.isCancelled, client.routeBoardsServerIdentity == server,
+              var search = laterQueries[routeID] {
+            await performLaterSearch(search.query, before: search.limit)
+            guard !Task.isCancelled, client.routeBoardsServerIdentity == server,
+                  let state = states[key(search.query)], state.consecutiveFailures == 0,
+                  state.message == nil, let result = state.result else { return }
+            if result.journeys.contains(where: { $0.departure >= now() && $0.departure < search.limit }) {
+                laterQueries[routeID]?.finished = true
+                return
+            }
+            let window = result.search.window
+            guard state.board?.status == "ready", !result.search.searchTruncated, result.search.provisional != true,
+                  abs(window.from.timeIntervalSince(search.searchedUntil)) < 1,
+                  window.to > search.searchedUntil else {
+                laterQueries[routeID]?.message = "The search could not check the full time window. Try again."
+                return
+            }
+            search.searchedUntil = min(window.to, search.limit)
+            search.finished = search.searchedUntil >= search.limit
+            if !search.finished { search.query.time = PlannerTime.iso8601(window.to) }
+            laterQueries[routeID] = search
+            if search.finished { return }
+        }
+    }
+
+    private func performLaterSearch(_ query: SavedRouteQuery, before limit: Date) async {
         let queryKey = key(query)
-        guard laterSearches.insert(queryKey).inserted else { return }
-        defer { laterSearches.remove(queryKey) }
+        let server = client.routeBoardsServerIdentity
 
         for attempt in 0...2 {
             guard !Task.isCancelled else { return }
@@ -196,16 +266,18 @@ final class SavedRoutePlannerStore {
                 do { try await Task.sleep(for: .seconds(1)) }
                 catch { return }
             }
-            var pendingPollDelay: TimeInterval = 5
             while !Task.isCancelled {
                 await refresh(queries: [query], force: true)
+                guard !Task.isCancelled, client.routeBoardsServerIdentity == server else { return }
                 guard let state = states[queryKey] else { break }
-                if state.consecutiveFailures == 0 && (state.result != nil || state.direct != nil) { return }
+                if state.consecutiveFailures == 0 {
+                    let hasOptions = state.result?.journeys.contains { $0.departure >= now() && $0.departure < limit } == true
+                    if hasOptions || (state.board?.status == "ready" && state.result != nil) || state.direct != nil { return }
+                }
                 guard state.isPending, state.consecutiveFailures == 0 else {
                     break
                 }
-                let pause = max(pendingPollDelay, state.nextRefresh.timeIntervalSince(now()))
-                pendingPollDelay = min(15, pendingPollDelay * 2)
+                let pause = min(20, max(1, state.nextRefresh.timeIntervalSince(now())))
                 do { try await Task.sleep(for: .seconds(pause)) }
                 catch { return }
             }

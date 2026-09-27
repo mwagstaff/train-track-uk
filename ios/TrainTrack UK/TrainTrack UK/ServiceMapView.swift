@@ -2,6 +2,17 @@ import SwiftUI
 import Combine
 import CoreLocation
 
+enum ServiceMapRetryPolicy {
+    static func delay(afterAttempt attempt: Int, unavailable: Bool) -> TimeInterval? {
+        guard !unavailable else { return nil }
+        switch attempt {
+        case 1: return 5
+        case 2: return 10
+        default: return nil
+        }
+    }
+}
+
 @MainActor
 private enum RailwayMapPresentationGate {
     private static var hasPresentedMap = false
@@ -252,7 +263,7 @@ struct ServiceMapView: View {
                 .presentationDragIndicator(.visible)
         }
         .overlay(alignment: .bottom) {
-            if isShowingEstimateNotice && !isHistorical && !isCompact && !isBusService {
+            if isShowingEstimateNotice && railwayRoute != nil && !isMapLoading && !isHistorical && !isCompact && !isBusService {
                 estimateNoticeBanner
                     .transition(.opacity)
             }
@@ -306,6 +317,15 @@ struct ServiceMapView: View {
     }
 
     private var mapUnavailableView: some View {
+        GeometryReader { geometry in
+            ScrollView {
+                mapUnavailableContent
+                    .frame(minHeight: geometry.size.height)
+            }
+        }
+    }
+
+    private var mapUnavailableContent: some View {
         ContentUnavailableView {
             Label(
                 isBusService ? "Railway map unavailable" : "Service map unavailable",
@@ -327,7 +347,7 @@ struct ServiceMapView: View {
             }
             .buttonStyle(.borderedProminent)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity)
     }
 
     private var estimateNoticeBanner: some View {
@@ -518,6 +538,10 @@ struct ServiceMapView: View {
     }
 
     private func loadServiceDetails() async {
+        defer {
+            isRetrying = false
+            nextRetryAt = nil
+        }
         if hasCallingPoints {
             recalcCurrentIndex()
             hasFinishedInitialLoad = true
@@ -526,6 +550,7 @@ struct ServiceMapView: View {
 
         var attempt = 0
         repeat {
+            guard !Task.isCancelled else { return }
             attempt += 1
             retryAttempt = attempt
             nextRetryAt = nil
@@ -534,6 +559,7 @@ struct ServiceMapView: View {
                 freshFor: attempt == 1 ? Self.initialServiceDetailsFreshness : 0,
                 context: serviceDetailsLookupContext
             )
+            guard !Task.isCancelled else { return }
             recalcCurrentIndex()
             hasFinishedInitialLoad = true
 
@@ -549,8 +575,9 @@ struct ServiceMapView: View {
                 return
             }
 
+            guard let delay = ServiceMapRetryPolicy.delay(afterAttempt: attempt,
+                unavailable: depStore.unavailableServiceIDs.contains(serviceID)) else { return }
             isRetrying = true
-            let delay = retryDelay(for: attempt)
             nextRetryAt = Date().addingTimeInterval(delay)
             do {
                 try await Task.sleep(for: .seconds(delay))
@@ -558,14 +585,6 @@ struct ServiceMapView: View {
                 return
             }
         } while !Task.isCancelled
-    }
-
-    private func retryDelay(for attempt: Int) -> TimeInterval {
-        switch attempt {
-        case 1: return 5
-        case 2: return 10
-        default: return 20
-        }
     }
 
     private var retryStatusText: String {
@@ -763,7 +782,12 @@ struct ServiceMapView: View {
         if let railwayRouteError {
             return railwayRouteError
         }
-        return "Sorry, National Rail route data can't be found for this train right now. Please try again later."
+        if let departure = depStore.departure(serviceID: serviceID, fromCRS: fromCRS, toCRS: toCRS),
+           let cancellation = JourneyItineraryBuilder.cancellation(for: departure, at: toCRS,
+               serviceDetailsByID: depStore.serviceDetailsById) {
+            return "\(JourneyCardPresentation.cancellationStatusText(cancellation)). Calling points are unavailable for this service."
+        }
+        return "Calling points are unavailable for this service. You can refresh to check for updated information."
     }
 
     private func serviceStatus() -> (text: String, color: Color) {

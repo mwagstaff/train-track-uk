@@ -751,6 +751,67 @@ struct TrainTrack_UKTests {
         #expect(itinerary.finalArrivalDelayMinutes == 2)
     }
 
+    @Test @MainActor func brightonCancellationSurvivesWithoutCallingPoints() throws {
+        let json = #"""
+        {"departure_time":{"scheduled":"23:52","estimated":"01:53"},"serviceType":"train",
+         "platform":"6","isCancelled":false,"destination":{"crs":"HHE","locationName":"Haywards Heath"},
+         "serviceID":"staff_202609266702771_ECR_20260926T235200_P",
+         "filterLocationCancelled":true,"filterCRS":"BTN","filterLocationName":"Brighton"}
+        """#
+        let departure = try JSONDecoder().decode(DepartureV2.self, from: Data(json.utf8))
+        #expect(!departure.isCancelled)
+        #expect(JourneyItineraryBuilder.isCancelled(departure))
+        let cancellation = try #require(JourneyItineraryBuilder.cancellation(for: departure, at: "BTN", serviceDetailsByID: [:]))
+        #expect(cancellation.isPartial)
+        #expect(JourneyCardPresentation.cancellationStatusText(cancellation) ==
+            "Cancelled to Brighton · Terminates at Haywards Heath")
+        #expect(JourneyItineraryBuilder.cancellation(for: departure, at: "HHE", serviceDetailsByID: [:]) == nil)
+        let retained = departure.withPlatform("5")
+        #expect(retained.filterLocationCancelled)
+        #expect(retained.filterCRS == "BTN")
+        let restored = try JSONDecoder().decode(DepartureV2.self, from: JSONEncoder().encode(retained))
+        #expect(restored.filterLocationName == "Brighton")
+    }
+
+    @Test @MainActor func aDifferentTerminusAloneDoesNotProveCancellation() throws {
+        let json = #"""
+        {"departure_time":{"scheduled":"23:52","estimated":"01:53"},"isCancelled":false,
+         "destination":{"crs":"HHE","locationName":"Haywards Heath"},"serviceID":"legacy"}
+        """#
+        let departure = try JSONDecoder().decode(DepartureV2.self, from: Data(json.utf8))
+        #expect(!departure.filterLocationCancelled)
+        #expect(JourneyItineraryBuilder.cancellation(for: departure, at: "BTN", serviceDetailsByID: [:]) == nil)
+    }
+
+    @Test @MainActor func hiddenStaffPlatformsCannotBeRestoredByThePlatformFallback() throws {
+        let json = #"""
+        {"departure_time":{"scheduled":"23:52","estimated":"01:53"},"platform":"6",
+         "platformIsHidden":true,"serviceID":"staff-test"}
+        """#
+        let departure = try JSONDecoder().decode(DepartureV2.self, from: Data(json.utf8))
+        #expect(departure.platform == nil)
+        #expect(departure.withPlatform("5").platform == nil)
+    }
+
+    @Test @MainActor func serviceMapRetriesAreBoundedAndStopForUnavailableServices() {
+        #expect(ServiceMapRetryPolicy.delay(afterAttempt: 1, unavailable: false) == 5)
+        #expect(ServiceMapRetryPolicy.delay(afterAttempt: 2, unavailable: false) == 10)
+        #expect(ServiceMapRetryPolicy.delay(afterAttempt: 3, unavailable: false) == nil)
+        #expect(ServiceMapRetryPolicy.delay(afterAttempt: 1, unavailable: true) == nil)
+    }
+
+    @Test @MainActor func serviceDetailsDistinguishUnavailableFromTransientAndLegacyEmptyResponses() throws {
+        let unavailable = try JSONDecoder().decode(NetworkServicePhone.ServiceDetailsEntry.self,
+            from: Data(#"{"error":"Service no longer available","unavailable":true}"#.utf8))
+        #expect(unavailable.details == nil)
+        #expect(unavailable.unavailable)
+        for json in [#"{"error":"Lookup failed","unavailable":false}"#, "{}"] {
+            let entry = try JSONDecoder().decode(NetworkServicePhone.ServiceDetailsEntry.self, from: Data(json.utf8))
+            #expect(entry.details == nil)
+            #expect(!entry.unavailable)
+        }
+    }
+
     @Test func singleLegJourneyCardsKeepCancelledDeparturesVisible() {
         let groupID = UUID()
         let directJourney = journey(

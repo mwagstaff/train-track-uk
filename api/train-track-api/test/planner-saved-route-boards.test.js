@@ -124,9 +124,31 @@ test('time-locked later searches preserve their window and bypass current direct
     assert.ok(board.result);
     assert.equal(board.direct, undefined);
     assert.equal(f.refreshCalls.length, 1);
+    assert.equal(f.refreshCalls[0].options.timeLocked, true);
     assert.equal((await f.manager.get(future)).boards[0].status, 'ready');
     await idle(f.manager);
     assert.equal(f.refreshCalls.length, 1, 'a completed future board must wait for the next live-check interval');
+});
+
+test('polling a future-day window retains its active job and ready result until its lease expires', async t => {
+    const pending = deferred();
+    const f = fixture(t, { call: () => pending.promise });
+    const future = { routes: [{ ...body.routes[0], time: new Date(start + 86400000).toISOString() }] };
+    await f.manager.get(future);
+    for (let i = 0; i < 10 && !f.calls.length; i++) await tick();
+    assert.equal(f.calls.length, 1);
+    const signal = f.calls[0].options.signal;
+    f.advance(1000);
+    await f.manager.get(future);
+    assert.equal(signal.aborted, false, 'a next-day departure must not be pruned as yesterday’s board');
+    assert.equal(f.calls.length, 1);
+    pending.resolve({ result: f.result(), connections: {} });
+    await idle(f.manager);
+    assert.equal((await f.manager.get(future)).boards[0].status, 'ready');
+    assert.equal(f.calls.length, 1);
+    f.advance(120001);
+    f.manager.prune();
+    assert.equal(f.manager.entries.size, 0, 'future windows still release resources when polling stops');
 });
 
 test('unknown, stale, partial and failed direct lookups cannot start a planner fallback', async t => {

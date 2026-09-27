@@ -415,6 +415,9 @@ struct SavedRoutePlannerTests {
         client.result = try result()
         let store = SavedRoutePlannerStore(client: client, now: { now })
         let route = group(["KTH", "VIC", "INV"])
+        await store.refresh(groups: [route])
+        client.requests = []
+        client.result = try result(journeys: [journey(departure: now.addingTimeInterval(7 * 3600))], from: now.addingTimeInterval(6 * 3600))
         await store.searchLater(for: route)
         let query = try #require(client.requests.first?.first)
         #expect(query.realtime == "apply")
@@ -431,7 +434,7 @@ struct SavedRoutePlannerTests {
     @Test func moreDeparturesStopsPollingOnceScheduledOptionsAreAvailable() async throws {
         let client = RouteBoardStub()
         client.status = "refreshing"
-        client.result = try result()
+        client.result = try result(journeys: [journey(departure: now.addingTimeInterval(7 * 3600))])
         let store = SavedRoutePlannerStore(client: client, now: { now })
         let route = group(["KTH", "VIC"])
 
@@ -453,6 +456,166 @@ struct SavedRoutePlannerTests {
         await store.searchLater(for: route)
         #expect(client.requests.count == 1)
         #expect(store.laterState(for: route)?.message == "Journey options are busy. Try again shortly.")
+    }
+
+    @Test func emptyWindowsContinueUntilAnOvernightDepartureIsFound() async throws {
+        let client = RouteBoardStub()
+        client.result = try result()
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["ELE", "LBG", "BIK"])
+        await store.refresh(groups: [route])
+        let overnight = try journey(departure: now.addingTimeInterval(21 * 3600))
+        client.resultForQuery = { query in
+            let start = try self.queryDate(query)
+            return try self.result(journeys: start >= self.now.addingTimeInterval(18 * 3600) ? [overnight] : [], from: start)
+        }
+        await store.searchLater(for: route)
+        #expect(try client.requests.dropFirst().map { try queryDate($0[0]) } == [6, 12, 18].map { now.addingTimeInterval(Double($0) * 3600) })
+        #expect(client.requests.allSatisfy { $0[0].via == ["LBG"] })
+        #expect(store.laterState(for: route)?.result?.journeys == [overnight])
+        #expect(store.state(for: route).result?.journeys.isEmpty == true)
+        #expect(store.laterState(for: route)?.reachedSearchLimit == false)
+    }
+
+    @Test func emptyFullDayReportsItsWindowAndDoesNotSearchAgainOnExpansion() async throws {
+        let client = RouteBoardStub()
+        client.resultForQuery = { query in try self.result(from: self.queryDate(query)) }
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["ELE", "BIK"])
+        await store.refresh(groups: [route])
+        #expect(store.state(for: route).emptySearchMessage == "No journeys found in the next 6 hours.")
+        await store.searchLater(for: route)
+        let state = try #require(store.laterState(for: route))
+        #expect(state.reachedSearchLimit)
+        #expect(!state.isPending)
+        #expect(state.emptySearchMessage == "No journeys found in the next 24 hours.")
+        #expect(client.requests.count == 4)
+        await store.searchLater(for: route)
+        #expect(client.requests.count == 4)
+    }
+
+    @Test func laterSearchFollowsReturnedWindowsAndCapsDeparturesAt24Hours() async throws {
+        let client = RouteBoardStub()
+        client.result = try result(hours: 8)
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["ELE", "BIK"])
+        await store.refresh(groups: [route])
+        let tooLate = try journey(departure: now.addingTimeInterval(25 * 3600))
+        client.resultForQuery = { query in
+            let start = try self.queryDate(query)
+            return try self.result(journeys: start >= self.now.addingTimeInterval(20 * 3600) ? [tooLate] : [], from: start)
+        }
+        await store.searchLater(for: route)
+        #expect(try client.requests.dropFirst().map { try queryDate($0[0]) } == [8, 14, 20].map { now.addingTimeInterval(Double($0) * 3600) })
+        #expect(store.laterState(for: route)?.result?.journeys.isEmpty == true)
+        #expect(store.laterState(for: route)?.reachedSearchLimit == true)
+        #expect(store.laterState(for: route)?.emptySearchMessage == "No journeys found in the next 24 hours.")
+    }
+
+    @Test func incompleteWindowsDoNotClaimAFullDayAndRetryTheSameWindow() async throws {
+        for truncated in [false, true] {
+            let client = RouteBoardStub()
+            client.resultForQuery = { query in
+                let start = try self.queryDate(query)
+                return try self.result(from: truncated ? start : start.addingTimeInterval(3600), truncated: truncated)
+            }
+            let store = SavedRoutePlannerStore(client: client, now: { now })
+            let route = group(["ELE", "BIK"])
+            await store.searchLater(for: route)
+            #expect(client.requests.count == 1)
+            #expect(store.laterState(for: route)?.message != nil)
+            #expect(store.laterState(for: route)?.reachedSearchLimit == false)
+            client.resultForQuery = { query in try self.result(from: self.queryDate(query)) }
+            await store.retryLater(for: route)
+            #expect(client.requests[0] == client.requests[1])
+            #expect(store.laterState(for: route)?.reachedSearchLimit == true)
+        }
+    }
+
+    @Test func cancellingAnEmptySearchStopsAdvancingAndExpansionResumesIt() async throws {
+        let client = RouteBoardStub()
+        client.hold = true
+        client.resultForQuery = { query in try self.result(from: self.queryDate(query)) }
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["ELE", "BIK"])
+        let task = Task { await store.searchLater(for: route) }
+        while client.continuation == nil { await Task.yield() }
+        // Another card sharing the same route must not start a duplicate chain.
+        await store.searchLater(for: route)
+        #expect(client.requests.count == 1)
+        task.cancel()
+        client.hold = false
+        client.continuation?.resume()
+        await task.value
+        #expect(client.requests.count == 1)
+        #expect(store.laterState(for: route)?.reachedSearchLimit == false)
+        await store.searchLater(for: route)
+        #expect(store.laterState(for: route)?.reachedSearchLimit == true)
+        #expect(client.requests[0] == client.requests[1])
+    }
+
+    @Test func laterSearchCoverageIsIsolatedByServer() async throws {
+        let client = RouteBoardStub()
+        client.resultForQuery = { query in try self.result(from: self.queryDate(query)) }
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["ELE", "BIK"])
+        await store.searchLater(for: route)
+        #expect(store.laterState(for: route)?.reachedSearchLimit == true)
+        client.routeBoardsServerIdentity = "other-server"
+        #expect(store.laterState(for: route) == nil)
+        await store.searchLater(for: route)
+        #expect(client.requests.count == 8)
+        #expect(store.laterState(for: route)?.reachedSearchLimit == true)
+    }
+
+    @Test func cachedProfilePastHoursDoNotCountTowardsTheNext24Hours() async throws {
+        let client = RouteBoardStub()
+        client.result = try result(from: now.addingTimeInterval(-2 * 3600), hours: 8, time: now)
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["ELE", "BIK"])
+        await store.refresh(groups: [route])
+        #expect(store.state(for: route).emptySearchMessage == "No journeys found in the next 6 hours.")
+        client.resultForQuery = { query in try self.result(from: self.queryDate(query)) }
+        await store.searchLater(for: route)
+        #expect(try client.requests.dropFirst().map { try queryDate($0[0]) } == [6, 12, 18].map { now.addingTimeInterval(Double($0) * 3600) })
+        #expect(store.laterState(for: route)?.searchedWindow?.to == now.addingTimeInterval(24 * 3600))
+        #expect(store.laterState(for: route)?.emptySearchMessage == "No journeys found in the next 24 hours.")
+    }
+
+    @Test func failureAfterAnEmptyWindowPreservesCoverageAndResumesAtTheFailure() async throws {
+        let client = RouteBoardStub()
+        client.resultForQuery = { query in
+            let start = try self.queryDate(query)
+            if start > self.now { throw PlannerError(code: "NETWORK", message: "Offline") }
+            return try self.result(from: start)
+        }
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["ELE", "BIK"])
+        await store.searchLater(for: route)
+        #expect(client.requests.count == 4)
+        #expect(store.laterState(for: route)?.message == "Offline")
+        #expect(store.laterState(for: route)?.searchedWindow?.to == now.addingTimeInterval(6 * 3600))
+        #expect(store.laterState(for: route)?.reachedSearchLimit == false)
+        client.resultForQuery = { query in try self.result(from: self.queryDate(query)) }
+        await store.retryLater(for: route)
+        #expect(client.requests[3] == client.requests[4])
+        #expect(store.laterState(for: route)?.reachedSearchLimit == true)
+    }
+
+    @Test func emptyProvisionalResultsKeepSearchingInsteadOfAdvancingTheWindow() async throws {
+        let client = RouteBoardStub()
+        client.status = "refreshing"
+        client.result = try result()
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["ELE", "BIK"])
+        let task = Task { await store.searchLater(for: route) }
+        while store.laterState(for: route)?.result == nil { await Task.yield() }
+        #expect(store.laterState(for: route)?.isSearchingLater == true)
+        #expect(store.laterState(for: route)?.searchedWindow?.to == now)
+        task.cancel()
+        await task.value
+        #expect(client.requests.count == 1)
+        #expect(store.laterState(for: route)?.reachedSearchLimit == false)
     }
 
     @Test func plannedAndLaterBoardsMergeChronologicallyWithPrimaryCopyOfOverlap() throws {
@@ -505,7 +668,7 @@ struct SavedRoutePlannerTests {
         #expect(store.laterState(for: route)?.message == "Offline")
 
         client.failure = nil
-        client.result = try result()
+        client.result = try result(journeys: [journey(departure: now.addingTimeInterval(7 * 3600))])
         await store.retryLater(for: route)
         #expect(client.requests.count == 4)
         #expect(store.laterState(for: route)?.result != nil)
@@ -623,7 +786,7 @@ struct SavedRoutePlannerTests {
         #expect(!PlannerTrainTracking.matchesBoard(departure, leg: tomorrow, now: observed))
     }
 
-    private func journey(live: PlannerLiveAnnotation?, departure: Date? = nil) throws -> PlannedJourney {
+    private func journey(live: PlannerLiveAnnotation? = nil, departure: Date? = nil) throws -> PlannedJourney {
         let start = departure ?? now.addingTimeInterval(600)
         var leg: [String: Any] = ["kind": "vehicle", "mode": "rail", "from": ["crs": "KTH", "name": "Kent House"],
             "to": ["crs": "VIC", "name": "London Victoria"], "departure": PlannerTime.iso8601(start),
@@ -684,8 +847,19 @@ struct SavedRoutePlannerTests {
         )
     }
 
-    private func result(journeys: [PlannedJourney] = []) throws -> PlannerSearchResponse {
+    private func queryDate(_ query: SavedRouteQuery) throws -> Date {
+        guard let time = query.time else { return now }
+        return try PlannerTime.decoder().decode(Date.self, from: JSONEncoder().encode(time))
+    }
+
+    private func result(journeys: [PlannedJourney] = [], from: Date? = nil, hours: Double = 6, truncated: Bool = false, time: Date? = nil) throws -> PlannerSearchResponse {
         var raw = try #require(JSONSerialization.jsonObject(with: Data(JourneyPlannerTests.emptyResult.utf8)) as? [String: Any])
+        var search = try #require(raw["search"] as? [String: Any])
+        let start = from ?? now
+        search["time"] = PlannerTime.iso8601(time ?? start)
+        search["window"] = ["from": PlannerTime.iso8601(start), "to": PlannerTime.iso8601(start.addingTimeInterval(hours * 3600))]
+        search["searchTruncated"] = truncated
+        raw["search"] = search
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .custom { date, encoder in
             var container = encoder.singleValueContainer()
@@ -709,6 +883,7 @@ struct SavedRoutePlannerTests {
     var requests: [[SavedRouteQuery]] = []
     var status = "ready"
     var result: PlannerSearchResponse?
+    var resultForQuery: ((SavedRouteQuery) throws -> PlannerSearchResponse)?
     var failure: Error?
     var boardError: PlannerError?
     var progress: SavedRouteBoardProgress?
@@ -721,8 +896,8 @@ struct SavedRoutePlannerTests {
         requests.append(routes)
         if hold { await withCheckedContinuation { continuation = $0 } }
         if let failure { throw failure }
-        return SavedRouteBoardsResponse(apiVersion: apiVersion, boards: routes.map {
-            SavedRouteBoard(id: $0.id, status: status, pollAfterMs: 20000, result: result, computedAt: nil, expiresAt: nil, error: boardError,
+        return SavedRouteBoardsResponse(apiVersion: apiVersion, boards: try routes.map {
+            SavedRouteBoard(id: $0.id, status: status, pollAfterMs: 20000, result: try resultForQuery?($0) ?? result, computedAt: nil, expiresAt: nil, error: boardError,
                 progress: progress, source: source, direct: direct)
         })
     }

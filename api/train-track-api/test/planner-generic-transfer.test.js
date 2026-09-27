@@ -69,6 +69,25 @@ function clockHouseNetwork(nextNightOnly = false) {
     };
 }
 
+function elmersEndNetwork() {
+    return {
+        stations: new Map(Object.entries({ ELE: 3, LBG: 10, STP: 15, BIK: 3 })
+            .map(([crs, minimumChangeMinutes]) => [crs, { crs, name: crs, minimumChangeMinutes }])),
+        // RJTTF939 ALF rows: the generic transfer is only available overnight.
+        rules: { tsi: [], links: [
+            parseFixedLink('M=TRANSFER,O=LBG,D=STP,T=30,S=0001,E=0659,P=4,R=0000001', { member: 'ALF', line: 1711 }),
+            parseFixedLink('M=TRANSFER,O=LBG,D=STP,T=30,S=0001,E=0529,P=4,R=1111100', { member: 'ALF', line: 1713 }),
+            parseFixedLink('M=TUBE,O=LBG,D=STP,T=25,S=0700,E=2359,P=4,R=0000001', { member: 'ALF', line: 1714 })
+        ] },
+        // Times from the reported Sunday 27 September itinerary.
+        services: [
+            clockService('ele-lbg', 'rail', 'ELE', 'LBG', '27', '08:23', '27', '08:48'),
+            { ...clockService('lbg-stp', 'rail', 'LBG', 'STP', '27', '09:21', '27', '09:35'), operator: 'TL' },
+            { ...clockService('lbg-bik', 'rail', 'LBG', 'BIK', '28', '05:56', '28', '06:33'), operator: 'SN' }
+        ]
+    };
+}
+
 test('existing normalized cursors keep their original mode permissions', () => {
     for (const algorithm of ['original', 'raptor']) {
         const previous = normalizeRequest({ ...input, algorithm, allowedModes: previousModes });
@@ -104,6 +123,37 @@ test('supplied generic transfers retain source windows, weekday and endpoint all
 for (const algorithm of ['original', 'raptor']) {
     const route = (request, net) => algorithm === 'raptor'
         ? findRaptorJourneys(request, compileRaptorNetwork(net)) : findJourneys(request, net);
+
+    test(`${algorithm} cannot use the St Pancras overnight transfer to bypass the connection wait limit`, () => {
+        const request = normalizeRequest({ origin: 'ELE', destination: 'BIK', time: '2026-09-27T02:28:00+01:00',
+            timeType: 'departAfter', realtime: 'off', algorithm, limit: 10 });
+        const net = elmersEndNetwork();
+        assert.deepEqual(route(request, net).journeys, [],
+            'The 08:23 feeder must not connect to Monday 05:56 by looping through St Pancras');
+
+        const withoutLoop = elmersEndNetwork();
+        withoutLoop.services.splice(0, 2, clockService('ele-stp', 'rail', 'ELE', 'STP', '27', '08:23', '27', '09:35'));
+        assert.deepEqual(route(request, withoutLoop).journeys, [],
+            'The same excessive transfer wait must be rejected even without a repeated station');
+
+        const daytime = elmersEndNetwork();
+        daytime.services.push(clockService('daytime-lbg-bik', 'rail', 'LBG', 'BIK', '27', '09:56', '27', '10:33'));
+        const journey = route(request, daytime).journeys[0];
+        assert.ok(journey);
+        assert.deepEqual(journey.legs.filter(leg => leg.kind === 'vehicle').map(leg => leg.serviceId),
+            ['ele-lbg', 'daytime-lbg-bik']);
+        assert.equal(journey.changes, 1);
+        assert.ok(validateJourney(journey, daytime, request));
+
+        const mondayNetwork = elmersEndNetwork();
+        mondayNetwork.services.push(clockService('monday-ele-lbg', 'rail', 'ELE', 'LBG', '28', '05:18', '28', '05:43'));
+        const mondayRequest = { ...request, time: '2026-09-28T02:28:00+01:00' };
+        const monday = route(mondayRequest, mondayNetwork).journeys[0];
+        assert.ok(monday);
+        assert.deepEqual(monday.legs.filter(leg => leg.kind === 'vehicle').map(leg => leg.serviceId),
+            ['monday-ele-lbg', 'lbg-bik']);
+        assert.ok(validateJourney(monday, mondayNetwork, mondayRequest));
+    });
 
     test(`${algorithm} returns the Clock House 04:44–Invergowrie 13:41 itinerary with the supplied transfer`, () => {
         const net = network();

@@ -14,6 +14,7 @@ final class DeparturesStore: ObservableObject {
     /// Cards read sorted departures many times per render; sort once per change.
     private var sortedDeparturesByPair: [String: [DepartureV2]] = [:]
     @Published private(set) var dataAvailabilityByPair: [String: JourneyDataAvailability] = [:]
+    @Published private(set) var unavailableServiceIDs: Set<String> = []
     @Published private(set) var serviceDetailsById: [String: ServiceDetails] = [:]
     @Published private(set) var loadingDetailsByServiceId: [String: ServiceLoadingV1] = [:]
     @Published private(set) var isInitialLoadInProgress = true
@@ -354,7 +355,7 @@ final class DeparturesStore: ObservableObject {
         )
 
         return departures.map { departure in
-            guard normalizedPlatform(departure.platform) == nil,
+            guard !departure.platformIsHidden, normalizedPlatform(departure.platform) == nil,
                   let platform = previousPlatformsByServiceID[departure.serviceID] else {
                 return departure
             }
@@ -402,19 +403,20 @@ final class DeparturesStore: ObservableObject {
         if !newTargets.isEmpty {
             let token = UUID()
             let task = Task { [weak self, newTargets, context] in
-                let details: [String: ServiceDetails]
+                let batch: ServiceDetailsBatch
                 do {
-                    details = try await NetworkServicePhone.shared.fetchServiceDetailsAggregatedChunked(
+                    batch = try await NetworkServicePhone.shared.fetchServiceDetailsBatchChunked(
                         ids: newTargets,
                         context: context
                     )
                 } catch {
-                    details = [:]
+                    batch = ServiceDetailsBatch()
                 }
                 self?.finishServiceDetailsRequest(
                     token: token,
                     requestedIDs: newTargets,
-                    details: details
+                    details: batch.details,
+                    unavailableIDs: batch.unavailableIDs
                 )
             }
             let request = ServiceDetailsRequest(token: token, task: task)
@@ -433,13 +435,16 @@ final class DeparturesStore: ObservableObject {
     private func finishServiceDetailsRequest(
         token: UUID,
         requestedIDs: [String],
-        details: [String: ServiceDetails]
+        details: [String: ServiceDetails],
+        unavailableIDs: Set<String>
     ) {
         let ownedIDs = requestedIDs.filter {
             serviceDetailsRequestsByID[$0]?.token == token
         }
         guard !ownedIDs.isEmpty else { return }
 
+        unavailableServiceIDs.subtract(ownedIDs)
+        unavailableServiceIDs.formUnion(unavailableIDs.intersection(ownedIDs))
         let fetchedAt = Date()
         var updatedDetails = serviceDetailsById
         var didUpdateDetails = false

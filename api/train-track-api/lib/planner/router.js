@@ -3,6 +3,7 @@ import { MAX_CHANGES, DEFAULT_WINDOW_MINUTES, MAX_CONNECTION_WAIT_MINUTES, MODES
 import { liveCall, liveLeg } from './live-network.js';
 import { validateTubeConnection, tubeBoardings } from './tube-routing.js';
 import { ROUTING_PROFILE_FIELDS } from './telemetry.js';
+import { hasAvoidableBacktracking } from './journey-quality.js';
 
 const MINUTE = 60_000;
 const indexes = new WeakMap();
@@ -674,6 +675,8 @@ function* journeySearch(request, network, options = {}) {
         return bound;
     };
     const retain = label => {
+        if (!departureProfile && label.station === target && label.viaProgress === via.length
+            && hasAvoidableBacktracking(label.path, index.services, request, reverse, check)) return;
         // A saved-board fallback already checked direct departures. Do not let
         // a scheduled direct train dominate all connecting replacement routes.
         if (options.excludeDirect && label.station === target && label.path?.leg.kind === 'vehicle'
@@ -769,6 +772,7 @@ function* journeySearch(request, network, options = {}) {
                         const viaProgress = visit(label.viaProgress, target);
                         if (viaProgress !== via.length) continue;
                         const complete = { ...label, station: target, time, boundary, viaProgress, boardings: round + transfer.boardings, disruptionRank: Math.max(label.disruptionRank ?? 0, transfer.disruptionRank ?? 0), path: { previous: label.path, leg } };
+                        if (!departureProfile && hasAvoidableBacktracking(complete.path, index.services, request, reverse, check)) continue;
                         results.push(complete);
                         rememberCompleted(complete);
                     }

@@ -592,7 +592,7 @@ export class LiveActivityManager {
             estimated: dep.departure_time?.estimated,
             platform: dep.platform,
             operator: dep.operator,
-            isCancelled: dep.isCancelled,
+            isCancelled: dep.isCancelled || dep.filterLocationCancelled === true,
             length: dep.length,
             destination: dep.destination,
             origin: dep.origin,

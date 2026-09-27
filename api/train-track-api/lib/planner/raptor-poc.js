@@ -2,6 +2,7 @@ import { createConnectionIndex, resolveConnection, CONNECTION_POLICY } from './c
 import { MAX_CHANGES, DEFAULT_WINDOW_MINUTES, MAX_CONNECTION_WAIT_MINUTES, MODES } from './contract.js';
 import { liveCall, liveLeg } from './live-network.js';
 import { validateJourney } from './router.js';
+import { hasAvoidableBacktracking } from './journey-quality.js';
 
 const MINUTE = 60_000;
 
@@ -260,6 +261,7 @@ export function findRaptorJourneys(request, index, options = {}) {
         }
         const query = Date.parse(request.time), window = (request.windowMinutes ?? DEFAULT_WINDOW_MINUTES) * MINUTE;
         const maxDuration = (options.maxDurationMinutes ?? 1440) * MINUTE;
+        const latestArrival = options.latestArrival ?? Infinity;
         const maxConnectionWait = MAX_CONNECTION_WAIT_MINUTES * MINUTE;
         const maxChanges = request.maxChanges ?? MAX_CHANGES, maxBoardings = maxChanges + 1;
         const limit = request.limit ?? 5, offset = options.offset ?? 0;
@@ -327,15 +329,18 @@ export function findRaptorJourneys(request, index, options = {}) {
             path: { previous: boarding.path, leg: { kind: 'vehicle', serviceId: boarding.service.id,
                 boardIndex: boarding.position, alightIndex } } } : label;
         const complete = (label, boarding, alightIndex) => {
+            const candidate = materializeRide(label, boarding, alightIndex);
+            if (!profile && hasAvoidableBacktracking(candidate.path, index.services, request, false, check)) return;
             if (completed.some(previous => dominates(previous, label))) return;
             for (let position = completed.length - 1; position >= 0; position--) {
                 if (dominates(label, completed[position])) completed.splice(position, 1);
             }
             countLabel();
-            completed.push(materializeRide(label, boarding, alightIndex));
+            completed.push(candidate);
         };
         const retain = (label, boarding, alightIndex) => {
             check();
+            if (label.time > latestArrival) return;
             if (label.boardings > maxBoardings || label.boundary != null
                 && (label.boundary < query || label.boundary >= query + window
                     || label.time - label.boundary > maxDuration)) return;
@@ -433,7 +438,7 @@ export function findRaptorJourneys(request, index, options = {}) {
                     const departure = service.calls[position].departure;
                     const boundary = label.boundary ?? connection?.start ?? departure;
                     const boardings = round + 1 + (connection?.boardings ?? 0);
-                    if (boundary < query || boundary >= query + window || boardings > maxBoardings
+                    if (departure > latestArrival || boundary < query || boundary >= query + window || boardings > maxBoardings
                         || departure - boundary > maxDuration
                         || label.path && departure - (connection?.end ?? label.time) > maxConnectionWait) return;
                     if (boardings + onwardBounds[position + 1] > maxBoardings) { metrics.topologyPruned++; return; }

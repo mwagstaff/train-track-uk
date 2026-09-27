@@ -36,7 +36,8 @@ enum SiriDeparturePolicy {
             }
             // These rows are already known to be unavailable and need no detail
             // request. In particular, cancelled rows are excluded from that batch.
-            if departure.isCancelled || departure.departureTime.estimated == "Cancelled" {
+            if departure.isCancelled || departure.departureTime.estimated == "Cancelled"
+                || (departure.filterLocationCancelled && departure.filterCRS?.uppercased() == to.crs.uppercased()) {
                 if let date = SiriRailTime.uniqueDate(departure.departureTime.scheduled, near: boardObserved,
                                                       from: -12 * 3600, through: 12 * 3600) {
                     cancellations.append(date)

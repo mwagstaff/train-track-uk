@@ -242,9 +242,13 @@ export class SavedRouteLive {
             compareWithConnections: available && availableRows.every(row => mode(row) === 'replacementBus') };
     }
 
-    async refresh(plan, request, { signal } = {}) {
+    async refresh(plan, request, { signal, timeLocked = false } = {}) {
         const context = this.context(signal), now = this.now(), realtime = request.realtime ?? 'apply';
         const source = plan.result, connections = createConnectionIndex(plan.connections);
+        // Live evidence has a four-hour horizon, but that is not the timetable
+        // window searched by "More departures". Keep future searches anchored.
+        const from = timeLocked ? instant(request.time) : now;
+        const window = timeLocked ? source.search.window : { from: iso(now), to: iso(now + 4 * HOUR) };
         const topologies = new Map(), examples = new Map();
         for (const journey of (source.journeys ?? []).slice(0, 5)) {
             const key = JSON.stringify(journey.legs.map(leg => [leg.kind, leg.mode, leg.from.crs, leg.to.crs]));
@@ -273,7 +277,7 @@ export class SavedRouteLive {
                 for (const state of states) for (const choice of choices) {
                     const alternatives = await this.transfers(state.pending, state.legs.at(-1), choice, connections, request, now, context);
                     if (!state.pending.length && state.legs.length) continue;
-                    if (instant(choice.departure) < (instant(state.legs.at(-1)?.arrival) || now)) continue;
+                    if (instant(choice.departure) < (instant(state.legs.at(-1)?.arrival) || Math.max(now, from))) continue;
                     for (const transfers of alternatives) {
                         const legs = [...state.legs, ...transfers, choice];
                         const remaining = original.legs.slice(templateIndex + 1)
@@ -297,6 +301,7 @@ export class SavedRouteLive {
                     if (!ordered(visits, request.via ?? [])) continue;
                     const departure = legs[0].departure, arrival = legs.at(-1).arrival;
                     if (instant(departure) < now || instant(arrival) < instant(departure) || instant(arrival) - instant(departure) > DAY) continue;
+                    if (timeLocked && instant(departure) >= instant(window.to)) continue;
                     const warnings = unique(legs.flatMap(leg => leg.warnings ?? []));
                     const journey = { departure, arrival, durationMinutes: (instant(arrival) - instant(departure)) / MINUTE,
                         changes: Math.max(0, legs.reduce((sum, leg) => sum + boardings(leg), 0) - 1),
@@ -324,8 +329,8 @@ export class SavedRouteLive {
                 && value !== 'Scheduled timetable only. Live delays and changes are not included.')) };
         return { ...source, ...page, dataset, journeys: page.journeys.slice(0, selected.length).map(identify),
             disruptedJourneys: page.journeys.slice(selected.length).map(identify),
-            search: { ...source.search, ...request, time: iso(now), realtime,
-                window: { from: iso(now), to: iso(now + 4 * HOUR) }, searchTruncated: truncated || source.search?.searchTruncated || false },
+            search: { ...source.search, ...request, time: timeLocked ? request.time : iso(now), realtime,
+                window, searchTruncated: truncated || source.search?.searchTruncated || false },
             warnings: unique([...dataset.warnings, ...page.live.warnings,
                 ...(context.resolveTubeConnection?.state?.notes ?? []),
                 ...(truncated ? ['More journey options may exist.'] : [])]), pagination: {} };

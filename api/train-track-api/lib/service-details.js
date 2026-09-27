@@ -1,7 +1,8 @@
 import { getWithRetry } from './upstream-api-client.js';
 import { testServiceHarness } from './test-service-harness.js';
-import { getTrainTimes } from './realtime-trains-api.js';
+import { getPublicTrainTimes } from './realtime-trains-api.js';
 import { primaryPlace } from './departure-places.js';
+import { staffDepartures } from './staff-departures.js';
 
 const SERVICE_DETAILS_TIMEOUT_MS = 3000;
 
@@ -10,6 +11,9 @@ export async function getServiceDetails(serviceId) {
     const testDetails = testServiceHarness.getServiceDetails(serviceId);
     if (testDetails) {
         return testDetails;
+    }
+    if (String(serviceId).startsWith('staff_')) {
+        return staffDepartures.getDetails(serviceId);
     }
 
     const url = `https://api1.raildata.org.uk/1010-service-details1_2/LDBWS/api/20220120/GetServiceDetails/${serviceId}`;
@@ -31,9 +35,8 @@ export async function getServiceDetails(serviceId) {
         }
         return parseResponseDataServiceDetails(response.data);
     } catch (error) {
-        // Rail Data Marketplace returns 400 or 500 after an LDBWS service ID has
-        // expired. Treat that documented short-lived-ID case as an unavailable
-        // result; the upstream status is still recorded by getWithRetry metrics.
+        // A generic 500 can also be a provider failure for a current ID. It is
+        // not evidence of permanent expiry.
         if (isUnavailableServiceDetailsError(error)) {
             return { error: 'No data for this service ID', unavailable: true };
         } else {
@@ -49,7 +52,7 @@ export async function getServiceDetails(serviceId) {
 
 export function isUnavailableServiceDetailsError(error) {
     const status = error?.response?.status;
-    return status === 400 || status === 500;
+    return status === 400 || status === 404 || status === 410;
 }
 
 export async function getServiceDetailsWithContext(serviceId, context = {}) {
@@ -61,7 +64,7 @@ export async function getServiceDetailsWithContext(serviceId, context = {}) {
     const associatedDetails = await resolveAssociatedServiceDetails({
         serviceId,
         context,
-        getDepartures: getTrainTimes,
+        getDepartures: getPublicTrainTimes,
         getDetails: getServiceDetails
     });
     return associatedDetails || directDetails;

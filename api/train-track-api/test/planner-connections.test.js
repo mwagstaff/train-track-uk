@@ -3,10 +3,39 @@ import assert from 'node:assert/strict';
 import { parseFixedLink } from '../lib/planner/parser.js';
 import { createConnectionIndex, resolveConnection, validateFixedLink, CONNECTION_POLICY } from '../lib/planner/connections.js';
 import { findJourneys, validateJourney } from '../lib/planner/router.js';
+import { MAX_CONNECTION_WAIT_MINUTES } from '../lib/planner/contract.js';
 
 const MINUTE = 60_000;
 const instant = value => Date.parse(`2026-09-15T${value}:00+01:00`);
 const iso = value => new Date(value).toISOString();
+
+test('fixed-link opening waits obey the connection limit in routing and independent validation', () => {
+    for (const mode of ['walk', 'tubeTransfer', 'metroTransfer', 'genericTransfer']) {
+        const rule = { ...walk(), mode, startTime: '2000', endTime: '2100' };
+        const index = createConnectionIndex(network([rule], [], { KGX: 7, STP: 3 }));
+        const arrival = instant('20:00') - (7 + MAX_CONNECTION_WAIT_MINUTES) * MINUTE;
+        const query = { from: 'KGX', to: 'STP', arrival };
+        const connection = resolveConnection(index, query);
+        assert.ok(connection, mode);
+        assert.equal(connection.breakdown.waitingMinutes, MAX_CONNECTION_WAIT_MINUTES);
+        assert.ok(validateFixedLink(index, connection));
+        assert.equal(resolveConnection(index, { ...query, arrival: arrival - 1 }), null, mode);
+        const tooLong = { ...connection, start: arrival - MINUTE, minutes: connection.minutes + 1,
+            breakdown: { ...connection.breakdown, waitingMinutes: MAX_CONNECTION_WAIT_MINUTES + 1 } };
+        assert.equal(validateFixedLink(index, tooLong), false, 'Reconstructed transfers must also reject excessive waits');
+    }
+});
+
+test('reverse fixed-link searches cannot hide an excessive wait after the link closes', () => {
+    const rule = { ...walk(), startTime: '0800', endTime: '0900' };
+    const index = createConnectionIndex(network([rule], [], { KGX: 7, STP: 3 }));
+    const departure = instant('09:00') + (3 + MAX_CONNECTION_WAIT_MINUTES) * MINUTE;
+    const query = { from: 'KGX', to: 'STP', departure, direction: 'latest' };
+    const connection = resolveConnection(index, query);
+    assert.ok(connection);
+    assert.equal(departure - connection.end, MAX_CONNECTION_WAIT_MINUTES * MINUTE);
+    assert.equal(resolveConnection(index, { ...query, departure: departure + 1 }), null);
+});
 
 // Independently transcribed RJTTF939ALF rows. Raw O/D order is retained by import.
 const tube = () => parseFixedLink('M=TUBE,O=EUS,D=VIC,T=14,S=1901,E=2359,P=4,R=1111110', { member: 'ALF', line: 1295 });

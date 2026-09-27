@@ -81,11 +81,120 @@ final class JourneyPlannerUITests: XCTestCase {
     }
 
     @MainActor
+    func testStaffDestinationCancellationsAndUnavailableMapInLightAndLargeDarkText() async throws {
+        let base = "http://127.0.0.1:3016/api/v2"
+        guard let (_, response) = try? await URLSession.shared.data(from: URL(string: base + "/health")!),
+              (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw XCTSkip("Start staff_departures_ui_fixture.mjs for this check.")
+        }
+        for largeText in [false, true] {
+            let app = launch(plannerEnabled: false, largeText: largeText, dark: largeText, apiBase: base, resetAppearance: true)
+            openAddJourney(in: app)
+            for (field, code, name) in [("from", "ECR", "East Croydon"), ("destination", "BTN", "Brighton")] {
+                let input = app.textFields["add-journey.\(field)"]
+                scrollTo(input, in: app, towardTop: field == "from")
+                input.tap()
+                input.typeText(code)
+                let suggestion = app.staticTexts[name].firstMatch
+                XCTAssertTrue(suggestion.waitForExistence(timeout: 5))
+                suggestion.tap()
+            }
+            let save = app.buttons["Save"]
+            scrollTo(save, in: app)
+            save.tap()
+            let first = app.staticTexts["Cancelled to Brighton · Terminates at Haywards Heath"].firstMatch
+            XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 10))
+            let reverse = app.buttons["Reverse journey"].firstMatch
+            XCTAssertTrue(reverse.waitForExistence(timeout: 5))
+            scrollTo(reverse, in: app, towardTop: true)
+            reverse.tap()
+            scrollTo(first, in: app)
+            XCTAssertTrue(first.waitForExistence(timeout: 10))
+            attach("staff-cancellation-first-\(largeText ? "dark-large" : "light")", app: app)
+            let second = app.staticTexts["Cancelled to Brighton · Terminates at Three Bridges"].firstMatch
+            scrollTo(second, in: app)
+            XCTAssertTrue(second.exists)
+            attach("staff-cancellation-second-\(largeText ? "dark-large" : "light")", app: app)
+            second.tap()
+            XCTAssertTrue(app.staticTexts["Service map unavailable"].waitForExistence(timeout: 10))
+            XCTAssertTrue(app.staticTexts["Cancelled to Brighton · Terminates at Three Bridges. Calling points are unavailable for this service."].exists)
+            XCTAssertFalse(app.staticTexts["Checking National Rail for service information…"].exists)
+            XCTAssertFalse(app.staticTexts["Train locations are approximate only"].exists)
+            let retry = app.buttons["Try again now"]
+            scrollTo(retry, in: app)
+            XCTAssertTrue(retry.isHittable)
+            attach("staff-map-unavailable-\(largeText ? "dark-large" : "light")", app: app)
+            app.terminate()
+        }
+    }
+
+    @MainActor
     func testNewJourneyDoesNotOfferSeparateSavedRouteForm() throws {
         let app = launch(plannerEnabled: true)
         openAddJourney(in: app)
         XCTAssertFalse(app.buttons["planner.saved-route"].exists)
         XCTAssertFalse(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Timetable published'")).firstMatch.exists)
+    }
+
+    @MainActor
+    func testSavedRouteEmptyDayLinksToNewJourney() throws {
+        try checkSavedRouteEmptyDay(largeText: false, dark: false, favourite: false)
+    }
+
+    @MainActor
+    func testFavouriteEmptyDayAtLargestTextInDarkModeLinksToNewJourney() throws {
+        try checkSavedRouteEmptyDay(largeText: true, dark: true, favourite: true)
+    }
+
+    @MainActor
+    private func checkSavedRouteEmptyDay(largeText: Bool, dark: Bool, favourite: Bool) throws {
+        let app = launch(plannerEnabled: false, largeText: largeText, dark: dark,
+            apiBase: "http://127.0.0.1:3014/saved-empty/api/v2", resetAppearance: true)
+        saveFixtureRoute(in: app)
+        if favourite {
+            let addFavourite = app.buttons["Add to favourites"].firstMatch
+            scrollTo(addFavourite, in: app, towardTop: true)
+            addFavourite.tap()
+            let confirmFavourite = app.alerts.buttons["Add to favourites"]
+            XCTAssertTrue(confirmFavourite.waitForExistence(timeout: 5))
+            confirmFavourite.tap()
+            app.tabBars.buttons["Favourites"].tap()
+            XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
+        }
+        let initial = app.staticTexts["No journeys found in the next 6 hours."]
+        XCTAssertTrue(initial.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["saved-route.new-journey"].exists)
+        let more = app.buttons["saved-route.later-departures"].firstMatch
+        scrollTo(more, in: app)
+        more.tap()
+        let empty = app.staticTexts["No journeys found in the next 24 hours."]
+        XCTAssertTrue(empty.waitForExistence(timeout: 10))
+        let newJourney = app.buttons["saved-route.new-journey"].firstMatch
+        scrollTo(newJourney, in: app)
+        XCTAssertTrue(newJourney.isHittable)
+        attach(largeText ? "saved-empty-day-largest-text-dark" : "saved-empty-day", app: app)
+        try app.performAccessibilityAudit(for: [.textClipped, .hitRegion]) { issue in
+            // Scope this audit to the empty state; existing card header controls
+            // have their own coverage and are unchanged by this search flow.
+            let label = issue.element?.label ?? ""
+            return issue.element?.identifier != "saved-route.new-journey"
+                && !label.contains("No journeys found") && !label.contains("Use New journey")
+        }
+        newJourney.tap()
+        XCTAssertTrue(app.navigationBars["New journey"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testSavedRouteMoreDeparturesFindsAnOvernightJourneyAfterEmptyWindows() throws {
+        let app = launch(plannerEnabled: false, apiBase: "http://127.0.0.1:3014/saved-overnight/api/v2", resetAppearance: true)
+        saveFixtureRoute(in: app)
+        XCTAssertTrue(app.staticTexts["No journeys found in the next 6 hours."].waitForExistence(timeout: 10))
+        let more = app.buttons["saved-route.later-departures"].firstMatch
+        scrollTo(more, in: app)
+        more.tap()
+        XCTAssertTrue(app.buttons["saved-route.journey.saved-overnight"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["No journeys found in the next 24 hours."].exists)
+        attach("saved-route-overnight-found", app: app)
     }
 
     @MainActor
@@ -1175,7 +1284,8 @@ final class JourneyPlannerUITests: XCTestCase {
         largeText: Bool = false,
         dark: Bool = false,
         apiBase: String = "http://127.0.0.1:1/api/v2",
-        timeZone: String? = nil
+        timeZone: String? = nil,
+        resetAppearance: Bool = false
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["JOURNEY_PLANNER_ENABLED"] = plannerEnabled ? "1" : "0"
@@ -1183,8 +1293,11 @@ final class JourneyPlannerUITests: XCTestCase {
         app.launchEnvironment["UI_TEST_RESET_JOURNEYS"] = "1"
         if let timeZone { app.launchEnvironment["TZ"] = timeZone }
         app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_GB"]
-        if dark { app.launchArguments += ["-AppleInterfaceStyle", "Dark"] }
-        if largeText {
+        if resetAppearance {
+            app.launchArguments += ["-AppleInterfaceStyle", dark ? "Dark" : "Light",
+                "-UIPreferredContentSizeCategoryName", largeText ? "UICTContentSizeCategoryAccessibilityXXXL" : "UICTContentSizeCategoryL"]
+        } else if dark { app.launchArguments += ["-AppleInterfaceStyle", "Dark"] }
+        if largeText && !resetAppearance {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
         }
         app.launch()

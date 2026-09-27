@@ -570,13 +570,51 @@ export class PlannerEngine {
             } finally { indexBuildMs = performance.now() - indexingStarted; }
             checkpoint();
             if (preparationOperations >= maxOperations) throw new PlannerError('SEARCH_TIMEOUT', 'RAPTOR exceeded its work budget.', 504);
-            const result = findRaptorJourneys(request, this.raptorIndex.index, { ...options,
-                maxOperations: maxOperations - preparationOperations,
-                timeoutMs: Math.max(1, timeoutMs - (performance.now() - started)) });
-            queryMetrics = result.metrics;
-            checkpoint();
-            result.metrics = { ...result.metrics, operations: preparationOperations + result.metrics.operations, indexBuildMs };
+            const run = (query, offset, bounds = {}) => {
+                const previous = queryMetrics ?? {};
+                const remaining = maxOperations - preparationOperations - (previous.operations ?? 0);
+                if (remaining <= 0) throw new PlannerError('SEARCH_TIMEOUT', 'RAPTOR exceeded its work budget.', 504);
+                let routed;
+                try {
+                    routed = findRaptorJourneys(query, this.raptorIndex.index, { ...options, ...bounds, offset,
+                        maxOperations: remaining,
+                        timeoutMs: Math.max(1, timeoutMs - (performance.now() - started)) });
+                } catch (error) {
+                    if (error.metrics) for (const [key, value] of Object.entries(previous)) error.metrics[key] = (error.metrics[key] ?? 0) + value;
+                    throw error;
+                }
+                queryMetrics = { ...routed.metrics };
+                for (const [key, value] of Object.entries(previous)) queryMetrics[key] = (queryMetrics[key] ?? 0) + value;
+                checkpoint();
+                return routed;
+            };
             const from = Date.parse(request.time), window = request.windowMinutes * 60000;
+            // Before accepting an arrival beyond this departure window, check
+            // later starts that could improve that earliest arrival without
+            // adding changes. An overnight detour must not stop the app looking
+            // for a later, shorter journey. Keep this comparison bounded; normal
+            // daytime searches and saved departure profiles need no extra pass.
+            const profile = options.departureProfile === true;
+            const result = run(profile ? request : { ...request, limit: 1001 }, profile ? options.offset ?? 0 : 0);
+            if (!profile) {
+                const first = result.journeys[0];
+                const until = first ? Date.parse(first.arrival) : from + window;
+                if (until > from + window) {
+                    const later = run({ ...request, time: new Date(from + window).toISOString(),
+                        windowMinutes: (until - from - window) / 60000,
+                        maxChanges: first.changes, limit: 1001 }, 0,
+                    { latestArrival: until });
+                    result.searchTruncated ||= later.searchTruncated || later.pagination.nextOffset != null;
+                    result.journeys = result.journeys.filter(journey => !later.journeys.some(other =>
+                        other.departure >= journey.departure && other.arrival <= journey.arrival && other.changes <= journey.changes));
+                }
+                const offset = options.offset ?? 0, total = result.journeys.length;
+                result.searchTruncated ||= result.pagination.nextOffset != null;
+                result.journeys = result.journeys.slice(offset, offset + request.limit);
+                result.pagination = { offset, total, nextOffset: offset + request.limit < total ? offset + request.limit : null };
+            }
+            checkpoint();
+            result.metrics = { ...queryMetrics, operations: preparationOperations + queryMetrics.operations, indexBuildMs };
             return { ...result,
                 searchWindow: { from: request.time, to: new Date(from + window).toISOString(), fromInclusive: true, toInclusive: false },
                 pagination: { ...result.pagination, earlierTime: new Date(from - window).toISOString(), laterTime: new Date(from + window).toISOString() },

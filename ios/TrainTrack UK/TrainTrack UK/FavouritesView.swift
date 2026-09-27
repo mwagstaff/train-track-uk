@@ -682,7 +682,8 @@ private extension FavouritesView {
                 onOpenPlannedJourney: { response, semanticKey in
                     cardDestination = .plannedJourney(response,
                         SavedRouteJourneyReference(group: displayedGroup, semanticKey: semanticKey))
-                }
+                },
+                onNewJourney: { router.selected = .addJourney }
             )
         }
         .contentShape(Rectangle())

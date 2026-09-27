@@ -42,6 +42,10 @@ struct DepartureV2: Codable, Identifiable, Hashable {
     let operatorCode: String?
     let siri: SiriDepartureProvenance?
     let hasProviderServiceID: Bool
+    let filterLocationCancelled: Bool
+    let platformIsHidden: Bool
+    let filterCRS: String?
+    let filterLocationName: String?
 
     var id: String { serviceID }
 
@@ -57,6 +61,7 @@ struct DepartureV2: Codable, Identifiable, Hashable {
         case destination, origin
         case serviceID, delayReason, cancelReason, timestamp, `operator`, operatorCode
         case siri
+        case filterLocationCancelled, filterCRS, filterLocationName, platformIsHidden
         case hasProviderServiceID = "has_provider_service_id"
     }
 
@@ -75,11 +80,16 @@ struct DepartureV2: Codable, Identifiable, Hashable {
         operator: String? = nil,
         operatorCode: String? = nil,
         siri: SiriDepartureProvenance? = nil,
-        hasProviderServiceID: Bool = true
+        hasProviderServiceID: Bool = true,
+        filterLocationCancelled: Bool = false,
+        filterCRS: String? = nil,
+        filterLocationName: String? = nil,
+        platformIsHidden: Bool = false
     ) {
         self.departureTime = departureTime
         self.serviceType = serviceType
-        self.platform = platform
+        self.platform = platformIsHidden ? nil : platform
+        self.platformIsHidden = platformIsHidden
         self.isCancelled = isCancelled
         self.length = length
         self.destination = destination
@@ -92,15 +102,22 @@ struct DepartureV2: Codable, Identifiable, Hashable {
         self.operatorCode = operatorCode
         self.siri = siri
         self.hasProviderServiceID = hasProviderServiceID
+        self.filterLocationCancelled = filterLocationCancelled
+        self.filterCRS = filterCRS
+        self.filterLocationName = filterLocationName
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.departureTime = try c.decode(DepartureTimeV2.self, forKey: .departureTime)
         self.serviceType = (try? c.decode(String.self, forKey: .serviceType)) ?? ""
-        self.platform = try? c.decode(String.self, forKey: .platform)
+        self.platformIsHidden = try c.decodeIfPresent(Bool.self, forKey: .platformIsHidden) ?? false
+        self.platform = platformIsHidden ? nil : (try? c.decode(String.self, forKey: .platform))
         self.isCancelled = (try? c.decode(Bool.self, forKey: .isCancelled)) ?? false
         self.length = try? c.decode(Int.self, forKey: .length)
+        self.filterLocationCancelled = try c.decodeIfPresent(Bool.self, forKey: .filterLocationCancelled) ?? false
+        self.filterCRS = try c.decodeIfPresent(String.self, forKey: .filterCRS)
+        self.filterLocationName = try c.decodeIfPresent(String.self, forKey: .filterLocationName)
 
         if let destArr = try? c.decode([PlaceInfoV2].self, forKey: .destination) {
             self.destination = destArr
@@ -151,7 +168,11 @@ struct DepartureV2: Codable, Identifiable, Hashable {
             operator: `operator`,
             operatorCode: operatorCode,
             siri: siri,
-            hasProviderServiceID: hasProviderServiceID
+            hasProviderServiceID: hasProviderServiceID,
+            filterLocationCancelled: filterLocationCancelled,
+            filterCRS: filterCRS,
+            filterLocationName: filterLocationName,
+            platformIsHidden: platformIsHidden
         )
     }
 }

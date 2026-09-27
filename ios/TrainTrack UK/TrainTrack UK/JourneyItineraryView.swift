@@ -64,6 +64,7 @@ struct JourneyCancellation: Hashable {
     let cancelledFrom: String?
     let destinationName: String?
     let serviceContinuesBeyondDestination: Bool
+    var terminatesAt: String? = nil
 
     var isPartial: Bool {
         cancelledFrom != nil && destinationName != nil
@@ -272,6 +273,7 @@ enum JourneyItineraryBuilder {
 
     static func isCancelled(_ departure: DepartureV2) -> Bool {
         departure.isCancelled || normalizedEstimate(departure) == "cancelled"
+            || (departure.filterLocationCancelled && departure.filterCRS != nil)
     }
 
     static func cancellation(
@@ -280,6 +282,15 @@ enum JourneyItineraryBuilder {
         serviceDetailsByID: [String: ServiceDetails]
     ) -> JourneyCancellation? {
         let targetCRS = destinationCRS.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if !departure.isCancelled, normalizedEstimate(departure) != "cancelled", departure.filterLocationCancelled,
+           departure.filterCRS?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == targetCRS {
+            let name = departure.filterLocationName ?? targetCRS
+            let terminus = departure.destination.count == 1
+                && departure.destination.first?.crs?.uppercased() != targetCRS
+                ? departure.destination.first?.locationName : nil
+            return JourneyCancellation(reason: departure.cancelReason, cancelledFrom: name,
+                destinationName: name, serviceContinuesBeyondDestination: false, terminatesAt: terminus)
+        }
         if let details = serviceDetailsByID[departure.serviceID],
            let branch = details.stationBranches.first(where: { branch in
                branch.contains {
@@ -316,7 +327,7 @@ enum JourneyItineraryBuilder {
             }
         }
 
-        guard isCancelled(departure) else { return nil }
+        guard departure.isCancelled || normalizedEstimate(departure) == "cancelled" else { return nil }
         return JourneyCancellation(
             reason: departure.cancelReason,
             cancelledFrom: nil,

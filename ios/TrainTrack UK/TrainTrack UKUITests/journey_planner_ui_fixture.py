@@ -359,6 +359,18 @@ class Handler(BaseHTTPRequestHandler):
                     key = (self.headers.get("X-Planner-Client"), path, route["id"])
                     ROUTE_REQUESTS[key] = ROUTE_REQUESTS.get(key, 0) + 1
                     board = {"id": route["id"], "status": "queued", "pollAfterMs": 1000}
+                    if path.startswith(("/saved-empty/", "/saved-overnight/")):
+                        start = datetime.fromisoformat(route["time"].replace("Z", "+00:00")) if route.get("time") else datetime.now(timezone.utc).replace(microsecond=0)
+                        result = search_result({})
+                        result["search"].update(origin=route["origin"], destination=route["destination"], time=iso(start),
+                            window={"from": iso(start), "to": iso(start + timedelta(hours=6))})
+                        result["journeys"] = []
+                        # Only the last six-hour window contains a departure.
+                        if path.startswith("/saved-overnight/") and start > datetime.now(timezone.utc) + timedelta(hours=17):
+                            result["journeys"] = [detail_journey(start + timedelta(hours=2))]
+                            result["journeys"][0]["id"] = "saved-overnight"
+                        boards.append(dict(board, status="ready", result=result))
+                        continue
                     progress_profile = path.startswith("/saved-progress")
                     hold_queue = path.startswith("/saved-progress-large/")
                     if progress_profile:
