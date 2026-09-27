@@ -1,6 +1,7 @@
 import os from 'os';
 import fs from 'fs';
 import client from 'prom-client';
+import { normalizeUpstreamUrl } from './upstream-metric-labels.js';
 
 const DEFAULT_METRIC_LABELS = Object.freeze({
     service_name: process.env.PROMETHEUS_SERVICE_NAME || 'train-track-api',
@@ -247,33 +248,6 @@ function outcomeFromStatus(status) {
 
 function asLabel(value, fallback = 'unknown') {
     return typeof value === 'string' && value.length > 0 ? value : fallback;
-}
-
-function normalizeUpstreamUrl(url) {
-    if (typeof url !== 'string' || url.length === 0) {
-        return 'unknown';
-    }
-
-    try {
-        const parsed = new URL(url);
-        const pathSegments = parsed.pathname.split('/').filter(Boolean);
-        const getServiceDetailsIndex = pathSegments.indexOf('GetServiceDetails');
-
-        if (getServiceDetailsIndex >= 0 && pathSegments.length > getServiceDetailsIndex + 1) {
-            pathSegments[getServiceDetailsIndex + 1] = ':serviceId';
-        }
-
-        const normalizedPath = `/${pathSegments.join('/')}`;
-        const normalizedQueryEntries = Array.from(parsed.searchParams.entries())
-            .sort(([left], [right]) => left.localeCompare(right));
-        const normalizedQuery = normalizedQueryEntries.length > 0
-            ? `?${normalizedQueryEntries.map(([key, value]) => `${key}=${value}`).join('&')}`
-            : '';
-
-        return `${normalizedPath}${normalizedQuery}`;
-    } catch {
-        return url;
-    }
 }
 
 function escapePrometheusLabelValue(value) {
