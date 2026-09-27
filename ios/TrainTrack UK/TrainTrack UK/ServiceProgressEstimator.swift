@@ -87,7 +87,7 @@ enum ServiceProgressEstimator {
 
     private static func hasActualTime(_ value: String?) -> Bool {
         guard let value else { return false }
-        return !value.isEmpty && value.caseInsensitiveCompare("Cancelled") != .orderedSame
+        return value.caseInsensitiveCompare("On time") == .orderedSame || clockMinutes(value) != nil
     }
 
     private static func resolvedEffectiveDates(

@@ -2001,12 +2001,7 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func liveActivityDepartureText(for departure: DepartureV2?) -> String {
-        guard let departure else { return "—" }
-        let estimated = departure.departureTime.estimated.trimmingCharacters(in: .whitespacesAndNewlines)
-        if estimated.lowercased() == "delayed" {
-            return "Delayed"
-        }
-        return displayDepartureTime(for: departure)
+        displayDepartureTime(for: departure)
     }
 
     private func startActivityLifecycleLogging() {

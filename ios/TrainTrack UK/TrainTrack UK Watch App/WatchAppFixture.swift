@@ -13,7 +13,19 @@ enum WatchAppFixture {
             WatchRoute(id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!, stations: [kent, victoria, WatchStation(crs: "BTN", name: "Brighton")], favourite: false)
         ]
         return WatchLibrary(routes: ProcessInfo.processInfo.arguments.contains("-watch-empty-routes") ? [] : routes,
-                            apiBase: "https://example.com/api/v2", updatedAt: Date())
+                            apiBase: "https://example.com/api/v2", updatedAt: Date(), journeys: ProcessInfo.processInfo.arguments.contains("-watch-in-progress") ? [journey] : [])
+    }
+
+    static var journey: WatchJourney {
+        WatchJourney(id: "preview-journey", context: "preview-leg-1",
+            route: WatchRoute(id: UUID(uuidString: "00000000-0000-0000-0000-000000000003")!,
+                stations: [WatchStation(crs: "ECR", name: "East Croydon"), WatchStation(crs: "BTN", name: "Brighton")], favourite: false),
+            phase: "in_transit", title: "Journey underway", detail: "You’re on the 23:52 Thameslink to Brighton.",
+            destination: "Brighton", arrival: "ETA TBC (delayed)", finalArrival: nil,
+            status: "Currently delayed for an unknown period of time, at Harlington", platform: nil, length: 12,
+            arrivalAction: "I’ve arrived at Brighton", serviceAction: "Change the train I’m on",
+            services: [WatchJourneyService(id: "train-1", departure: "23:52", status: "Delayed", platform: "6", cancelled: false),
+                       WatchJourneyService(id: "train-2", departure: "00:28", status: "Delayed", platform: "6", cancelled: false)], updatedAt: Date())
     }
 
     static func board(for route: WatchRoute) -> WatchBoard {

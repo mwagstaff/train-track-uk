@@ -378,3 +378,34 @@ test('unregisters every Live Activity belonging to a dismissed schedule', async 
     assert.equal(removed, 2);
     assert.equal(manager.subscriptions.size, 0);
 });
+
+
+test('unknown departure delay keeps the same clock time as the phone', () => {
+    const content = liveActivityManager.buildContentState({ fromStation: 'ECR', toStation: 'BTN' }, {
+        fetchedAt: '2026-09-26T23:02:00Z',
+        departures: [
+            { scheduled: '00:24', estimated: 'On time' },
+            { scheduled: '00:28', estimated: 'Delayed', arrivalTime: 'Delayed', platform: '6' }
+        ]
+    });
+    assert.equal(content.estimated, '00:24');
+    assert.equal(content.upcomingDepartures[0].time, '00:28');
+    assert.equal(content.upcomingDepartures[0].delayMinutes, 240);
+});
+
+test('unknown estimates after a reported stop never imply arrival', () => {
+    const details = {
+        previousCallingPoints: [{ callingPoint: [{ locationName: 'Harlington', crs: 'HLN', st: '23:20', at: '23:24' }] }],
+        subsequentCallingPoints: [{ callingPoint: [{ locationName: 'Brighton', crs: 'BTN', st: '00:50', et: 'Delayed' }] }],
+        locationName: 'East Croydon', crs: 'ECR', std: '23:52', etd: 'Delayed'
+    };
+    const status = liveActivityManager.computeRichStatus({ scheduled: '23:52', estimated: 'Delayed' }, details);
+    assert.equal(status, 'Currently delayed for an unknown period of time, at Harlington');
+});
+
+
+test('station delay crosses midnight without becoming on time', () => {
+    assert.equal(liveActivityManager.calculateStationDelay({ st: '23:58', at: '00:07' }), 9);
+    assert.equal(liveActivityManager.calculateDelay('23:58', '00:07'), 9);
+    assert.equal(liveActivityManager.calculateDelay('23:58', '23:57'), 0);
+});

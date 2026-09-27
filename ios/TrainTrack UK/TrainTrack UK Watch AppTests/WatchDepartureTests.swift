@@ -13,6 +13,32 @@ struct WatchDepartureTests {
         UserDefaults(suiteName: "WatchTests.\(UUID())")!
     }
 
+    @Test func widgetLinksDistinguishDeparturesFromProgress() throws {
+        let departures = try #require(WatchLaunch(url: URL(string: "traintrack://in-progress?from=ECR&to=BTN&watch=departures")!))
+        #expect(!departures.showsProgress)
+        let progress = try #require(WatchLaunch(url: URL(string: "traintrack://in-progress?from=ECR&to=BTN&watch=progress")!))
+        #expect(progress.showsProgress)
+        #expect(WatchLaunch(url: URL(string: "https://in-progress?from=ECR&to=BTN")!) == nil)
+        #expect(WatchLaunch(url: URL(string: "traintrack://journey?from=ECR")!) == nil)
+    }
+
+    @Test func journeySnapshotPersistsAndCommandsRejectOldContext() throws {
+        let journey = WatchAppFixture.journey
+        let library = WatchLibrary(routes: [], apiBase: "https://example.com/api/v2", updatedAt: Date(), journeys: [journey])
+        let store = WatchLibraryStore(defaults: defaults())
+        store.receive(try JSONEncoder().encode(library))
+        #expect(store.library?.journeys?.first == journey)
+        let valid = WatchJourneyCommand(requestID: UUID(), journeyID: journey.id, context: journey.context, action: .arrive)
+        #expect(valid.matches(journey))
+        let old = WatchJourneyCommand(requestID: UUID(), journeyID: journey.id, context: "previous-leg", action: .arrive)
+        #expect(!old.matches(journey))
+        let other = WatchJourneyCommand(requestID: UUID(), journeyID: "another-journey", context: journey.context, action: .end)
+        #expect(!other.matches(journey))
+        store.receive(try JSONEncoder().encode(WatchLibrary(routes: [], apiBase: library.apiBase,
+                                                          updatedAt: library.updatedAt.addingTimeInterval(1), journeys: [])))
+        #expect(store.library?.journeys?.isEmpty == true)
+    }
+
     @Test func libraryPersistsAndEmptySnapshotRemovesRoutes() throws {
         let defaults = defaults()
         let store = WatchLibraryStore(defaults: defaults)

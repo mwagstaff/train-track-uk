@@ -1001,6 +1001,15 @@ export class LiveActivityManager {
                 }
             }
 
+            // Unknown estimates cannot move the train beyond its last reported stop.
+            // In particular, never infer arrival just because a timetable time has passed.
+            const lastReported = allStations.findLastIndex(s => !this.isCancelledAtStation(s)
+                && (s.at === 'On time' || /^\d{2}:\d{2}$/.test(s.at || '')));
+            const nextReported = allStations.slice(lastReported + 1).find(s => !this.isCancelledAtStation(s));
+            if (lastReported >= 0 && nextReported?.et?.toLowerCase() === 'delayed') {
+                return `Currently delayed for an unknown period of time, at ${allStations[lastReported].locationName}`;
+            }
+
             // Time-based position detection (matching iOS logic)
             // approachWindow: within 1 min of next station -> approaching
             // atGraceWindow: remain "at <prev>" for 30s after its estimated departure
@@ -1094,7 +1103,7 @@ export class LiveActivityManager {
 
             // After final station
             const last = allStations[allStations.length - 1];
-            if (last) {
+            if (last && (last.at === 'On time' || /^\d{2}:\d{2}$/.test(last.at || ''))) {
                 const d = this.calculateStationDelay(last);
                 const lateText = d === 0 ? 'on time' : `${d} minute${d === 1 ? '' : 's'} late`;
                 return `Arrived ${lateText} at ${last.locationName}`;
@@ -1240,28 +1249,11 @@ export class LiveActivityManager {
     }
 
     calculateStationDelay(station) {
-        const scheduled = station.st;
-
-        // Check actual arrival time first (for stations already passed)
-        if (station.at && station.at !== 'Cancelled') {
-            if (station.at === 'On time') return 0;
-            const sched = moment(scheduled, 'HH:mm');
-            const actual = moment(station.at, 'HH:mm');
-            if (sched.isValid() && actual.isValid()) {
-                return Math.max(0, actual.diff(sched, 'minutes'));
-            }
+        const actual = station.at;
+        if (actual === 'On time' || /^\d{2}:\d{2}$/.test(actual || '')) {
+            return this.calculateDelay(station.st, actual);
         }
-
-        // Fall back to estimated time
-        const estimated = station.et;
-        if (!scheduled || !estimated || estimated === 'On time') return 0;
-        if (estimated.toLowerCase() === 'delayed') return 240; // Unknown delay
-
-        const sched = moment(scheduled, 'HH:mm');
-        const est = moment(estimated, 'HH:mm');
-
-        if (!sched.isValid() || !est.isValid()) return 0;
-        return Math.max(0, est.diff(sched, 'minutes'));
+        return this.calculateDelay(station.st, station.et);
     }
 
     parseStationTime(timeStr) {
@@ -1274,6 +1266,7 @@ export class LiveActivityManager {
         if (!dep) return '';
         if (dep.isCancelled) return 'Cancelled';
         const delay = this.calculateDelay(dep.scheduled, dep.estimated);
+        if (delay >= 240) return 'Delayed for an unknown period of time';
         if (delay > 0) return `Delayed by ${delay} min`;
         if (dep.estimated === 'On time') return 'On time';
         return this.getTimeString(dep.estimated, dep.scheduled);
@@ -1289,10 +1282,11 @@ export class LiveActivityManager {
     calculateDelay(scheduled, estimated) {
         if (!scheduled || !estimated || estimated === 'On time') return 0;
         if (estimated.trim().toLowerCase() === 'delayed') return 240;
-        const sched = moment(scheduled, 'HH:mm');
-        const est = moment(estimated, 'HH:mm');
+        const sched = moment(scheduled, 'HH:mm', true);
+        const est = moment(estimated, 'HH:mm', true);
         if (!sched.isValid() || !est.isValid()) return 0;
-        return Math.max(0, est.diff(sched, 'minutes'));
+        const forward = (est.diff(sched, 'minutes') + 1440) % 1440;
+        return forward <= 720 ? forward : 0;
     }
 
     getTimeString(estimated, scheduled, fallback = '') {
@@ -1304,9 +1298,7 @@ export class LiveActivityManager {
     }
 
     getDisplayTime(estimated, scheduled, fallback = '') {
-        if (typeof estimated === 'string' && estimated.trim().toLowerCase() === 'delayed') {
-            return 'Delayed';
-        }
+        // Keep the scheduled clock time when the delay has no estimate, matching iOS.
         return this.getTimeString(estimated, scheduled, fallback);
     }
 

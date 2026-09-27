@@ -22,10 +22,12 @@ nonisolated struct WatchLibrary: Codable, Equatable, Sendable {
     let routes: [WatchRoute]
     let apiBase: String
     let updatedAt: Date
+    var journeys: [WatchJourney]? = nil
 
     static func decode(_ data: Data) throws -> Self {
         let library = try JSONDecoder().decode(Self.self, from: data)
-        guard library.routes.allSatisfy({ $0.stations.count >= 2 }),
+        guard (library.journeys ?? []).allSatisfy({ $0.route.stations.count >= 2 }),
+              library.routes.allSatisfy({ $0.stations.count >= 2 }),
               Set(library.routes.map(\.id)).count == library.routes.count,
               let url = URL(string: library.apiBase),
               ["https", "http"].contains(url.scheme), url.host != nil else {

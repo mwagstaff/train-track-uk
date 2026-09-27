@@ -17,7 +17,10 @@ struct Live_ActivityLiveActivity: Widget {
         components.host = deepLinkHost(for: context.state.journeyPhase)
         let queryItems = [
             URLQueryItem(name: "from", value: context.state.deepLinkFromCRS ?? context.state.fromCRS),
-            URLQueryItem(name: "to", value: context.state.deepLinkToCRS ?? context.state.toCRS)
+            URLQueryItem(name: "to", value: context.state.deepLinkToCRS ?? context.state.toCRS),
+            URLQueryItem(name: "watch", value: context.state.journeyPhase.showsInProgressService ? "progress" : "departures"),
+            URLQueryItem(name: "fromName", value: context.state.journeyStartName),
+            URLQueryItem(name: "toName", value: context.state.journeyDestinationName)
         ]
         components.queryItems = queryItems
         return components.url
@@ -151,7 +154,7 @@ private struct LiveActivitySmartStackView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 6) {
-                PrimaryDepartureTimeText(state: state, font: .title, weight: .bold)
+                PrimaryDepartureTimeText(state: state, font: state.estimated.count > 5 ? .headline : .title, weight: .bold)
                     .minimumScaleFactor(0.5)
                     .accessibilityLabel("\(primaryTimeLabel(for: state)) \(state.isCancelled ? state.scheduledDeparture ?? state.estimated : state.estimated)")
 
@@ -182,8 +185,9 @@ private struct LiveActivitySmartStackView: View {
             .accessibilityElement(children: .combine)
 
             if state.journeyPhase.showsInProgressService {
-                Text(state.destinationTitle)
+                Text(primaryStatusText(for: state) ?? state.journeyStatusMessage)
                     .font(.system(size: detailSize, weight: .semibold))
+                    .lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .minimumScaleFactor(0.8)
             } else if !state.upcomingDepartures.isEmpty {
@@ -485,6 +489,9 @@ private struct PrimaryDepartureTimeText: View {
     private var text: String {
         if state.isCancelled {
             return state.scheduledDeparture ?? state.estimated
+        }
+        if state.estimated.caseInsensitiveCompare("Delayed") == .orderedSame {
+            return state.journeyPhase.showsInProgressService ? "TBC" : state.scheduledDeparture ?? "TBC"
         }
         return state.estimated
     }

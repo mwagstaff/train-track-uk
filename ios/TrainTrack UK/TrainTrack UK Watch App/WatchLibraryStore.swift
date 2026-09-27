@@ -6,6 +6,9 @@ import WatchConnectivity
 final class WatchLibraryStore: NSObject, WCSessionDelegate {
     private(set) var library: WatchLibrary?
     private(set) var syncMessage: String?
+    private(set) var actionMessage: String?
+    private(set) var isPerformingAction = false
+    @ObservationIgnored private var isSyncing = false
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private var started = false
 
@@ -28,7 +31,7 @@ final class WatchLibraryStore: NSObject, WCSessionDelegate {
         WCSession.default.activate()
     }
 
-    func requestSync() {
+    func requestSync(refreshJourney: Bool = false) {
         #if DEBUG && targetEnvironment(simulator)
         if WatchAppFixture.enabled { return }
         #endif
@@ -40,15 +43,47 @@ final class WatchLibraryStore: NSObject, WCSessionDelegate {
             syncMessage = "Open TrainTrack UK on your iPhone to sync saved routes."
             return
         }
+        guard !isSyncing else { return }
+        isSyncing = true
         syncMessage = "Syncing with iPhone…"
-        session.sendMessage(["request": WatchLibrary.contextKey], replyHandler: { reply in
+        session.sendMessage(["request": WatchLibrary.contextKey, "refreshJourney": refreshJourney], replyHandler: { reply in
             let data = reply[WatchLibrary.contextKey] as? Data
             Task { @MainActor in
+                self.isSyncing = false
                 if let data { self.receive(data) }
                 else { self.syncMessage = "Couldn't sync routes. Try again with the iPhone app open." }
             }
         }, errorHandler: { _ in
-            Task { @MainActor in self.syncMessage = "Open TrainTrack UK on your iPhone to sync saved routes." }
+            Task { @MainActor in self.isSyncing = false; self.syncMessage = "Open TrainTrack UK on your iPhone to sync journey data." }
+        })
+    }
+
+    func perform(_ action: WatchJourneyCommand.Action, journey: WatchJourney, serviceID: String? = nil) {
+        guard !isPerformingAction else { return }
+        let session = WCSession.default
+        guard session.activationState == .activated, session.isReachable else {
+            actionMessage = "Connect to your iPhone and open TrainTrack UK to update this journey. Nothing has changed."
+            return
+        }
+        let command = WatchJourneyCommand(requestID: UUID(), journeyID: journey.id,
+                                          context: journey.context, action: action, serviceID: serviceID)
+        guard let data = try? JSONEncoder().encode(command) else { return }
+        isPerformingAction = true
+        actionMessage = nil
+        session.sendMessage([WatchJourneyCommand.messageKey: data], replyHandler: { reply in
+            let snapshot = reply[WatchLibrary.contextKey] as? Data
+            let error = reply["error"] as? String
+            Task { @MainActor in
+                self.isPerformingAction = false
+                if let snapshot { self.receive(snapshot) }
+                self.actionMessage = error ?? "Journey updated on your iPhone."
+            }
+        }, errorHandler: { _ in
+            Task { @MainActor in
+                self.isPerformingAction = false
+                self.actionMessage = "Couldn't confirm the update. Sync with your iPhone before trying again."
+                self.requestSync()
+            }
         })
     }
 

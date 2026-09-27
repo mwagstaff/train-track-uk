@@ -1,13 +1,25 @@
 import SwiftUI
+import WidgetKit
 
 struct ContentView: View {
     @State private var library = WatchLibraryStore()
+    @State private var path: [WatchLaunch] = []
+    @State private var pendingActivityLaunch = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 if let snapshot = library.library {
+                    if let journey = snapshot.journeys?.first {
+                        Section {
+                            NavigationLink {
+                                WatchInProgressView(library: library, journeyID: journey.id)
+                            } label: {
+                                Label("In Progress", systemImage: "location.fill")
+                            }
+                        }
+                    }
                     Section {
                         NavigationLink {
                             WatchRoutesView(library: library, favourites: true)
@@ -39,11 +51,50 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("TrainTrack UK")
+            .navigationDestination(for: WatchLaunch.self) { launch in
+                if launch.showsProgress {
+                    WatchInProgressView(library: library, launch: launch)
+                } else {
+                    WatchLinkedDeparturesView(library: library, launch: launch)
+                }
+            }
         }
-        .task { library.start() }
+        .task {
+            library.start()
+            #if DEBUG && targetEnvironment(simulator)
+            if let raw = ProcessInfo.processInfo.environment["WATCH_LAUNCH_URL"], let url = URL(string: raw) { open(url) }
+            #endif
+        }
+        .onOpenURL { open($0) }
+        .onContinueUserActivity(NSUserActivityTypeLiveActivity) { activity in
+            if let url = activity.webpageURL { open(url) }
+            else { pendingActivityLaunch = true; openCurrentActivity() }
+            library.requestSync(refreshJourney: true)
+        }
+        .onChange(of: library.library) { _, _ in
+            if pendingActivityLaunch { openCurrentActivity() }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { library.requestSync() }
         }
+    }
+
+    private func open(_ url: URL) {
+        guard let launch = WatchLaunch(url: url) else { return }
+        pendingActivityLaunch = false
+        path = [launch]
+        library.requestSync(refreshJourney: true)
+    }
+
+    private func openCurrentActivity() {
+        guard let journey = library.library?.journeys?.first else { return }
+        var url = URLComponents()
+        url.scheme = "traintrack"
+        url.host = "in-progress"
+        url.queryItems = [URLQueryItem(name: "from", value: journey.route.origin.crs),
+                          URLQueryItem(name: "to", value: journey.route.destination.crs),
+                          URLQueryItem(name: "watch", value: ["pending_start", "at_start"].contains(journey.phase) ? "departures" : "progress")]
+        if let value = url.url { open(value) }
     }
 
     private var syncButton: some View {
@@ -86,14 +137,15 @@ private struct WatchRoutesView: View {
     }
 }
 
-private struct WatchDeparturesView: View {
+struct WatchDeparturesView: View {
     let routeID: UUID
     let library: WatchLibraryStore
+    var fallbackRoute: WatchRoute? = nil
     @State private var store = WatchBoardStore()
     @State private var refreshGeneration = 0
     @Environment(\.scenePhase) private var scenePhase
 
-    private var route: WatchRoute? { library.library?.routes.first { $0.id == routeID } }
+    private var route: WatchRoute? { library.library?.routes.first { $0.id == routeID } ?? fallbackRoute }
     private var apiBase: String { library.library?.apiBase ?? "" }
     private var refreshIdentity: String { "\(scenePhase == .active)-\(apiBase)-\(String(describing: route))-\(refreshGeneration)" }
 
