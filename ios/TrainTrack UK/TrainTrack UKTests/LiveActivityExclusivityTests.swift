@@ -99,6 +99,19 @@ struct LiveActivityDismissalPolicyTests {
 
 struct LiveActivityInProgressUpdatePolicyTests {
     @Test
+    func boardingCannotBeResetButTrainCorrectionsAndResumptionAreAllowed() {
+        for current: JourneyActivityAttributes.JourneyPhase in [.enRoute, .arrived] {
+            for incoming: JourneyActivityAttributes.JourneyPhase in [.pendingStart, .atStart] {
+                #expect(LiveActivityInProgressUpdatePolicy.isPreBoardingReset(from: current, to: incoming))
+            }
+            #expect(!LiveActivityInProgressUpdatePolicy.isPreBoardingReset(from: current, to: .enRoute))
+            #expect(!LiveActivityInProgressUpdatePolicy.isPreBoardingReset(from: current, to: .arrived))
+        }
+        #expect(!LiveActivityInProgressUpdatePolicy.isPreBoardingReset(from: .pendingStart, to: .atStart))
+        #expect(!LiveActivityInProgressUpdatePolicy.isPreBoardingReset(from: .atStart, to: .enRoute))
+    }
+
+    @Test
     func staleLocalOnTimeResultDoesNotReplaceDelayedServerEstimate() {
         let current = state(
             estimated: "08:06",

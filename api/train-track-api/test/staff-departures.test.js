@@ -36,7 +36,7 @@ test('captured overnight departures retain destination cancellations and usable 
     assert.equal(parsed.departures[1].destination.crs, 'TBD');
 });
 
-test('staff-first board primes the map cache without any service-detail request', async () => {
+test('staff-first board primes onward details and bounds optional upstream lookups', async () => {
     let now = Date.parse(captured.generatedAt);
     const calls = [];
     const provider = new StaffDepartures({ now: () => now, credentials: () => 'test', request: async ({ url }) => {
@@ -46,13 +46,15 @@ test('staff-first board primes the map cache without any service-detail request'
     assert.equal(calls.length, 2); // trains and replacement buses
     assert.ok(calls.every(url => url.includes('GetDepBoardWithDetails/ECR/20260927T014006')));
     assert.equal((await provider.getDetails(firstID)).subsequentCallingPoints[0].callingPoint.at(-1).crs, 'BTN');
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 3); // optional origin lookup fails safely for this mock
+    await provider.getDetails(firstID);
+    assert.equal(calls.length, 3); // failure is throttled within the cache window
     now += 31_000;
     const [first, same] = await Promise.all([provider.getDetails(firstID), provider.getDetails(firstID)]);
     assert.deepEqual(first, same);
-    assert.equal(calls.length, 3);
-    assert.ok(calls[2].includes('/ECR/20260926T235200?'));
-    assert.ok(calls[2].includes('timeWindow=2'));
+    assert.equal(calls.length, 5);
+    assert.ok(calls[3].includes('/ECR/20260926T235200?'));
+    assert.ok(calls[3].includes('timeWindow=2'));
 });
 
 test('a cold cache recovers by exact dated reference and never chooses a neighbouring service', async () => {
@@ -144,4 +146,112 @@ test('existing service-details API dispatch serves a staff reference from the bo
     const details = await getServiceDetailsWithContext(firstID, { fromCRS: 'ECR', toCRS: 'BTN' });
     assert.equal(details.crs, 'ECR');
     assert.equal(details.subsequentCallingPoints[0].callingPoint.at(-1).isCancelled, true);
+});
+
+const kentHouse = JSON.parse(fs.readFileSync(new URL('./fixtures/kent-house-upstream.json', import.meta.url)));
+const kentHouseID = 'staff_202609298086990_KTH_20260929T074200_P';
+
+function kentHouseProvider(changeOrigin = board => board) {
+    let now = Date.parse(kentHouse.boarding.generatedAt);
+    const calls = [];
+    const provider = new StaffDepartures({ now: () => now, credentials: () => 'test', request: async ({ url }) => {
+        calls.push(url);
+        const isOrigin = url.includes('/ORP/');
+        const data = structuredClone(isOrigin ? kentHouse.origin : kentHouse.boarding);
+        data.generatedAt = new Date(now).toISOString();
+        return { data: isOrigin ? changeOrigin(data) : data };
+    } });
+    provider.remember(normalizeStaffDepartureBoard(kentHouse.boarding, { station: 'KTH', destination: 'VIC' }).details);
+    return { provider, calls, advance: () => { now += 31_000; } };
+}
+
+test('KTH map restores earlier stops from the same dated train and retains them through refreshes', async () => {
+    const { provider, calls, advance } = kentHouseProvider();
+    const [details, concurrent] = await Promise.all([provider.getDetails(kentHouseID), provider.getDetails(kentHouseID)]);
+    assert.deepEqual(details, concurrent);
+    assert.deepEqual(details.previousCallingPoints[0].callingPoint.map(p => p.crs), ['ORP', 'PET', 'BKL', 'BMS', 'SRT', 'BKJ']);
+    assert.equal(details.crs, 'KTH');
+    assert.equal(details.std, '07:42');
+    assert.equal(details.subsequentCallingPoints[0].callingPoint.at(-1).crs, 'VIC');
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0].includes('/ORP/20260929T054200?'));
+    assert.equal(new URL(calls[0]).searchParams.get('filterCRS'), 'KTH');
+    advance();
+    assert.deepEqual((await provider.getDetails(kentHouseID)).previousCallingPoints, details.previousCallingPoints);
+    assert.equal(calls.length, 3); // refresh live timings on both sides of the boarding station
+});
+
+test('upstream recovery rejects wrong trains, wrong dated boarding calls and ambiguous or truncated boards', async () => {
+    const changes = [
+        board => { board.trainServices[0].rid = '202609298087003'; return board; },
+        board => { board.trainServices[0].subsequentLocations.find(p => p.crs === 'KTH').std = '2026-09-30T07:42:00'; return board; },
+        board => { board.trainServices.push(structuredClone(board.trainServices[0])); return board; },
+        board => { board.isTruncated = true; return board; },
+        board => { board.filtercrs = 'VIC'; return board; },
+        () => { throw new Error('timeout'); }
+    ];
+    for (const change of changes) {
+        const { provider, calls } = kentHouseProvider(change);
+        const details = await provider.getDetails(kentHouseID);
+        assert.deepEqual(details.previousCallingPoints[0].callingPoint, []);
+        assert.equal(details.subsequentCallingPoints[0].callingPoint.at(-1).crs, 'VIC');
+        await provider.getDetails(kentHouseID);
+        assert.equal(calls.length, 1);
+    }
+});
+
+test('upstream lookup crosses midnight using the boarding date without the host timezone', async () => {
+    const raw = structuredClone(kentHouse.boarding);
+    raw.trainServices[0].std = '2026-09-30T00:42:00';
+    const { provider, calls } = kentHouseProvider();
+    const entries = normalizeStaffDepartureBoard(raw, { station: 'KTH', destination: 'VIC' }).details;
+    provider.remember(entries);
+    await provider.getDetails([...entries.keys()][0]);
+    assert.ok(calls[0].includes('/ORP/20260929T224200?'));
+});
+
+
+test('earlier station live timings advance even when departure polling keeps boarding details fresh', async () => {
+    let reachedShortlands = false;
+    const { provider, calls, advance } = kentHouseProvider(board => {
+        const shortlands = board.trainServices[0].subsequentLocations.find(p => p.crs === 'SRT');
+        shortlands.departureType = reachedShortlands ? 'Actual' : 'Forecast';
+        shortlands.atdSpecified = reachedShortlands;
+        shortlands.etdSpecified = true;
+        shortlands.etd = shortlands.std;
+        shortlands.atd = shortlands.std;
+        return board;
+    });
+    const first = await provider.getDetails(kentHouseID);
+    assert.equal(first.previousCallingPoints[0].callingPoint.find(p => p.crs === 'SRT').at, undefined);
+    await provider.getDetails(kentHouseID);
+    assert.equal(calls.length, 1); // no extra lookup within 30 seconds
+    advance();
+    reachedShortlands = true;
+    const freshBoard = structuredClone(kentHouse.boarding);
+    freshBoard.generatedAt = new Date(Date.parse(freshBoard.generatedAt) + 31_000).toISOString();
+    provider.remember(normalizeStaffDepartureBoard(freshBoard, { station: 'KTH', destination: 'VIC' }).details);
+    const [next, concurrent] = await Promise.all([provider.getDetails(kentHouseID), provider.getDetails(kentHouseID)]);
+    assert.deepEqual(next, concurrent);
+    assert.equal(next.previousCallingPoints[0].callingPoint.find(p => p.crs === 'SRT').at, '07:36');
+    assert.equal(calls.length, 2); // only origin lookup; boarding data was already fresh
+    assert.equal(calls.filter(url => url.includes('/ORP/')).length, 2);
+});
+
+test('failed earlier-station refresh preserves the last good route and retries after its freshness window', async () => {
+    let fail = false;
+    const { provider, calls, advance } = kentHouseProvider(board => {
+        if (fail) throw new Error('temporary upstream failure');
+        return board;
+    });
+    const first = await provider.getDetails(kentHouseID);
+    fail = true;
+    advance();
+    assert.deepEqual((await provider.getDetails(kentHouseID)).previousCallingPoints, first.previousCallingPoints);
+    await provider.getDetails(kentHouseID);
+    assert.equal(calls.filter(url => url.includes('/ORP/')).length, 2);
+    fail = false;
+    advance();
+    assert.deepEqual((await provider.getDetails(kentHouseID)).previousCallingPoints, first.previousCallingPoints);
+    assert.equal(calls.filter(url => url.includes('/ORP/')).length, 3);
 });

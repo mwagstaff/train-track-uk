@@ -248,6 +248,77 @@ test('unconfirmed boarding never promotes the next departure and can recover a c
     assert.equal(subscription.serviceMatchConfirmed, false);
 });
 
+for (const currentPhase of ['en_route', 'arrived']) {
+    for (const resetPhase of ['pending_start', 'at_start']) {
+        test(`${resetPhase} cannot reset a ${currentPhase} activity or block a train correction`, async () => {
+            const manager = new LiveActivityManager();
+            const subscription = {
+                deviceId: 'phase-device', activityId: 'phase-activity',
+                fromStation: 'KTH', toStation: 'VIC', journeyPhase: currentPhase,
+                preferredServiceId: '0742-train', lastJourneyStatusObservedAtMs: 1000
+            };
+            manager.subscriptions.set(manager.buildKey(subscription.deviceId, subscription.activityId), subscription);
+            let polls = 0;
+            manager.saveSubscriptionToMongo = async () => {};
+            manager.pollSubscription = async () => { polls += 1; return { sent: true }; };
+
+            const result = await manager.handleJourneyPhase(subscription.deviceId, {
+                fromStation: 'KTH', toStation: 'VIC', phase: resetPhase,
+                preferredServiceId: '0757-train', statusObservedAtMs: 3000
+            });
+            assert.equal(result.pushed, 0);
+            assert.equal(polls, 0);
+            assert.equal(subscription.journeyPhase, currentPhase);
+            assert.equal(subscription.preferredServiceId, '0742-train');
+            assert.equal(subscription.lastJourneyStatusObservedAtMs, 1000);
+
+            // Includes resuming an arrived journey and changing the matched train.
+            await manager.handleJourneyPhase(subscription.deviceId, {
+                phase: 'en_route', preferredServiceId: 'corrected-train', statusObservedAtMs: 2000
+            });
+            assert.equal(subscription.journeyPhase, 'en_route');
+            assert.equal(subscription.preferredServiceId, 'corrected-train');
+            assert.equal(polls, 1);
+        });
+
+        test(`late ${resetPhase} registration preserves a ${currentPhase} train and refreshes its token`, () => {
+            const manager = new LiveActivityManager();
+            const existing = {
+                deviceId: 'register-device', activityId: 'register-activity',
+                fromStation: 'KTH', toStation: 'VIC', journeyPhase: currentPhase,
+                preferredServiceId: '0742-train', pushToken: 'old-token',
+                autoEndOnArrival: false, autoEndOnDeparture: false
+            };
+            const key = manager.buildKey(existing.deviceId, existing.activityId);
+            manager.subscriptions.set(key, existing);
+            // Stop after registration construction, before persistence or push I/O.
+            manager.evictDuplicateSessionsForDevice = () => {
+                manager.subscriptions.delete(key);
+                return [];
+            };
+            const registered = manager.registerSubscription({
+                ...existing, journeyPhase: resetPhase, pushToken: 'new-token',
+                preferredServiceId: '0757-train', autoEndOnArrival: true, autoEndOnDeparture: true
+            });
+            assert.equal(registered.pushToken, 'new-token');
+            assert.equal(registered.journeyPhase, currentPhase);
+            assert.equal(registered.preferredServiceId, '0742-train');
+            assert.equal(registered.autoEndOnArrival, false);
+            assert.equal(registered.autoEndOnDeparture, false);
+        });
+    }
+}
+
+test('a new activity can still begin in the pre-boarding phase', async () => {
+    const manager = new LiveActivityManager();
+    const subscription = { deviceId: 'new-device', activityId: 'new-activity', journeyPhase: 'pending_start' };
+    manager.subscriptions.set(manager.buildKey(subscription.deviceId, subscription.activityId), subscription);
+    manager.saveSubscriptionToMongo = async () => {};
+    manager.pollSubscription = async () => ({ sent: true });
+    await manager.handleJourneyPhase(subscription.deviceId, { phase: 'at_start', statusObservedAtMs: 1000 });
+    assert.equal(subscription.journeyPhase, 'at_start');
+});
+
 test('unconfirmed journey pushes a clearing update even with no matching departures', async () => {
     const manager = new LiveActivityManager();
     const subscription = {

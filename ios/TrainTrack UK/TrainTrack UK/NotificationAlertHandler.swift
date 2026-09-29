@@ -24,6 +24,11 @@ final class NotificationAlertHandler {
         }
         guard var info = NotificationLegInfo(content: content) else { return }
 
+        if info.alertType == NotificationAlertType.originWelcome {
+            DeepLinkRouter.shared.openInProgress()
+            return
+        }
+
         if info.alertType == "activation_prompt" {
             await openJourneyForActivation(info: &info)
             return

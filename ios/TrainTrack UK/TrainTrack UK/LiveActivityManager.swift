@@ -52,6 +52,13 @@ enum LiveActivityDismissalPolicy {
 }
 
 enum LiveActivityInProgressUpdatePolicy {
+    static func isPreBoardingReset(
+        from current: JourneyActivityAttributes.JourneyPhase,
+        to incoming: JourneyActivityAttributes.JourneyPhase
+    ) -> Bool {
+        current.showsInProgressService && !incoming.showsInProgressService
+    }
+
     static func reconcilingLocalUpdate(
         _ candidate: JourneyActivityAttributes.ContentState,
         with current: JourneyActivityAttributes.ContentState,
@@ -412,6 +419,14 @@ final class LiveActivityManager: ObservableObject {
         let startCRS = startStation.crs.uppercased()
         let destinationCRS = destinationStation.crs.uppercased()
         let routeKey = "\(startCRS)_\(destinationCRS)"
+        // Candidate arming targets a route, so a different subscription for the
+        // same route must not reset the journey already being tracked.
+        if !phase.showsInProgressService,
+           let active = JourneyTrackingCoordinator.shared.activeJourney,
+           active.plannedOrigin.crs.uppercased() == startCRS,
+           active.plannedDestination.crs.uppercased() == destinationCRS {
+            return
+        }
         let updateID = UUID()
         journeyPhaseUpdateIDs[routeKey] = updateID
         defer {
@@ -430,6 +445,9 @@ final class LiveActivityManager: ObservableObject {
             let deepLinkFrom = (routeState.deepLinkFromCRS ?? routeState.fromCRS).uppercased()
             let deepLinkTo = (routeState.deepLinkToCRS ?? routeState.toCRS).uppercased()
             guard deepLinkFrom == startCRS, deepLinkTo == destinationCRS else { continue }
+            guard !LiveActivityInProgressUpdatePolicy.isPreBoardingReset(
+                from: routeState.journeyPhase, to: phase
+            ) else { continue }
 
             let currentLeg = checkpoint?.currentLeg
             let matchedServiceID = (phase.showsInProgressService ? currentLeg?.serviceID : nil)

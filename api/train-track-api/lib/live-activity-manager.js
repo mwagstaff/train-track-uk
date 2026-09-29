@@ -17,6 +17,11 @@ const APP_CHECKIN_WARNING_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_APP_C
 const DEFAULT_MAX_ACTIVE_PER_DEVICE = 1;
 const JOURNEY_COMPLETION_GRACE_MS = 10 * 60 * 1000;
 
+function isPreBoardingReset(currentPhase, incomingPhase) {
+    return ['en_route', 'arrived'].includes(currentPhase)
+        && ['pending_start', 'at_start'].includes(incomingPhase);
+}
+
 export class LiveActivityManager {
     constructor() {
         this.subscriptions = new Map();
@@ -99,6 +104,14 @@ export class LiveActivityManager {
         this.deletedDeviceIds.delete(deviceId);
         const key = this.buildKey(deviceId, activityId);
         const existing = this.subscriptions.get(key);
+        // Token registration can arrive after boarding with an old board state.
+        // Refresh the token, but keep ownership of the train already being tracked.
+        if (isPreBoardingReset(existing?.journeyPhase, journeyPhase)) {
+            journeyPhase = existing.journeyPhase;
+            preferredServiceId = existing.preferredServiceId;
+            autoEndOnDeparture = existing.autoEndOnDeparture;
+            autoEndOnArrival = existing.autoEndOnArrival;
+        }
 
         // Track token changes for debugging
         const tokenPreview = this.maskToken(pushToken);
@@ -1682,6 +1695,10 @@ export class LiveActivityManager {
         });
 
         const results = await Promise.all(subscriptions.map(async (subscription) => {
+            // Arming a candidate must never reset this activity after boarding.
+            // Reject before advancing the timestamp so a valid train correction
+            // already in flight can still be applied.
+            if (isPreBoardingReset(subscription.journeyPhase, phase)) return 0;
             // Independent status uploads may arrive out of order after recovery
             // or a manual correction. Keep the most recently observed state.
             if (Number.isFinite(statusObservedAtMs)) {

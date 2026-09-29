@@ -119,6 +119,61 @@ struct RailwayRoutingTests {
         )
     }
 
+    @Test @MainActor func liveRouteGreysOnlyTheGeometryBehindTheTrain() throws {
+        // The train is between the first two calls; the passenger boards at KTH later.
+        let stations = ["ORP", "PET", "KTH", "PNE"].map {
+            callingPoint(crs: $0, scheduled: "07:42", estimated: "07:44")
+        }
+        let route = ServiceRailwayRoute(
+            coordinates: (0...6).map { CLLocationCoordinate2D(latitude: 51, longitude: Double($0)) },
+            cumulativeDistances: [0, 10, 40, 50, 70, 90, 100],
+            stationCoordinateIndices: [0, 2, 4, 6]
+        )
+        // Skipped calls and unequal distances must still end grey at the train marker.
+        let skippedCall = ServiceProgressEstimate(previousStationIndex: 0, nextStationIndex: 2, fraction: 0.5)
+        #expect(route.floatingStationIndex(for: skippedCall) == 0.875)
+        #expect(route.floatingStationIndex(for: .unavailable) == nil)
+        let pieces = RailwayLiveRouteSegments.make(route: route, stations: stations,
+                                                  idPrefix: "primary", floatingStationIndex: 0.5)
+        #expect(pieces.map(\.status) == [.completed, .minorDelay, .minorDelay, .minorDelay])
+        let greyEnd = try #require(pieces[0].coordinates.last)
+        let colouredStart = try #require(pieces[1].coordinates.first)
+        // Half the distance along the curved/polyline segment, not half its vertices.
+        #expect(abs(greyEnd.longitude - (1 + 1.0 / 3)) < 0.000001)
+        #expect(greyEnd.longitude == colouredStart.longitude)
+        #expect(pieces[0].coordinates.map(\.longitude) == [0, 1, greyEnd.longitude])
+        #expect(pieces[1].coordinates.last?.longitude == 2)
+        #expect(RailwayRouteSegmentStatus.completed.color == .gray)
+
+        let atKentHouse = RailwayLiveRouteSegments.make(route: route, stations: stations,
+                                                       idPrefix: "primary", floatingStationIndex: 2)
+        #expect(atKentHouse.map(\.status) == [.completed, .completed, .minorDelay])
+        let arrived = RailwayLiveRouteSegments.make(route: route, stations: stations,
+                                                   idPrefix: "primary", floatingStationIndex: 3)
+        #expect(arrived.map(\.status) == [.completed, .completed, .completed])
+    }
+
+    @Test @MainActor func unavailableProgressAndHistoricalMapsRetainDelayColours() {
+        let stations = [
+            callingPoint(crs: "AAA", scheduled: "07:42"),
+            callingPoint(crs: "BBB", scheduled: "07:44"),
+            callingPoint(crs: "CCC", scheduled: "07:46", estimated: "07:47"),
+            callingPoint(crs: "DDD", scheduled: "07:48", estimated: "07:55")
+        ]
+        let route = ServiceRailwayRoute(
+            coordinates: (0...3).map { CLLocationCoordinate2D(latitude: 51, longitude: Double($0)) },
+            cumulativeDistances: [0, 10, 20, 30], stationCoordinateIndices: [0, 1, 2, 3]
+        )
+        for progress: Double? in [nil, -1, .nan, 0] {
+            let pieces = RailwayLiveRouteSegments.make(route: route, stations: stations,
+                                                      idPrefix: "primary", floatingStationIndex: progress)
+            #expect(pieces.map(\.status) == [.onTime, .minorDelay, .majorDelayOrCancellation])
+        }
+        let historical = RailwayLiveRouteSegments.make(route: route, stations: stations,
+            idPrefix: "primary", highlightedIndices: [1, 2], floatingStationIndex: 3)
+        #expect(historical.map(\.status) == [.minorDelay, .majorDelayOrCancellation])
+    }
+
     @Test func historicalMapHighlightsOnlySegmentsWithinTheTravelledStationRange() {
         #expect(RailwayTravelHighlight.segmentIndices(for: 2...5) == Set([2, 3, 4]))
         #expect(RailwayTravelHighlight.segmentIndices(for: nil) == nil)

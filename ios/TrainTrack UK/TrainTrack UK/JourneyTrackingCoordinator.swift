@@ -434,7 +434,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
 
     func manuallyBoard(subscriptionID: String, departure: DepartureV2) async {
         if armedCandidates.first(where: { $0.subscriptionId == subscriptionID })?.originArrivedAt == nil {
-            await handleOriginArrival(subscriptionID: subscriptionID)
+            await handleOriginArrival(subscriptionID: subscriptionID, sendWelcomeNotification: false)
         }
         guard let candidate = armedCandidates.first(where: { $0.subscriptionId == subscriptionID }),
               candidate.stations.count >= 2 else { return }
@@ -448,7 +448,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
 
     func manuallyBoardWithoutMatchedService(subscriptionID: String) async {
         if armedCandidates.first(where: { $0.subscriptionId == subscriptionID })?.originArrivedAt == nil {
-            await handleOriginArrival(subscriptionID: subscriptionID)
+            await handleOriginArrival(subscriptionID: subscriptionID, sendWelcomeNotification: false)
         }
         guard let candidate = armedCandidates.first(where: { $0.subscriptionId == subscriptionID }),
               candidate.stations.count >= 2 else { return }
@@ -1032,7 +1032,8 @@ final class JourneyTrackingCoordinator: ObservableObject {
         subscriptionID: String,
         from: String? = nil,
         to: String? = nil,
-        detectedAt: Date = Date()
+        detectedAt: Date = Date(),
+        sendWelcomeNotification: Bool = true
     ) async {
         guard activeJourney == nil, !isFinishingJourney, !isResumingJourney else { return }
         guard let index = Self.candidateIndexForRouteEvent(
@@ -1075,11 +1076,13 @@ final class JourneyTrackingCoordinator: ObservableObject {
             "to": second.crs,
             "detected_at": detectedAt
         ])
+        var welcomeDepartures: [DepartureV2] = []
         do {
             let snapshot = try await NetworkServicePhone.shared.fetchDeparturesAggregated(
                 pairs: [(from: first.crs, to: second.crs)]
             )
             let departures = snapshot[pairKey(from: first.crs, to: second.crs)]?.departures ?? []
+            welcomeDepartures = departures
             RecentServiceStore.shared.observe(departures, fromCRS: first.crs, toCRS: second.crs)
             // Scheduled and live-session identifiers can change while the request is in flight.
             // Keep the station evidence with the surviving candidate for the same journey.
@@ -1113,6 +1116,12 @@ final class JourneyTrackingCoordinator: ObservableObject {
               candidate.isCurrent,
               candidate.source != .scheduled || !hasInProgressAdHocJourney else { return }
         let destination = candidate.stations.last ?? second
+        if sendWelcomeNotification, !Task.isCancelled {
+            await postOriginWelcomeNotification(
+                candidate, departures: welcomeDepartures, detectedAt: detectedAt
+            )
+        }
+        guard activeJourney == nil, !isFinishingJourney, !isResumingJourney else { return }
         await LiveActivityManager.shared.updateJourneyPhase(
             .atStart,
             startStation: first,
@@ -2633,6 +2642,42 @@ final class JourneyTrackingCoordinator: ObservableObject {
             return [active.plannedStations[active.plannedLegIndex], active.currentPlannedLegDestination]
         }
         return leg.callingPoints.map { station(crs: $0.crs, fallbackName: $0.locationName) }
+    }
+
+    private func postOriginWelcomeNotification(
+        _ candidate: ArmedJourneyHistoryCandidate,
+        departures: [DepartureV2],
+        detectedAt: Date
+    ) async {
+        let now = Date()
+        // Replayed location evidence can recover tracking long after leaving the station.
+        guard now.timeIntervalSince(detectedAt) < 2 * 60,
+              let origin = candidate.stations.first,
+              let destination = candidate.stations.last else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "\(origin.name) → \(destination.name)"
+        content.body = OriginWelcomeNotification.body(stationName: origin.name, departures: departures, now: now)
+        content.sound = .default
+        content.categoryIdentifier = NotificationCategoryId.journeyHistory
+        content.userInfo = [
+            NotificationPayloadKeys.alertType: NotificationAlertType.originWelcome,
+            NotificationPayloadKeys.from: origin.crs,
+            NotificationPayloadKeys.to: destination.crs
+        ]
+        let request = UNNotificationRequest(
+            identifier: "origin_welcome_\(origin.crs)_\(destination.crs)_\(Int(detectedAt.timeIntervalSince1970))",
+            content: content, trigger: nil
+        )
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+            log("origin_welcome_scheduled", "Scheduled welcome at \(origin.crs)", metadata: [
+                "notification_id": request.identifier, "detected_at": detectedAt
+            ])
+        } catch {
+            log("origin_welcome_failed", "Could not schedule welcome: \(error.localizedDescription)", metadata: [
+                "notification_id": request.identifier, "error": error.localizedDescription
+            ])
+        }
     }
 
     private func postArrivalConfirmedNotification(

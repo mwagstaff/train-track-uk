@@ -18,6 +18,7 @@ struct RailwayEstimatedTrainMarker: View {
 }
 
 enum RailwayRouteSegmentStatus: Equatable {
+    case completed
     case onTime
     case minorDelay
     case majorDelayOrCancellation
@@ -50,6 +51,7 @@ enum RailwayRouteSegmentStatus: Equatable {
 
     var color: Color {
         switch self {
+        case .completed: .gray
         case .onTime: Color.accentColor
         case .minorDelay: .yellow
         case .majorDelayOrCancellation: .red
@@ -246,10 +248,46 @@ func railwayClockTime(_ value: String?) -> String? {
     return String(format: "%02d:%02d", hour, minute)
 }
 
-private struct RailwayMapSegment: Identifiable {
+struct RailwayMapSegment: Identifiable {
     let id: String
     let coordinates: [CLLocationCoordinate2D]
     let status: RailwayRouteSegmentStatus
+}
+
+enum RailwayLiveRouteSegments {
+    static func make(
+        route: ServiceRailwayRoute,
+        stations: [CallingPoint],
+        idPrefix: String,
+        highlightedIndices: Set<Int>? = nil,
+        floatingStationIndex: Double? = nil
+    ) -> [RailwayMapSegment] {
+        guard stations.count >= 2, route.stationCount == stations.count else { return [] }
+        return stations.indices.dropLast().flatMap { index -> [RailwayMapSegment] in
+            guard highlightedIndices?.contains(index) ?? true else { return [] }
+            let progress = floatingStationIndex.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil }
+            let completedFraction = highlightedIndices == nil
+                ? min(max((progress ?? 0) - Double(index), 0), 1) : 0
+            var pieces: [RailwayMapSegment] = []
+            if completedFraction > 0 {
+                pieces.append(RailwayMapSegment(
+                    id: "\(idPrefix)-\(index)-completed",
+                    coordinates: route.coordinates(fromStation: index, throughStation: index + 1,
+                                                   fractionRange: 0...completedFraction),
+                    status: .completed
+                ))
+            }
+            if completedFraction < 1 {
+                pieces.append(RailwayMapSegment(
+                    id: "\(idPrefix)-\(index)-ahead",
+                    coordinates: route.coordinates(fromStation: index, throughStation: index + 1,
+                                                   fractionRange: completedFraction...1),
+                    status: .between(stations[index], and: stations[index + 1])
+                ))
+            }
+            return pieces.filter { $0.coordinates.count >= 2 }
+        }
+    }
 }
 
 struct ServiceRailwayMapBranch: Identifiable {
@@ -946,15 +984,16 @@ struct ServiceRailwayMapView: View {
         let highlightedPrimaryIndices = RailwayTravelHighlight.segmentIndices(
             for: highlightedTravelRange
         )
-        return segments(
-            for: route,
+        return RailwayLiveRouteSegments.make(
+            route: route,
             stations: stations,
             idPrefix: "primary",
-            highlightedIndices: highlightedPrimaryIndices
+            highlightedIndices: highlightedPrimaryIndices,
+            floatingStationIndex: liveFloatingStationIndex
         )
             + additionalRoutes.flatMap { branch in
-                segments(
-                    for: branch.route,
+                RailwayLiveRouteSegments.make(
+                    route: branch.route,
                     stations: branch.stations,
                     idPrefix: branch.id,
                     highlightedIndices: highlightedIndices(for: branch)
@@ -969,25 +1008,6 @@ struct ServiceRailwayMapView: View {
         let hasHistoricalHighlight = highlightedTravelRange != nil
             || additionalRoutes.contains { $0.highlightedTravelRange != nil }
         return hasHistoricalHighlight ? [] : nil
-    }
-
-    private func segments(
-        for route: ServiceRailwayRoute,
-        stations: [CallingPoint],
-        idPrefix: String,
-        highlightedIndices: Set<Int>?
-    ) -> [RailwayMapSegment] {
-        guard stations.count >= 2, route.stationCount == stations.count else { return [] }
-        return stations.indices.dropLast().compactMap { index in
-            guard highlightedIndices?.contains(index) ?? true else { return nil }
-            let coordinates = route.coordinates(fromStation: index, throughStation: index + 1)
-            guard coordinates.count >= 2 else { return nil }
-            return RailwayMapSegment(
-                id: "\(idPrefix)-\(index)",
-                coordinates: coordinates,
-                status: .between(stations[index], and: stations[index + 1])
-            )
-        }
     }
 
     private var stationItems: [RailwayMapStationItem] {
@@ -1122,7 +1142,9 @@ struct ServiceRailwayMapView: View {
     }
 
     private var liveFloatingStationIndex: Double {
-        onboardPosition?.floatingStationIndex ?? progress.floatingIndex
+        onboardPosition?.floatingStationIndex
+            ?? route.floatingStationIndex(for: progress)
+            ?? progress.floatingIndex
     }
 
     private var trainCoordinateKey: String {
@@ -1224,7 +1246,7 @@ struct ServiceRailwayMapView: View {
     private func stationDot(for item: RailwayMapStationItem) -> some View {
         if normalizedCRS(item.station.crs) == normalizedCRS(fromCRS) {
             Circle()
-                .fill(.orange)
+                .fill(isBehindTrain(item) ? .gray : .orange)
                 .frame(width: 18, height: 18)
                 .overlay(Circle().stroke(.white, lineWidth: 2))
                 .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
@@ -1242,7 +1264,12 @@ struct ServiceRailwayMapView: View {
         let isCurrent = progress.isAvailable
             && progress.previousStationIndex == progress.nextStationIndex
             && item.primaryIndex == progress.previousStationIndex
-        return (.white, isCurrent)
+        return (isBehindTrain(item) ? .gray : .white, isCurrent)
+    }
+
+    private func isBehindTrain(_ item: RailwayMapStationItem) -> Bool {
+        guard highlightedTravelRange == nil, let index = item.primaryIndex else { return false }
+        return liveFloatingStationIndex > Double(index) + 0.001
     }
 
     private func stationAccessibilityLabel(for item: RailwayMapStationItem) -> String {
@@ -1254,14 +1281,13 @@ struct ServiceRailwayMapView: View {
             return "\(label), selected journey destination"
         }
         let status: String
-        if let index = item.primaryIndex,
+        if isBehindTrain(item) {
+            status = "completed"
+        } else if let index = item.primaryIndex,
            progress.isAvailable,
            progress.previousStationIndex == progress.nextStationIndex,
            index == progress.previousStationIndex {
             status = "current station"
-        } else if let index = item.primaryIndex,
-                  progress.isAvailable && index <= progress.previousStationIndex {
-            status = "completed"
         } else {
             status = "upcoming"
         }

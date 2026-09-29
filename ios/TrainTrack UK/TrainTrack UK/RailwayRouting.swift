@@ -55,6 +55,19 @@ nonisolated struct ServiceRailwayRoute: Sendable {
             return stationCount == 1 ? 0 : nil
         }
 
+        return floatingStationIndex(atDistance: projectedDistance)
+    }
+
+    func floatingStationIndex(for progress: ServiceProgressEstimate) -> Double? {
+        guard progress.isAvailable,
+              stationCoordinateIndices.indices.contains(progress.previousStationIndex),
+              stationCoordinateIndices.indices.contains(progress.nextStationIndex) else { return nil }
+        let start = cumulativeDistances[stationCoordinateIndices[progress.previousStationIndex]]
+        let end = cumulativeDistances[stationCoordinateIndices[progress.nextStationIndex]]
+        return floatingStationIndex(atDistance: start + (end - start) * min(max(progress.fraction, 0), 1))
+    }
+
+    private func floatingStationIndex(atDistance projectedDistance: CLLocationDistance) -> Double {
         for upperStation in 1..<stationCount {
             let lowerDistance = cumulativeDistances[stationCoordinateIndices[upperStation - 1]]
             let upperDistance = cumulativeDistances[stationCoordinateIndices[upperStation]]
@@ -70,14 +83,31 @@ nonisolated struct ServiceRailwayRoute: Sendable {
         return Double(stationCount - 1)
     }
 
-    func coordinates(fromStation start: Int, throughStation end: Int) -> [CLLocationCoordinate2D] {
+    func coordinates(
+        fromStation start: Int,
+        throughStation end: Int,
+        fractionRange: ClosedRange<Double> = 0...1
+    ) -> [CLLocationCoordinate2D] {
         guard stationCount > 0 else { return [] }
         let lowerStation = min(max(min(start, end), 0), stationCount - 1)
         let upperStation = min(max(max(start, end), 0), stationCount - 1)
         let lowerCoordinate = stationCoordinateIndices[lowerStation]
         let upperCoordinate = stationCoordinateIndices[upperStation]
         guard lowerCoordinate <= upperCoordinate else { return [] }
-        return Array(coordinates[lowerCoordinate...upperCoordinate])
+        if fractionRange == 0...1 {
+            return Array(coordinates[lowerCoordinate...upperCoordinate])
+        }
+        let startDistance = cumulativeDistances[lowerCoordinate]
+        let length = cumulativeDistances[upperCoordinate] - startDistance
+        let lowerDistance = startDistance + length * min(max(fractionRange.lowerBound, 0), 1)
+        let upperDistance = startDistance + length * min(max(fractionRange.upperBound, 0), 1)
+        guard lowerDistance < upperDistance,
+              let first = coordinate(atDistance: lowerDistance),
+              let last = coordinate(atDistance: upperDistance) else { return [] }
+        let interior = (lowerCoordinate...upperCoordinate).filter {
+            cumulativeDistances[$0] > lowerDistance && cumulativeDistances[$0] < upperDistance
+        }.map { coordinates[$0] }
+        return [first] + interior + [last]
     }
 
     private func distanceAlongRoute(

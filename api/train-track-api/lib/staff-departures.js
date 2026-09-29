@@ -79,7 +79,7 @@ function callingPoints(locations, service, previous = false) {
     });
 }
 
-export function normalizeStaffDepartureBoard(raw, { station, destination, type = 'P', serviceID }) {
+export function normalizeStaffDepartureBoard(raw, { station, destination, type = 'P', serviceID, rid }) {
     if (!raw || raw.crs !== station || !Number.isFinite(Date.parse(raw.generatedAt))
         || raw.servicesAreUnavailable === true || raw.isTruncated === true) {
         throw new Error('Staff departure board unavailable or truncated');
@@ -91,6 +91,7 @@ export function normalizeStaffDepartureBoard(raw, { station, destination, type =
     if (raw[field] != null && !Array.isArray(raw[field])) throw new Error('Malformed staff departure board');
     const details = new Map();
     const services = list(raw[field]).filter(service => (!serviceID || staffServiceReference(service, station, type) === serviceID)
+        && (!rid || service.rid === rid)
         && publicCall(service)
         && service.isPassengerService !== false && service.isDeleted !== true
         && service.filterLocationOperational !== true).map(service => {
@@ -115,6 +116,7 @@ export function normalizeStaffDepartureBoard(raw, { station, destination, type =
         };
         details.set(serviceID, {
             ...shared, generatedAt: raw.generatedAt, locationName: raw.locationName, crs: station,
+            origin: places(service.origin),
             sta: specified(service, 'sta') ? clock(service.sta) : undefined,
             std: clock(service.std), eta: arrival.actual ? undefined : arrival.estimated, ata: arrival.actual,
             etd: departure.actual ? undefined : departure.estimated, atd: departure.actual,
@@ -162,7 +164,12 @@ export class StaffDepartures {
             const existing = this.details.get(id);
             if (existing && Date.parse(existing.value.generatedAt) > Date.parse(details.generatedAt)) continue;
             this.details.delete(id);
-            this.details.set(id, { value: details, fetchedAt: this.now() });
+            // Departure boards omit the upstream route. Keep an exact-service prefix
+            // already recovered on demand when a newer board refreshes live timings.
+            const previousCallingPoints = details.previousCallingPoints?.[0]?.callingPoint?.length
+                ? details.previousCallingPoints : existing?.value.previousCallingPoints;
+            this.details.set(id, { value: { ...details, previousCallingPoints: previousCallingPoints ?? details.previousCallingPoints },
+                fetchedAt: this.now(), prefixFetchedAt: existing?.prefixFetchedAt });
         }
         while (this.details.size > MAX_CACHE_ENTRIES) this.details.delete(this.details.keys().next().value);
     }
@@ -178,25 +185,71 @@ export class StaffDepartures {
             generatedAt: results.map(result => result.board.generatedAt).sort()[0] };
     }
 
+    async restorePreviousCallingPoints(id, reference, cached) {
+        const origins = cached.value.origin;
+        // Earlier calls carry live forecasts/actuals, not just route geometry.
+        // Refresh on their own clock even when boarding-board polling stays fresh.
+        if (!this.enabled || origins?.length !== 1 || !/^[A-Z]{3}$/.test(origins[0].crs)
+            || origins[0].crs === reference.station
+            || (cached.prefixFetchedAt != null && this.now() - cached.prefixFetchedAt < FRESH_MS)) return;
+        cached.prefixFetchedAt = this.now();
+        const origin = origins[0].crs;
+        // Look back from the boarding departure, preserving London wall time across
+        // midnight. A bounded query failure must not discard the onward live data.
+        const wallTime = reference.scheduled.replace(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})$/, '$1-$2-$3T$4:$5:$6Z');
+        const start = new Date(Date.parse(wallTime) - 2 * 60 * 60_000).toISOString().slice(0, 19).replaceAll('-', '').replaceAll(':', '');
+        const query = new URLSearchParams({ numRows: '149', timeWindow: '120', services: reference.type,
+            filterCRS: reference.station, filterType: 'to' });
+        try {
+            const response = await this.request({ api: 'rail_staff_departure_board', operation: 'get_departure_board_with_details',
+                url: `${BOARD_URL}${origin}/${start}?${query}`,
+                headers: { 'x-apikey': this.credentials() }, maxRetries: 0, timeoutMs: 3000 });
+            const field = reference.type === 'B' ? 'busServices' : 'trainServices';
+            const matches = list(response.data?.[field]).filter(service => service.rid === reference.rid);
+            if (matches.length !== 1) return;
+            const anchors = list(matches[0].subsequentLocations).filter(location => publicCall(location) && specified(location, 'std')
+                && location.crs === reference.station
+                && staffServiceReference({ ...location, rid: reference.rid }, reference.station, reference.type) === id);
+            if (anchors.length !== 1) return;
+            const result = normalizeStaffDepartureBoard(response.data, {
+                station: origin, destination: reference.station, type: reference.type, rid: reference.rid
+            });
+            if (result.details.size !== 1) return;
+            const prefix = callingPoints([{
+                ...matches[0], crs: origin, locationName: response.data.locationName,
+                platformIsHidden: response.data.platformsAreHidden === true || matches[0].platformIsHidden === true
+            }, ...list(matches[0].subsequentLocations).slice(0,
+                matches[0].subsequentLocations.indexOf(anchors[0]))], matches[0], true);
+            const current = this.details.get(id);
+            if (current) current.value.previousCallingPoints = [{ callingPoint: prefix }];
+        } catch {
+            // The current station and onward live data remain useful during a prefix lookup failure.
+        }
+    }
+
     async getDetails(id) {
         const reference = parseStaffServiceReference(id);
         if (!reference) return { error: 'Invalid staff service reference', unavailable: true };
-        const cached = this.details.get(id);
-        if (cached && Date.parse(cached.value.generatedAt) <= this.now() + 5000 && this.now() - cached.fetchedAt < FRESH_MS
-            && this.now() - Date.parse(cached.value.generatedAt) < FRESH_MS) return structuredClone(cached.value);
         if (this.inflight.has(id)) return this.inflight.get(id);
         const promise = (async () => {
-            if (!this.enabled) return { error: 'Staff service data unavailable' };
-            try {
-                const result = await this.requestBoard(reference.station, reference.scheduled, { type: reference.type, serviceID: id });
-                this.remember(result.details);
-                // Exact RID, station, dated departure and transport type: never
-                // substitute a nearby departure, or yesterday's train after midnight.
-                const detail = result.details.has(id) ? this.details.get(id)?.value : null;
-                return detail ? structuredClone(detail) : { error: 'Service no longer available', unavailable: true };
-            } catch {
-                return { error: 'Staff service lookup failed' };
+            let cached = this.details.get(id);
+            const fresh = cached && Date.parse(cached.value.generatedAt) <= this.now() + 5000
+                && this.now() - cached.fetchedAt < FRESH_MS
+                && this.now() - Date.parse(cached.value.generatedAt) < FRESH_MS;
+            if (!fresh) {
+                if (!this.enabled) return { error: 'Staff service data unavailable' };
+                try {
+                    const result = await this.requestBoard(reference.station, reference.scheduled, { type: reference.type, serviceID: id });
+                    this.remember(result.details);
+                    // Exact dated identity: never substitute a neighbouring train.
+                    if (!result.details.has(id)) return { error: 'Service no longer available', unavailable: true };
+                    cached = this.details.get(id);
+                } catch {
+                    return { error: 'Staff service lookup failed' };
+                }
             }
+            await this.restorePreviousCallingPoints(id, reference, cached);
+            return structuredClone(this.details.get(id)?.value ?? cached.value);
         })().finally(() => this.inflight.delete(id));
         this.inflight.set(id, promise);
         return promise;
