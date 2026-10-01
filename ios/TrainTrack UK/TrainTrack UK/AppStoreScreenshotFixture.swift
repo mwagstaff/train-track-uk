@@ -11,8 +11,17 @@ enum AppStoreScreenshotFixture {
               let screen = ProcessInfo.processInfo.environment["RELEASE_SCREENSHOT_SCREEN"] else { return }
         prepared = true
         do {
-            try await StationsService.shared.loadStations()
-            let allStations = StationsService.shared.stations
+            let allStations: [Station]
+            if screen.hasPrefix("in-progress-offline") {
+                // Offline UI checks must be able to seed a journey without an API connection.
+                allStations = [
+                    Station(crs: "ECR", name: "East Croydon", longitude: "-0.0928", latitude: "51.3755"),
+                    Station(crs: "GTW", name: "Gatwick Airport", longitude: "-0.1610", latitude: "51.1569")
+                ]
+            } else {
+                try await StationsService.shared.loadStations()
+                allStations = StationsService.shared.stations
+            }
             func stations(_ codes: [String]) -> [Station] {
                 codes.compactMap { code in allStations.first { $0.crs == code } }
             }
@@ -96,7 +105,7 @@ enum AppStoreScreenshotFixture {
                     ))
                     TabRouter.shared.selected = .inProgress
                 }
-            case "in-progress", "route-map":
+            case "in-progress", "route-map", "in-progress-offline", "in-progress-offline-empty":
                 let route = stations(["ECR", "GTW"])
                 if route.count == 2 {
                     JourneyTrackingCoordinator.shared.installScreenshotCheckpoint(checkpoint(
@@ -124,7 +133,17 @@ enum AppStoreScreenshotFixture {
                             atd: leg.callingPoints.first?.actualTime,
                             delayReason: nil, cancelReason: nil
                         )
-                        DeparturesStore.shared.installScreenshotServiceDetails(details, serviceID: leg.serviceID!)
+                        if screen == "in-progress-offline-empty" {
+                            var empty = checkpoint
+                            empty.legs[0].serviceID = "offline-empty-service"
+                            empty.legs[0].callingPoints = []
+                            empty.legs[0].serviceCallingPoints = []
+                            JourneyTrackingCoordinator.shared.installScreenshotCheckpoint(empty)
+                        } else {
+                            DeparturesStore.shared.installScreenshotServiceDetails(
+                                details, serviceID: leg.serviceID!, isStale: screen == "in-progress-offline"
+                            )
+                        }
                     }
                     try await Task.sleep(for: .milliseconds(300))
                     TabRouter.shared.selected = .inProgress

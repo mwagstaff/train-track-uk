@@ -16,8 +16,18 @@ final class DeparturesStore: ObservableObject {
     @Published private(set) var dataAvailabilityByPair: [String: JourneyDataAvailability] = [:]
     @Published private(set) var unavailableServiceIDs: Set<String> = []
     @Published private(set) var serviceDetailsById: [String: ServiceDetails] = [:]
+    @Published private(set) var serviceDataAvailabilityByID: [String: JourneyDataAvailability] = [:]
     @Published private(set) var loadingDetailsByServiceId: [String: ServiceLoadingV1] = [:]
     @Published private(set) var isInitialLoadInProgress = true
+
+    private struct CachedService: Codable {
+        let details: ServiceDetails
+        let fetchedAt: Date
+    }
+    private static let serviceCacheKey = "recentServiceDetailsV1"
+    private static let serviceCacheLifetime: TimeInterval = 6 * 60 * 60
+    private let defaults: UserDefaults
+    private let fetchServiceDetails: ([String], ServiceDetailsLookupContext?) async throws -> ServiceDetailsBatch
 
     private var timerCancellable: AnyCancellable?
     private var journeysCancellable: AnyCancellable?
@@ -35,16 +45,38 @@ final class DeparturesStore: ObservableObject {
         let task: Task<Void, Never>
     }
 
-    private init() {
+    init(
+        defaults: UserDefaults = UserDefaults(suiteName: "group.dev.skynolimit.traintrack") ?? .standard,
+        fetchServiceDetails: @escaping ([String], ServiceDetailsLookupContext?) async throws -> ServiceDetailsBatch = {
+            try await NetworkServicePhone.shared.fetchServiceDetailsBatchChunked(ids: $0, context: $1)
+        }
+    ) {
+        self.defaults = defaults
+        self.fetchServiceDetails = fetchServiceDetails
+        if let data = defaults.data(forKey: Self.serviceCacheKey),
+           let cached = try? JSONDecoder().decode([String: CachedService].self, from: data) {
+            let cutoff = Date().addingTimeInterval(-Self.serviceCacheLifetime)
+            for (id, entry) in cached where entry.fetchedAt > cutoff {
+                serviceDetailsById[id] = entry.details
+                serviceDetailsFetchedAt[id] = entry.fetchedAt
+                serviceDataAvailabilityByID[id] = JourneyDataAvailability(
+                    status: .stale, lastSuccessfulUpdate: entry.fetchedAt
+                )
+            }
+        }
         // Remove data created by the retired pinned-journey feature.
         UserDefaults(suiteName: "group.dev.skynolimit.traintrack")?
             .removeObject(forKey: "pinned_departures_v1")
     }
 
     #if (DEBUG || APP_STORE_CAPTURE) && targetEnvironment(simulator)
-    func installScreenshotServiceDetails(_ details: ServiceDetails, serviceID: String) {
+    func installScreenshotServiceDetails(_ details: ServiceDetails, serviceID: String, isStale: Bool = false) {
         serviceDetailsById[serviceID] = details
-        serviceDetailsFetchedAt[serviceID] = Date()
+        let date = Date().addingTimeInterval(isStale ? -180 : 0)
+        serviceDetailsFetchedAt[serviceID] = date
+        serviceDataAvailabilityByID[serviceID] = JourneyDataAvailability(
+            status: isStale ? .stale : .live, lastSuccessfulUpdate: date
+        )
     }
     #endif
 
@@ -118,6 +150,7 @@ final class DeparturesStore: ObservableObject {
             let departures = applyDepartureSnapshots(snapshots, replacingExistingDepartures: false)
             scheduleLoadingRefresh(for: departures)
         } catch {
+            guard !Task.isCancelled, !(error is CancellationError), (error as? URLError)?.code != .cancelled else { return }
             markDepartureRefreshFailed(for: pairs)
         }
     }
@@ -130,6 +163,10 @@ final class DeparturesStore: ObservableObject {
             originSnapshot: departuresByPair[key] ?? [], currentDepartures: [departure])
         serviceDetailsById[departure.serviceID] = details
         serviceDetailsFetchedAt[departure.serviceID] = Date()
+        serviceDataAvailabilityByID[departure.serviceID] = JourneyDataAvailability(
+            status: .live, lastSuccessfulUpdate: serviceDetailsFetchedAt[departure.serviceID]
+        )
+        persistServiceDetails()
         RecentServiceStore.shared.observe([departure], fromCRS: fromCRS, toCRS: toCRS)
     }
 
@@ -384,6 +421,7 @@ final class DeparturesStore: ObservableObject {
         let targets = requestedIDs.filter { id in
             if force { return true }
             guard serviceDetailsById[id] != nil else { return true }
+            if serviceDataAvailabilityByID[id]?.status != .live { return true }
             guard let freshnessInterval else { return false }
             guard let fetchedAt = serviceDetailsFetchedAt[id] else { return true }
             return now.timeIntervalSince(fetchedAt) >= freshnessInterval
@@ -405,11 +443,15 @@ final class DeparturesStore: ObservableObject {
             let task = Task { [weak self, newTargets, context] in
                 let batch: ServiceDetailsBatch
                 do {
-                    batch = try await NetworkServicePhone.shared.fetchServiceDetailsBatchChunked(
-                        ids: newTargets,
-                        context: context
-                    )
+                    guard let self else { return }
+                    batch = try await self.fetchServiceDetails(newTargets, context)
                 } catch {
+                    if error is CancellationError || (error as? URLError)?.code == .cancelled || Task.isCancelled {
+                        for id in newTargets where self?.serviceDetailsRequestsByID[id]?.token == token {
+                            self?.serviceDetailsRequestsByID[id] = nil
+                        }
+                        return
+                    }
                     batch = ServiceDetailsBatch()
                 }
                 self?.finishServiceDetailsRequest(
@@ -453,11 +495,42 @@ final class DeparturesStore: ObservableObject {
                 updatedDetails[id] = detail
                 serviceDetailsFetchedAt[id] = fetchedAt
                 didUpdateDetails = true
+                serviceDataAvailabilityByID[id] = JourneyDataAvailability(status: .live, lastSuccessfulUpdate: fetchedAt)
+            } else {
+                serviceDataAvailabilityByID[id] = JourneyDataAvailability(
+                    status: updatedDetails[id] == nil ? .unavailable : .stale,
+                    lastSuccessfulUpdate: serviceDetailsFetchedAt[id]
+                )
             }
             serviceDetailsRequestsByID[id] = nil
         }
         if didUpdateDetails {
             serviceDetailsById = updatedDetails
+            persistServiceDetails()
+        }
+    }
+
+    func serviceDataAvailability(for serviceID: String, now: Date = Date()) -> JourneyDataAvailability? {
+        guard let availability = serviceDataAvailabilityByID[serviceID] else { return nil }
+        if availability.status == .live, let date = availability.lastSuccessfulUpdate,
+           now.timeIntervalSince(date) > 60 {
+            return JourneyDataAvailability(status: .stale, lastSuccessfulUpdate: date)
+        }
+        return availability
+    }
+
+    private func persistServiceDetails() {
+        let cutoff = Date().addingTimeInterval(-Self.serviceCacheLifetime)
+        let recent = serviceDetailsFetchedAt.filter { $0.value > cutoff }
+            .sorted { $0.value > $1.value }.prefix(100)
+        var cached: [String: CachedService] = [:]
+        for (id, date) in recent {
+            if let details = serviceDetailsById[id] {
+                cached[id] = CachedService(details: details, fetchedAt: date)
+            }
+        }
+        if let data = try? JSONEncoder().encode(cached) {
+            defaults.set(data, forKey: Self.serviceCacheKey)
         }
     }
 

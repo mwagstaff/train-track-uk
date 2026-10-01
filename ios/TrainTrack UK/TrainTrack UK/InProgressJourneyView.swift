@@ -20,6 +20,16 @@ enum InProgressJourneyPresentation {
         return "\(eta), \(delayMinutes) minute\(delayMinutes == 1 ? "" : "s") late"
     }
 
+    static func savedArrivalTime(for leg: JourneyHistoryLeg?, destinationCRS: String) -> String? {
+        guard let leg else { return nil }
+        let points = leg.callingPoints + (leg.serviceCallingPoints ?? [])
+        guard let point = points.first(where: {
+            $0.crs.caseInsensitiveCompare(destinationCRS) == .orderedSame
+        }) else { return nil }
+        let time = point.actualTime ?? point.estimatedTime ?? point.scheduledTime
+        return time == "On time" ? point.scheduledTime : time
+    }
+
     static func originalArrivalText(time: String?, delayMinutes: Int?) -> String? {
         guard let time, let delayMinutes, delayMinutes > 0 else { return nil }
         return "Originally due to arrive at \(JourneyCardPresentation.arrivalTimeLabel(time))"
@@ -148,6 +158,7 @@ struct InProgressJourneyView: View {
                     completionContent(completion)
                 } else if let group = selectedGroup {
                     statusCard(group: group)
+                    updateWarning(group: group)
                     if coordinator.activeJourney == nil || coordinator.activeJourney?.phase == .atInterchange {
                         departureContext(group: group)
                     } else {
@@ -457,13 +468,17 @@ struct InProgressJourneyView: View {
         let itinerary = remainingItinerary(group: group, departure: departure)
         let delayMinutes = itinerary?.finalArrivalDelayMinutes
         let scheduledArrivalTime = itinerary?.legs.last?.scheduledArrivalDate.map(clockTime)
+        // The current leg is a destination fallback only on the final leg.
+        let savedArrival = nextLegGroup(from: group) == nil
+            ? coordinator.activeJourney.flatMap { currentLegETA(active: $0, departure: departure) }
+            : nil
         return etaCard(
             label: "Destination: \(group.endStation.name)",
             subtitle: InProgressJourneyPresentation.originalArrivalText(
                 time: scheduledArrivalTime,
                 delayMinutes: delayMinutes
             ),
-            time: itinerary?.finalArrivalTime,
+            time: itinerary?.finalArrivalTime ?? savedArrival,
             delayMinutes: delayMinutes,
             showsDelayStatus: true
         )
@@ -523,46 +538,85 @@ struct InProgressJourneyView: View {
         caption: String,
         status: (text: String, color: Color)
     ) -> some View {
-        Button {
-            mapSelection = selection
-        } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.headline)
-                    Text(caption).font(.caption).foregroundStyle(.secondary)
-                    HStack(spacing: 7) {
-                        Circle()
-                            .fill(status.color)
-                            .frame(width: 8, height: 8)
-                        Text(status.text)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.leading)
-                    }
-                    .padding(.top, 2)
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.headline)
+                Text(caption).font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 7) {
+                    Circle().fill(status.color).frame(width: 8, height: 8)
+                    Text(status.text)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.leading)
                 }
-                ServiceMapView(
-                    serviceID: selection.serviceID,
-                    fromCRS: selection.fromCRS,
-                    toCRS: selection.toCRS,
-                    departureTime: selection.departureTime,
-                    destinationName: selection.destinationName,
-                    fallbackCallingPoints: selection.fallbackCallingPoints,
-                    isCompact: true,
-                    onboardLocation: selection.usesOnboardLocation ? location.lastLocation : nil
-                )
-                .frame(height: 220)
-                .allowsHitTesting(false)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .padding(.top, 2)
+            }
+            ServiceMapView(
+                serviceID: selection.serviceID,
+                fromCRS: selection.fromCRS,
+                toCRS: selection.toCRS,
+                departureTime: selection.departureTime,
+                destinationName: selection.destinationName,
+                fallbackCallingPoints: selection.fallbackCallingPoints,
+                isCompact: true,
+                onboardLocation: selection.usesOnboardLocation ? location.lastLocation : nil
+            )
+            .id(selection.serviceID)
+            .frame(height: dynamicTypeSize.isAccessibilitySize ? 340 : 220)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            Button {
+                mapSelection = selection
+            } label: {
                 Label("Expand map", systemImage: "arrow.up.left.and.arrow.down.right")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .contentShape(Rectangle())
             }
-            .padding(14)
-            .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 22))
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+            .accessibilityHint("Opens an interactive service map")
         }
-        .buttonStyle(.plain)
-        .accessibilityHint("Opens an interactive service map")
+        .padding(14)
+        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 22))
+    }
+
+    private func updateWarning(group: JourneyGroup) -> some View {
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            let serviceID = activeDeparture?.serviceID ?? nextDeparture?.serviceID
+            let serviceAvailability = serviceID.flatMap {
+                depStore.serviceDataAvailability(for: $0, now: context.date)
+            }
+            let boardAvailability = group.legs.map { depStore.dataAvailability(for: $0) }
+                .first { $0.status != .live }
+            let availability = serviceAvailability?.status != .live && serviceAvailability != nil
+                ? serviceAvailability : boardAvailability
+            if let availability, availability.status != .live {
+                Label {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Live updates interrupted")
+                            .font(.subheadline.weight(.semibold))
+                        Text("Your connection or the data service may be unavailable. We’ll keep trying.")
+                            .font(.caption)
+                        if let updatedAt = availability.lastSuccessfulUpdate {
+                            Text("Showing saved information. Last updated \(updatedAt, style: .time).")
+                                .font(.caption)
+                        } else {
+                            Text("Any saved journey information is shown below.")
+                                .font(.caption)
+                        }
+                    }
+                    .foregroundStyle(.primary)
+                } icon: {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 18))
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("in-progress.update-warning")
+            }
+        }
     }
 
     @ViewBuilder
@@ -830,9 +884,8 @@ struct InProgressJourneyView: View {
            }) {
             return point.displayTime
         }
-        return active.currentLeg?.callingPoints.first(where: {
-            $0.crs.caseInsensitiveCompare(destinationCRS) == .orderedSame
-        }).map { $0.actualTime ?? $0.estimatedTime ?? $0.scheduledTime }
+        return InProgressJourneyPresentation.savedArrivalTime(for: active.currentLeg, destinationCRS: destinationCRS)
+            ?? active.currentLeg?.scheduledArrivalAt.map(clockTime)
     }
 
     private func estimatedChangeTime(group: JourneyGroup, departure: DepartureV2) -> String {
@@ -1075,13 +1128,18 @@ struct InProgressJourneyView: View {
                toCRS: journey.toStation.crs
            ) {
             let color: Color = live.delayMinutes >= 5 ? .red : (live.delayMinutes > 0 ? .yellow : .green)
-            return (live.text, color)
+            let isSaved = depStore.serviceDataAvailability(for: departure.serviceID)?.status != .live
+            return (isSaved ? "Last known: \(live.text)" : live.text, isSaved ? .secondary : color)
         }
-        return ("Live status unavailable", .secondary)
+        if coordinator.activeJourney?.currentLeg?.serviceID == departure.serviceID,
+           !historyCallingPoints(coordinator.activeJourney?.currentLeg).isEmpty {
+            return ("Showing saved journey information", .secondary)
+        }
+        return ("Waiting for live updates", .secondary)
     }
 
     private func historyCallingPoints(_ leg: JourneyHistoryLeg?) -> [CallingPoint] {
-        (leg?.serviceCallingPoints ?? leg?.callingPoints ?? []).map { point in
+        ((leg?.serviceCallingPoints?.isEmpty == false ? leg?.serviceCallingPoints : leg?.callingPoints) ?? []).map { point in
             CallingPoint(
                 locationName: point.locationName,
                 crs: point.crs,

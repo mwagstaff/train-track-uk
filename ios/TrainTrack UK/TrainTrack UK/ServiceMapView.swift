@@ -109,7 +109,7 @@ struct ServiceMapView: View {
             || !hasFinishedInitialLoad
             || isLoadingRailwayRoute
             || (
-                hasCallingPoints
+                stations().count >= 2
                     && !isBusService
                     && railwayRoute == nil
                     && railwayRouteError == nil
@@ -269,7 +269,7 @@ struct ServiceMapView: View {
             }
         }
         .onReceive(timer) { _ in
-            guard hasCallingPoints, !isHistorical else { return }
+            guard !isHistorical, !isRetrying, !depStore.unavailableServiceIDs.contains(serviceID) else { return }
             Task {
                 await depStore.ensureServiceDetails(
                     for: [serviceID],
@@ -298,7 +298,7 @@ struct ServiceMapView: View {
         .task(id: serviceID) {
             await displayEstimateNotice()
         }
-        .task(id: routeRequestKey) {
+        .task(id: "\(routeRequestKey)|\(loadRequestID)") {
             let requestKey = routeRequestKey
             await loadRailwayRoute(requestKey: requestKey)
         }
@@ -316,11 +316,46 @@ struct ServiceMapView: View {
         }
     }
 
+    @ViewBuilder
     private var mapUnavailableView: some View {
-        GeometryReader { geometry in
-            ScrollView {
-                mapUnavailableContent
-                    .frame(minHeight: geometry.size.height)
+        if isCompact {
+            VStack(spacing: 8) {
+                ScrollView {
+                    VStack(spacing: 6) {
+                        Label(isBusService ? "Railway map unavailable" : "Service map unavailable",
+                              systemImage: isBusService ? "bus.fill" : "tram.fill")
+                            .font(.subheadline.weight(.semibold))
+                        Text(isBusService ? "This service uses a replacement bus." : "The route map couldn’t be loaded. Try again when your connection improves.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if isRetrying {
+                            Text(retryStatusText)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .multilineTextAlignment(.center)
+                }
+                Button {
+                    loadRequestID = UUID()
+                } label: {
+                    Text("Try again now")
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(12)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("service-map.compact-unavailable")
+        } else {
+            GeometryReader { geometry in
+                ScrollView {
+                    mapUnavailableContent
+                        .frame(minHeight: geometry.size.height)
+                }
             }
         }
     }
@@ -687,7 +722,7 @@ struct ServiceMapView: View {
         } else {
             reordered = branches
         }
-        guard isHistorical,
+        guard (isHistorical || (reordered.first?.count ?? 0) < 2),
               !fallbackCallingPoints.isEmpty,
               let fetchedPrimary = reordered.first,
               fallbackCallingPoints.count >= fetchedPrimary.count else {

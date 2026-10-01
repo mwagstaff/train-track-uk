@@ -7,6 +7,148 @@ struct JourneyServiceMatchingPolicyTests {
     private let origin = Station(crs: "VIC", name: "London Victoria", longitude: "-0.1442", latitude: "51.4951")
     private let destination = Station(crs: "KTH", name: "Kent House", longitude: "-0.0458", latitude: "51.4127")
 
+    @Test func octoberFirstDelayed0742IsOneTrainAcrossStaffAndPublicFeeds() throws {
+        let records = try octoberFirstRecentDepartures()
+        let result = JourneyServiceMatchingPolicy.match(
+            departures: [], recentDepartures: records, from: destination, to: origin,
+            detectedAt: octoberFirst("06:52:20"), originArrivedAt: octoberFirst("06:38:01")
+        )
+        #expect(result.departure?.serviceID == "staff_202610018086990_KTH_20261001T074200_P")
+        #expect(result.departure?.departureTime.actual == "07:49")
+        #expect(result.scheduledDepartureAt == octoberFirst("06:42:00"))
+        #expect(result.timeDifferenceMinutes == 3)
+    }
+
+    @Test func feedAliasRecoveryPreservesRealAmbiguityAndRequiresNewerActualEvidence() throws {
+        let conflicts: [(staff: [String: Any], other: [String: Any])] = [
+            ([:], ["platform": "3"]),
+            ([:], ["serviceType": "bus"]),
+            ([:], ["serviceID": "staff_202610018086991_KTH_20261001T074200_P"]),
+            ([:], ["actualDeparture": "07:48", "actualDepartureAt": "2026-10-01T06:48:00Z"]),
+            ([:], ["providerObservedAt": "2026-10-01T07:50:00Z"]),
+            (["actualDeparture": NSNull(), "actualDepartureAt": NSNull()], [:])
+        ]
+        for conflict in conflicts {
+            let records = try octoberFirstRecentDepartures(staffChanges: conflict.staff, publicChanges: conflict.other)
+            let result = JourneyServiceMatchingPolicy.match(
+                departures: [], recentDepartures: records, from: destination, to: origin,
+                detectedAt: octoberFirst("06:52:20"), originArrivedAt: octoberFirst("06:38:01")
+            )
+            #expect(result.departure == nil)
+            #expect(result.eligibleServiceIDs.count == 2)
+        }
+    }
+
+    @Test func aliasResolutionPrecedesEligibilitySoAnOldForecastCannotSelectAFutureTrain() throws {
+        let records = try octoberFirstRecentDepartures(staffChanges: [
+            "actualDeparture": "07:54", "actualDepartureAt": "2026-10-01T06:54:00Z"
+        ])
+        let result = JourneyServiceMatchingPolicy.match(
+            departures: [], recentDepartures: records, from: destination, to: origin,
+            detectedAt: octoberFirst("06:52:20"), originArrivedAt: octoberFirst("06:38:01")
+        )
+        #expect(result.departure == nil)
+        #expect(result.eligibleServiceIDs.isEmpty)
+    }
+
+    @Test func threeSameMinuteRecordsCannotBeAssumedToBeOneTrain() throws {
+        let records = try octoberFirstRecentDepartures()
+        let extra = try octoberFirstRecentDepartures(publicChanges: ["serviceID": "9277919KENTHOS_"])[1]
+        #expect(JourneyServiceMatchingPolicy.match(
+            departures: [], recentDepartures: records + [extra], from: destination, to: origin,
+            detectedAt: octoberFirst("06:52:20"), originArrivedAt: octoberFirst("06:38:01")
+        ).departure == nil)
+    }
+
+    private func octoberFirst(_ time: String) -> Date {
+        ISO8601DateFormatter().date(from: "2026-10-01T\(time)Z")!
+    }
+
+    private func octoberFirstRecentDepartures(
+        staffChanges: [String: Any] = [:], publicChanges: [String: Any] = [:]
+    ) throws -> [RecentDepartureV2] {
+        // Public service observations captured from the API after the reported journey.
+        // The same scheduled departure has different IDs in the two upstream feeds.
+        let json = """
+        [
+          {"serviceID":"staff_202610018086990_KTH_20261001T074200_P","serviceType":"train",
+           "fromCRS":"KTH","toCRS":"VIC","scheduledDeparture":"07:42","estimatedDeparture":"07:49",
+           "actualDeparture":"07:49","scheduledDepartureAt":"2026-10-01T06:42:00Z",
+           "estimatedDepartureAt":"2026-10-01T06:49:00Z","actualDepartureAt":"2026-10-01T06:49:00Z",
+           "platform":"2","isCancelled":false,"providerObservedAt":"2026-10-01T07:49:38Z",
+           "lastObservedAt":"2026-10-01T07:49:38Z"},
+          {"serviceID":"9277918KENTHOS_","serviceType":"train","fromCRS":"KTH","toCRS":"VIC",
+           "scheduledDeparture":"07:42","estimatedDeparture":"07:45","scheduledDepartureAt":"2026-10-01T06:42:00Z",
+           "estimatedDepartureAt":"2026-10-01T06:45:00Z","platform":"2","isCancelled":false,
+           "providerObservedAt":"2026-10-01T06:40:49Z","lastObservedAt":"2026-10-01T06:40:50Z"}
+        ]
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var records = try #require(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]])
+        records[0].merge(staffChanges) { _, new in new }
+        records[1].merge(publicChanges) { _, new in new }
+        return try decoder.decode([RecentDepartureV2].self, from: JSONSerialization.data(withJSONObject: records))
+    }
+
+    @Test func delayed1727CanRecoverFromActualDepartureWhenTheBoardStillPredicts1740() throws {
+        let board = [departure("17:27", estimated: "17:40"), departure("17:42")]
+        let detectedAt = date("17:38").addingTimeInterval(30)
+        #expect(JourneyServiceMatchingPolicy.match(departures: board, recentDepartures: [],
+            from: origin, to: destination, detectedAt: detectedAt, originArrivedAt: date("17:20")
+        ).departure == nil)
+        #expect(JourneyServiceMatchingPolicy.detailRecoveryServiceIDs(
+            departures: board, recentDepartures: [], detectedAt: detectedAt) == ["17:27"])
+        let evidence = try #require(JourneyServiceMatchingPolicy.departureEvidence(
+            serviceID: "17:27", details: recoveryDetails(), from: origin, to: destination, detectedAt: detectedAt
+        ))
+        let result = JourneyServiceMatchingPolicy.match(departures: board, recentDepartures: [evidence],
+            from: origin, to: destination, detectedAt: detectedAt, originArrivedAt: date("17:20"))
+        #expect(result.departure?.serviceID == "17:27")
+        #expect(result.scheduledDepartureAt == date("17:27"))
+        #expect(result.departure?.departureTime.actual == "17:38")
+        #expect(result.confidence == 0.9)
+        #expect(JourneyServiceMatchingPolicy.match(
+            departures: board + [departure("17:32")], recentDepartures: [evidence],
+            from: origin, to: destination, detectedAt: detectedAt, originArrivedAt: date("17:20")
+        ).departure == nil)
+    }
+
+    @Test func recoveryDetailsMustProveDepartureOnTheCorrectRouteAndDay() throws {
+        for details in [
+            try recoveryDetails(actual: "Delayed"),
+            try recoveryDetails(actual: "17:40"),
+            try recoveryDetails(crs: "BRX"),
+            try recoveryDetails(destinationCRS: "ORP"),
+            try recoveryDetails(day: 8),
+            try recoveryDetails(cancelled: true)
+        ] {
+            #expect(JourneyServiceMatchingPolicy.departureEvidence(serviceID: "17:27", details: details,
+                from: origin, to: destination, detectedAt: date("17:38").addingTimeInterval(30)) == nil)
+        }
+    }
+
+    @Test func recoveryLookupIncludesRecentOnlyTrainsAndExcludesOldOrFutureServices() {
+        #expect(JourneyServiceMatchingPolicy.detailRecoveryServiceIDs(
+            departures: [departure("16:57"), departure("17:42"), departure("17:27")],
+            recentDepartures: [recent("17:27"), recent("17:12"), recent("17:20", cancelled: true)],
+            detectedAt: date("17:38")
+        ) == ["17:27", "17:12"])
+    }
+
+    private func recoveryDetails(actual: String = "17:38", crs: String = "VIC",
+        destinationCRS: String = "KTH", day: Int = 9, cancelled: Bool = false) throws -> ServiceDetails {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "generatedAt": ISO8601DateFormatter().string(from: date("17:39", day: day)),
+            "serviceType": "train", "locationName": "London Victoria", "crs": crs,
+            "std": "17:27", "etd": "17:40", "atd": actual, "isCancelled": cancelled,
+            "subsequentCallingPoints": [["callingPoint": [[
+                "locationName": "Kent House", "crs": destinationCRS, "st": "17:45"
+            ]]]]
+        ])
+        return try JSONDecoder().decode(ServiceDetails.self, from: data)
+    }
+
     @Test func delayedVictoriaExitRecoversThe1727AfterItDisappearsFromTheLiveBoard() {
         let result = match(
             departures: [departure("17:42", id: "8561000VICTRIE_")],

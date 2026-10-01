@@ -4,11 +4,65 @@ enum JourneyServiceMatchingPolicy {
     static let departureDetectionLookback: TimeInterval = 30 * 60
     static let departureDetectionTolerance: TimeInterval = 2 * 60
 
+    /// Bound fallback lookups to trains around the original departure observation.
+    static func detailRecoveryServiceIDs(
+        departures: [DepartureV2], recentDepartures: [RecentDepartureV2], detectedAt: Date
+    ) -> [String] {
+        let lower = detectedAt.addingTimeInterval(-departureDetectionLookback)
+        let board = departures.compactMap { departure -> (String, Date)? in
+            guard !departure.isCancelled, departure.hasProviderServiceID,
+                  let scheduled = JourneyHistoryTime.date(for: departure.departureTime.scheduled,
+                    near: departure.evidenceObservedAt ?? detectedAt),
+                  (lower...detectedAt).contains(scheduled) else { return nil }
+            return (departure.serviceID, scheduled)
+        }
+        let recent = recentDepartures.filter {
+            !$0.isCancelled && (lower...detectedAt).contains($0.scheduledDepartureAt)
+        }.map { ($0.serviceID, $0.scheduledDepartureAt) }
+        var seen = Set<String>()
+        return (board + recent).sorted { $0.1 > $1.1 }
+            .compactMap { seen.insert($0.0).inserted ? $0.0 : nil }.prefix(4).map { $0 }
+    }
+
+    /// Only an actual departure at the boarding station can resolve a stale forecast.
+    /// Generated-at anchors the service day so reused identifiers cannot select yesterday's train.
+    static func departureEvidence(
+        serviceID: String, details: ServiceDetails, from: Station, to: Station, detectedAt: Date
+    ) -> RecentDepartureV2? {
+        guard details.crs.caseInsensitiveCompare(from.crs) == .orderedSame,
+              details.isCancelled != true,
+              details.subsequentCallingPoints?.contains(where: { branch in
+                  branch.callingPoint.contains {
+                      $0.crs.caseInsensitiveCompare(to.crs) == .orderedSame && $0.isCancelled != true
+                  }
+              }) == true,
+              let observedAt = SiriRailTime.parseISO(details.generatedAt),
+              let scheduledText = details.std,
+              let scheduled = JourneyHistoryTime.date(for: scheduledText, near: observedAt),
+              let actualText = details.atd,
+              let actual = JourneyHistoryTime.date(
+                  for: actualText.caseInsensitiveCompare("On time") == .orderedSame ? details.std : actualText,
+                  near: scheduled
+              ),
+              abs(scheduled.timeIntervalSince(detectedAt)) <= departureDetectionLookback,
+              actual <= detectedAt else { return nil }
+        return RecentDepartureV2(
+            serviceID: serviceID, serviceType: details.serviceType, fromCRS: from.crs, toCRS: to.crs,
+            scheduledDeparture: scheduledText, estimatedDeparture: details.etd,
+            actualDeparture: actualText.caseInsensitiveCompare("On time") == .orderedSame ? details.std : actualText,
+            scheduledDepartureAt: scheduled,
+            estimatedDepartureAt: JourneyHistoryTime.date(for: details.etd, near: scheduled),
+            actualDepartureAt: actual, platform: details.platform, isCancelled: false,
+            lastObservedAt: observedAt, providerObservedAt: observedAt
+        )
+    }
+
     struct Match {
         let departure: DepartureV2?
         let scheduledDepartureAt: Date?
         let timeDifferenceMinutes: Int?
         let confidence: Double
+        var eligibleServiceIDs: [String] = []
 
         static let unmatched = Match(
             departure: nil, scheduledDepartureAt: nil, timeDifferenceMinutes: nil, confidence: 0
@@ -25,6 +79,33 @@ enum JourneyServiceMatchingPolicy {
             actualDepartureAt == nil
                 && departure.departureTime.estimated.trimmingCharacters(in: .whitespacesAndNewlines)
                     .caseInsensitiveCompare("Delayed") == .orderedSame
+        }
+    }
+
+    /// The staff and public feeds use different IDs for the same departure.
+    /// Collapse only a one-to-one pair with a matching dated timetable/platform,
+    /// backed by a newer actual departure. Same-feed or conflicting records remain ambiguous.
+    private static func coalescingFeedAliases(_ candidates: [Candidate], fromCRS: String) -> [Candidate] {
+        Dictionary(grouping: candidates, by: \.scheduledDepartureAt).values.flatMap { group -> [Candidate] in
+            guard group.count == 2,
+                  let staff = group.first(where: {
+                      $0.departure.serviceID.range(of: "^staff_[0-9]{15}_[A-Z]{3}_[0-9]{8}T[0-9]{6}_P$",
+                          options: .regularExpression) != nil
+                  }),
+                  staff.departure.serviceID.split(separator: "_")[2].uppercased() == fromCRS.uppercased(),
+                  let other = group.first(where: { $0.departure.serviceID != staff.departure.serviceID }),
+                  other.departure.serviceID.range(of: "^[0-9]+[A-Z_]+$", options: .regularExpression) != nil,
+                  staff.departure.serviceType == "train", other.departure.serviceType == "train",
+                  staff.departure.isCancelled == other.departure.isCancelled,
+                  let platform = staff.departure.platform?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !platform.isEmpty, platform.caseInsensitiveCompare("TBC") != .orderedSame,
+                  platform == other.departure.platform?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  let actual = staff.actualDepartureAt,
+                  other.actualDepartureAt == nil || other.actualDepartureAt == actual,
+                  let staffObserved = staff.departure.evidenceObservedAt,
+                  let otherObserved = other.departure.evidenceObservedAt,
+                  staffObserved >= otherObserved else { return group }
+            return [staff]
         }
     }
 
@@ -156,7 +237,7 @@ enum JourneyServiceMatchingPolicy {
             detectedAt.addingTimeInterval(-departureDetectionLookback),
             originArrivedAt?.addingTimeInterval(-departureDetectionTolerance) ?? .distantPast
         )
-        let eligible = candidatesByID.values.filter { candidate in
+        let eligible = coalescingFeedAliases(Array(candidatesByID.values), fromCRS: from.crs).filter { candidate in
             guard !candidate.departure.isCancelled else { return false }
             if candidate.hasUnresolvedDelay {
                 // "Delayed" gives no departure time. A recently observed train can
@@ -175,7 +256,11 @@ enum JourneyServiceMatchingPolicy {
         // Actual departure establishes that a train ran; it does not prove that
         // the passenger boarded it instead of another equally plausible train.
         guard eligible.count == 1, let selected = eligible.first,
-              !selected.hasUnresolvedDelay else { return .unmatched }
+              !selected.hasUnresolvedDelay else {
+            var unmatched = Match.unmatched
+            unmatched.eligibleServiceIDs = eligible.map(\.departure.serviceID).sorted()
+            return unmatched
+        }
         let difference = Int(abs(selected.effectiveDepartureAt.timeIntervalSince(detectedAt)) / 60)
         let confidence: Double
         switch difference {
@@ -188,7 +273,8 @@ enum JourneyServiceMatchingPolicy {
             departure: selected.departure,
             scheduledDepartureAt: selected.scheduledDepartureAt,
             timeDifferenceMinutes: difference,
-            confidence: confidence
+            confidence: confidence,
+            eligibleServiceIDs: [selected.departure.serviceID]
         )
     }
 }

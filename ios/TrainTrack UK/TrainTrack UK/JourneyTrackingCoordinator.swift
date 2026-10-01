@@ -2001,12 +2001,12 @@ final class JourneyTrackingCoordinator: ObservableObject {
             activeJourney = active
             persistCheckpoint()
         }
-        let recentDepartures = RecentServiceStore.shared.departures(
+        var recentDepartures = RecentServiceStore.shared.departures(
             fromCRS: from.crs, toCRS: to.crs, now: detectedAt
         )
         let preferredServiceID = LiveActivityManager.shared.preferredServiceID(fromCRS: from.crs, toCRS: to.crs)
         let originArrivedAt = active.originArrivalForServiceMatching(from: from)
-        let match = forceUnmatchedService ? JourneyServiceMatchingPolicy.Match.unmatched : JourneyServiceMatchingPolicy.match(
+        var match = forceUnmatchedService ? JourneyServiceMatchingPolicy.Match.unmatched : JourneyServiceMatchingPolicy.match(
             departures: departures,
             recentDepartures: recentDepartures,
             from: from,
@@ -2016,6 +2016,38 @@ final class JourneyTrackingCoordinator: ObservableObject {
             preferredServiceID: preferredServiceID,
             preferredDeparture: preferredDeparture
         )
+        if match.departure == nil, !forceUnmatchedService, preferredDeparture == nil {
+            let ids = JourneyServiceMatchingPolicy.detailRecoveryServiceIDs(
+                departures: departures, recentDepartures: recentDepartures, detectedAt: detectedAt
+            )
+            if !ids.isEmpty {
+                _ = await DeparturesStore.shared.ensureServiceDetails(
+                    for: ids, force: true,
+                    context: ServiceDetailsLookupContext(fromCRS: from.crs, toCRS: to.crs,
+                        originCRS: nil, operator: nil, destinationCRSs: [], length: nil)
+                )
+                guard !Task.isCancelled, !isFinishingJourney,
+                      activeJourney?.id == active.id,
+                      activeJourney?.serviceMatchRecovery?.id == recovery?.id else { return }
+                let recoveredEvidence = ids.compactMap { id -> RecentDepartureV2? in
+                    guard let details = DeparturesStore.shared.serviceDetailsById[id] else { return nil }
+                    return JourneyServiceMatchingPolicy.departureEvidence(
+                        serviceID: id, details: details, from: from, to: to, detectedAt: detectedAt
+                    )
+                }
+                recentDepartures += recoveredEvidence
+                log("service_detail_recovery_evaluated", "Checked actual departures before retrying the service match", metadata: [
+                    "journey_id": active.id.uuidString,
+                    "requested_service_ids": ids,
+                    "loaded_service_ids": ids.filter { DeparturesStore.shared.serviceDetailsById[$0] != nil },
+                    "recovered_service_ids": recoveredEvidence.map(\.serviceID)
+                ])
+                match = JourneyServiceMatchingPolicy.match(
+                    departures: departures, recentDepartures: recentDepartures, from: from, to: to,
+                    detectedAt: detectedAt, originArrivedAt: originArrivedAt
+                )
+            }
+        }
         let selected = match.departure
         let confidence = match.confidence
         let selectedDifference = match.timeDifferenceMinutes
@@ -2034,6 +2066,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
             "recent_departure_count": recentDepartures.count,
             "origin_arrived_at": originArrivedAt,
             "confidence": confidence,
+            "eligible_service_ids": match.eligibleServiceIDs,
             "rebound_from_service_id": reboundFromServiceID
         ])
 
