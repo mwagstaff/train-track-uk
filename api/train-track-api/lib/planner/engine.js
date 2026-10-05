@@ -458,8 +458,7 @@ export class PlannerEngine {
         remember(this.journeys, journey.id, { journey, version, at: this.now(), live }, 500);
     }
 
-    async journey(id, signal) {
-        const cached = this.journeys.get(id);
+    async journey(id, signal, cached = this.journeys.get(id)) {
         if (!cached || this.now() - cached.at > HOUR) {
             throw new PlannerError('JOURNEY_EXPIRED', 'This journey has expired. Please search again.', 410);
         }
@@ -476,7 +475,7 @@ export class PlannerEngine {
                 remember(this.dates, dateKey, resolved, this.config.dateCacheSize);
             }
             const service = resolved.services.find(value => value.id === (leg.scheduledServiceId ?? leg.serviceId));
-            legs.push(service ? { ...leg, serviceCallingPoints: service.calls.map(call => ({
+            legs.push(service ? { ...leg, uid: service.uid, serviceCallingPoints: service.calls.map(call => ({
                 station: this.publicStation(stations.get(call.station) ?? call.station),
                 arrival: Number.isFinite(call.arrival) ? new Date(call.arrival).toISOString() : null,
                 departure: Number.isFinite(call.departure) ? new Date(call.departure).toISOString() : null

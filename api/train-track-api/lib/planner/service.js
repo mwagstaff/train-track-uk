@@ -196,8 +196,9 @@ export class PlannerService {
         }
         const live = cached.live && { ...cached.live, warnings: [...cached.live.warnings,
             ...(Date.parse(cached.live.expiresAt) < Date.now() ? ['These live times are from an earlier search. Search again to refresh them.'] : [])] };
-        const dataset = await this.metadata().call('metadata', { version: cached.version, live }, options);
-        return { journey: cached.journey, dataset, ...(live ? { live } : {}) };
+        // Searches may finish on any worker. Pass the retained result so detail
+        // enrichment also works on a different worker or after a worker restart.
+        return this.call('journey', { id, cached: { ...cached, live } }, options);
     }
 
     // Single-worker diagnostics remain available to scheduling tests and tooling.

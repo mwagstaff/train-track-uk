@@ -233,9 +233,9 @@ final class NotificationAppDelegate: NSObject, UIApplicationDelegate, UNUserNoti
             "action_identifier": response.actionIdentifier
         ]) { _, new in new })
         Task { @MainActor in
-            NotificationAlertHandler.shared.handle(response: response)
+            await NotificationAlertHandler.shared.handle(response: response)
+            completionHandler()
         }
-        completionHandler()
     }
 }
 

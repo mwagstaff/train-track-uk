@@ -9,6 +9,7 @@ struct PlannerError: Error, LocalizedError, Decodable, Equatable {
 @MainActor
 protocol JourneyPlannerServing {
     func status() async throws -> PlannerStatus
+    func liveDepartures(origin: String, destination: String) async throws -> JourneyDeparturesSnapshot
     func stations(query: String) async throws -> [PlannerStation]
     func search(_ request: PlannerSearchRequest) async throws -> PlannerSearchResponse
     func search(_ request: PlannerSearchRequest, progress: @escaping @MainActor (PlannerSearchProgress) -> Void) async throws -> PlannerSearchResponse
@@ -16,6 +17,15 @@ protocol JourneyPlannerServing {
 }
 
 extension JourneyPlannerServing {
+    func liveDepartures(origin: String, destination: String) async throws -> JourneyDeparturesSnapshot {
+        let snapshots = try await NetworkServicePhone.shared.fetchDeparturesAggregated(
+            pairs: [(from: origin, to: destination)], requireFresh: true)
+        guard let snapshot = snapshots["\(origin)_\(destination)"], snapshot.dataStatus == .live else {
+            throw PlannerError(code: "LIVE_UNAVAILABLE", message: "Live departures couldn’t be loaded. Please try again.")
+        }
+        return snapshot
+    }
+
     func search(_ request: PlannerSearchRequest, progress: @escaping @MainActor (PlannerSearchProgress) -> Void) async throws -> PlannerSearchResponse {
         try request.validateAlgorithm()
         progress(.running)

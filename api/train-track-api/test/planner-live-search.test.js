@@ -441,16 +441,19 @@ test('journey details retain the exact live result context while full service st
   assert.equal(details.journey.legs[0].scheduledDeparture, iso('12:05'));
   assert.equal(details.journey.legs[0].serviceCallingPoints.at(-1).arrival, iso('12:25'));
 
-  // Exercise the production parent cache and metadata lookup without starting a
+  // Exercise the production parent cache and detail lookup without starting a
   // real worker: only transport is injected, while settle/journey are unchanged.
   t.mock.method(Date, 'now', f.now);
   const service = new PlannerService(config);
-  service.metadataService = { call: async (_method, payload) => f.engine.publicMetadata(f.repo, payload.live), close() {} };
+  t.mock.method(service, 'call', async (method, payload) => {
+    assert.equal(method, 'journey');
+    return f.engine.journey(payload.id, undefined, payload.cached);
+  });
   t.after(() => service.close());
   service.settle({ method: 'search', resolve() {}, reject: error => { throw error; }, settled: false }, null, response);
   const parentDetails = await service.journey(journey.id);
   assert.deepEqual(parentDetails.live, response.live);
-  assert.deepEqual(parentDetails.journey, journey);
+  assert.deepEqual(parentDetails.journey, details.journey);
   assert.equal(parentDetails.dataset.scheduledOnly, false);
   assert.ok(parentDetails.dataset.warnings.every(warning => !warning.includes('Scheduled timetable only')));
 });
@@ -465,7 +468,10 @@ test('identical timetable journeys retain separate off, apply, ignore and unavai
   assert.ok(responses.every(response => response.journeys[0].departure === iso('12:05') && response.journeys[0].arrival === iso('12:25')));
   t.mock.method(Date, 'now', f.now);
   const service = new PlannerService(config);
-  service.metadataService = { call: async (_method, payload) => f.engine.publicMetadata(f.repo, payload.live), close() {} };
+  t.mock.method(service, 'call', async (method, payload) => {
+    assert.equal(method, 'journey');
+    return f.engine.journey(payload.id, undefined, payload.cached);
+  });
   t.after(() => service.close());
   for (const response of responses) {
     service.settle({ method: 'search', resolve() {}, reject: error => { throw error; }, settled: false }, null, response);
@@ -476,7 +482,7 @@ test('identical timetable journeys retain separate off, apply, ignore and unavai
     const parentDetails = await service.journey(id);
     assert.deepEqual(engineDetails.live, response.live);
     assert.deepEqual(parentDetails.live, response.live);
-    assert.deepEqual(parentDetails.journey, response.journeys[0]);
+    assert.deepEqual(parentDetails.journey, engineDetails.journey);
   }
 });
 

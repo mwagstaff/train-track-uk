@@ -263,6 +263,8 @@ struct NotificationSubscription: Codable, Identifiable, Hashable {
     let mutedAtByLegDay: [String: String]?
     let createdAt: Date?
     let updatedAt: Date?
+    var plannerJourney: ScheduledPlannerJourney? = nil
+    var plannerStatus: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -280,6 +282,8 @@ struct NotificationSubscription: Codable, Identifiable, Hashable {
         case mutedAtByLegDay = "muted_at_by_leg_day"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case plannerJourney = "planner_journey"
+        case plannerStatus = "planner_status"
     }
 
     var routeTitle: String {
@@ -349,6 +353,7 @@ enum NotificationScheduleExpiry {
         for subscription: NotificationSubscription,
         calendar: Calendar = .current
     ) -> Date? {
+        if let plan = subscription.plannerJourney { return plan.expiresAt }
         guard subscription.scheduleKind == .oneOff else { return nil }
         return subscription.legs
             .filter(\.enabled)
@@ -725,6 +730,7 @@ struct NotificationSubscriptionRequest: Codable {
     let muteOnArrival: Bool?
     let liveSessionOrigin: NotificationLiveSessionOrigin?
     let activeUntil: Date?
+    var plannerJourney: ScheduledPlannerJourney? = nil
 
     enum CodingKeys: String, CodingKey {
         case subscriptionId = "subscription_id"
@@ -745,5 +751,6 @@ struct NotificationSubscriptionRequest: Codable {
         case muteOnArrival = "mute_on_arrival"
         case liveSessionOrigin = "live_session_origin"
         case activeUntil = "active_until"
+        case plannerJourney = "planner_journey"
     }
 }

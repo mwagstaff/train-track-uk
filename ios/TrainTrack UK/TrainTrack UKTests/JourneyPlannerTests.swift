@@ -10,6 +10,81 @@ struct JourneyPlannerTests {
     private let destination = PlannerStation(crs: "VIC", name: "London Victoria")
     private let now = Date(timeIntervalSince1970: 1_799_999_000)
 
+    @Test func liveTrackingPinsTheSelectedTrainAndRejectsInvalidEvidence() throws {
+        let now = try #require(ISO8601DateFormatter().date(from: "2026-10-03T12:00:00Z"))
+        func train(id: String = "selected", cancelled: Bool = false, destinationCancelled: Bool = false,
+                   observed: Date? = nil, providerID: Bool = true, time: String = "13:10") -> DepartureV2 {
+            DepartureV2(departureTime: .init(scheduled: time, estimated: "On time"), serviceType: "train",
+                platform: "2", isCancelled: cancelled, length: nil, destination: [], origin: nil,
+                serviceID: id, delayReason: nil, cancelReason: nil, timestamp: observed ?? now,
+                hasProviderServiceID: providerID, filterLocationCancelled: destinationCancelled)
+        }
+        let selected = train()
+        func allowed(_ current: DepartureV2, server: String = "original", at date: Date? = nil) -> Bool {
+            LiveDepartureTracking.canStart(selected: selected, selectedObservedAt: now, current: current,
+                verifiedAt: current.evidenceObservedAt ?? now, selectedServer: "original", currentServer: server, now: date ?? now)
+        }
+        #expect(allowed(train()))
+        #expect(!allowed(train(id: "next-train")))
+        #expect(!allowed(train(cancelled: true)))
+        #expect(!allowed(train(destinationCancelled: true)))
+        #expect(!allowed(train(providerID: false)))
+        #expect(!allowed(train(), server: "different"))
+        #expect(!allowed(train(observed: now.addingTimeInterval(-91))))
+        #expect(!allowed(train(observed: now.addingTimeInterval(60))))
+        #expect(!allowed(train(time: "13:20")))
+        #expect(!allowed(train(), at: now.addingTimeInterval(601)))
+        #expect(!allowed(train(observed: now.addingTimeInterval(86400)), at: now.addingTimeInterval(86400)))
+    }
+
+    @Test func unavailablePlannerUsesLiveDeparturesAndLocksRestoredTimes() async throws {
+        let service = PlannerStubService()
+        service.statusValue = PlannerStatus(available: false, apiVersion: 3,
+            capabilities: .init(timeTypes: [], maxChanges: 0), dataset: nil, reason: "Internal dataset error")
+        let store = makeStore(client: service)
+        store.origin = origin
+        store.destination = destination
+        store.timeMode = .departAt
+        await store.loadStatus()
+        #expect(store.isLiveOnly)
+        #expect(store.timeMode == .now)
+        #expect(store.validationMessage(now: now) == nil)
+        store.timeMode = .departAt
+        #expect(store.timeMode == .now)
+        await store.search(now: now)
+        #expect(service.requests.isEmpty)
+        #expect(service.liveRequests == ["KTH-VIC"])
+        #expect(store.liveDepartures != nil)
+        #expect(store.searchError == nil)
+        await store.searchForLaterTrainsWhenInitialWindowIsEmpty()
+        #expect(store.automaticSearchState == nil)
+        #expect(service.requests.isEmpty)
+        let recent = PlannerRecentSearch(id: UUID(), intent: .init(origin: origin, destination: destination,
+            timeMode: .departAt, explicitTime: now.addingTimeInterval(3600)), searchedAt: now)
+        store.restore(recent)
+        #expect(store.timeMode == .now)
+        service.statusValue = PlannerStatus(available: true, apiVersion: 3,
+            capabilities: .init(timeTypes: ["departAfter"], maxChanges: 3, algorithms: ["raptor"]), dataset: nil, reason: nil)
+        await store.loadStatus()
+        #expect(!store.isLiveOnly)
+        store.timeMode = .departAt
+        #expect(store.timeMode == .departAt)
+    }
+
+    @Test func statusFailureAllowsLiveSearchAndLiveFailureIsReadable() async throws {
+        let service = PlannerStubService()
+        let store = makeStore(client: service)
+        store.origin = origin
+        store.destination = destination
+        await store.loadStatus()
+        #expect(store.isLiveOnly)
+        service.failure = PlannerError(code: "NETWORK", message: "Technical error")
+        await store.search(now: now)
+        #expect(store.liveDepartures == nil)
+        #expect(store.searchError?.message == "Live departures couldn’t be loaded. Please try again.")
+        #expect(!store.isSearching)
+    }
+
     @Test func savedRouteBoardsUseAdditiveEndpointAndOnly404EnablesFallback() async throws {
         let session = stubSession()
         defer { session.invalidateAndCancel(); PlannerStubProtocol.handler = nil }
@@ -1311,6 +1386,12 @@ private final class PlannerStubService: JourneyPlannerServing {
     var results: [PlannerSearchResponse] = []
     var holdSearches = false
     var pending: [CheckedContinuation<PlannerSearchResponse, Error>] = []
+    var liveRequests: [String] = []
+    func liveDepartures(origin: String, destination: String) async throws -> JourneyDeparturesSnapshot {
+        liveRequests.append("\(origin)-\(destination)")
+        if let failure { throw failure }
+        return JourneyDeparturesSnapshot(departures: [], dataStatus: .live, lastSuccessfulUpdate: Date())
+    }
     var statusValue: PlannerStatus?
     func status() async throws -> PlannerStatus {
         if let statusValue { return statusValue }

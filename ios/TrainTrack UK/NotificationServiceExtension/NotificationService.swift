@@ -288,22 +288,22 @@ class NotificationService: UNNotificationServiceExtension {
     }
 
     private func ensureCategoriesRegistered() {
-        let muteAction = UNNotificationAction(
-            identifier: "MUTE_LEG_TODAY",
-            title: "Mute this journey",
-            options: [.foreground]
+        let endAction = UNNotificationAction(
+            identifier: "END_JOURNEY",
+            title: "End journey",
+            options: [.destructive]
         )
 
         let journeyCategory = UNNotificationCategory(
             identifier: "JOURNEY_LEG_ALERT",
-            actions: [muteAction],
+            actions: [endAction],
             intentIdentifiers: [],
             options: []
         )
 
         let arrivalCategory = UNNotificationCategory(
             identifier: "STATION_ARRIVAL",
-            actions: [muteAction],
+            actions: [endAction],
             intentIdentifiers: [],
             options: []
         )

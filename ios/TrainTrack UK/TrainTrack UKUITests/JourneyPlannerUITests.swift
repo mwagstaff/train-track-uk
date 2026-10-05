@@ -4,6 +4,128 @@ final class JourneyPlannerUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testUnavailablePlannerKeepsStationLookupAndLiveDeparturesWorking() async throws {
+        for largeText in [false, true] {
+            let app = try await launchQueuedFixture(profile: "unavailable", largeText: largeText,
+                destination: "VIC", dark: largeText, resetAppearance: true)
+            let when = app.buttons["planner.when"]
+            scrollTo(when, in: app, towardTop: true)
+            XCTAssertFalse(when.isEnabled)
+            XCTAssertTrue(when.label.contains("Depart now"))
+            XCTAssertFalse(app.datePickers["planner.date"].exists)
+            let warning = app.descendants(matching: .any)["planner.live-only-warning"].firstMatch
+            scrollToLocalDirection(warning, in: app)
+            XCTAssertTrue(warning.exists)
+            attach(largeText ? "live-only-large-dark" : "live-only-default", app: app)
+            let search = app.buttons["planner.search"]
+            scrollTo(search, in: app)
+            XCTAssertTrue(search.isEnabled)
+            search.tap()
+            XCTAssertTrue(app.navigationBars["Live departures"].waitForExistence(timeout: 10))
+            let departure = app.buttons["journey.departure.outage-live"]
+            scrollToLocalDirection(departure, in: app)
+            XCTAssertTrue(departure.exists)
+            XCTAssertTrue(departure.label.contains("On time"))
+            XCTAssertTrue(departure.label.contains("Platform 2"))
+            attach(largeText ? "live-departures-large-dark" : "live-departures-default", app: app)
+            departure.tap()
+            XCTAssertTrue(app.buttons["Train info"].waitForExistence(timeout: 15))
+            let track = app.buttons["live-departure.track"]
+            XCTAssertTrue(track.exists)
+            XCTAssertTrue(track.isEnabled)
+            XCTAssertTrue(track.isHittable)
+            attach(largeText ? "live-tracking-large-dark" : "live-tracking-default", app: app)
+            app.buttons["Train info"].tap()
+            XCTAssertTrue(app.navigationBars.matching(NSPredicate(format: "identifier CONTAINS %@", "to London Victoria")).firstMatch.waitForExistence(timeout: 5))
+            app.terminate()
+        }
+    }
+
+    @MainActor
+    func testScheduleSelectedJourneyDefaultsAndLargeText() async throws {
+        for largeText in [false, true] {
+            let app = try await launchQueuedFixture(profile: "schedule", largeText: largeText, dark: largeText, resetAppearance: true)
+            app.buttons["planner.search"].tap()
+            let journey = app.buttons["planner.journey.fixture-schedule"]
+            XCTAssertTrue(journey.waitForExistence(timeout: 10))
+            journey.tap()
+            let schedule = app.buttons["planner.detail.schedule"]
+            XCTAssertTrue(schedule.waitForExistence(timeout: 10))
+            scrollTo(schedule, in: app)
+            schedule.tap()
+            XCTAssertTrue(app.navigationBars["Schedule journey"].waitForExistence(timeout: 5))
+            let picker = app.buttons["planner.schedule.lead-time"]
+            scrollTo(picker, in: app)
+            XCTAssertTrue(picker.label.contains("1 hour"))
+            picker.tap()
+            app.buttons["2 hours"].tap()
+            XCTAssertTrue(picker.label.contains("2 hours"))
+            let save = app.buttons["planner.schedule.save"]
+            scrollTo(save, in: app)
+            XCTAssertTrue(save.isHittable)
+            attach(largeText ? "schedule-large-dark" : "schedule-default", app: app)
+            app.buttons["Done"].tap()
+            XCTAssertTrue(app.navigationBars["Journey details"].waitForExistence(timeout: 5))
+            app.terminate()
+        }
+    }
+
+    @MainActor
+    func testScheduledJourneyCardOpensSettingsAtBothTextSizes() async throws {
+        let base = "http://127.0.0.1:3014/schedule/api/v2"
+        guard let (_, response) = try? await URLSession.shared.data(from: URL(string: base + "/notifications/subscriptions")!),
+              (response as? HTTPURLResponse)?.statusCode == 200 else {
+            throw XCTSkip("Start journey_planner_ui_fixture.py for the scheduled-card check.")
+        }
+        for largeText in [false, true] {
+            let app = launch(plannerEnabled: true, largeText: largeText, dark: largeText, apiBase: base, resetAppearance: true)
+            app.tabBars.buttons["My Journeys"].tap()
+            let scheduledCard = app.buttons["planner.scheduled.fixture-scheduled-card"]
+            XCTAssertTrue(scheduledCard.waitForExistence(timeout: 10))
+            scrollTo(scheduledCard, in: app, towardTop: true)
+            attach(largeText ? "scheduled-card-large-dark" : "scheduled-card-default", app: app)
+            scheduledCard.tap()
+            XCTAssertTrue(app.navigationBars["Scheduled journey"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["planner.schedule.lead-time"].exists)
+            app.buttons["Done"].tap()
+            app.terminate()
+        }
+    }
+
+    @MainActor
+    func testDepartureModeCanChangeBeforeAndDuringLiveActivity() async throws {
+        for profile in ["schedule", "schedule-active"] {
+            let base = "http://127.0.0.1:3014/\(profile)/api/v2"
+            guard let (_, response) = try? await URLSession.shared.data(from: URL(string: base + "/notifications/subscriptions")!),
+                  (response as? HTTPURLResponse)?.statusCode == 200 else {
+                throw XCTSkip("Start journey_planner_ui_fixture.py for this check.")
+            }
+            let app = launch(plannerEnabled: true, apiBase: base, resetAppearance: true)
+            app.tabBars.buttons["My Journeys"].tap()
+            let card = app.buttons["planner.scheduled.fixture-scheduled-card"]
+            XCTAssertTrue(card.waitForExistence(timeout: 10))
+            for expected in ["0", "1"] {
+                card.tap()
+                XCTAssertTrue(app.navigationBars["Scheduled journey"].waitForExistence(timeout: 5))
+                let toggle = app.switches["planner.schedule.all-departures"]
+                scrollTo(toggle, in: app)
+                XCTAssertTrue(toggle.isEnabled)
+                XCTAssertEqual(toggle.value as? String, expected)
+                if profile == "schedule-active" { XCTAssertFalse(app.buttons["planner.schedule.lead-time"].isEnabled) }
+                toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+                XCTAssertEqual(toggle.value as? String, expected == "0" ? "1" : "0")
+                attach("all-departures-\(profile)-\(expected)", app: app)
+                let save = app.buttons["planner.schedule.save"]
+                scrollTo(save, in: app)
+                XCTAssertTrue(save.isEnabled)
+                save.tap()
+                XCTAssertTrue(app.navigationBars["Scheduled journey"].waitForNonExistence(timeout: 10))
+            }
+            app.terminate()
+        }
+    }
+
+    @MainActor
     func testPlannerHasNoRoutingOrLiveTimesSwitches() throws {
         for largeTextAndDarkMode in [false, true] {
             let app = launch(plannerEnabled: true, largeText: largeTextAndDarkMode, dark: largeTextAndDarkMode)
@@ -1103,10 +1225,10 @@ final class JourneyPlannerUITests: XCTestCase {
     }
 
     @MainActor
-    private func launchQueuedFixture(profile: String, largeText: Bool = false, destination: String = "INV", dark: Bool = false) async throws -> XCUIApplication {
+    private func launchQueuedFixture(profile: String, largeText: Bool = false, destination: String = "INV", dark: Bool = false, resetAppearance: Bool = false) async throws -> XCUIApplication {
         let base = "http://127.0.0.1:3014/\(profile)/api/v2"
         _ = try await fixtureCancellationCount(profile: profile)
-        let app = launch(plannerEnabled: true, largeText: largeText, dark: dark, apiBase: base)
+        let app = launch(plannerEnabled: true, largeText: largeText, dark: dark, apiBase: base, resetAppearance: resetAppearance)
         openAddJourney(in: app)
         selectStations(origin: "KTH", destination: destination, in: app)
         scrollTo(app.buttons["planner.search"], in: app)
@@ -1291,6 +1413,9 @@ final class JourneyPlannerUITests: XCTestCase {
         app.launchEnvironment["JOURNEY_PLANNER_ENABLED"] = plannerEnabled ? "1" : "0"
         app.launchEnvironment["API_BASE"] = apiBase
         app.launchEnvironment["UI_TEST_RESET_JOURNEYS"] = "1"
+        if apiBase.contains("/schedule/") || apiBase.contains("/schedule-active/") {
+            app.launchArguments += ["-knownSubscriptionIDs", "(fixture-scheduled-card)"]
+        }
         if let timeZone { app.launchEnvironment["TZ"] = timeZone }
         app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_GB"]
         if resetAppearance {

@@ -1,5 +1,16 @@
 import SwiftUI
 
+extension View {
+    func journeyCardSurface() -> some View {
+        background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+            }
+    }
+}
+
 enum JourneyCardPresentation {
     static func isUpcomingDeparture(_ departure: DepartureV2, now: Date = Date()) -> Bool {
         let departureDate = JourneyItineraryBuilder.date(
@@ -371,12 +382,7 @@ struct JourneyCard: View {
                 laterDeparturesControl
             }
         }
-        .background(Color(uiColor: .secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color.primary.opacity(0.05), lineWidth: 1)
-        }
+        .journeyCardSurface()
         .task(id: prefetchTaskID(presentation.upcomingDepartures)) {
             guard plannedBoard == nil || plannedBoard?.usesLegacyDepartures == true || usesDirectDepartures else { return }
             await prefetchVisibleServiceDetails(presentation.upcomingDepartures)
@@ -716,6 +722,7 @@ struct JourneyCard: View {
             }
             .buttonStyle(.plain)
             .accessibilityHint("Opens live calling points for this service.")
+            .accessibilityIdentifier("journey.departure.\(summary.firstDeparture.serviceID)")
         } else {
             styledDepartureRow(summary, isLast: isLast, presentation: presentation)
         }

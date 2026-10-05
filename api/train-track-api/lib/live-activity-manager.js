@@ -9,6 +9,7 @@ import { notificationSubscriptionManager } from './notification-subscription-man
 import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
 import { minutesUntilDeparture } from './live-activity-departure-order.js';
 import { allowDeviceData } from './device-data-deletion-state.js';
+import { PLANNER_SCHEDULE_PREFIX } from './planner-journey-schedule.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.LIVE_ACTIVITY_POLL_INTERVAL_SECONDS || '20');
 const DEFAULT_END_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_END_AFTER_SECONDS || '7200'); // default 2 hours
@@ -173,6 +174,20 @@ export class LiveActivityManager {
             windowEnd: windowEnd || existing?.windowEnd || null
         };
 
+        const plannerSchedule = notificationSubscriptionManager.plannerScheduler.find(deviceId, subscription.scheduleKey);
+        if (plannerSchedule) {
+            subscription.endAt = existing?.endAt || plannerSchedule.plannerJourney.expiresAt;
+            subscription.endPolicy = 'planned_journey_arrival';
+            subscription.lastPlannerContent = existing?.lastPlannerContent || plannerSchedule.plannerState?.content;
+            if (Array.from(this.subscriptions.values()).some(other => other.deviceId === deviceId && other.activityId !== activityId
+                && !other.evicted && (!other.endAt || Date.parse(other.endAt) > Date.now()))) {
+                subscription.evicted = true;
+                plannerSchedule.plannerState.status = 'conflict';
+                notificationSubscriptionManager._saveSubscription(plannerSchedule).catch(error => console.error('[planner-schedule] conflict persistence failed:', error.message));
+                this.sendEndPushForEvictedSubscription(subscription, 'planner_late_registration_conflict').catch(error => console.error('[planner-schedule] late activity end failed:', error.message));
+                return subscription;
+            }
+        }
         this.subscriptions.set(key, subscription);
         const evicted = this.evictDuplicateSessionsForDevice(deviceId, activityId);
         for (const stale of evicted) {
@@ -345,6 +360,9 @@ export class LiveActivityManager {
         }
         subscription.isPollInProgress = true;
         try {
+            if (subscription.scheduleKey?.startsWith(PLANNER_SCHEDULE_PREFIX)) {
+                return await this.pollPlannerSubscription(subscription, { force, dryRun });
+            }
             const snapshot = this.applyLastKnownPlatforms(
                 await this.getDeparturesSnapshot(
                     subscription.fromStation,
@@ -453,6 +471,75 @@ export class LiveActivityManager {
         }
     }
 
+    async buildPlannerRouteContent(schedule) {
+        const plan = schedule.plannerJourney;
+        const leg = plan.legs[schedule.plannerState.legIndex];
+        const from = leg.from, to = leg.to;
+        let snapshot;
+        try { snapshot = await this.getDeparturesSnapshot(from.crs, to.crs); }
+        catch { snapshot = { departures: [], fetchedAt: new Date().toISOString(), unavailable: true }; }
+        const content = this.buildContentState({ fromStation: from.crs, toStation: to.crs,
+            displayName: `${from.name} → ${to.name}`, journeyUpdatesEnabled: true,
+            scheduleKey: `${PLANNER_SCHEDULE_PREFIX}${schedule.id}` }, snapshot);
+        if (!snapshot.departures.length) {
+            content.statusText = snapshot.unavailable ? 'Live departures unavailable' : 'No upcoming departures';
+            content.estimated = '—';
+            content.destinationTitle = to.name;
+        }
+        return content;
+    }
+
+    async refreshPlannerSchedule(deviceId, subscriptionId) {
+        const matching = Array.from(this.subscriptions.values()).filter(activity => activity.deviceId === deviceId
+            && activity.scheduleKey === `${PLANNER_SCHEDULE_PREFIX}${subscriptionId}`);
+        await Promise.all(matching.map(activity => this.pollSubscription(activity, { force: true })));
+    }
+
+    async pollPlannerSubscription(subscription, { force = false, dryRun = false } = {}) {
+        if (!notificationSubscriptionManager.hasHydratedFromMongo) return { sent: false, reason: 'schedules_loading' };
+        const schedule = notificationSubscriptionManager.plannerScheduler.find(subscription.deviceId, subscription.scheduleKey);
+        if (!schedule || Date.parse(schedule.plannerJourney.expiresAt) <= Date.now()) {
+            if (!dryRun) await this.sendEndUpdate(subscription, { reason: 'planned_journey_ended', preserveNotificationLiveSession: true });
+            return { sent: false, reason: 'planned_journey_ended' };
+        }
+        const content = await notificationSubscriptionManager.plannerScheduler.snapshot(schedule);
+        if (subscription.evicted || notificationSubscriptionManager.subscriptions.get(schedule.id) !== schedule) return { sent: false, reason: 'cancelled' };
+        const comparable = value => JSON.stringify(value && { ...value, lastUpdated: 0, activityID: null, revision: 0 });
+        if (!force && comparable(content) === comparable(subscription.lastPlannerContent) && !this.shouldRefreshStaleDate(subscription)) return { sent: false, reason: 'no_change' };
+        const payload = { aps: { timestamp: Math.floor(Date.now() / 1000), event: 'update',
+            'stale-date': Math.floor(Date.now() / 1000) + 300,
+            'content-state': { ...content, activityID: subscription.activityId, revision: subscription.revision || 0 } } };
+        if (content.isCancelled && !subscription.lastPlannerContent?.isCancelled) {
+            payload.aps.alert = { title: 'Train cancelled', body: content.routeTitle };
+        }
+        if (dryRun) return { sent: false, reason: 'dry_run', payload };
+        const result = await this.pushClient.sendLiveActivityUpdate(subscription.pushToken, payload,
+            { useSandbox: subscription.useSandbox, event: 'live_activity_update', context: this.buildPushContext(subscription, 'planner_update') });
+        this.logPushEvent(subscription, payload, result, 'live_activity_update');
+        if (result?.isBadToken) {
+            await this.unregisterSubscription(subscription.deviceId, subscription.activityId, { preserveNotificationLiveSession: true });
+            return { sent: false, reason: 'bad_token' };
+        }
+        if (!(result?.status >= 200 && result.status < 300)) return { sent: false, reason: 'push_failed' };
+        subscription.lastPlannerContent = content;
+        subscription.lastPushAt = new Date().toISOString();
+        subscription.revision = (subscription.revision || 0) + 1;
+        if (schedule.plannerJourney.showAllDepartures && subscription.journeyCompletedAt) {
+            subscription.journeyCompletedAt = null;
+            subscription.endAt = schedule.plannerJourney.expiresAt;
+            this.scheduleEnd(subscription);
+        }
+        if (!schedule.plannerJourney.showAllDepartures && schedule.plannerState.completed && !subscription.journeyCompletedAt) {
+            subscription.journeyCompletedAt = new Date().toISOString();
+            subscription.endAt = new Date(Date.now() + JOURNEY_COMPLETION_GRACE_MS).toISOString();
+            schedule.plannerState.status = 'completed';
+            await notificationSubscriptionManager._saveSubscription(schedule);
+            this.scheduleEnd(subscription);
+        }
+        await this.saveSubscriptionToMongo(subscription);
+        return { sent: true, payload };
+    }
+
     async sendEndUpdate(subscription, { reason = subscription.endReason || 'unknown', trigger = 'unknown', preserveNotificationLiveSession = false } = {}) {
         const key = this.buildKey(subscription.deviceId, subscription.activityId);
         const endContext = {
@@ -463,7 +550,7 @@ export class LiveActivityManager {
             end_after_ms: Number.isFinite(subscription.endAfterMs) ? subscription.endAfterMs : null,
             window_end_buffer_ms: Number.isFinite(subscription.windowEndBufferMs) ? subscription.windowEndBufferMs : null
         };
-        const snapshot = trigger === 'eviction'
+        const snapshot = trigger === 'eviction' || subscription.scheduleKey?.startsWith(PLANNER_SCHEDULE_PREFIX)
             ? { ...(subscription.lastSnapshot || { departures: [] }), fetchedAt: new Date().toISOString() }
             : subscription.lastSnapshot || (
             await this.getDeparturesSnapshot(
@@ -492,7 +579,8 @@ export class LiveActivityManager {
         this.clearEndTimer(subscription);
         this.subscriptions.delete(key);
         await this.deleteSubscriptionFromMongo(subscription);
-        if (!preserveNotificationLiveSession) await this.deleteMatchingLiveSessions(subscription);
+        await this.markPlannerActivityEnded(subscription);
+        if (!preserveNotificationLiveSession && !subscription.scheduleKey?.startsWith(PLANNER_SCHEDULE_PREFIX)) await this.deleteMatchingLiveSessions(subscription);
 
         // Log if token was bad/expired (expected when activity was already dismissed)
         if (pushResponse?.isBadToken) {
@@ -895,6 +983,9 @@ export class LiveActivityManager {
     }
 
     buildContentState(subscription, snapshot, appIsActive = false) {
+        if (subscription.scheduleKey?.startsWith(PLANNER_SCHEDULE_PREFIX) && subscription.lastPlannerContent) {
+            return { ...subscription.lastPlannerContent, activityID: subscription.activityId, revision: subscription.revision || 0 };
+        }
         const isInProgress = subscription.journeyPhase === 'en_route' || subscription.journeyPhase === 'arrived';
         const isUnconfirmed = isInProgress && subscription.serviceMatchConfirmed === false;
         const primary = isUnconfirmed ? {} : (isInProgress && subscription.preferredServiceId
@@ -1413,6 +1504,8 @@ export class LiveActivityManager {
             console.error(`[live-activity] Failed to delete unregistered session ${key}: ${error?.message || error}`);
         }
         this.log(`[live-activity] unregistered ${deviceId}/${activityId}`);
+        await this.markPlannerActivityEnded(subscription);
+        if (subscription.scheduleKey?.startsWith(PLANNER_SCHEDULE_PREFIX)) return subscription;
         if (preserveNotificationLiveSession) {
             this.log(`[live-activity] preserved_notification_live_session ${deviceId}/${activityId}`);
         } else {
@@ -1423,6 +1516,14 @@ export class LiveActivityManager {
             }
         }
         return subscription;
+    }
+
+    async markPlannerActivityEnded(subscription) {
+        const schedule = notificationSubscriptionManager.plannerScheduler.find(subscription.deviceId, subscription.scheduleKey);
+        if (schedule?.plannerState && ['starting', 'started'].includes(schedule.plannerState.status)) {
+            schedule.plannerState.status = 'ended';
+            await notificationSubscriptionManager._saveSubscription(schedule);
+        }
     }
 
     async unregisterSubscriptionsForSchedule(deviceId, scheduleKey, { fallbackDeviceIds = [] } = {}) {
@@ -1695,6 +1796,7 @@ export class LiveActivityManager {
         });
 
         const results = await Promise.all(subscriptions.map(async (subscription) => {
+            if (subscription.scheduleKey?.startsWith(PLANNER_SCHEDULE_PREFIX)) return 0;
             // Arming a candidate must never reset this activity after boarding.
             // Reject before advancing the timestamp so a valid train correction
             // already in flight can still be applied.

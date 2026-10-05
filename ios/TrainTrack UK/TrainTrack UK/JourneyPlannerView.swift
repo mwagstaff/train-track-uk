@@ -65,8 +65,9 @@ struct JourneyPlannerView: View {
                     }
                     store.timeMode = mode
                 })) {
-                    ForEach(PlannerTimeMode.searchCases) { mode in Text(mode.title).tag(mode) }
+                    ForEach(store.isLiveOnly ? [.now] : PlannerTimeMode.searchCases) { mode in Text(mode.title).tag(mode) }
                 }
+                .disabled(store.isLiveOnly)
                 .accessibilityIdentifier("planner.when")
                 if store.timeMode != .now {
                     if let range = store.status?.dataset?.coverage.dateRange {
@@ -105,10 +106,10 @@ struct JourneyPlannerView: View {
                 Button { startSearch() } label: {
                     HStack {
                         if store.isSearching { ProgressView() }
-                        Text(store.isSearching ? store.searchProgress.title : "Find journeys")
+                        Text(store.isSearching ? store.searchProgress.title : (store.isLiveOnly ? "View live departures" : "Find journeys"))
                     }
                 }
-                .disabled(store.status?.available != true || store.origin == nil || store.destination == nil || store.isSearching)
+                .disabled((store.status?.available != true && !store.isLiveOnly) || store.origin == nil || store.destination == nil || store.isSearching)
                 .accessibilityIdentifier("planner.search")
                 if store.isSearching {
                     Button("Cancel search", role: .cancel) {
@@ -156,7 +157,7 @@ struct JourneyPlannerView: View {
         .environment(\.calendar, PlannerTime.displayCalendar)
         .sheet(item: $stationField) { field in
             NavigationStack {
-                PlannerStationPicker(title: field.title, client: store.client) { station in
+                PlannerStationPicker(title: field.title, client: store.client, liveOnly: store.isLiveOnly) { station in
                     if field == .origin { store.origin = station } else { store.destination = station }
                 }
             }
@@ -164,10 +165,14 @@ struct JourneyPlannerView: View {
         .navigationDestination(for: AddJourneyNavigationDestination.self) { destination in
             switch destination {
             case .plannerResults:
-                PlannerResultsView(store: store, loadPage: { startSearch(cursor: $0) }, cancelSearch: {
-                    searchTask?.cancel()
-                    store.cancelSearch()
-                }, rerunSearch: { startSearch() })
+                if store.liveDepartures != nil {
+                    PlannerLiveDeparturesView(store: store)
+                } else {
+                    PlannerResultsView(store: store, loadPage: { startSearch(cursor: $0) }, cancelSearch: {
+                        searchTask?.cancel()
+                        store.cancelSearch()
+                    }, rerunSearch: { startSearch() })
+                }
             }
         }
         .onChange(of: navigationPath) { _, path in
@@ -249,16 +254,14 @@ struct JourneyPlannerView: View {
     @ViewBuilder private var plannerAvailabilitySection: some View {
         if store.isLoadingStatus {
             Section { ProgressView("Checking journey planner…") }
-        } else if let status = store.status, !status.available {
+        } else if store.isLiveOnly {
             Section {
-                Text(status.reason ?? "The journey planner is unavailable.")
+                Label(JourneyPlannerStore.liveOnlyNotice, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(Color.primary)
-                Button("Retry") { Task { await store.loadStatus() } }
-            }
-        } else if let error = store.statusError {
-            Section {
-                Text(error).foregroundStyle(Color.primary)
-                Button("Retry") { Task { await store.loadStatus() } }
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("planner.live-only-warning")
+                Button("Retry journey planner") { Task { await store.loadStatus() } }
             }
         }
     }
@@ -269,7 +272,7 @@ struct JourneyPlannerView: View {
             await store.search(cursor: cursor, repeatingLastSearch: repeatingLastSearch)
             guard !Task.isCancelled else { return }
             if cursor == nil,
-               store.response != nil,
+               (store.response != nil || store.liveDepartures != nil),
                !navigationPath.contains(.plannerResults) {
                 navigationPath.append(.plannerResults)
             }
@@ -286,9 +289,87 @@ struct JourneyPlannerView: View {
     }
 }
 
+private struct PlannerLiveDeparturesView: View {
+    let store: JourneyPlannerStore
+    @State private var groupID = UUID()
+    @State private var createdAt = Date()
+    @State private var selectedDeparture: DepartureV2?
+
+    var body: some View {
+        List {
+            Section {
+                Text("Live departures only. Future journey planning is temporarily unavailable.")
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Direct trains calling at your destination are shown.")
+                    .foregroundStyle(.secondary)
+            }
+            if let intent = store.liveSearchIntent, let snapshot = store.liveDepartures {
+                Section {
+                    departureCard(intent: intent, snapshot: snapshot)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                } header: {
+                    Text("\(intent.origin.name) → \(intent.destination.name)")
+                        .textCase(nil)
+                }
+            }
+            if let error = store.searchError { Text(error.message) }
+        }
+        .navigationTitle("Live departures")
+        .refreshable { await store.search(repeatingLastSearch: true) }
+        .navigationDestination(item: $selectedDeparture) { departure in
+            if let intent = store.liveSearchIntent {
+                ServiceMapView(serviceID: departure.serviceID,
+                    fromCRS: intent.origin.crs, toCRS: intent.destination.crs,
+                    departureTime: JourneyItineraryBuilder.departureDisplayTime(departure),
+                    destinationName: intent.destination.name)
+                    .safeAreaInset(edge: .bottom) {
+                        LiveDepartureTrackingButton(departure: departure, group: journeyGroup(intent),
+                            observedAt: store.liveDepartures?.lastSuccessfulUpdate ?? createdAt)
+                            .padding()
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(.regularMaterial)
+                    }
+            }
+        }
+        .railwayBackgroundPOC()
+    }
+
+    private func journeyGroup(_ intent: PlannerSearchIntent) -> JourneyGroup {
+        let leg = Journey(id: groupID, groupId: groupID, legIndex: 0,
+            fromStation: station(intent.origin), toStation: station(intent.destination),
+            createdAt: createdAt, favorite: false)
+        return JourneyGroup(id: groupID, legs: [leg])
+    }
+
+    private func departureCard(intent: PlannerSearchIntent, snapshot: JourneyDeparturesSnapshot) -> some View {
+        let group = journeyGroup(intent)
+        let board = SavedRouteBoard(id: SavedRouteQuery(group: group).id, status: "ready",
+            pollAfterMs: nil, result: nil, computedAt: snapshot.lastSuccessfulUpdate,
+            expiresAt: nil, error: nil, source: "direct", direct: snapshot)
+        return JourneyCard(group: group, isFavourite: false, defaultDepartureCount: snapshot.departures.count,
+            isLiveActive: false, scheduledSubscriptions: [], canAddSchedule: false, isBusy: false,
+            isInteractive: true, isExpanded: true, canReverseJourney: false, isJourneyReversed: false,
+            onToggleExpanded: {}, onToggleJourneyReversed: {},
+            onOpenDeparture: { _, departure in selectedDeparture = departure },
+            onToggleFavourite: {}, onToggleJourneyUpdates: {}, onAddJourneySchedule: {},
+            onEditJourneySchedule: { _ in }, onRemoveJourney: {},
+            showsHeader: false, allowsExpansion: false, plannedBoard: SavedRouteBoardState(board: board))
+    }
+
+    private func station(_ station: PlannerStation) -> Station {
+        StationsService.shared.stations.first { $0.crs == station.crs }
+            ?? Station(crs: station.crs, name: station.name,
+                longitude: station.longitude.map { String($0) } ?? "",
+                latitude: station.latitude.map { String($0) } ?? "")
+    }
+}
+
 private struct PlannerStationPicker: View {
     let title: String
     let client: any JourneyPlannerServing
+    var liveOnly = false
     var excludedStationCodes: Set<String> = []
     let select: (PlannerStation) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -323,7 +404,7 @@ private struct PlannerStationPicker: View {
                     Text("Enter at least two letters or a three-letter station code.")
                         .foregroundStyle(Color.plannerSecondaryText)
                 } else if !isLoading && stations.isEmpty {
-                    Text("No matching stations in the available timetable.")
+                    Text("No matching stations found.")
                         .foregroundStyle(Color.plannerSecondaryText)
                 }
                 ForEach(stations.filter { !excludedStationCodes.contains($0.crs.uppercased()) }) { station in
@@ -357,13 +438,25 @@ private struct PlannerStationPicker: View {
             guard isLoading else { return }
             do {
                 try await Task.sleep(for: .milliseconds(250))
-                let found = try await client.stations(query: requestedQuery)
+                let found: [PlannerStation]
+                if liveOnly {
+                    try await StationsService.shared.loadStations()
+                    found = StationsService.shared.search(requestedQuery).map { plannerStation(from: $0) }
+                } else {
+                    do {
+                        found = try await client.stations(query: requestedQuery)
+                    } catch {
+                        try Task.checkCancellation()
+                        try await StationsService.shared.loadStations()
+                        found = StationsService.shared.search(requestedQuery).map { plannerStation(from: $0) }
+                    }
+                }
                 try Task.checkCancellation()
                 stations = found
                 isLoading = false
             } catch {
                 guard !Task.isCancelled else { return }
-                self.error = error.localizedDescription
+                self.error = "Stations couldn’t be loaded. Please try again."
                 isLoading = false
             }
         }
@@ -1328,6 +1421,7 @@ struct PlannerJourneyDetailView: View {
                     Text("Summary").font(.headline)
                     PlannerJourneySummary(journey: response.journey, liveIsStale: liveIsStale, showsTravelNotes: false)
                         .accessibilityIdentifier("planner.detail.summary")
+                    PlannerScheduleAction(journey: response.journey)
                     // Live-data notes are summarised by the status line at the foot of the page.
                     ForEach(PlannerLivePresentation.searchResultWarnings(for: response.journey)
                         .filter { !PlannerLivePresentation.isRefreshFailureWarning($0) }, id: \.self) { warning in

@@ -12,6 +12,13 @@ import JourneyActivityShared
 
 struct Live_ActivityLiveActivity: Widget {
     private func deepLinkURL(for context: ActivityViewContext<JourneyActivityAttributes>) -> URL? {
+        if let key = context.state.scheduleKey, key.hasPrefix("planner:") {
+            var components = URLComponents()
+            components.scheme = "traintrack"
+            components.host = "scheduled-journey"
+            components.queryItems = [URLQueryItem(name: "id", value: String(key.dropFirst(8)))]
+            return components.url
+        }
         var components = URLComponents()
         components.scheme = "traintrack"
         components.host = deepLinkHost(for: context.state.journeyPhase)
@@ -250,6 +257,13 @@ struct LiveActivityLockScreenView: View {
     let attributes: JourneyActivityAttributes
 
     private var deepLinkURL: URL? {
+        if let key = state.scheduleKey, key.hasPrefix("planner:") {
+            var components = URLComponents()
+            components.scheme = "traintrack"
+            components.host = "scheduled-journey"
+            components.queryItems = [URLQueryItem(name: "id", value: String(key.dropFirst(8)))]
+            return components.url
+        }
         var components = URLComponents()
         components.scheme = "traintrack"
         components.host = deepLinkHost(for: state.journeyPhase)

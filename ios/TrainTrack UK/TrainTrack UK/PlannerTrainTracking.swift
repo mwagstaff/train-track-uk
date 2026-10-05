@@ -181,3 +181,100 @@ struct PlannerTrainTrackingButton: View {
         .onDisappear { task?.cancel() }
     }
 }
+
+/// A live board already identifies the train; recheck that exact service before starting updates.
+@MainActor enum LiveDepartureTracking {
+    static func canStart(selected: DepartureV2, selectedObservedAt: Date, current: DepartureV2,
+                         verifiedAt: Date, selectedServer: String, currentServer: String, now: Date) -> Bool {
+        guard selectedServer == currentServer,
+              current.serviceID == selected.serviceID, current.hasProviderServiceID,
+              current.serviceType == "train", !current.isCancelled, !current.filterLocationCancelled,
+              now.timeIntervalSince(verifiedAt) < 90, verifiedAt <= now.addingTimeInterval(30),
+              let originalTime = PlannerTrainTracking.date(selected.departureTime.scheduled,
+                  near: selected.evidenceObservedAt ?? selectedObservedAt),
+              let currentTime = PlannerTrainTracking.date(current.departureTime.scheduled,
+                  near: current.evidenceObservedAt ?? verifiedAt),
+              originalTime == currentTime,
+              let expectedTime = SavedRouteDirectPresentation.departureDate(current, useLiveTimes: true,
+                  now: now, observedAt: verifiedAt) else { return false }
+        return expectedTime >= now
+    }
+}
+
+struct LiveDepartureTrackingButton: View {
+    let departure: DepartureV2
+    let group: JourneyGroup
+    let observedAt: Date
+    @EnvironmentObject private var departures: DeparturesStore
+    @EnvironmentObject private var notifications: NotificationSubscriptionStore
+    @EnvironmentObject private var activities: LiveActivityManager
+    @EnvironmentObject private var router: TabRouter
+    @AppStorage("liveActivityDurationMinutes") private var duration = 60
+    @State private var task: Task<Void, Never>?
+    @State private var busy = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                busy = true
+                error = nil
+                task = Task {
+                    defer { busy = false }
+                    do {
+                        let server = ApiHostPreference.currentBaseURL
+                        let from = group.startStation.crs
+                        let to = group.endStation.crs
+                        let boards = try await NetworkServicePhone.shared.fetchDeparturesAggregated(
+                            pairs: [(from, to)], requireFresh: true, timeout: 8)
+                        try Task.checkCancellation()
+                        guard let board = boards["\(from)_\(to)"], board.dataStatus == .live,
+                              let current = board.departures.first(where: { $0.serviceID == departure.serviceID }) else {
+                            throw PlannerTrainTracking.unavailable
+                        }
+                        let verifiedAt = current.evidenceObservedAt ?? board.lastSuccessfulUpdate ?? Date()
+                        let validate = {
+                            LiveDepartureTracking.canStart(selected: departure, selectedObservedAt: observedAt,
+                                current: current, verifiedAt: verifiedAt, selectedServer: server,
+                                currentServer: ApiHostPreference.currentBaseURL, now: Date())
+                        }
+                        guard validate() else { throw PlannerTrainTracking.unavailable }
+                        let details = try await NetworkServicePhone.shared.fetchServiceDetailsAggregated(
+                            ids: [current.serviceID], context: ServiceDetailsLookupContext(fromCRS: from, toCRS: to,
+                                originCRS: nil, operator: current.operator, destinationCRSs: [to], length: current.length), timeout: 8)
+                        try Task.checkCancellation()
+                        guard let detail = details[current.serviceID], validate(),
+                              JourneyItineraryBuilder.cancellation(for: current, at: to,
+                                  serviceDetailsByID: details) == nil else { throw PlannerTrainTracking.unavailable }
+                        departures.recordVerifiedService(current, details: detail, fromCRS: from, toCRS: to)
+                        let started = await JourneyUpdateActions.start(group: group, scheduledSubscription: nil,
+                            liveSession: nil, liveActivityDurationMinutes: duration, notificationStore: notifications,
+                            activityManager: activities, departuresStore: departures, preferredServiceID: current.serviceID,
+                            validatePreferredService: {
+                                guard let leg = group.legs.first,
+                                      let latest = departures.departures(for: leg).first(where: { $0.serviceID == current.serviceID }) else { return false }
+                                return LiveDepartureTracking.canStart(selected: departure, selectedObservedAt: observedAt,
+                                    current: latest, verifiedAt: latest.evidenceObservedAt ?? verifiedAt,
+                                    selectedServer: server, currentServer: ApiHostPreference.currentBaseURL, now: Date())
+                                    && JourneyItineraryBuilder.cancellation(for: latest, at: to,
+                                        serviceDetailsByID: departures.serviceDetailsById) == nil
+                            })
+                        if started { router.selected = .inProgress }
+                        else if !Task.isCancelled { error = activities.lastMessage ?? "Train tracking could not be started. Please try again." }
+                    } catch {
+                        if !Task.isCancelled { self.error = error.localizedDescription }
+                    }
+                }
+            } label: {
+                if busy { ProgressView("Confirming train…") }
+                else { Label("Track this train", systemImage: "location.fill") }
+            }
+            .disabled(busy || departure.isCancelled || departure.filterLocationCancelled || !departure.hasProviderServiceID || departure.serviceType != "train")
+            .accessibilityIdentifier("live-departure.track")
+            Text("Tracks this train from \(group.startStation.name) to \(group.endStation.name).")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let error { Text(error).font(.caption).foregroundStyle(.primary) }
+        }
+        .onDisappear { task?.cancel() }
+    }
+}

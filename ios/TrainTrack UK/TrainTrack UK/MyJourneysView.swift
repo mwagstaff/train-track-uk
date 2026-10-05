@@ -9,6 +9,7 @@ struct MyJourneysView: View {
     @EnvironmentObject var router: TabRouter
     @Environment(\.scenePhase) private var scenePhase
     @State private var routePlanner = SavedRoutePlannerStore.shared
+    @ObservedObject private var deepLink = DeepLinkRouter.shared
     @AppStorage(ApiHostPreference.storageKey, store: ApiHostPreference.store) private var plannerHost = ApiHost.prod.rawValue
     @State private var journeyPendingDelete: JourneyGroup? = nil
     @State private var showDeleteDialog = false
@@ -159,6 +160,9 @@ struct MyJourneysView: View {
                 cardDestinationView(destination)
             }
             .task { await notificationStore.refresh() }
+            .sheet(item: $deepLink.scheduledJourney) { schedule in
+                if let plan = schedule.plannerJourney { PlannerJourneyScheduleView(plan: plan, existing: schedule) }
+            }
             .task(id: plannerRefreshKey) {
                 guard plannerIsActive else { return }
                 await routePlanner.watch(groups: plannerGroups)
@@ -303,6 +307,9 @@ struct MyJourneysView: View {
 
     @ViewBuilder
     private func listContent(_ groups: [Group]) -> some View {
+        ScheduledPlannerJourneysSection(searchText: normalizedActiveSearchText) { schedule in
+            deepLink.scheduledJourney = schedule
+        }
         switch sortMode {
         case .distance:
             if groupsEmpty(groups) {
@@ -327,6 +334,7 @@ struct MyJourneysView: View {
 
     @ViewBuilder
     private var emptySection: some View {
+        if !notificationStore.subscriptions.contains(where: { $0.plannerJourney != nil }) {
         Section {
             SwiftUI.Group {
                 if hasActiveSearch {
@@ -384,6 +392,7 @@ struct MyJourneysView: View {
             }
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
+        }
         }
     }
 

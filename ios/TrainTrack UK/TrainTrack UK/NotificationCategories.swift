@@ -3,22 +3,22 @@ import UserNotifications
 
 enum NotificationCategoryRegistrar {
     static func register() {
-        let muteAction = UNNotificationAction(
-            identifier: NotificationActionId.muteLegForToday,
-            title: "Mute this journey",
-            options: [.foreground]
+        let endAction = UNNotificationAction(
+            identifier: NotificationActionId.endJourney,
+            title: "End journey",
+            options: [.destructive]
         )
 
         let journeyCategory = UNNotificationCategory(
             identifier: NotificationCategoryId.journeyLegAlert,
-            actions: [muteAction],
+            actions: [endAction],
             intentIdentifiers: [],
             options: []
         )
 
         let arrivalCategory = UNNotificationCategory(
             identifier: NotificationCategoryId.stationArrival,
-            actions: [muteAction],
+            actions: [endAction],
             intentIdentifiers: [],
             options: []
         )

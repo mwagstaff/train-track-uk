@@ -8,13 +8,11 @@ final class NotificationAlertHandler {
 
     private let locationProvider = NotificationLocationProvider()
 
-    func handle(response: UNNotificationResponse) {
+    func handle(response: UNNotificationResponse) async {
         let action = response.actionIdentifier
         let title = response.notification.request.content.title
-        DebugLogStore.shared.log("Notification action: \(action) title=\(title)", category: "Mute")
-        Task {
-            await handleAsync(response: response)
-        }
+        DebugLogStore.shared.log("Notification action: \(action) title=\(title)", category: "Notifications")
+        await handleAsync(response: response)
     }
 
     private func handleAsync(response: UNNotificationResponse) async {
@@ -23,6 +21,11 @@ final class NotificationAlertHandler {
             return
         }
         guard var info = NotificationLegInfo(content: content) else { return }
+
+        if response.actionIdentifier == NotificationActionId.endJourney {
+            await endJourney(info: &info)
+            return
+        }
 
         if info.alertType == NotificationAlertType.originWelcome {
             DeepLinkRouter.shared.openInProgress()
@@ -47,6 +50,22 @@ final class NotificationAlertHandler {
             await muteLegForToday(info: &info, requireGeofence: !bypassGeofence)
         default:
             break
+        }
+    }
+
+    private func endJourney(info: inout NotificationLegInfo) async {
+        if info.fromCode == nil || info.toCode == nil {
+            await info.resolveStationCodesIfNeeded()
+        }
+        let ended = await NotificationSubscriptionStore.shared.endJourneyFromNotification(
+            subscriptionID: info.subscriptionId,
+            fromCode: info.fromCode,
+            toCode: info.toCode
+        )
+        if ended {
+            ToastStore.shared.show("Journey ended", icon: "checkmark.circle.fill")
+        } else {
+            DebugLogStore.shared.log("Notification end skipped: journey not found", category: "Notifications")
         }
     }
 

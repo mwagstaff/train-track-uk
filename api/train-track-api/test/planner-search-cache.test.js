@@ -37,6 +37,42 @@ function fixture(t) {
 
 const cacheStatuses = telemetry => telemetry.filter(value => value.cacheStatus).map(value => value.cacheStatus);
 
+test('production detail dispatch enriches retained searches on a worker without its original journey cache', async t => {
+    const { repo, services } = data();
+    const source = `
+        import { PlannerEngine } from ${JSON.stringify(new URL('../lib/planner/engine.js', import.meta.url).href)};
+        const repo = ${JSON.stringify(repo)}, services = ${JSON.stringify(services)};
+        repo.resolveServices = date => ({ services: date === '2026-09-18' ? services : [], diagnostics: { counts: {} } });
+        repo.close = () => {};
+        PlannerEngine.prototype.loadStationPresentation = async function() {
+            this.now = () => ${now};
+            this.openDataset = async () => repo;
+        };
+        const journey = PlannerEngine.prototype.journey;
+        PlannerEngine.prototype.journey = function(...args) {
+            this.journeys.clear();
+            return journey.apply(this, args);
+        };
+        await import(${JSON.stringify(new URL('../lib/planner/worker.js', import.meta.url).href)});
+    `;
+    const service = new PlannerService({ ...config, workerCount: 1 }, { workerURL: new URL(`data:text/javascript,${encodeURIComponent(source)}`) });
+    // Inject only the dataset; retain the production parent dispatch and real worker protocol.
+    service.standardWorker = true;
+    service.metadata = () => assert.fail('Journey details must enrich the selected service, not return the search snapshot');
+    t.after(() => service.close());
+    const response = await service.search({ ...body, algorithm: 'raptor' });
+    const selected = response.journeys[0];
+    assert.equal(selected.legs[0].uid, undefined);
+    const details = await service.journey(selected.id);
+    assert.equal(details.journey.legs[0].uid, services[0].uid);
+    assert.equal(details.journey.legs[0].originDate, services[0].originDate);
+    assert.deepEqual(details.journey.legs[0].serviceCallingPoints.map(call => call.station.crs), ['AAA', 'CCC']);
+    assert.equal(details.journey.departure, selected.departure);
+    assert.deepEqual(details.journey.legs[0].callingPoints, selected.legs[0].callingPoints);
+    service.journeys.get(selected.id).at = Date.now() - 3600001;
+    await assert.rejects(service.journey(selected.id), { code: 'JOURNEY_EXPIRED' });
+});
+
 test('clearing search results forces both algorithms to miss without discarding prepared data or journey details', async t => {
     const engine = fixture(t), telemetry = [];
     const execution = { onTelemetry: value => telemetry.push(value) };

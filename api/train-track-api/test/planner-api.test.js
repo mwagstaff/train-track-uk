@@ -120,7 +120,7 @@ test('saved-route discovery performs one ordinary search, preserves vias and exp
 
 test('journey details include the full dated service without changing the travelled stops', async () => {
     const repo = repository();
-    repo.resolveServices = date => ({ services: [{ id: 'full-service', calls: [
+    repo.resolveServices = date => ({ services: [{ id: 'full-service', uid: 'A12345', calls: [
         { station: 'ABW', departure: Date.parse('2026-09-08T05:30:00Z') },
         { station: 'KTH', departure: Date.parse('2026-09-08T06:00:00Z') },
         { station: 'VIC', arrival: Date.parse('2026-09-08T06:21:00Z') }
@@ -132,6 +132,7 @@ test('journey details include the full dated service without changing the travel
     journey.legs[0].originDate = '2026-09-08';
     instance.retainJourney(journey, version);
     const details = await instance.journey(journey.id);
+    assert.equal(details.journey.legs[0].uid, 'A12345');
     assert.deepEqual(details.journey.legs[0].callingPoints, journey.legs[0].callingPoints);
     assert.deepEqual(details.journey.legs[0].serviceCallingPoints.map(call => call.station.crs), ['ABW', 'KTH', 'VIC']);
     assert.equal(details.journey.legs[0].serviceCallingPoints[2].arrival, '2026-09-08T06:21:00.000Z');

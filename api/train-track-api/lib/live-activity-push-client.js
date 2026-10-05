@@ -145,7 +145,7 @@ export class LiveActivityPushClient {
         const environment = useSandbox ? 'sandbox' : 'prod';
         const host = useSandbox ? 'api.sandbox.push.apple.com' : 'api.push.apple.com';
 
-        const maxRetries = Number.isFinite(DEFAULT_PUSH_MAX_RETRIES) && DEFAULT_PUSH_MAX_RETRIES >= 0
+        const maxRetries = options.disableRetries === true ? 0 : Number.isFinite(DEFAULT_PUSH_MAX_RETRIES) && DEFAULT_PUSH_MAX_RETRIES >= 0
             ? Math.trunc(DEFAULT_PUSH_MAX_RETRIES)
             : 3;
 

@@ -25,6 +25,7 @@ enum NotificationCategoryId {
 }
 
 enum NotificationActionId {
+    static let endJourney = "END_JOURNEY"
     static let muteLegForToday = "MUTE_LEG_TODAY"
 }
 

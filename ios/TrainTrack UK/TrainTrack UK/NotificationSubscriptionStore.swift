@@ -40,6 +40,22 @@ final class NotificationSubscriptionService {
         try await delete(id: id, path: "subscriptions")
     }
 
+    func updatePlannerDisplay(id: String, showAllDepartures: Bool) async throws -> NotificationSubscription {
+        guard let url = URL(string: "\(base)/notifications/subscriptions/planner-display") else {
+            throw PhoneNetworkError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-Token")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "device_id": deviceId, "subscription_id": id, "show_all_departures": showAllDepartures
+        ])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validateResponse(response, data: data)
+        return try decoder.decode(NotificationSubscriptionResponse.self, from: data).subscription
+    }
+
     func deleteLiveSession(id: String) async throws {
         try await delete(id: id, path: "live_sessions")
     }
@@ -334,6 +350,12 @@ final class NotificationSubscriptionStore: ObservableObject {
     }
 
     // MARK: - Mutations
+    func updatePlannerDisplay(id: String, showAllDepartures: Bool) async throws -> NotificationSubscription {
+        let updated = try await service.updatePlannerDisplay(id: id, showAllDepartures: showAllDepartures)
+        if let index = subscriptions.firstIndex(where: { $0.id == id }) { subscriptions[index] = updated }
+        return updated
+    }
+
 
     func upsert(_ requestBody: NotificationSubscriptionRequest) async throws -> NotificationSubscription {
         let subscription = try await service.upsertSubscription(requestBody)
@@ -439,6 +461,101 @@ final class NotificationSubscriptionStore: ObservableObject {
         await syncGeofences()
     }
 
+    func endJourneyFromNotification(subscriptionID: String?, fromCode: String?, toCode: String?) async -> Bool {
+        if let target = notificationEndTarget(subscriptionID: subscriptionID, fromCode: fromCode, toCode: toCode) {
+            await endJourneyUpdates(subscriptionID: target.id, group: target.group)
+            return true
+        }
+        await refresh()
+        guard let target = notificationEndTarget(subscriptionID: subscriptionID, fromCode: fromCode, toCode: toCode) else {
+            return false
+        }
+        await endJourneyUpdates(subscriptionID: target.id, group: target.group)
+        return true
+    }
+
+    private func notificationEndTarget(subscriptionID: String?, fromCode: String?, toCode: String?) -> (id: String, group: JourneyGroup)? {
+        let coordinator = JourneyTrackingCoordinator.shared
+        let active = coordinator.activeJourney
+        let completed = coordinator.recentlyCompleted?.checkpoint
+        let candidates = coordinator.armedCandidates
+        let sessions = liveSessions + subscriptions.filter { $0.id == subscriptionID }
+
+        func containsNotifiedLeg(_ stations: [Station]) -> Bool {
+            guard let fromCode, let toCode else { return false }
+            return zip(stations, stations.dropFirst()).contains { from, to in
+                from.crs.caseInsensitiveCompare(fromCode) == .orderedSame
+                    && to.crs.caseInsensitiveCompare(toCode) == .orderedSame
+            }
+        }
+
+        func target(id: String, stations: [Station]) -> (id: String, group: JourneyGroup)? {
+            guard stations.count >= 2 else { return nil }
+            let groupID = UUID()
+            let legs = stations.indices.dropLast().map { index in
+                Journey(id: UUID(), groupId: groupID, legIndex: index,
+                        fromStation: stations[index], toStation: stations[index + 1],
+                        createdAt: Date(), favorite: false)
+            }
+            return (id, JourneyGroup(id: groupID, legs: legs))
+        }
+
+        func target(for session: NotificationSubscription) -> (id: String, group: JourneyGroup)? {
+            let legs = session.legs.filter(\.enabled)
+            guard let first = legs.first else { return nil }
+            func station(_ crs: String, _ name: String?) -> Station {
+                StationsService.shared.stations.first { $0.crs.caseInsensitiveCompare(crs) == .orderedSame }
+                    ?? Station(crs: crs.uppercased(), name: name ?? crs.uppercased(), longitude: "0", latitude: "0")
+            }
+            let stations = [station(first.from, first.fromName)] + legs.map { station($0.to, $0.toName) }
+            return target(id: session.id, stations: stations)
+        }
+
+        if let active, active.subscriptionId == subscriptionID {
+            return target(id: active.subscriptionId, stations: active.plannedStations)
+        }
+        if let candidate = candidates.first(where: { $0.subscriptionId == subscriptionID }) {
+            return target(id: candidate.subscriptionId, stations: candidate.stations)
+        }
+        if let completed, completed.subscriptionId == subscriptionID {
+            return target(id: completed.subscriptionId, stations: completed.plannedStations)
+        }
+        if let session = sessions.first(where: { $0.id == subscriptionID }) {
+            let legs = session.legs.filter(\.enabled)
+            if let first = legs.first {
+                let route = [first.from] + legs.map(\.to)
+                func matchesRoute(_ stations: [Station]) -> Bool {
+                    stations.map { $0.crs.uppercased() } == route.map { $0.uppercased() }
+                }
+                if let active, matchesRoute(active.plannedStations) {
+                    return target(id: active.subscriptionId, stations: active.plannedStations)
+                }
+                if let candidate = candidates.first(where: { matchesRoute($0.stations) }) {
+                    return target(id: candidate.subscriptionId, stations: candidate.stations)
+                }
+            }
+            return target(for: session)
+        }
+        if let active, containsNotifiedLeg(active.plannedStations) {
+            return target(id: active.subscriptionId, stations: active.plannedStations)
+        }
+        if let candidate = candidates.first(where: { containsNotifiedLeg($0.stations) }) {
+            return target(id: candidate.subscriptionId, stations: candidate.stations)
+        }
+        if let completed, containsNotifiedLeg(completed.plannedStations) {
+            return target(id: completed.subscriptionId, stations: completed.plannedStations)
+        }
+        if let session = sessions.first(where: { session in
+            session.legs.filter(\.enabled).contains { leg in
+                leg.from.caseInsensitiveCompare(fromCode ?? "") == .orderedSame
+                    && leg.to.caseInsensitiveCompare(toCode ?? "") == .orderedSame
+            }
+        }) {
+            return target(for: session)
+        }
+        return nil
+    }
+
     func endJourneyUpdates(subscriptionID: String, group: JourneyGroup) async {
         let coordinator = JourneyTrackingCoordinator.shared
         let reference = coordinator.armedCandidates.first { $0.subscriptionId == subscriptionID }?.activeFrom
@@ -535,7 +652,7 @@ final class NotificationSubscriptionStore: ObservableObject {
         scheduled: [NotificationSubscription],
         liveSessions: [NotificationSubscription]
     ) -> [NotificationSubscription] {
-        scheduled + liveSessions.filter { $0.liveSessionOrigin != .scheduled }
+        scheduled.filter { $0.plannerJourney == nil } + liveSessions.filter { $0.liveSessionOrigin != .scheduled }
     }
 
     var hasAuthoritativeRemoteState: Bool {
@@ -722,7 +839,7 @@ final class NotificationSubscriptionStore: ObservableObject {
         let scheduledTypes = NotificationPreferences.effectiveTypes(for: .scheduled)
         let liveTypes = NotificationPreferences.effectiveTypes(for: .liveSession)
 
-        for subscription in scheduled {
+        for subscription in scheduled where subscription.plannerJourney == nil {
             let request = NotificationSubscriptionRequest(
                 subscriptionId: subscription.id,
                 deviceId: DeviceIdentity.deviceToken,
@@ -784,7 +901,7 @@ final class NotificationSubscriptionStore: ObservableObject {
             where Self.retainsScheduleForRecovery(subscription) {
             byID[subscription.id] = subscription
         }
-        for subscription in subscriptions where !NotificationScheduleExpiry.isExpired(subscription) {
+        for subscription in subscriptions where subscription.plannerJourney == nil && !NotificationScheduleExpiry.isExpired(subscription) {
             byID[subscription.id] = subscription
         }
         for subscription in geofenceEligibleLiveSessions {
@@ -901,6 +1018,7 @@ final class NotificationSubscriptionStore: ObservableObject {
     }
 
     private static func retainsScheduleForRecovery(_ subscription: NotificationSubscription, now: Date = Date()) -> Bool {
+        guard subscription.plannerJourney == nil else { return false }
         guard let expiration = NotificationScheduleExpiry.expirationDate(for: subscription) else { return true }
         return now < expiration.addingTimeInterval(StationDetectionPolicy.recoveryLifetime)
     }

@@ -62,6 +62,32 @@ def iso(value):
     return value.isoformat().replace("+00:00", "Z")
 
 
+def scheduled_journey():
+    journey = detail_journey()
+    journey["id"] = "fixture-schedule"
+    for index, leg in enumerate(journey["legs"]):
+        if leg["mode"] == "rail":
+            leg["uid"] = f"A{index:05}"
+            leg["originDate"] = START.date().isoformat()
+    return journey
+
+
+SCHEDULE_MODES = {}
+
+
+def scheduled_card(profile, device):
+    departure = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=10) if profile == "schedule-active" else START
+    leg = {"kind": "vehicle", "mode": "rail", "from": {"crs": "CLK", "name": "Clock House"},
+           "to": {"crs": "CHX", "name": "London Charing Cross"}, "departure": iso(departure),
+           "arrival": iso(departure + timedelta(minutes=33)), "uid": "A12345",
+           "originDate": departure.date().isoformat(), "operator": "SE", "calls": [], "transferMinutes": 0}
+    return {"id": "fixture-scheduled-card", "device_id": device, "route_key": "planner:CLK-CHX",
+            "schedule_type": "one_off", "days_of_week": [], "notification_types": [], "legs": [],
+            "source": "scheduled", "planner_status": "started" if profile == "schedule-active" else None,
+            "planner_journey": {"leadMinutes": 60, "legs": [leg],
+                                "showAllDepartures": SCHEDULE_MODES.get((profile, device), False)}}
+
+
 def generic_transfer_journey():
     journey = detail_journey()
     journey["id"] = "fixture-generic-transfer"
@@ -130,6 +156,8 @@ def search_result(request, profile=None):
                      "durationMinutes": 360, "changes": 3, "legs": legs}]
     if profile in ["details", "live-details"]:
         journeys = [detail_journey(LIVE_START if profile == "live-details" else START)]
+    if profile == "schedule":
+        journeys = [scheduled_journey()]
     if profile == "generic-transfer":
         journeys = [generic_transfer_journey()]
     if profile == "tubetrack":
@@ -282,7 +310,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         url = urlparse(self.path)
-        if "/journeys/departure-row-" in url.path:
+        profile = url.path.split("/")[1]
+        if profile in ["schedule", "schedule-active"] and url.path.endswith("/notifications/subscriptions"):
+            self.respond(200, {"subscriptions": [scheduled_card(profile, self.headers.get("X-Device-Token", "fixture"))]})
+        elif profile in ["schedule", "schedule-active"] and url.path.endswith("/notifications/live_sessions"):
+            self.respond(200, {"subscriptions": []})
+        elif "/journeys/departure-row-" in url.path:
             journey_id = url.path.rsplit("/", 1)[-1]
             result = departure_rows_result()
             journey = next((value for value in result["journeys"] if value["id"] == journey_id), None)
@@ -311,6 +344,8 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(200, {"journey": generic_transfer_journey(), "dataset": DATASET})
         elif url.path.endswith("/journeys/fixture-details"):
             self.respond(200, {"journey": detail_journey(LIVE_START if url.path.startswith("/live-details/") else START), "dataset": DATASET})
+        elif url.path.endswith("/journeys/fixture-schedule"):
+            self.respond(200, {"journey": scheduled_journey(), "dataset": DATASET})
         elif url.path.startswith("/live-details/") and "/departures/from/" in url.path:
             scheduled = LIVE_START.astimezone(ZoneInfo("Europe/London")).strftime("%H:%M")
             self.respond(200, {"KTH_VIC": {"departures": [{"serviceID": "fixture-live", "serviceType": "train",
@@ -334,6 +369,26 @@ class Handler(BaseHTTPRequestHandler):
             ]}})
         elif url.path.startswith(("/saved/", "/saved-legacy/")) and "/departures/from/" in url.path:
             self.respond(200, {})
+        elif url.path.startswith("/unavailable/") and url.path.endswith("/status"):
+            self.respond(200, {"available": False, "apiVersion": 3,
+                "capabilities": {"timeTypes": [], "maxChanges": 0}, "reason": "Internal dataset failure"})
+        elif url.path.startswith("/unavailable/") and "/v3/" in url.path:
+            self.respond(503, {"error": {"code": "DATASET_UNAVAILABLE", "message": "Internal dataset failure"}})
+        elif url.path.startswith("/unavailable/") and "/departures/from/" in url.path:
+            self.respond(200, {"KTH_VIC": {"departures": [{"serviceID": "outage-live", "serviceType": "train",
+                "departure_time": {"scheduled": PLANNER_LIVE_START.astimezone(ZoneInfo("Europe/London")).strftime("%H:%M"),
+                                   "estimated": "On time"}, "platform": "2", "operatorCode": "SE",
+                "operator": "Southeastern", "destination": [{"crs": "VIC", "locationName": "London Victoria"}]}],
+                "data_status": "live", "last_successful_update": iso(datetime.now(timezone.utc))}})
+        elif url.path.startswith("/unavailable/") and "/service_details/outage-live" in url.path:
+            def timing(minutes):
+                return (PLANNER_LIVE_START + timedelta(minutes=minutes)).astimezone(ZoneInfo("Europe/London")).strftime("%H:%M")
+            self.respond(200, [{"outage-live": {"generatedAt": iso(datetime.now(timezone.utc)),
+                "serviceType": "train", "operatorCode": "SE", "operator": "Southeastern", "platform": "2",
+                "crs": "KTH", "locationName": "Kent House", "std": timing(0), "etd": "On time",
+                "subsequentCallingPoints": [{"callingPoint": [
+                    {"crs": "PNE", "locationName": "Penge East", "st": timing(5), "et": "On time"},
+                    {"crs": "VIC", "locationName": "London Victoria", "st": timing(21), "et": "On time"}]}]}}])
         elif url.path.endswith("/status"):
             self.respond(200, {"available": True, "apiVersion": 3,
                                "capabilities": {"timeTypes": ["departAfter"], "maxChanges": 5,
@@ -343,6 +398,17 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path.endswith("/stations"):
             query = parse_qs(url.query).get("q", [""])[0].upper()
             self.respond(200, {"stations": [station for station in STATIONS if query in station["crs"] or query in station["name"].upper()]})
+        else:
+            self.respond(404, {})
+
+    def do_PATCH(self):
+        url = urlparse(self.path)
+        profile = url.path.split("/")[1]
+        if profile in ["schedule", "schedule-active"] and url.path.endswith("/notifications/subscriptions/planner-display"):
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            device = body["device_id"]
+            SCHEDULE_MODES[(profile, device)] = body["show_all_departures"]
+            self.respond(200, {"subscription": scheduled_card(profile, device)})
         else:
             self.respond(404, {})
 

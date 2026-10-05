@@ -56,6 +56,7 @@ import { plannerSearchLog } from './lib/planner-search-log.js';
 notificationSubscriptionManager.getDeviceLiveActivities = (deviceId) =>
     Array.from(liveActivityManager.subscriptions.values()).filter((session) => session.deviceId === deviceId);
 notificationSubscriptionManager.getDeviceTrackingSessions = (deviceId) => journeyTrackingManager.listSessions(deviceId);
+notificationSubscriptionManager.plannerScheduler.routeContent = schedule => liveActivityManager.buildPlannerRouteContent(schedule);
 
 journeyTrackingManager.setJourneyCompletionHandler(async (completion) => {
     await notificationSubscriptionManager.reconcileJourneyCompletion({
@@ -689,6 +690,7 @@ app.post('/api/v2/notifications/subscriptions', async (req, res) => {
         push_token,
         route_key,
         schedule_type,
+        planner_journey,
         days_of_week,
         notification_types,
         legs,
@@ -731,6 +733,7 @@ app.post('/api/v2/notifications/subscriptions', async (req, res) => {
             pushToken: push_token,
             routeKey: route_key,
             scheduleKind: schedule_type,
+            plannerJourney: planner_journey,
             daysOfWeek: days_of_week,
             notificationTypes: notification_types,
             legs,
@@ -769,6 +772,19 @@ app.post('/api/v2/notifications/subscriptions', async (req, res) => {
     }
 });
 
+app.patch('/api/v2/notifications/subscriptions/planner-display', async (req, res) => {
+    const { device_id, subscription_id, show_all_departures } = req.body || {};
+    try {
+        const subscription = await notificationSubscriptionManager.updatePlannerDisplay({
+            deviceId: device_id, subscriptionId: subscription_id, showAllDepartures: show_all_departures
+        });
+        // Save the preference even if APNs is temporarily unavailable; the next poll retries the update.
+        try { await liveActivityManager.refreshPlannerSchedule(device_id, subscription_id); }
+        catch (error) { console.error('[live-activity] Planner display refresh failed:', error?.message); }
+        res.json({ subscription });
+    } catch (error) { res.status(400).json({ error: error?.message || 'Unable to update this journey' }); }
+});
+
 app.get('/api/v2/notifications/subscriptions', (req, res) => {
     const { device_id } = req.query || {};
     logNotificationRequest('list', req, { device_id });
@@ -791,6 +807,11 @@ app.delete('/api/v2/notifications/subscriptions', async (req, res) => {
         reason: 'api_delete_scheduled_subscription',
         metadata: { request: buildRequestAuditContext(req) }
     });
+    if (removed) {
+        const activities = Array.from(liveActivityManager.subscriptions.values()).filter(activity =>
+            activity.deviceId === device_id && activity.scheduleKey === `planner:${subscription_id}`);
+        await Promise.all(activities.map(activity => liveActivityManager.cleanupSubscription(activity, 'planner_schedule_cancelled')));
+    }
     res.json({ status: removed ? 'deleted' : 'not_found' });
 });
 

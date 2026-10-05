@@ -251,6 +251,7 @@ final class LiveActivityManager: ObservableObject {
         windowEnd: String?,
         now: Date = Date()
     ) -> (date: Date, source: String)? {
+        if scheduleKey?.hasPrefix("planner:") == true { return nil }
         if let scheduledEnd = scheduledWindowEndDate(
             scheduleKey: scheduleKey,
             windowStart: windowStart,
@@ -440,6 +441,7 @@ final class LiveActivityManager: ObservableObject {
         var backendStateSynchronized = false
 
         for activity in currentSystemActivities() {
+            if activity.content.state.scheduleKey?.hasPrefix("planner:") == true { continue }
             guard journeyPhaseUpdateIDs[routeKey] == updateID else { return }
             let routeState = activity.content.state
             let deepLinkFrom = (routeState.deepLinkFromCRS ?? routeState.fromCRS).uppercased()
@@ -690,6 +692,7 @@ final class LiveActivityManager: ObservableObject {
 
         // Refresh all tracked activities
         for (activityID, tracked) in trackedActivities {
+            if tracked.scheduleKey?.hasPrefix("planner:") == true { continue }
             let fromCRS = tracked.fromCRS
             let toCRS = tracked.toCRS
 
@@ -1430,6 +1433,7 @@ final class LiveActivityManager: ObservableObject {
 
                 let now = Date()
                 for (activityID, tracked) in self.trackedActivities {
+                    if tracked.scheduleKey?.hasPrefix("planner:") == true { continue }
                     let deadline = self.forceEndDeadline(for: tracked, now: now)
                     if now > deadline.date {
                         let elapsed = now.timeIntervalSince(tracked.startedAt)
@@ -1498,6 +1502,7 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func refreshAndUpdate(for journey: Journey, depStore: DeparturesStore, activityID: String? = nil) async {
+        if let activityID, trackedActivities[activityID]?.scheduleKey?.hasPrefix("planner:") == true { return }
         // Fetch fresh departure data from the API
         let timestamp = Date()
         let activityLabel = activityID ?? "all"
@@ -2205,6 +2210,7 @@ final class LiveActivityManager: ObservableObject {
         fromCRS: String,
         toCRS: String
     ) async {
+        if activity.content.state.scheduleKey?.hasPrefix("planner:") == true { return }
         guard let scheduleKey = scheduledActivityKey(for: activity),
               var tracked = trackedActivities[activity.id] else {
             return
@@ -2267,6 +2273,7 @@ final class LiveActivityManager: ObservableObject {
         fromCRS: String,
         toCRS: String
     ) async {
+        if activity.content.state.scheduleKey?.hasPrefix("planner:") == true { return }
         guard trackedActivities[activity.id] != nil, isUsableSystemActivity(activity) else { return }
         guard !notificationLiveSessionEnsuredActivityIDs.contains(activity.id) else { return }
         guard let scheduleKey = scheduledActivityKey(for: activity) else {
@@ -2556,6 +2563,14 @@ final class LiveActivityManager: ObservableObject {
         // Remove from tracked activities
         trackedActivities[activityID] = nil
         notificationLiveSessionEnsuredActivityIDs.remove(activityID)
+
+        if tracked.scheduleKey?.hasPrefix("planner:") == true {
+            Task { @MainActor in
+                await sendLiveActivityUnregistration(activityID: activityID, preserveNotificationLiveSession: true)
+            }
+            updatePublishedState()
+            return
+        }
 
         let preserveNotificationLiveSession = NotificationMuteStorage.consumePendingLiveSessionPreserveOnArrival(
             from: tracked.fromCRS,

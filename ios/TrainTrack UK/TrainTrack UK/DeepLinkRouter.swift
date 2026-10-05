@@ -8,10 +8,20 @@ final class DeepLinkRouter: ObservableObject {
     static let shared = DeepLinkRouter()
 
     @Published var routeMapDestination: JourneyRouteMapDestination?
+    @Published var scheduledJourney: NotificationSubscription?
 
     func handle(url: URL) {
         guard url.scheme == "traintrack" else { return }
         let host = url.host?.lowercased()
+        if host == "scheduled-journey" {
+            let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "id" }?.value
+            TabRouter.shared.selected = .myJourneys
+            Task {
+                await NotificationSubscriptionStore.shared.refresh()
+                scheduledJourney = NotificationSubscriptionStore.shared.subscriptions.first { $0.id == id && $0.plannerJourney != nil }
+            }
+            return
+        }
 
         // Handle refresh-live-activity deep link
         if host == "refresh-live-activity" {

@@ -105,7 +105,7 @@ async function run({ id, method, payload, cancelBuffer, execution }) {
             result = await engine[method](payload, signal, context);
         }
         else if (method === 'prewarm') result = await telemetry.measure('preparationMs', () => prewarm(signal));
-        else if (method === 'journey') result = await engine.journey(payload.id, signal);
+        else if (method === 'journey') result = await engine.journey(payload.id, signal, payload.cached);
         else if (method === 'explain') result = await engine.explain(payload.request, signal);
         else if (method === 'runtime') result = engine.runtime();
         else throw new PlannerError('INVALID_REQUEST', 'Unknown planner operation.');

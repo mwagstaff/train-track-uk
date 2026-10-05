@@ -10,6 +10,7 @@ import { holidayModeStore } from './holiday-mode-store.js';
 import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
 import { sleep } from './retry-utils.js';
 import { allowDeviceData } from './device-data-deletion-state.js';
+import { normalizePlannerSchedule, PlannerJourneyScheduler } from './planner-journey-schedule.js';
 import {
     buildMuteNotificationPlan,
     JOURNEY_COMPLETION_RECONCILIATION_REASON,
@@ -67,6 +68,8 @@ export class NotificationSubscriptionManager {
         this.getDeviceTrackingSessions = options.getDeviceTrackingSessions || (() => []);
         this.scheduledStartTasks = new Map();
         this.scheduleSkipTasks = new Map();
+        this.getPlannerPushToken = options.getPlannerPushToken || (deviceId => pushToStartTokenStore.get(deviceId));
+        this.plannerScheduler = new PlannerJourneyScheduler(this, options.plannerScheduler);
         // Polling loop is started by init() after Mongo hydration.
     }
 
@@ -230,12 +233,27 @@ export class NotificationSubscriptionManager {
         return Array.from(this.subscriptions.values()).map((sub) => this.publicSubscription(sub));
     }
 
+    async updatePlannerDisplay({ deviceId, subscriptionId, showAllDepartures }) {
+        const subscription = this.subscriptions.get(subscriptionId);
+        if (!deviceId || subscription?.deviceId !== deviceId || !subscription.plannerJourney) {
+            throw new Error('Scheduled journey not found');
+        }
+        if (typeof showAllDepartures !== 'boolean') throw new Error('Show all departures must be true or false');
+        if (Date.parse(subscription.plannerJourney.expiresAt) <= Date.now()) throw new Error('This scheduled journey has ended');
+        subscription.plannerJourney.showAllDepartures = showAllDepartures;
+        if (subscription.plannerState) subscription.plannerState.checkedAt = null;
+        subscription.updatedAt = new Date().toISOString();
+        await this._saveSubscription(subscription);
+        return this.publicSubscription(subscription);
+    }
+
     async upsertSubscription(payload) {
         const {
             deviceId,
             pushToken,
             routeKey: routeKeyInput,
             scheduleKind: scheduleKindInput,
+            plannerJourney: plannerJourneyInput,
             daysOfWeek: daysInput,
             notificationTypes: typesInput,
             legs: legsInput,
@@ -264,6 +282,10 @@ export class NotificationSubscriptionManager {
         }
 
         const source = normalizeSource(sourceInput);
+        const plannerJourney = plannerJourneyInput ? normalizePlannerSchedule(plannerJourneyInput) : null;
+        if (plannerJourney && (source !== SCHEDULED_SOURCE || scheduleKindInput !== ONE_OFF_SCHEDULE)) {
+            throw new Error('Planned journeys must use a one-off schedule');
+        }
         const scheduleKind = source === SCHEDULED_SOURCE
             ? normalizeScheduleKind(scheduleKindInput)
             : null;
@@ -285,7 +307,7 @@ export class NotificationSubscriptionManager {
             const dayWindows = source === SCHEDULED_SOURCE && scheduleKind === REGULAR_SCHEDULE
                 ? normalizeDayWindows(leg.day_windows ?? leg.dayWindows, index)
                 : null;
-            if (enabled && source === SCHEDULED_SOURCE) {
+            if (enabled && source === SCHEDULED_SOURCE && !plannerJourney) {
                 const { startMinutes, endMinutes } = parseWindow(windowStart, windowEnd);
                 const duration = endMinutes - startMinutes;
                 if (duration < 0 || duration > MAX_WINDOW_MINUTES) {
@@ -321,7 +343,8 @@ export class NotificationSubscriptionManager {
         }
         const existingById = subscriptionId
             ? this.subscriptions.get(subscriptionId)
-            : null;
+            : plannerJourney ? Array.from(this.subscriptions.values()).find(candidate => candidate.deviceId === deviceId
+                && candidate.plannerJourney?.identity === plannerJourney.identity) : null;
         const matchingScheduledLiveSessions = !subscriptionId
             && source === LIVE_SESSION_SOURCE
             && requestedLiveSessionOrigin === 'scheduled'
@@ -344,6 +367,8 @@ export class NotificationSubscriptionManager {
         if (subscriptionId && !existing) {
             throw new Error('Subscription not found');
         }
+        if (existing?.plannerJourney && !plannerJourney) throw new Error('Edit this journey from Scheduled journeys');
+        if (existing?.plannerState?.status && plannerJourney) throw new Error('This scheduled journey has already started or finished');
         const deviceCount = this.countSubscriptionsForDevice(deviceId, { source });
         if (!existing && deviceCount >= MAX_SUBSCRIPTIONS_PER_DEVICE) {
             if (source === LIVE_SESSION_SOURCE) {
@@ -370,6 +395,8 @@ export class NotificationSubscriptionManager {
             pushToken,
             routeKey,
             scheduleKind,
+            plannerJourney,
+            plannerState: null,
             daysOfWeek: scheduleKind === ONE_OFF_SCHEDULE
                 ? []
                 : (daysOfWeek.length > 0 ? daysOfWeek : (existing?.daysOfWeek || [])),
@@ -441,6 +468,7 @@ export class NotificationSubscriptionManager {
         if (source === SCHEDULED_SOURCE) {
             await this.auditScheduledPushToStartReadiness(subscription);
         }
+        if (plannerJourney && Date.parse(plannerJourney.startsAt) <= Date.now()) await this.plannerScheduler.poll(subscription);
         return this.publicSubscription(subscription);
     }
 
@@ -752,6 +780,7 @@ export class NotificationSubscriptionManager {
         if (this.isHolidayModeEnabled(subscription.deviceId)) {
             return;
         }
+        if (subscription.plannerJourney) return this.plannerScheduler.poll(subscription);
         for (const storedLeg of subscription.legs) {
             if (!storedLeg.enabled) continue;
             const now = new Date();
@@ -885,6 +914,11 @@ export class NotificationSubscriptionManager {
     }
 
     async dismissScheduledOccurrence({ deviceId, scheduleKey, fallbackDeviceIds = [] }) {
+        const planned = this.plannerScheduler.find(deviceId, scheduleKey);
+        if (planned) {
+            await this.deleteSubscription({ deviceId, subscriptionId: planned.id, reason: 'planner_activity_dismissed' });
+            return { dismissed: true };
+        }
         if (!allowDeviceData(deviceId)) throw new Error('Device data deletion is in progress');
         const normalizedScheduleKey = typeof scheduleKey === 'string' ? scheduleKey.trim() : '';
         if (!deviceId || !normalizedScheduleKey) {
@@ -1069,10 +1103,14 @@ export class NotificationSubscriptionManager {
         }
     }
 
-    deviceHasLiveActivity(deviceId) {
+    deviceHasLiveActivity(deviceId, excludingSubscriptionId = null) {
         if (this.getDeviceLiveActivities(deviceId).some((activity) =>
             !activity.endAt || Date.parse(activity.endAt) > Date.now()
         )) return true;
+        if (Array.from(this.subscriptions.values()).some(candidate => candidate.deviceId === deviceId
+            && candidate.id !== excludingSubscriptionId
+            && ['starting', 'started', 'unconfirmed'].includes(candidate.plannerState?.status)
+            && Date.parse(candidate.plannerJourney.expiresAt) > Date.now())) return true;
         // A successful remote start occupies the device even before iOS returns its token.
         return Array.from(this.subscriptions.values()).some((candidate) =>
             candidate.deviceId === deviceId && candidate.legs?.some((storedLeg) => {
@@ -1608,6 +1646,8 @@ export class NotificationSubscriptionManager {
             source: this.subscriptionSource(subscription),
             live_session_origin: subscription.liveSessionOrigin || null,
             active_until: subscription.activeUntil || null,
+            planner_journey: subscription.plannerJourney || null,
+            planner_status: subscription.plannerState?.status || null,
             push_token_invalid_at: subscription.pushTokenInvalidAt || null,
             last_bad_token_reason: subscription.lastBadTokenReason || null,
             muted_by_leg_day: subscription.mutedByLegDay,
@@ -2165,6 +2205,7 @@ function getLiveActivityStartWindowState(leg) {
 }
 
 export function shouldPollNow(subscription, leg, now = new Date()) {
+    if (subscription?.plannerJourney) return false; // Dated itineraries have their own scheduler.
     if (normalizeSource(subscription?.source) === LIVE_SESSION_SOURCE) {
         const activeUntil = Date.parse(subscription?.activeUntil || '');
         return !Number.isFinite(activeUntil) || activeUntil > now.getTime();
@@ -2192,6 +2233,7 @@ export function shouldPollNow(subscription, leg, now = new Date()) {
 }
 
 export function isExpiredOneOffSchedule(subscription, now = new Date()) {
+    if (subscription?.plannerJourney) return now.getTime() >= Date.parse(subscription.plannerJourney.expiresAt);
     if (
         normalizeSource(subscription?.source) !== SCHEDULED_SOURCE
         || normalizeScheduleKind(subscription?.scheduleKind) !== ONE_OFF_SCHEDULE

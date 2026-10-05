@@ -72,7 +72,13 @@ final class JourneyPlannerStore {
     var origin: PlannerStation?
     var destination: PlannerStation?
     var via: PlannerStation?
-    var timeMode: PlannerTimeMode = .now
+    var timeMode: PlannerTimeMode = .now {
+        didSet { if isLiveOnly && timeMode != .now { timeMode = .now } }
+    }
+    var isLiveOnly: Bool { status?.available == false || statusError != nil }
+    static let liveOnlyNotice = "Future journeys can’t be planned right now. You can still look up stations and view live departures."
+    private(set) var liveDepartures: JourneyDeparturesSnapshot?
+    private(set) var liveSearchIntent: PlannerSearchIntent?
     var explicitTime = Date()
     private(set) var status: PlannerStatus?
     private(set) var statusError: String?
@@ -107,6 +113,7 @@ final class JourneyPlannerStore {
             return "Choose an intermediate station different from the origin and destination."
         }
         guard timeMode != .arriveBy else { return "Choose Depart now or Depart at." }
+        if isLiveOnly { return nil }
         if let status, status.capabilities.algorithms?.contains("raptor") != true {
             return "This API does not support the current journey planner."
         }
@@ -125,7 +132,10 @@ final class JourneyPlannerStore {
 
     func loadStatus() async {
         isLoadingStatus = true
-        defer { isLoadingStatus = false }
+        defer {
+            isLoadingStatus = false
+            if isLiveOnly { timeMode = .now }
+        }
         do {
             let value = try await client.status()
             try Task.checkCancellation()
@@ -146,6 +156,8 @@ final class JourneyPlannerStore {
         timeMode = recent.intent.timeMode
         if let date = recent.intent.explicitTime { explicitTime = date }
         response = nil
+        liveDepartures = nil
+        liveSearchIntent = nil
         searchError = nil
     }
 
@@ -159,7 +171,7 @@ final class JourneyPlannerStore {
     /// Searches each following timetable window after an empty initial result, stopping once
     /// the first journey is found or the first 24 hours have been searched.
     func searchForLaterTrainsWhenInitialWindowIsEmpty() async {
-        guard let initial = response,
+        guard !isLiveOnly, let initial = response,
               initial.journeys.isEmpty,
               searchError == nil,
               lastRequest?.cursor == nil else { return }
@@ -206,7 +218,32 @@ final class JourneyPlannerStore {
         generation = token
         isSearching = false
         searchError = nil
-        if cursor == nil && !repeatingLastSearch { response = nil }
+        if cursor == nil && !repeatingLastSearch {
+            response = nil
+            liveDepartures = nil
+            liveSearchIntent = nil
+        }
+        if isLiveOnly {
+            guard cursor == nil else { return }
+            guard let intent, validationMessage(now: now) == nil else {
+                searchError = PlannerError(code: "INVALID_REQUEST", message: validationMessage(now: now) ?? "Select stations.")
+                return
+            }
+            isSearching = true
+            defer { if generation == token { isSearching = false } }
+            do {
+                let snapshot = try await client.liveDepartures(origin: intent.origin.crs, destination: intent.destination.crs)
+                try Task.checkCancellation()
+                guard generation == token else { return }
+                liveDepartures = snapshot
+                liveSearchIntent = intent
+                recents.record(intent, at: now)
+            } catch {
+                guard generation == token, !Task.isCancelled else { return }
+                searchError = PlannerError(code: "LIVE_UNAVAILABLE", message: "Live departures couldn’t be loaded. Please try again.")
+            }
+            return
+        }
         let request: PlannerSearchRequest
         let submittedIntent = repeatingLastSearch ? lastIntent : intent
         do {
