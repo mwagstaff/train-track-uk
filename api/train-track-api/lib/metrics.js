@@ -324,16 +324,21 @@ export function metricsMiddleware(req, res, next) {
     res.end = function(...args) {
         const duration = Date.now() - start;
         const isPlanner = req.originalUrl?.startsWith('/api/v3/journey-planner/');
-        const path = isPlanner && req.route
-            ? `/api/v3/journey-planner${req.route.path}` : req.route ? req.route.path : req.path;
+        // Express route definitions can be strings, arrays or regular expressions.
+        // Keep labels based on templates, never concrete station/service IDs.
+        const routePath = req.route?.path;
+        const template = Array.isArray(routePath) ? routePath.map(String).join('|')
+            : routePath != null ? String(routePath) : req.path;
+        const path = isPlanner && req.route ? `/api/v3/journey-planner${template}` : template;
+        const versionPath = typeof routePath === 'string' ? path : req.path;
         const status = res.statusCode;
         const method = req.method;
 
         let apiVersion = 'other';
-        if (path.startsWith('/api/v1')) {
+        if (versionPath.startsWith('/api/v1')) {
             apiVersion = 'v1';
             v1RequestsTotal.inc();
-        } else if (path.startsWith('/api/v2')) {
+        } else if (versionPath.startsWith('/api/v2')) {
             apiVersion = 'v2';
             v2RequestsTotal.inc();
         } else if (isPlanner) {
@@ -348,7 +353,7 @@ export function metricsMiddleware(req, res, next) {
             requestDurations.shift();
         }
 
-        originalEnd.apply(res, args);
+        return originalEnd.apply(res, args);
     };
 
     next();

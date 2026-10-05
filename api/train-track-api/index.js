@@ -1263,8 +1263,12 @@ app.post('/api/v2/live_activities/debug/trigger', async (req, res) => {
     }
 });
 
-app.get('/api/v1/departures/from/:fromStation', async (req, res) => {
-    res.json(await getTrainTimes(req.params.fromStation));
+app.get(['/api/v1/departures/from/:fromStation', '/api/v2/departures/from/:fromStation'], async (req, res) => {
+    const station = req.params.fromStation.trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(station)) {
+        return res.status(400).json({ error: 'fromStation must be a three-letter CRS code' });
+    }
+    res.json(await getTrainTimes(station));
 });
 
 // V1 API - Original format for backward compatibility

@@ -2,6 +2,43 @@
 
 API for the [TrainTrack UK](https://apps.apple.com/gb/app/traintrack-uk/id6504205950) app.
 
+## Station-wide live departures (TubeTrack)
+
+`GET /api/v2/departures/from/:fromStation` returns upcoming departures across
+all operators and destinations. The existing V1 URL is an alias with the same
+response. Supply a three-letter CRS code; lowercase is accepted and malformed
+codes return HTTP 400. No destination is required.
+
+After deployment, for Kent House:
+
+```sh
+curl https://api.skynolimit.dev/train-track/api/v2/departures/from/KTH
+```
+
+The response is an object containing `departures`, `dataStatus` (`live`, `partial`,
+`stale` or `unavailable`) and `lastSuccessfulUpdate` (ISO timestamp or null).
+Each train includes `serviceID`, `operator`, `operatorCode`, `departure_time`
+(`scheduled` and `estimated`), `destination` (`crs`, `locationName`), plus platform
+and cancellation fields when supplied. Dividing trains can have a destination
+array. Estimates can contain status text such as `Delayed` or `Cancelled`.
+Times are UK local `HH:mm`; clients must handle midnight when calculating minutes
+until departure. Missing platforms should be displayed as unknown.
+
+TubeTrack can group trains by `operator`/`operatorCode`, or exclude Thameslink
+using `operatorCode === "TL"` (falling back to the operator name when absent).
+Replacement buses can also appear; inspect `serviceType` if displaying trains only.
+Sort the displayed departures by departure time and retain cancellation indicators.
+An unavailable response must not be displayed as “no trains”; use `dataStatus`
+and `lastSuccessfulUpdate` to communicate freshness.
+
+Boards use the existing 30-second fresh cache and stale fallback. Polling every
+30 seconds while the station is visible is sufficient. Two upstream windows,
+starting now and at +119 minutes, cover approximately the next four hours.
+Each query requests up to 149 rows; busy stations and upstream restrictions can
+limit coverage. This is an upcoming board, not an exhaustive full-day timetable.
+Staff boards are preferred, with public boards as fallback. Station requests
+do not populate the journey-pair recent-departures store.
+
 ## Staff-first departures
 
 When `LIVE_DEPARTURE_BOARD_STAFF_VERSION_API_KEY` (or `STAFF_DEPARTURES_API_KEY`)

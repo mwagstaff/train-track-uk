@@ -63,8 +63,8 @@ export async function getTrainTimes(from, to, { requireFresh = false, signal } =
 }
 
 async function getCachedTrainTimes(from, to) {
-    if (!from || !to) {
-        return { error: `Missing from (${from}) or to (${to}) parameter` };
+    if (!from) {
+        return { error: `Missing from (${from}) parameter` };
     }
 
     const testResult = testServiceHarness.getTrainTimes(from, to);
@@ -238,7 +238,7 @@ async function fetchJourneyResult(from, to, options = {}) {
     const uniqueDepartures = Array.from(uniqueByService.values());
 
     applyPlatformFallbackCache(uniqueDepartures, from, to);
-    if (!options.requireFresh) {
+    if (to && !options.requireFresh) {
         try {
             await recentDeparturesRepository.recordDepartures(from, to, uniqueDepartures);
         } catch (error) {
@@ -295,12 +295,12 @@ export async function getPublicTrainTimes(from, to) {
 }
 
 async function getLiveDepartureBoard(from, to, offset, { requireFresh = false, signal, preferPublic = false } = {}) {
-    if (!from || !to) {
-        return { error: `Missing from (${from}) or to (${to}) parameter` };
+    if (!from) {
+        return { error: `Missing from (${from}) parameter` };
     }
     if (!preferPublic && staffDepartures.enabled) {
         try {
-            const board = await staffDepartures.getBoard(from.toUpperCase(), to.toUpperCase(), offset, { signal });
+            const board = await staffDepartures.getBoard(from.toUpperCase(), to?.toUpperCase(), offset, { signal });
             const parsed = await parseResponseDataLiveDepartureBoard(board, { requestedOffsetMinutes: offset });
             if (parsed.error) throw new Error(parsed.error);
             return { ...parsed, provider: 'staff' };
@@ -309,7 +309,7 @@ async function getLiveDepartureBoard(from, to, offset, { requireFresh = false, s
             console.warn(`Staff departures unavailable for ${from}->${to}; using public board: ${error.message}`);
         }
     }
-    const url = to && to.length > 0 ? `https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120/GetDepartureBoard/${from}?filterCrs=${to}&filterType=to&timeOffset=${offset}` : `https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120/GetDepartureBoard/${from}?timeOffset=${offset}`;
+    const url = to && to.length > 0 ? `https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120/GetDepartureBoard/${from}?filterCrs=${to}&filterType=to&timeOffset=${offset}` : `https://api1.raildata.org.uk/1010-live-departure-board-dep1_2/LDBWS/api/20220120/GetDepartureBoard/${from}?timeOffset=${offset}&numRows=149&timeWindow=119`;
     try {
         const start = Date.now();
         const response = await getWithRetry({
