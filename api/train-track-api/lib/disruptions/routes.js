@@ -1,7 +1,8 @@
 import express from 'express';
 import { MonitorError } from './model.js';
+import { normalizeLiveOperator } from './live.js';
 
-export function registerDisruptionRoutes(app, monitor, { requestMiddleware, now = Date.now } = {}) {
+export function registerDisruptionRoutes(app, monitor, { requestMiddleware, now = Date.now, liveDisruptions } = {}) {
     const router = express.Router(), callers = new Map();
     router.use((req, res, next) => {
         res.set('Cache-Control', 'no-store');
@@ -17,6 +18,17 @@ export function registerDisruptionRoutes(app, monitor, { requestMiddleware, now 
         next();
     });
     if (requestMiddleware) router.use(requestMiddleware);
+    router.get('/live', async (req, res, next) => {
+        try {
+            const operator = normalizeLiveOperator(req.query);
+            const result = await liveDisruptions.get(operator);
+            if (result.status === 'unavailable') res.set('Retry-After', '60');
+            res.status(result.status === 'unavailable' ? 503 : 200).json(result);
+        } catch (error) {
+            next(error instanceof MonitorError ? error
+                : new MonitorError('Live rail disruptions are temporarily unavailable.', 503, 'DISRUPTIONS_UNAVAILABLE'));
+        }
+    });
     router.get('/', async (req, res, next) => {
         try { res.json(await monitor.get(req.query.device_id)); } catch (error) { next(error); }
     });

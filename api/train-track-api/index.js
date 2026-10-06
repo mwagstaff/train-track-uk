@@ -12,6 +12,7 @@ import {
     recordJourneyEvent,
     recordPlannerRequest,
     recordDisruptionMonitoring,
+    recordDisruptionFeed,
     recordPushTokenRegistration,
     updateJourneyGauges,
     updateNotificationSubscriptionGauges,
@@ -38,7 +39,8 @@ import { startTimetableIngestion } from './lib/planner/ingestion-scheduler.js';
 import { timetableIngestionConfig } from './lib/planner/ingestion-source.js';
 import { DisruptionMonitor } from './lib/disruptions/manager.js';
 import { disruptionConfig } from './lib/disruptions/model.js';
-import { createPlannedEngineeringProvider } from './lib/disruptions/notices.js';
+import { createIncidentProvider, engineeringSnapshot } from './lib/disruptions/notices.js';
+import { createLiveDisruptions } from './lib/disruptions/live.js';
 import { registerDisruptionRoutes } from './lib/disruptions/routes.js';
 import {
     deleteSubscriptionAuditEventsForDevice,
@@ -234,18 +236,21 @@ registerPlannerGateway(app, { targets: plannerService, ownership: plannerRouting
     recordRequest: recordPlannerRequest, requestMiddleware: metricsMiddleware });
 if (embeddedPlannerService) registerPlannerRoutes(app, { service: embeddedPlannerService });
 const monitorConfig = disruptionConfig();
+const incidentProvider = createIncidentProvider({ endpoint: monitorConfig.noticeEndpoint,
+    authorization: monitorConfig.noticeAuthorization, username: monitorConfig.noticeUsername,
+    password: monitorConfig.noticePassword, headers: monitorConfig.noticeHeaders,
+    cacheMs: monitorConfig.noticeRefreshMs, observe: recordDisruptionFeed,
+    stationDefinitions: JSON.parse(fs.readFileSync(new URL('./resources/stations.json', import.meta.url), 'utf8')) });
 const disruptionMonitor = registerDisruptionRoutes(app, new DisruptionMonitor({
     planner: plannerService,
     combinedPlannerReadiness: true,
     config: monitorConfig,
-    notices: createPlannedEngineeringProvider({ endpoint: monitorConfig.noticeEndpoint,
-        authorization: monitorConfig.noticeAuthorization, username: monitorConfig.noticeUsername,
-        password: monitorConfig.noticePassword, headers: monitorConfig.noticeHeaders,
-        stationDefinitions: JSON.parse(fs.readFileSync(new URL('./resources/stations.json', import.meta.url), 'utf8')) }),
+    notices: { async getSnapshot(options) { return engineeringSnapshot(await incidentProvider.getSnapshot(options)); } },
     pushClient: notificationSubscriptionManager.pushClient,
     isHolidayMode: deviceId => notificationSubscriptionManager.isHolidayModeEnabled(deviceId),
     observe: recordDisruptionMonitoring
-}), { requestMiddleware: metricsMiddleware });
+}), { requestMiddleware: metricsMiddleware,
+    liveDisruptions: createLiveDisruptions({ provider: incidentProvider, refreshMs: monitorConfig.noticeRefreshMs }) });
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
@@ -1667,11 +1672,13 @@ const server = app.listen(port, () => {
 const timetableIngestion = startTimetableIngestion({ config: { ...timetableIngestionConfig(),
     enabled: process.env.PLANNER_INGESTION_ENABLED === 'true' } });
 disruptionMonitor.start();
+incidentProvider.start();
 // Stop the importer as well as the HTTP server on service shutdown. Leave its
 // five-second kill escalation time to run before this process exits.
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
     timetableIngestion.stop();
     disruptionMonitor.stop();
+    incidentProvider.stop();
     embeddedPlannerService?.close();
     void plannerSearchLog.close({ timeoutMs: 3000 });
     server.close();

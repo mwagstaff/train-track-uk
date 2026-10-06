@@ -2,6 +2,83 @@
 
 API for the [TrainTrack UK](https://apps.apple.com/gb/app/traintrack-uk/id6504205950) app.
 
+## Live National Rail disruptions
+
+`GET /api/v2/disruptions/live` returns published, currently active, unplanned
+incidents nationwide. No device ID or saved journey is required. Optional
+`?operator=SE` filters by a two-character uppercase TOC code, including incidents
+affecting all operators. Unknown valid codes can return an empty list; malformed,
+repeated or unsupported query parameters return HTTP 400.
+
+After deployment:
+
+```sh
+curl https://api.skynolimit.dev/train-track/api/v2/disruptions/live
+curl 'https://api.skynolimit.dev/train-track/api/v2/disruptions/live?operator=SE'
+```
+
+Example response (illustrative incident):
+
+```json
+{
+  "status": "available",
+  "checkedAt": "2026-10-06T12:00:00.000Z",
+  "lastAttemptAt": "2026-10-06T12:00:00.000Z",
+  "ageSeconds": 0,
+  "stale": false,
+  "reason": null,
+  "incidents": [{
+    "id": "example-incident",
+    "title": "Signal failure",
+    "body": "Trains are delayed.",
+    "sourceURL": "https://www.nationalrail.co.uk/status-and-disruptions/",
+    "operators": [{ "code": "SE", "name": "Southeastern" }],
+    "allOperators": false,
+    "routesAffected": "Between London and Kent",
+    "priority": 1,
+    "updatedAt": "2026-10-06T11:30:00.000Z",
+    "startAt": "2026-10-06T11:00:00.000Z",
+    "endAt": null
+  }]
+}
+```
+
+`status` is `available`, `partial` (some records were rejected), or `unavailable`.
+Usable snapshots return HTTP 200; unavailable snapshots return HTTP 503 with
+`Retry-After: 60`. `checkedAt` is the last usable fetch time, not an incident's
+publication time; `lastAttemptAt` is the last completed fetch attempt. Both are
+UTC ISO timestamps; `checkedAt` and `ageSeconds` are null before the first usable
+fetch. Incident times respect the offsets supplied by National Rail. A null
+`endAt` means the end is unknown. Priority is the source's 0–2 value (0 first),
+or null when unknown, not an inferred severity. Results sort by priority, then
+most recently updated, then ID.
+
+The API uses the existing `TRAIN_TRACK_UK_DISRUPTIONS_API_KEY` and feed overrides.
+One in-memory provider per API process supplies both live incidents and planned
+engineering notices. It refreshes in the background even with automatic journey
+monitoring off. `DISRUPTION_NOTICE_REFRESH_SECONDS` defaults to 60 and accepts
+60–300 seconds; configure it to match the subscribed product's polling allowance.
+Concurrent requests share a fetch. Warm live requests use the cache immediately
+while an overdue refresh runs. Responses use `Cache-Control: no-store` so clients
+see current freshness metadata; polling once per minute is sufficient.
+
+During an outage, the last usable snapshot remains available with `stale: true`
+for at most ten minutes from its fetch, then the endpoint returns HTTP 503.
+Expired incidents are still filtered on every read. An unavailable or partial
+empty response must never be described as an all-clear. Partial feeds contain
+only successfully validated incidents and may omit rejected records. The cache
+is not persisted across restarts. No timetable search or notification is triggered.
+
+This is a feed of published incidents, not every individual delayed or cancelled
+train. Planned work remains at `/api/v2/disruptions/future?stations=CLK,LBG`.
+Affected routes are source prose, not guaranteed station or journey coverage.
+Render `body` and `routesAffected` as text; link to `sourceURL` for official advice.
+
+Metrics: `disruption_feed_refreshes_total{outcome="complete|partial|unavailable"}`
+and `disruption_feed_last_success_timestamp_seconds`. Use
+`time() - disruption_feed_last_success_timestamp_seconds` for feed age;
+the existing HTTP metrics cover endpoint latency and errors.
+
 ## Station-wide live departures (TubeTrack)
 
 `GET /api/v2/departures/from/:fromStation` returns upcoming departures across

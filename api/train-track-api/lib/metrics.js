@@ -71,6 +71,15 @@ const disruptionNotices = new client.Gauge({ name: 'disruption_notices_available
 const disruptionBacklog = new client.Gauge({ name: 'disruption_pending_profiles', help: 'Demanded profile jobs waiting or running', registers: [register] });
 const disruptionBacklogAge = new client.Gauge({ name: 'disruption_oldest_pending_seconds', help: 'Age of the oldest demanded profile job', registers: [register] });
 const disruptionChecks = new client.Counter({ name: 'disruption_checks_total', help: 'Bounded advance profile outcomes', labelNames: ['outcome'], registers: [register] });
+const disruptionFeedSuccess = new client.Gauge({ name: 'disruption_feed_last_success_timestamp_seconds',
+    help: 'Last usable incident feed fetch; subtract from time() for snapshot age', registers: [register] });
+const disruptionFeedRefreshes = new client.Counter({ name: 'disruption_feed_refreshes_total',
+    help: 'Incident feed refresh outcomes', labelNames: ['outcome'], registers: [register] });
+
+export function recordDisruptionFeed({ available, complete, checkedAt }) {
+    disruptionFeedRefreshes.inc({ outcome: !available ? 'unavailable' : complete ? 'complete' : 'partial' });
+    if (checkedAt) disruptionFeedSuccess.set(Date.parse(checkedAt) / 1000);
+}
 
 export function recordDisruptionMonitoring({ ready, noticesAvailable, outcome, pending, oldestAgeSeconds } = {}) {
     if (typeof ready === 'boolean') disruptionReady.set(ready ? 1 : 0);

@@ -139,7 +139,10 @@ the complete Authorization setting takes precedence over Basic credentials.
 Keep credentials in server deployment configuration, not the repository.
 
 Transport is HTTPS, refuses redirects, has a 10-second
-deadline and a 5 MiB decoded-body limit, and refreshes at most every five minutes.
+deadline and a 5 MiB decoded-body limit. The API now shares the feed with the
+live disruption endpoint and refreshes every 60 seconds by default, configurable
+with `DISRUPTION_NOTICE_REFRESH_SECONDS` (60–300 seconds). The standalone
+engineering validation provider retains its five-minute cache default.
 Missing access, invalid XML or upstream failure is unavailable, not an empty
 healthy feed. Previous unexpired warnings verified under the current relevance
 rule remain visible with their original check time while a source is unavailable.
@@ -164,6 +167,7 @@ records; this partial-feed policy applies to the background provider.
 | `DISRUPTION_MAX_SOURCE_AGE_HOURS` | 48 |
 | `TRAIN_TRACK_UK_DISRUPTIONS_API_KEY` | Bitwarden-backed Knowledgebase Incidents data key; selects the endpoint above and supplies `x-apikey` |
 | `DISRUPTION_NOTICE_URL` | Optional endpoint override; defaults to the subscribed XML endpoint when the Marketplace key is set |
+| `DISRUPTION_NOTICE_REFRESH_SECONDS` | 60; shared incident-feed refresh interval, allowed range 60–300 seconds |
 | `DISRUPTION_NOTICE_AUTHORIZATION` | Optional complete Authorization header |
 | `DISRUPTION_NOTICE_USERNAME`, `DISRUPTION_NOTICE_PASSWORD` | Optional Basic credentials |
 | `DISRUPTION_NOTICE_HEADERS_JSON` | Optional JSON object of provider headers; explicit `x-apikey` overrides the Marketplace key |
@@ -198,6 +202,10 @@ tests, including real Mongo persistence, with five existing optional skips.
 
 ## API and operations
 
+- `GET /api/v2/disruptions/live` lists nationwide active unplanned incidents,
+  optionally filtered by `operator=SE`. It requires no installation identity and
+  remains independent of monitoring mode. See the [API contract](../api/train-track-api/README.md#live-national-rail-disruptions)
+  for freshness, partial coverage and HTTP 503 behaviour.
 - `PUT /api/v2/disruptions/monitors` replaces one installation's saved monitor
   snapshot. Fields: `device_id`, `monitors`, optional `push_token` and
   `use_sandbox`. Each monitor has `id`, ordered `stations`, `name`, `enabled`,
@@ -226,7 +234,8 @@ tests, including real Mongo persistence, with five existing optional skips.
 
 ## Validating the feed and timetable import
 
-The engineering XML feed is cached in the API process for five minutes. It is
+The shared incidents XML feed is cached in the API process for one minute by
+default (configurable up to five minutes). It is
 **not imported into a Mongo collection**. An empty `disruption_monitors`,
 `disruption_profiles` or `disruption_deliveries` collection does not establish
 whether the engineering feed is working:

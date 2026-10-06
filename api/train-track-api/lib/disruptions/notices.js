@@ -132,7 +132,11 @@ function nationalRailURL(links) {
     return 'https://www.nationalrail.co.uk/status-and-disruptions/';
 }
 
-export function parseEngineeringNotices(xml, { stationDefinitions = [], onInvalidIncident } = {}) {
+export function parseEngineeringNotices(xml, options = {}) {
+    return parseIncidentNotices(xml, { ...options, plannedOnly: true });
+}
+
+export function parseIncidentNotices(xml, { stationDefinitions = [], onInvalidIncident, plannedOnly = false } = {}) {
     // Reject DTD/entity declarations before parsing; the feed has no need for
     // them. The transport separately bounds decompressed response bytes.
     if (typeof xml !== 'string' || /<!DOCTYPE|<!ENTITY/i.test(xml) || XMLValidator.validate(xml) !== true) throw invalid();
@@ -145,24 +149,36 @@ export function parseEngineeringNotices(xml, { stationDefinitions = [], onInvali
     for (const incident of array(root.PtIncident)) {
         try {
             if (!incident || typeof incident !== 'object' || !['true', 'false', '1', '0'].includes(string(incident.Planned).toLowerCase())) throw invalid();
-            if (!flag(incident.Planned) || flag(incident.ClearedIncident) || string(incident.Progress).toLowerCase() === 'closed') continue;
+            const planned = flag(incident.Planned);
+            if (!plannedOnly && !planned && incident.ClearedIncident !== undefined
+                && !['true', 'false', '1', '0'].includes(string(incident.ClearedIncident).toLowerCase())) throw invalid();
+            if (plannedOnly && !planned || flag(incident.ClearedIncident) || string(incident.Progress).toLowerCase() === 'closed') continue;
             const incidentID = string(incident.IncidentNumber);
             if (!incidentID || incidentID.length > 256 || !array(incident.ValidityPeriod).length) throw invalid();
-            const title = text(incident.Summary).slice(0, 500) || 'Planned engineering work';
+            const title = text(incident.Summary).slice(0, 500) || (planned ? 'Planned engineering work' : 'Service disruption');
             const routesMarkup = incident.Affects?.RoutesAffected, routes = text(routesMarkup);
-            const body = text(incident.Description).slice(0, 10000) || routes || 'See National Rail for details of this planned engineering work.';
-            const clauses = affectedStationClauses(routesMarkup, matchStations);
-            const closedStationCRS = explicitlyClosedStations(incident.Description, matchStations);
+            const body = text(incident.Description).slice(0, 10000) || routes || (planned
+                ? 'See National Rail for details of this planned engineering work.' : 'See National Rail for details of this disruption.');
+            const clauses = planned ? affectedStationClauses(routesMarkup, matchStations) : [];
+            const closedStationCRS = planned ? explicitlyClosedStations(incident.Description, matchStations) : [];
             const stationCRS = [...new Set([...clauses.flat(), ...closedStationCRS])].sort();
             const sourceURL = nationalRailURL(incident.InfoLinks);
             const updatedAt = timestamp(incident.ChangeHistory?.LastChangedDate, false);
+            const allOperators = Object.hasOwn(incident.Affects?.Operators ?? {}, 'AllOperators');
+            const operators = planned ? [] : array(incident.Affects?.Operators?.AffectedOperator).map(operator => ({
+                code: string(operator?.OperatorRef), name: text(operator?.OperatorName).slice(0, 200) || null
+            }));
+            if (!planned && (!allOperators && !operators.length || operators.some(operator => !/^[A-Z0-9]{2}$/.test(operator.code)))) throw invalid();
+            const rawPriority = string(incident.IncidentPriority);
+            const priority = /^[0-2]$/.test(rawPriority) ? Number(rawPriority) : null;
             const incidentNotices = [];
             for (const period of array(incident.ValidityPeriod)) {
                 const startAt = timestamp(period?.StartTime), endAt = timestamp(period?.EndTime, false);
                 if (endAt && Date.parse(endAt) <= Date.parse(startAt)) throw invalid();
                 incidentNotices.push({ id: `${incidentID}:${startAt}`, incidentId: incidentID, title, body, startAt, endAt,
                     stationCRS, affectedStationClauses: clauses, closedStationCRS,
-                    sourceURL, planned: true, kind: 'engineering', ...(updatedAt ? { updatedAt } : {}) });
+                    sourceURL, planned, kind: planned ? 'engineering' : 'disruption', ...(updatedAt ? { updatedAt } : {}),
+                    ...(!planned ? { operators, allOperators, routesAffected: routes.slice(0, 10000), priority } : {}) });
             }
             notices.push(...incidentNotices);
         } catch (error) {
@@ -172,7 +188,9 @@ export function parseEngineeringNotices(xml, { stationDefinitions = [], onInvali
             unverifiedIDs.add(incidentId);
             // Never return part of an invalid incident, or upstream content in
             // diagnostics. A missing ID means prior incidents cannot be ruled out.
-            onInvalidIncident({ incidentId, reason: 'invalid_incident' });
+            const plannedValue = string(incident?.Planned).toLowerCase();
+            onInvalidIncident({ incidentId, reason: 'invalid_incident' },
+                ['true', 'false', '1', '0'].includes(plannedValue) ? flag(incident.Planned) : null);
         }
     }
     const verified = notices.filter(notice => !unverifiedIDs.has(notice.incidentId));
@@ -199,9 +217,26 @@ export function matchEngineeringNotices(notices, { stations = [], date, startMin
         && (!notice.endAt || Number.isFinite(Date.parse(notice.endAt)) && Date.parse(notice.endAt) > from));
 }
 
-export function createPlannedEngineeringProvider({ endpoint, authorization, username, password, headers = {}, stationDefinitions = [],
-    fetchImpl = globalThis.fetch, now = Date.now, timeoutMs = 10000, maximumBytes = 5 * 1024 * 1024, cacheMs = 300000 } = {}) {
-    let cached, flight;
+export function createPlannedEngineeringProvider(options = {}) {
+    return createIncidentProvider({ cacheMs: 300000, ...options, plannedOnly: true });
+}
+
+// Keep the existing engineering consumers isolated from unplanned incidents.
+export function engineeringSnapshot(snapshot) {
+    const notices = snapshot.notices.filter(notice => notice.planned);
+    if (!snapshot.available) return { ...snapshot, notices };
+    const unverifiedIncidentIds = snapshot.unverifiedPlannedIncidentIds ?? snapshot.unverifiedIncidentIds ?? [];
+    const complete = unverifiedIncidentIds.length === 0;
+    if (!complete && !notices.length) {
+        return { ...snapshot, available: false, notices: [], reason: 'invalid_feed' };
+    }
+    return { ...snapshot, notices, unverifiedIncidentIds, complete, reason: complete ? null : 'partial_feed' };
+}
+
+export function createIncidentProvider({ endpoint, authorization, username, password, headers = {}, stationDefinitions = [],
+    fetchImpl = globalThis.fetch, now = Date.now, timeoutMs = 10000, maximumBytes = 5 * 1024 * 1024, cacheMs = 60000,
+    plannedOnly = false, observe = () => {} } = {}) {
+    let cached, lastAvailable, flight, activeController, pollTimer, stopped = false, started = false;
     const unavailable = reason => ({ available: false, checkedAt: new Date(now()).toISOString(), notices: [], reason });
     async function refresh() {
         if (!endpoint) return unavailable('not_configured');
@@ -212,6 +247,7 @@ export function createPlannedEngineeringProvider({ endpoint, authorization, user
             if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) return unavailable('invalid_configuration');
         } catch { return unavailable('invalid_configuration'); }
         const controller = new AbortController();
+        activeController = controller;
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         timer.unref?.();
         try {
@@ -232,23 +268,32 @@ export function createPlannedEngineeringProvider({ endpoint, authorization, user
                 if (size > maximumBytes) { controller.abort(); return unavailable('feed_too_large'); }
                 chunks.push(bytes);
             }
-            const unverifiedIDs = new Set();
-            const notices = parseEngineeringNotices(Buffer.concat(chunks).toString('utf8'), { stationDefinitions,
-                onInvalidIncident: ({ incidentId }) => unverifiedIDs.add(incidentId) });
+            const unverifiedIDs = new Set(), unverifiedPlannedIDs = new Set();
+            const notices = parseIncidentNotices(Buffer.concat(chunks).toString('utf8'), { stationDefinitions, plannedOnly,
+                onInvalidIncident: ({ incidentId }, planned) => {
+                    unverifiedIDs.add(incidentId);
+                    if (planned !== false) unverifiedPlannedIDs.add(incidentId);
+                } });
             const complete = unverifiedIDs.size === 0;
             return { available: true, complete, checkedAt: new Date(now()).toISOString(), notices,
-                unverifiedIncidentIds: [...unverifiedIDs], reason: complete ? null : 'partial_feed' };
+                unverifiedIncidentIds: [...unverifiedIDs], unverifiedPlannedIncidentIds: [...unverifiedPlannedIDs],
+                reason: complete ? null : 'partial_feed' };
         } catch (error) {
             return unavailable(controller.signal.aborted ? 'timeout' : error.code === 'invalid_feed' ? 'invalid_feed' : 'upstream_unavailable');
-        } finally { clearTimeout(timer); }
+        } finally { clearTimeout(timer); activeController = null; }
     }
-    return {
-        async getSnapshot({ signal, force = false } = {}) {
-            if (signal?.aborted) return unavailable('cancelled');
+    const provider = {
+        async getSnapshot({ signal, force = false, staleWhileRevalidate = false } = {}) {
+            if (signal?.aborted || stopped) return unavailable('cancelled');
             if (!flight && (force || !cached || now() - Date.parse(cached.checkedAt) >= cacheMs)) {
-                flight = refresh().then(value => { cached = value; return value; }).finally(() => { flight = null; });
+                flight = refresh().then(value => {
+                    cached = value;
+                    if (value.available) lastAvailable = value;
+                    observe({ available: value.available, complete: value.complete, checkedAt: lastAvailable?.checkedAt });
+                    return value;
+                }).finally(() => { flight = null; });
             }
-            if (!flight) return structuredClone(cached);
+            if (!flight || staleWhileRevalidate && cached) return structuredClone(cached);
             if (!signal) return structuredClone(await flight);
             // One caller cancelling must not poison the shared authoritative snapshot.
             let cancelled;
@@ -258,6 +303,23 @@ export function createPlannedEngineeringProvider({ endpoint, authorization, user
             });
             try { return structuredClone(await Promise.race([flight, cancellation])); }
             finally { signal.removeEventListener('abort', cancelled); }
-        }
+        },
+        getLastAvailableSnapshot() { return structuredClone(lastAvailable); },
+        start() {
+            if (started || stopped || !endpoint) return;
+            started = true;
+            const poll = async () => {
+                try { await provider.getSnapshot(); }
+                finally {
+                    if (!stopped) {
+                        const delay = Math.max(1, cacheMs - (now() - Date.parse(cached.checkedAt)));
+                        pollTimer = setTimeout(poll, delay); pollTimer.unref?.();
+                    }
+                }
+            };
+            void poll();
+        },
+        stop() { stopped = true; clearTimeout(pollTimer); activeController?.abort(); }
     };
+    return provider;
 }
