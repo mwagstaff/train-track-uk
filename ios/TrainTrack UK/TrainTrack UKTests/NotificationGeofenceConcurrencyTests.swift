@@ -1,9 +1,44 @@
+import CoreLocation
 import Foundation
 import Testing
 @testable import TrainTrack_UK
 
 @MainActor
 struct NotificationGeofenceConcurrencyTests {
+    @Test func precisionBurstPreservesWakeMonitoringWhenStandardUpdatesAreSuspended() {
+        let manager = LocationUpdateSpy()
+        StationLocationUpdateMode.significantChanges.apply(to: manager)
+        StationLocationUpdateMode.precision.apply(to: manager)
+        #expect(manager.standardUpdatesRunning)
+
+        // Regression: Victoria approach at 17:02, then no execution until 17:26.
+        // Do not execute the burst timeout: it cannot rescue a suspended process.
+        manager.standardUpdatesRunning = false
+        #expect(manager.significantChangesRunning)
+        #expect(manager.significantChangesStopCount == 0)
+    }
+
+    @Test func precisionCanStartWithWakeMonitoringBeforeLowSensitivitySetup() {
+        let manager = LocationUpdateSpy()
+        StationLocationUpdateMode.precision.apply(to: manager)
+        #expect(manager.standardUpdatesRunning)
+        #expect(manager.significantChangesRunning)
+    }
+
+    @Test func finishingPrecisionStopsGPSButRetainsWakeMonitoringUntilTrackingEnds() {
+        let manager = LocationUpdateSpy()
+        StationLocationUpdateMode.precision.apply(to: manager)
+        StationLocationUpdateMode.significantChanges.apply(to: manager)
+        #expect(!manager.standardUpdatesRunning)
+        #expect(manager.significantChangesRunning)
+        #expect(manager.significantChangesStopCount == 0)
+
+        StationLocationUpdateMode.stopped.apply(to: manager)
+        #expect(!manager.standardUpdatesRunning)
+        #expect(!manager.significantChangesRunning)
+        #expect(manager.significantChangesStopCount == 1)
+    }
+
     @Test func explicitJourneyPreparesBackgroundSessionBeforeLeavingForeground() {
         #expect(BackgroundActivitySessionPolicy.shouldRetainSession(
             hasActiveGeofences: true,
@@ -133,5 +168,19 @@ struct NotificationGeofenceConcurrencyTests {
         await second.value
         #expect(maximumActiveOperationCount == 1)
         #expect(events == ["first-start", "first-end", "second-start", "second-end"])
+    }
+}
+
+private final class LocationUpdateSpy: CLLocationManager {
+    var standardUpdatesRunning = false
+    var significantChangesRunning = false
+    var significantChangesStopCount = 0
+
+    override func startUpdatingLocation() { standardUpdatesRunning = true }
+    override func stopUpdatingLocation() { standardUpdatesRunning = false }
+    override func startMonitoringSignificantLocationChanges() { significantChangesRunning = true }
+    override func stopMonitoringSignificantLocationChanges() {
+        significantChangesRunning = false
+        significantChangesStopCount += 1
     }
 }

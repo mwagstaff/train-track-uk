@@ -43,17 +43,40 @@ test('station boards include every operator, deduplicate windows and reuse the c
     assert.equal(persist.mock.callCount(), 0);
 });
 
-test('station boards use staff data without a destination filter', async t => {
+test('busy station boards retain intervening trains even when the ten-row staff provider is enabled', async t => {
     t.mock.getter(staffDepartures, 'enabled', () => true);
-    const calls = [];
-    t.mock.method(staffDepartures, 'getBoard', async (from, to, offset) => {
-        calls.push({ from, to, offset });
-        return { generatedAt: new Date().toISOString(), trainServices: [service('staff-1', 'Southeastern', 'SE')] };
+    const servicesFor = offset => Array.from({ length: 60 }, (_, index) => {
+        const minute = offset + index * 2;
+        const time = `${12 + Math.floor(minute / 60)}:${String(minute % 60).padStart(2, '0')}`;
+        return { ...service(`wat-${minute}`, 'South Western Railway', 'SW'), std: time, etd: time };
     });
-    const result = await getTrainTimes('BKH');
+    // WithDetails silently caps each two-hour window at ten rows. The old path
+    // therefore jumped from 12:18 to 13:59 and lost all intervening departures.
+    const staff = t.mock.method(staffDepartures, 'getBoard', async (from, to, offset) => ({
+        generatedAt: new Date().toISOString(), trainServices: servicesFor(offset).slice(0, 10)
+    }));
+    const urls = [];
+    upstream = async url => {
+        const request = new URL(url);
+        urls.push(request);
+        return { data: { generatedAt: new Date().toISOString(),
+            trainServices: servicesFor(Number(request.searchParams.get('timeOffset')))
+                .slice(0, Number(request.searchParams.get('numRows'))) } };
+    };
+    const result = await getTrainTimes('WAT');
     assert.equal(result.dataStatus, 'live');
-    assert.equal(result.departures.length, 1);
-    assert.deepEqual(calls, [{ from: 'BKH', to: undefined, offset: 0 }, { from: 'BKH', to: undefined, offset: 119 }]);
+    assert.equal(result.departures.length, 120);
+    assert.deepEqual(result.departures.slice(0, 60).map(d => d.serviceID), servicesFor(0).map(s => s.serviceID));
+    assert.equal(result.departures[10].departure_time.scheduled, '12:20');
+    assert.equal(result.departures[59].departure_time.scheduled, '13:58');
+    assert.equal(result.departures[60].departure_time.scheduled, '13:59');
+    assert.equal(staff.mock.callCount(), 0);
+    assert.equal(urls.length, 2);
+    for (const url of urls) {
+        assert.ok(url.pathname.endsWith('/GetDepartureBoard/WAT'));
+        assert.equal(url.searchParams.get('numRows'), '149');
+        assert.equal(url.searchParams.has('filterCrs'), false);
+    }
 });
 
 test('station provider failures remain unavailable rather than an apparently empty live board', async t => {

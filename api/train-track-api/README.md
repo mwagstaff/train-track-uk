@@ -113,8 +113,12 @@ Boards use the existing 30-second fresh cache and stale fallback. Polling every
 starting now and at +119 minutes, cover approximately the next four hours.
 Each query requests up to 149 rows; busy stations and upstream restrictions can
 limit coverage. This is an upcoming board, not an exhaustive full-day timetable.
-Staff boards are preferred, with public boards as fallback. Station requests
-do not populate the journey-pair recent-departures store.
+Station-wide requests use the public `GetDepartureBoard` endpoint. The staff
+`GetDepBoardWithDetails` endpoint caps each window at ten services even when
+149 are requested, which would omit intervening trains at busy stations such
+as Waterloo before the +119-minute window. Station requests do not populate
+the journey-pair recent-departures store. Saved journey pairs retain the
+staff-first policy described below.
 
 ## Staff-first departures
 

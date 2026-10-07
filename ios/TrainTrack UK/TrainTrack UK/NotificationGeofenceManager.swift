@@ -49,6 +49,30 @@ final class AsyncOperationSerialiser {
     }
 }
 
+enum StationLocationUpdateMode {
+    case significantChanges
+    case precision
+    case stopped
+
+    @MainActor
+    func apply(to manager: CLLocationManager) {
+        switch self {
+        case .significantChanges:
+            manager.stopUpdatingLocation()
+            manager.startMonitoringSignificantLocationChanges()
+        case .precision:
+            // Standard updates can be suspended after a background geofence wake.
+            // Keep the independent wake/relaunch service registered throughout the burst;
+            // its timeout may not run until the next time iOS wakes the app.
+            manager.startMonitoringSignificantLocationChanges()
+            manager.startUpdatingLocation()
+        case .stopped:
+            manager.stopUpdatingLocation()
+            manager.stopMonitoringSignificantLocationChanges()
+        }
+    }
+}
+
 enum BackgroundActivitySessionPolicy {
     static func shouldRetainSession(
         hasActiveGeofences: Bool,
@@ -862,7 +886,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
 
         guard trackingMode == nil else { return }
         configureLowSensitivityTrackingProfile()
-        manager.startMonitoringSignificantLocationChanges()
+        StationLocationUpdateMode.significantChanges.apply(to: manager)
         manager.requestLocation()
         trackingMode = .lowSensitivity
 
@@ -894,16 +918,17 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         let wasAlreadyHighSensitivity = trackingMode == .highSensitivity
         precisionSamplingTask?.cancel()
         if trackingMode != .highSensitivity {
-            manager.stopMonitoringSignificantLocationChanges()
             configureHighSensitivityTrackingProfile()
             manager.allowsBackgroundLocationUpdates = true
             manager.showsBackgroundLocationIndicator = true
             ensureBackgroundActivitySessionIfNeeded(reason: "precision-sampling")
-            manager.startUpdatingLocation()
+            StationLocationUpdateMode.precision.apply(to: manager)
             trackingMode = .highSensitivity
         }
 
+        let token = AppBackgroundTaskToken(name: "station-precision-sampling")
         precisionSamplingTask = Task { @MainActor [weak self] in
+            defer { token.end() }
             try? await Task.sleep(
                 nanoseconds: UInt64(duration * 1_000_000_000)
             )
@@ -929,8 +954,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         precisionSamplingTask = nil
         guard trackingMode != nil else { return }
 
-        manager.stopUpdatingLocation()
-        manager.stopMonitoringSignificantLocationChanges()
+        StationLocationUpdateMode.stopped.apply(to: manager)
         configureLowSensitivityTrackingProfile()
         trackingMode = nil
         manager.allowsBackgroundLocationUpdates = false
@@ -1042,11 +1066,10 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         guard trackingMode == .highSensitivity else { return }
         precisionSamplingTask?.cancel()
         precisionSamplingTask = nil
-        manager.stopUpdatingLocation()
         manager.allowsBackgroundLocationUpdates = false
         manager.showsBackgroundLocationIndicator = manager.authorizationStatus == .authorizedWhenInUse
         configureLowSensitivityTrackingProfile()
-        manager.startMonitoringSignificantLocationChanges()
+        StationLocationUpdateMode.significantChanges.apply(to: manager)
         trackingMode = .lowSensitivity
         stopBackgroundActivitySessionIfPossible()
         logGeofenceDiagnostic("tracking_downgraded", metadata: ["reason": reason])

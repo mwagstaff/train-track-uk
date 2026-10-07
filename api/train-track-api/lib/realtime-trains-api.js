@@ -298,7 +298,9 @@ async function getLiveDepartureBoard(from, to, offset, { requireFresh = false, s
     if (!from) {
         return { error: `Missing from (${from}) parameter` };
     }
-    if (!preferPublic && staffDepartures.enabled) {
+    // Station-wide boards need the public endpoint's 149-row capacity. Staff
+    // WithDetails caps each window at ten, leaving a gap before the +119 window.
+    if (to && !preferPublic && staffDepartures.enabled) {
         try {
             const board = await staffDepartures.getBoard(from.toUpperCase(), to?.toUpperCase(), offset, { signal });
             const parsed = await parseResponseDataLiveDepartureBoard(board, { requestedOffsetMinutes: offset });
