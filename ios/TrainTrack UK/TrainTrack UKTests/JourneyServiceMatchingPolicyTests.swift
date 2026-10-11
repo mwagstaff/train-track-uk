@@ -19,6 +19,64 @@ struct JourneyServiceMatchingPolicyTests {
         #expect(result.timeDifferenceMinutes == 3)
     }
 
+    @Test func publicActualDepartureResolvesAnOlderStaffForecast() throws {
+        let records = try publicActualDepartureRecords()
+        for orderedRecords in [records, Array(records.reversed())] {
+            let result = JourneyServiceMatchingPolicy.match(
+                departures: [], recentDepartures: orderedRecords, from: destination, to: origin,
+                detectedAt: octoberFirst("06:52:20"), originArrivedAt: octoberFirst("06:38:01")
+            )
+            #expect(result.departure?.serviceID == "9277918KENTHOS_")
+            #expect(result.departure?.departureTime.actual == "07:49")
+            #expect(result.eligibleServiceIDs == ["9277918KENTHOS_"])
+        }
+    }
+
+    @Test func publicActualEvidenceMustBeNewerAndNonConflicting() throws {
+        let conflicts: [[String: Any]] = [
+            ["providerObservedAt": "2026-10-01T07:50:00Z"],
+            ["actualDeparture": "07:48", "actualDepartureAt": "2026-10-01T06:48:00Z"],
+            ["platform": "3"],
+            ["platform": "TBC"]
+        ]
+        for conflict in conflicts {
+            let result = JourneyServiceMatchingPolicy.match(
+                departures: [], recentDepartures: try publicActualDepartureRecords(staffChanges: conflict),
+                from: destination, to: origin,
+                detectedAt: octoberFirst("06:52:20"), originArrivedAt: octoberFirst("06:38:01")
+            )
+            #expect(result.departure == nil)
+            #expect(result.eligibleServiceIDs.count == 2)
+        }
+    }
+
+    @Test func publicActualAfterDetectionCannotLeaveAnEligibleStaleStaffForecast() throws {
+        let result = JourneyServiceMatchingPolicy.match(
+            departures: [], recentDepartures: try publicActualDepartureRecords(actual: "07:54"),
+            from: destination, to: origin,
+            detectedAt: octoberFirst("06:52:20"), originArrivedAt: octoberFirst("06:38:01")
+        )
+        #expect(result.departure == nil)
+        #expect(result.eligibleServiceIDs.isEmpty)
+    }
+
+    private func publicActualDepartureRecords(
+        staffChanges: [String: Any] = [:], actual: String = "07:49"
+    ) throws -> [RecentDepartureV2] {
+        // Reproduce the October 8 failure shape: only the public feed supplies an
+        // actual departure; the matching staff record remains a forecast.
+        var staff: [String: Any] = [
+            "actualDeparture": NSNull(), "actualDepartureAt": NSNull(),
+            "providerObservedAt": "2026-10-01T06:40:49Z"
+        ]
+        staff.merge(staffChanges) { _, new in new }
+        return try octoberFirstRecentDepartures(staffChanges: staff, publicChanges: [
+            "actualDeparture": actual,
+            "actualDepartureAt": "2026-10-01T06:\(actual.suffix(2)):00Z",
+            "providerObservedAt": "2026-10-01T07:49:38Z"
+        ])
+    }
+
     @Test func feedAliasRecoveryPreservesRealAmbiguityAndRequiresNewerActualEvidence() throws {
         let conflicts: [(staff: [String: Any], other: [String: Any])] = [
             ([:], ["platform": "3"]),

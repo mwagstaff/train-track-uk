@@ -15,15 +15,19 @@ const NEUTRAL = { colour: '#59636E', textColour: '#FFFFFF' };
  */
 export class TubeTrackProvider {
     constructor({ baseURL = 'https://api.skynolimit.dev/tube-track/api/v1', fetch: request = globalThis.fetch,
-        now = Date.now, timeoutMs = 4_000, mappings = stationConfig.stations, lineColours = bundledPalette } = {}) {
+        now = Date.now, timeoutMs = 4_000, mappings = stationConfig.stations, lineColours = bundledPalette, allowedModes = [...MODES], minuteKeys = false, journeyPath = '/journeys', palettePath = '/line-colours' } = {}) {
         this.baseURL = baseURL.replace(/\/$/, '');
         this.fetch = request;
         this.now = now;
         this.timeoutMs = timeoutMs;
-        this.mappings = mappings;
+        this.mappings = structuredClone(mappings);
+        this.allowedModes = new Set(allowedModes);
         this.palette = paletteMap(lineColours);
         this.paletteExpiresAt = 0;
         this.paletteFlight = null;
+        this.minuteKeys = minuteKeys;
+        this.journeyPath = journeyPath;
+        this.palettePath = palettePath;
         this.cache = new Map();
         this.observations = new Map();
         this.inflight = new Map();
@@ -33,18 +37,19 @@ export class TubeTrackProvider {
 
     mapping(crs) { return this.mappings[String(crs).trim().toUpperCase()] ?? null; }
 
-    async lookup({ from, to, time, timeMode = 'departAt', signal, budget = { limit: MAX_REQUESTS, used: 0 }, awaitIO = work => work() }) {
+    async lookup({ from, to, time, timeMode = 'departAt', accessibility = 'none', signal, budget = { limit: MAX_REQUESTS, used: 0 }, awaitIO = work => work() }) {
         throwIfCancelled(signal);
         if (!['departAt', 'arriveBy'].includes(timeMode)) throw new TypeError('Invalid TubeTrack time mode');
-        const instant = typeof time === 'number' ? time : validTimestamp(time) ? Date.parse(time) : NaN;
+        let instant = typeof time === 'number' ? time : validTimestamp(time) ? Date.parse(time) : NaN;
         if (!Number.isFinite(instant) || !Number.isFinite(new Date(instant).getTime())) throw new TypeError('Invalid TubeTrack time');
         if (!Number.isSafeInteger(budget.limit) || budget.limit < 0 || !Number.isSafeInteger(budget.used)
             || budget.used < 0 || budget.used > budget.limit) throw new TypeError('Invalid TubeTrack request budget');
         const origin = this.mapping(from);
         const destination = this.mapping(to);
         if (!origin || !destination) return unavailable('unmapped', 'unmapped');
+        if (this.minuteKeys) instant = (timeMode === 'arriveBy' ? Math.floor(instant / 60000) : Math.ceil(instant / 60000)) * 60000;
         const params = new URLSearchParams({ from: origin.routingId, to: destination.routingId,
-            timeMode, time: new Date(instant).toISOString(), accessibility: 'none' });
+            timeMode, time: new Date(instant).toISOString(), accessibility });
         const key = params.toString();
         const pair = `${origin.routingId}|${destination.routingId}`;
         const cached = this.cache.get(key);
@@ -139,7 +144,7 @@ export class TubeTrackProvider {
 
     async fetchJourney(params, signal) {
         const [raw] = await Promise.all([
-            this.getJSON(`/journeys?${params}`, signal), this.refreshPalette()
+            this.getJSON(`${this.journeyPath}?${params}`, signal), this.refreshPalette()
         ]);
         signal.throwIfAborted();
         if (!isObject(raw?.data) || !Array.isArray(raw.data.journeys) || raw.data.journeys.length > 64) throw malformed();
@@ -160,7 +165,7 @@ export class TubeTrackProvider {
             if (journey.legs.some(leg => !leg || typeof leg.mode !== 'string')) throw malformed();
             // A replacement bus/tram cannot be made a rail route by deleting its
             // leg. Reject the entire itinerary and keep any supported options.
-            if (journey.legs.some(leg => !MODES.has(leg.mode))) { unsupportedJourneyCount++; continue; }
+            if (journey.legs.some(leg => !this.allowedModes.has(leg.mode))) { unsupportedJourneyCount++; continue; }
             validateOptionalJourneyFields(journey);
             journeys.push({ ...journey, legs: journey.legs.map(leg => {
                 if (typeof leg.id !== 'string' || typeof leg.instruction !== 'string'
@@ -192,7 +197,7 @@ export class TubeTrackProvider {
     refreshPalette() {
         if (this.now() < this.paletteExpiresAt) return Promise.resolve();
         if (!this.paletteFlight) {
-            this.paletteFlight = this.getJSON('/line-colours').then(raw => {
+            this.paletteFlight = this.getJSON(this.palettePath).then(raw => {
                 if (!Array.isArray(raw?.data) || raw.meta?.stale === true) throw malformed();
                 const palette = paletteMap(raw.data);
                 if (!palette.size) throw malformed();

@@ -36,7 +36,9 @@ function boardingStations(request, journeys, now) {
             stations.add(leg.from.crs);
         }
     }
-    return [...stations];
+    // Combined searches also have TfL-only endpoint IDs. Only National Rail
+    // CRS codes belong on the live departure-board API.
+    return [...stations].filter(station => /^[A-Z0-9]{3}$/.test(station));
 }
 
 function detailCandidates(matches, request, journeys, now, detailed) {

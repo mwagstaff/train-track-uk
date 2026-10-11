@@ -16,6 +16,9 @@ export function registerPlannerGateway(app, { targets, ownership, recordRequest 
         ['POST /route-boards', 'route-boards']
     ]));
     mount('/api/v4/journey-planner', new Map([['POST /route-boards', 'saved-route-boards-v4']]));
+    mount('/api/v5/journey-planner', new Map([
+        ['POST /search-jobs', 'job-submit'], ['GET /search-jobs/:id', 'job'], ['DELETE /search-jobs/:id', 'job']
+    ]));
 }
 
 function createHandler(namespace, allowed, dependencies) {
@@ -115,6 +118,14 @@ async function forward(req, res, namespace, operation, target, caller, ownership
             redirect: 'manual', signal: controller.signal, headers,
             ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}) });
         if (response.status >= 300 && response.status < 400) throw new PlannerError('DATASET_UNAVAILABLE', 'The planner destination returned an unsafe redirect.', 503);
+        // An older standalone service returns Express HTML for the new route.
+        // Do not confuse a missing submission endpoint with an expired job.
+        if (response.status === 404 && operation === 'job-submit' && namespace === '/api/v5/journey-planner') {
+            await response.body?.cancel();
+            console.warn('[planner-gateway] combined route unavailable', JSON.stringify({ targetId: target.id, status: 404 }));
+            throw new PlannerError('PLANNER_VERSION_UNAVAILABLE',
+                'Combined journey planning is temporarily unavailable. Please try again later.', 503);
+        }
         const content = await readResponse(response, MAX_RESPONSE_BYTES);
         let payload = null;
         if (content.length) {

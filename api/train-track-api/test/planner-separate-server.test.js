@@ -288,3 +288,31 @@ test('production planner accepts the dedicated Mongo URI variable', async () => 
     assert.equal(runtime.persistenceMode, 'mongo');
     await runtime.close();
 });
+
+
+test('v5 gateway identifies a stale standalone deployment and accepts the current server', async t => {
+    const oldURL = await listen(t, express()); // Express returns HTML 404, as a pre-v5 deployment does.
+    const service = new PlannerService(plannerConfig({ PLANNER_ENABLED: 'true' }));
+    const runtime = await createPlannerServer({ env: { PLANNER_HOST_ID: 'mini', PLANNER_SERVICE_TOKEN: token,
+        PLANNER_INGESTION_ENABLED: 'false', PLANNER_PERSISTENCE_MODE: 'memory' }, service });
+    t.after(() => runtime.close());
+    const currentURL = await listen(t, runtime.app);
+    let baseUrl = oldURL;
+    const app = express();
+    registerPlannerGateway(app, {
+        targets: { pin: async () => ({ targetId: 'mini', target: { id: 'mini', mode: 'remote', baseUrl, token } }) },
+        ownership: { targetFor: async () => 'mini', rememberResponse: async () => {} }
+    });
+    const url = await listen(t, app);
+    const options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' };
+    const old = await fetch(`${url}/api/v5/journey-planner/search-jobs`, options);
+    assert.equal(old.status, 503);
+    assert.equal((await old.json()).error.code, 'PLANNER_VERSION_UNAVAILABLE');
+    baseUrl = currentURL;
+    const current = await fetch(`${url}/api/v5/journey-planner/search-jobs`, options);
+    assert.equal(current.status, 422);
+    assert.equal((await current.json()).error.code, 'INVALID_STATION');
+    const legacy = await fetch(`${url}/api/v3/journey-planner/search-jobs`, options);
+    assert.equal(legacy.status, 400);
+    assert.equal((await legacy.json()).error.code, 'INVALID_STATION');
+});

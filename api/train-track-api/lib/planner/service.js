@@ -538,6 +538,7 @@ export class PlannerService {
         this.closed = true;
         if (this.loadAdmissionOverride) this.releaseLoadAdmissionCap(this.loadAdmissionOverride.leaseId);
         this.searchJobs?.close();
+        this.combinedJobs?.close();
         this.routeBoards?.close();
         this.savedRouteBoards?.close();
         this.metadataService?.close();

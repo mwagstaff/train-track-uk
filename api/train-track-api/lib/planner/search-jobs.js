@@ -9,8 +9,11 @@ const pending = work => work.state === 'queued' || work.state === 'running';
 // caller cancelling or disappearing must not cancel another caller's search.
 export class PlannerSearchJobs {
     constructor(service, { now = Date.now, leaseMs = 120000, resultMs = 600000,
-        maxLeases = 128, maxPerClient = 2, maxPerNetwork = 4, searchLog = noOpPlannerSearchLog } = {}) {
+        maxLeases = 128, maxPerClient = 2, maxPerNetwork = 4, searchLog = noOpPlannerSearchLog,
+        normalize = normalizeSearchPayload, method = 'search' } = {}) {
         this.service = service;
+        this.normalize = normalize;
+        this.method = method;
         this.config = { ...plannerConfig({}), ...service.config };
         this.now = now;
         this.searchLog = searchLog;
@@ -48,7 +51,7 @@ export class PlannerSearchJobs {
         if (idempotencyKey && !/^[A-Za-z0-9_-]{8,128}$/.test(idempotencyKey)) {
             throw new PlannerError('INVALID_REQUEST', 'Use an 8–128 character Idempotency-Key.');
         }
-        const payload = normalizeSearchPayload(body, this.config.raptorOnly);
+        const payload = this.normalize(body, this.config.raptorOnly);
         const requestedKey = JSON.stringify(payload);
         const retryKey = idempotencyKey ? `${client}:${idempotencyKey}` : null;
         const previous = () => {
@@ -192,7 +195,7 @@ export class PlannerSearchJobs {
                 this.updateWork(work, telemetry);
             } };
         let retry = false;
-        Promise.resolve().then(() => this.service.call('search', work.payload, options)).then(result => {
+        Promise.resolve().then(() => this.service.call(this.method, work.payload, options)).then(result => {
             if (!work.controller.signal.aborted) {
                 work.result = result; work.state = 'completed';
                 this.finishWork(work, { status: 'success', outcome: result.journeys?.length ? 'completed' : 'empty',

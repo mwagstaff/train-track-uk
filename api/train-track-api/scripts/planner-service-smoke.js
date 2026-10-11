@@ -86,6 +86,14 @@ export async function runPlannerServiceSmoke({ baseUrl = 'http://127.0.0.1:3014'
     if (status.payload?.available !== true || !status.payload?.dataset?.version) {
         throw new Error(`Planner status is unavailable: ${status.payload?.reason ?? 'no active dataset'}`);
     }
+    // A liveness/status probe also succeeds against a stale pre-v5 process.
+    // Invalid input checks the deployed route without queueing routing work.
+    const combined = await request('combined v5 route', '/api/v5/journey-planner/search-jobs', {
+        method: 'POST', body: {}, accepted: [422]
+    });
+    if (combined.payload?.error?.code !== 'INVALID_STATION') {
+        throw new Error('Combined v5 route did not validate map endpoints. Check the standalone planner deployment.');
+    }
     const searchTime = time || chooseSearchTime(status.payload.dataset, now());
     let cacheClears = 0;
     const clearCache = async label => {

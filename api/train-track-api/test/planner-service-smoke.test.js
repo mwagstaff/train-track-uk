@@ -31,6 +31,7 @@ test('service smoke exercises authenticated status, searches, detail and queued 
             dataset: { version: 'dataset-one', coverage: { from: '2026-09-01', to: '2026-10-01' } } });
         if (parsed.pathname.endsWith('/stations')) return json({ stations: [{ crs: parsed.searchParams.get('q') }] });
         if (parsed.pathname.includes('/journeys/')) return json({ journey: { legs: [{ kind: 'vehicle' }] } });
+        if (parsed.pathname === '/api/v5/journey-planner/search-jobs') return json({ error: { code: 'INVALID_STATION' } }, 422);
         if (parsed.pathname.endsWith('/search-jobs')) return json({ id: 'job-one', status: 'completed', pollAfterMs: 1000,
             result: { journeys: [{ id: journeyId }] } }, 202, { 'Retry-After': '1' });
         if (parsed.pathname.endsWith('/search')) {
@@ -55,6 +56,7 @@ test('service smoke exercises authenticated status, searches, detail and queued 
     assert.equal(report.residentMemoryBytes, 104857600);
     assert.ok(calls.includes('POST /api/v3/journey-planner/search'));
     assert.equal(report.cacheClears, 0);
+    assert.ok(calls.includes('POST /api/v5/journey-planner/search-jobs'));
 
     const beforeColdRun = calls.length;
     const cold = await runPlannerServiceSmoke({ token, fetchImpl, baseUrl: 'http://planner.test', runs: 1,

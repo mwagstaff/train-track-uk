@@ -97,6 +97,50 @@ test('dismissing a scheduled occurrence mutes that occurrence and deletes its li
     assert.equal(notifications.length, 1);
 });
 
+test('boarding the 16:42 suppresses a later 16:57 platform announcement after schedule refresh', async () => {
+    const { manager, notifications, subscription, leg } = await testSetup();
+    await manager.muteLegForDate({
+        deviceId: subscription.deviceId, subscriptionId: subscription.id,
+        from: 'VIC', to: 'KTH', reason: 'station_exit'
+    });
+    notifications.length = 0;
+    manager.getDeviceTrackingSessions = (deviceId) => deviceId === subscription.deviceId
+        ? [{ source: 'scheduled', from: 'VIC', to: 'KTH', service_id: 'service-1642' }]
+        : [];
+    await manager.upsertSubscription({ ...subscription, subscriptionId: subscription.id });
+    const refreshed = manager.subscriptions.get(subscription.id);
+    const later = { ...departure(null), serviceID: 'service-1657', scheduled: '16:57', estimated: '16:57' };
+    await manager.sendUpdateNotifications(refreshed, leg, 'VIC-KTH', departures(later), ['platform']);
+    await manager.sendUpdateNotifications(refreshed, leg, 'VIC-KTH', departures({ ...later, platform: '3' }), ['platform']);
+    assert.equal(notifications.length, 0);
+});
+
+test('an en-route Live Activity suppresses platform alerts without a tracking session', async () => {
+    const { manager, notifications, subscription, leg } = await testSetup();
+    manager.getDeviceLiveActivities = () => [{
+        fromStation: 'VIC', toStation: 'KTH', journeyPhase: 'en_route',
+        endAt: new Date(Date.now() + 60_000).toISOString()
+    }];
+    await manager.sendUpdateNotifications(subscription, leg, 'VIC-KTH', departures(departure(null)), ['platform']);
+    await manager.sendUpdateNotifications(subscription, leg, 'VIC-KTH', departures(departure('3')), ['platform']);
+    assert.equal(notifications.length, 0);
+});
+
+for (const activity of [
+    { fromStation: 'VIC', toStation: 'KTH', journeyPhase: 'at_start' },
+    { fromStation: 'KTH', toStation: 'VIC', journeyPhase: 'en_route' },
+    { fromStation: 'VIC', toStation: 'KTH', journeyPhase: 'en_route', endAt: '2000-01-01T00:00:00Z' }
+]) {
+    test(`platform alerts remain available for ${JSON.stringify(activity)}`, async () => {
+        const { manager, notifications, subscription, leg } = await testSetup();
+        manager.getDeviceTrackingSessions = () => [{ from: 'KTH', to: 'VIC' }];
+        manager.getDeviceLiveActivities = () => [activity];
+        await manager.sendUpdateNotifications(subscription, leg, 'VIC-KTH', departures(departure(null)), ['platform']);
+        await manager.sendUpdateNotifications(subscription, leg, 'VIC-KTH', departures(departure('3')), ['platform']);
+        assert.equal(notifications.length, 1);
+    });
+}
+
 async function testSetup() {
     const manager = new NotificationSubscriptionManager();
     const notifications = [];

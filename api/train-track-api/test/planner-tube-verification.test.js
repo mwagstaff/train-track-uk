@@ -129,3 +129,47 @@ for (const [name, arrival, departure, elapsed] of [
         assert.equal(source.requested.length, 1);
     });
 }
+
+test('selected independent transfers share one worker yield and at most two upstream slots', { timeout: 3000 }, async t => {
+    let clock = 0;
+    t.mock.method(performance, 'now', () => clock);
+    const budget = { limit: 8, used: 4 };
+    let active = 0, maximum = 0, yields = 0;
+    const releases = [];
+    const source = { lookup: async query => {
+        if (query.budget.used >= query.budget.limit) return { status: 'unavailable', journeys: [], meta: { reason: 'requestLimit' } };
+        query.budget.used++;
+        return query.awaitIO(async () => {
+            active++; maximum = Math.max(maximum, active);
+            await new Promise(resolve => releases.push(resolve));
+            active--;
+            return { status: 'available', journeys: [], expiresAt: iso(at('08:01')), meta: {} };
+        });
+    } };
+    const resolve = createTubeResolver(source, { budget, now: () => at('08:00'), verificationConcurrency: 2, lookupBudgetMs: 250,
+        awaitIO: async work => { yields++; return work(); } });
+    resolve.reserveForResults();
+    const index = createConnectionIndex(network());
+    const journeys = [];
+    for (const arrival of ['11:00', '12:00', '13:00']) {
+        const connections = await resolve(index, { from: 'VIC', to: 'PAD', arrival: at(arrival), departure: at(arrival) + 60 * MINUTE,
+            direction: 'earliest', allowedModes: ['tubeTransfer'] });
+        assert.ok(connections.length);
+        journeys.push({ legs: [connections[0]] });
+    }
+    const verification = resolve.verifySelected(journeys);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(active, 2);
+    assert.equal(yields, 1);
+    clock = 100;
+    releases.shift()();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(active, 2);
+    clock = 200;
+    releases.splice(0).forEach(release => release());
+    assert.equal(await verification, true);
+    assert.equal(maximum, 2);
+    assert.equal(budget.used, 7);
+    assert.equal(resolve.metrics().pending, 0);
+    assert.equal(resolve.metrics().lookupMs, 200, 'overlapping lookups count wall time once');
+});

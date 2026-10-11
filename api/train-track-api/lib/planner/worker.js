@@ -39,6 +39,7 @@ const engine = new PlannerEngine(workerData, {
     liveProvider: new PlannerLiveProvider({ request: requestUpstream }),
     createLiveBudget: createLiveRequestBudget
 });
+let combinedEngine;
 
 parentPort.on('message', message => {
     if (message.upstreamResult || message.upstreamError) {
@@ -98,6 +99,11 @@ async function run({ id, method, payload, cancelBuffer, execution }) {
         else if (method === 'metadata') result = engine.publicMetadata(await engine.dataset(payload.version), payload.live);
         else if (method === 'stations') result = await engine.stationList(payload.query);
         else if (method === 'search') result = await engine.search(payload, signal, context);
+        else if (method === 'combinedSearch') {
+            const { CombinedPlannerEngine } = await import('./combined.js');
+            combinedEngine ??= new CombinedPlannerEngine(engine);
+            result = await combinedEngine.search(payload, signal, context);
+        }
         else if (method === 'disruptionProfile') result = await engine.disruptionProfile(payload, signal, context);
         else if (method === 'clearSearchCache') result = engine.clearSearchCache();
         else if (method === 'savedRoutePlan') result = await engine.savedRoutePlan(payload, signal, context);

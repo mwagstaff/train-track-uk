@@ -6,12 +6,19 @@ import { PlannerRouteBoards } from './planner/route-boards.js';
 import { SavedRouteBoards } from './planner/saved-route-boards.js';
 import { isIP } from 'node:net';
 import { plannerSearchLog } from './planner-search-log.js';
+import { normalizeCombinedRequest } from './planner/combined.js';
 
 export function registerPlannerRoutes(app, { service = new PlannerService(), recordRequest = () => {}, requestMiddleware,
     searchLog = plannerSearchLog, routeBoards = new PlannerRouteBoards(service, { searchLog }),
     savedRouteBoards = new SavedRouteBoards(service, { searchLog }), resolveCaller } = {}) {
     const router = express.Router();
     const jobs = new PlannerSearchJobs(service, { searchLog });
+    const combinedJobs = new PlannerSearchJobs(service, { searchLog,
+        normalize: normalizeCombinedRequest, method: 'combinedSearch', maxPerClient: 1, maxPerNetwork: 2 });
+    combinedJobs.maxInFlight = 1;
+    combinedJobs.config = { ...combinedJobs.config, maxSearchJobs: 4, jobTimeoutMs: 60000,
+        jobQueueTimeoutMs: 90000, jobMaxOperations: 20000000 };
+    service.combinedJobs = combinedJobs;
     service.searchJobs = jobs;
     service.routeBoards = routeBoards;
     service.savedRouteBoards = savedRouteBoards;
@@ -129,14 +136,14 @@ export function registerPlannerRoutes(app, { service = new PlannerService(), rec
                     message: known ? error.message : 'Saved journey planning is temporarily unavailable.' } });
             }
         });
-    const jobHandler = method => async (req, res) => {
+    const jobHandler = (method, manager = jobs) => async (req, res) => {
         try {
             let result;
             if (method === 'submit') {
-                result = await jobs.submit(req.body, { ...caller(req), idempotencyKey: req.get('Idempotency-Key') });
+                result = await manager.submit(req.body, { ...caller(req), idempotencyKey: req.get('Idempotency-Key') });
                 res.status(202);
-            } else if (method === 'get') result = jobs.get(req.params.id);
-            else { jobs.cancel(req.params.id); res.status(204).end(); return; }
+            } else if (method === 'get') result = manager.get(req.params.id);
+            else { manager.cancel(req.params.id); res.status(204).end(); return; }
             res.set('Retry-After', '1').json(result);
         } catch (error) {
             const known = error instanceof PlannerError;
@@ -151,6 +158,10 @@ export function registerPlannerRoutes(app, { service = new PlannerService(), rec
     router.delete('/search-jobs/:id', ...beforeRequest('job-cancel'), jobHandler('cancel'));
     // No aliases or middleware on any existing API namespace.
     app.use('/api/v3/journey-planner', router);
+    app.post('/api/v5/journey-planner/search-jobs', ...beforeRequest('job-submit'), requireJSON,
+        express.json({ limit: '16kb' }), parseError, jobHandler('submit', combinedJobs));
+    app.get('/api/v5/journey-planner/search-jobs/:id', ...beforeRequest('job-status'), jobHandler('get', combinedJobs));
+    app.delete('/api/v5/journey-planner/search-jobs/:id', ...beforeRequest('job-cancel'), jobHandler('cancel', combinedJobs));
     // New apps opt into direct-first saved departures. Existing planner and
     // departure endpoints keep their established response and routing behavior.
     app.post('/api/v4/journey-planner/route-boards', ...beforeRequest('saved-route-boards-v4'),

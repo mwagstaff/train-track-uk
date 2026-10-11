@@ -84,7 +84,8 @@ enum JourneyServiceMatchingPolicy {
 
     /// The staff and public feeds use different IDs for the same departure.
     /// Collapse only a one-to-one pair with a matching dated timetable/platform,
-    /// backed by a newer actual departure. Same-feed or conflicting records remain ambiguous.
+    /// backed by a newer actual departure from either feed. Same-feed or conflicting
+    /// records remain ambiguous. Retain the ID that supplies the confirmed evidence.
     private static func coalescingFeedAliases(_ candidates: [Candidate], fromCRS: String) -> [Candidate] {
         Dictionary(grouping: candidates, by: \.scheduledDepartureAt).values.flatMap { group -> [Candidate] in
             guard group.count == 2,
@@ -100,12 +101,19 @@ enum JourneyServiceMatchingPolicy {
                   let platform = staff.departure.platform?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !platform.isEmpty, platform.caseInsensitiveCompare("TBC") != .orderedSame,
                   platform == other.departure.platform?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  let actual = staff.actualDepartureAt,
-                  other.actualDepartureAt == nil || other.actualDepartureAt == actual,
                   let staffObserved = staff.departure.evidenceObservedAt,
-                  let otherObserved = other.departure.evidenceObservedAt,
-                  staffObserved >= otherObserved else { return group }
-            return [staff]
+                  let otherObserved = other.departure.evidenceObservedAt else { return group }
+            if let actual = staff.actualDepartureAt,
+               other.actualDepartureAt == nil || other.actualDepartureAt == actual,
+               staffObserved >= otherObserved {
+                return [staff]
+            }
+            if let actual = other.actualDepartureAt,
+               staff.actualDepartureAt == nil || staff.actualDepartureAt == actual,
+               otherObserved >= staffObserved {
+                return [other]
+            }
+            return group
         }
     }
 

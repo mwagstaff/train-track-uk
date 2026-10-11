@@ -114,11 +114,13 @@ function fallback(index, query, parts, response, notes) {
  * National Rail Tube links. Alternatives retain their boarding-count/time
  * trade-offs, so a faster two-line route cannot erase a usable direct route. */
 export function createTubeResolver(provider, { signal, check = () => {}, awaitIO = work => work(),
-    budget = { limit: 12, used: 0 }, now = Date.now, lookupBudgetMs = 8000 } = {}) {
+    budget = { limit: 12, used: 0 }, now = Date.now, lookupBudgetMs = 8000, verificationConcurrency = 1 } = {}) {
     const memo = new Map();
     const observations = new Map();
     const pending = new Map();
-    let lookupMs = 0;
+    let lookupMs = 0, activeLookups = 0, busySince = 0;
+    let verifyingBatch = false;
+    const elapsedLookupMs = () => lookupMs + (activeLookups ? performance.now() - busySince : 0);
     let reserveForResults = false;
     const state = { limited: false, expiresAt: Infinity, used: false, notes: new Set() };
     const checkpoint = () => {
@@ -183,15 +185,20 @@ export function createTubeResolver(provider, { signal, check = () => {}, awaitIO
                     if (nearby) memo.set(key, nearby.response);
                 }
                 if (!memo.has(key)) {
-                    const began = performance.now();
+                    if (activeLookups++ === 0) busySince = performance.now();
                     // Speculative graph branches cannot spend the capacity
                     // reserved for connections in the actual result frontier.
                     const requestLimit = reserveForResults && !priority ? Math.floor(budget.limit / 2) : budget.limit;
                     const timeLimit = reserveForResults && !priority ? lookupBudgetMs * 0.375 : lookupBudgetMs;
-                    memo.set(key, await provider.lookup({ from: query.from, to: query.to,
-                        time: iso(instant), timeMode: reverse ? 'arriveBy' : 'departAt', signal,
-                        awaitIO, budget: lookupMs >= timeLimit || budget.used >= requestLimit ? { limit: 0, used: 0 } : budget }));
-                    lookupMs += performance.now() - began;
+                    try {
+                        memo.set(key, await provider.lookup({ from: query.from, to: query.to,
+                            time: iso(instant), timeMode: reverse ? 'arriveBy' : 'departAt', signal,
+                            awaitIO: verifyingBatch ? work => work() : awaitIO,
+                            budget: elapsedLookupMs() >= timeLimit || budget.used >= requestLimit ? { limit: 0, used: 0 } : budget }));
+                    } finally {
+                        // Count overlapping lookups once, including admission wait.
+                        if (--activeLookups === 0) lookupMs += performance.now() - busySince;
+                    }
                     const response = memo.get(key);
                     if (response.status === 'available' && response.journeys?.length && !response.meta?.stale
                         && Date.parse(response.expiresAt) > now()) {
@@ -209,6 +216,11 @@ export function createTubeResolver(provider, { signal, check = () => {}, awaitIO
             let response = await get(time);
             if (response.status !== 'available' || response.meta?.stale || Date.parse(response.expiresAt) <= now()) {
                 return useFallback(response, window);
+            }
+            // Stop messages can explain an empty or out-of-window result (for
+            // example a closed destination). Do not discard them with its legs.
+            for (const message of response.messages ?? []) {
+                if (typeof message === 'string' && message.trim()) state.notes.add(`TfL: ${message}`);
             }
             let options = response.journeys ?? [];
             // Reserve the contingency in an arrive-by query too. A second query
@@ -285,25 +297,44 @@ export function createTubeResolver(provider, { signal, check = () => {}, awaitIO
     resolve.reserveForResults = () => { reserveForResults = true; };
     resolve.verifySelected = async journeys => {
         let changed = false;
-        const visited = new Set();
+        const visited = new Set(), tasks = [];
         for (const journey of journeys) for (const [position, leg] of journey.legs.entries()) {
-            checkpoint();
-            const key = connectionKey(leg);
-            const candidate = pending.get(key);
+            const key = connectionKey(leg), candidate = pending.get(key);
             if (!candidate || visited.has(key)) continue;
             visited.add(key);
-            if (budget.used >= budget.limit || lookupMs >= lookupBudgetMs) return changed;
-            pending.delete(key);
-            await resolve(candidate.index, { ...candidate.query,
-                arrival: candidate.query.arrival ?? (position > 0 ? Date.parse(journey.legs[position - 1].arrival) : undefined),
-                departure: candidate.query.departure ?? (position + 1 < journey.legs.length ? Date.parse(journey.legs[position + 1].departure) : undefined)
-            }, true);
-            // Even an upstream failure changes the reason for fallback. A
-            // successful response can alter boardings, timings or feasibility.
-            changed = true;
+            tasks.push(async () => {
+                checkpoint();
+                if (budget.used >= budget.limit || elapsedLookupMs() >= lookupBudgetMs) return;
+                pending.delete(key);
+                await resolve(candidate.index, { ...candidate.query,
+                    arrival: candidate.query.arrival ?? (position > 0 ? Date.parse(journey.legs[position - 1].arrival) : undefined),
+                    departure: candidate.query.departure ?? (position + 1 < journey.legs.length ? Date.parse(journey.legs[position + 1].departure) : undefined)
+                }, true);
+                changed = true;
+            });
+        }
+        if (verificationConcurrency === 1) {
+            for (const task of tasks) await task();
+        } else if (tasks.length) {
+            // Yield the worker CPU slot once for the whole batch: nested awaitIO
+            // calls would overwrite the worker's single resume continuation.
+            verifyingBatch = true;
+            try {
+                await awaitIO(async () => {
+                    let cursor = 0;
+                    const workers = Array.from({ length: Math.min(verificationConcurrency, tasks.length) }, async () => {
+                        while (cursor < tasks.length) await tasks[cursor++]();
+                    });
+                    const settled = await Promise.allSettled(workers);
+                    const failure = settled.find(value => value.status === 'rejected');
+                    if (failure) throw failure.reason;
+                });
+            } finally { verifyingBatch = false; }
         }
         return changed;
     };
+    resolve.metrics = () => ({ requests: budget.used, limit: budget.limit, lookupMs: Math.round(elapsedLookupMs()),
+        pending: pending.size, memoEntries: memo.size });
     resolve.state = state;
     return resolve;
 }

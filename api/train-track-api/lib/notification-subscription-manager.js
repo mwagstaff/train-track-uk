@@ -1570,6 +1570,29 @@ export class NotificationSubscriptionManager {
             return null;
         }
 
+        // Boarding can outlive the notification mute (for example, saving a
+        // schedule resets delivery state). Recheck journey state immediately
+        // before sending so the next train on the board cannot trigger alerts.
+        if (leg && context !== 'schedule_skipped_ad_hoc' && (
+            this.getDeviceTrackingSessions(activeSubscription.deviceId).some((session) =>
+                session.from === leg.from && session.to === leg.to
+            )
+            || this.getDeviceLiveActivities(activeSubscription.deviceId).some((activity) =>
+                activity.fromStation === leg.from && activity.toStation === leg.to
+                    && activity.journeyPhase === 'en_route'
+                    && (!activity.endAt || Date.parse(activity.endAt) > Date.now())
+            )
+        )) {
+            console.log('[notifications] suppress_push', JSON.stringify({
+                subscription_id: subscriptionId,
+                device_id: activeSubscription.deviceId,
+                leg: legKey,
+                context,
+                reason: 'journey_in_progress'
+            }));
+            return null;
+        }
+
         return activeSubscription;
     }
 

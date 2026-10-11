@@ -405,3 +405,18 @@ test('concurrent searches and palette refresh share a two-request bound', async 
     assert.equal(maximum, 2);
     assert.equal(provider.active, 0);
 });
+
+test('minute cache shares only equivalent TfL instants and never shifts returned times', async () => {
+    const { provider, calls } = setup({ minuteKeys: true });
+    const first = await provider.lookup({ ...query, time: NOW + 1000 });
+    const second = await provider.lookup({ ...query, time: NOW + 59000 });
+    assert.deepEqual(second.journeys, first.journeys);
+    assert.equal(calls.filter(url => url.includes('/journeys')).length, 1);
+    assert.equal(new URL(calls.find(url => url.includes('/journeys'))).searchParams.get('time'), iso(60000));
+    await provider.lookup({ ...query, time: NOW + 61000 });
+    await provider.lookup({ ...query, time: NOW + 1000, timeMode: 'arriveBy' });
+    await provider.lookup({ ...query, time: NOW + 1000, accessibility: 'platform' });
+    assert.equal(calls.filter(url => url.includes('/journeys')).length, 4);
+    const reverse = calls.find(url => url.includes('arriveBy'));
+    assert.equal(new URL(reverse).searchParams.get('time'), iso(0));
+});

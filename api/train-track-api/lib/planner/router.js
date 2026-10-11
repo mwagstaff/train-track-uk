@@ -750,7 +750,14 @@ function* journeySearch(request, network, options = {}) {
         return connection ? [connection] : [];
     };
     for (let round = 0; round <= maxBoardings; round++) {
-        for (const labels of rounds[round].values()) for (const label of [...labels].sort((a, b) => reverse ? a.boundary - b.boundary : b.boundary - a.boundary)) {
+        // Interactive combined searches spend a bounded TfL lookup budget.
+        // Visit the earliest reachable stations across the whole round before
+        // later trains at one station consume that budget. Legacy searches keep
+        // their existing traversal and pruning order.
+        const batches = options.prioritizeJourneyTime ? [[...rounds[round].values()].flat()] : rounds[round].values();
+        for (const labels of batches) for (const label of [...labels].sort((a, b) => options.prioritizeJourneyTime
+            ? reverse ? b.time - a.time : a.time - b.time
+            : reverse ? a.boundary - b.boundary : b.boundary - a.boundary)) {
             check();
             if (label.station === target && label.path && label.viaProgress === via.length) { results.push(label); continue; }
             const completionBound = finishBound(label.boundary, label.boardings, label.station, label.disruptionRank);
