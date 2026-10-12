@@ -7,6 +7,86 @@ struct JourneyServiceMatchingPolicyTests {
     private let origin = Station(crs: "VIC", name: "London Victoria", longitude: "-0.1442", latitude: "51.4951")
     private let destination = Station(crs: "KTH", name: "Kent House", longitude: "-0.0458", latitude: "51.4127")
 
+    @Test func octoberTwelfthUndatedStaffSnapshotResolvesToConfirmedPublicService() throws {
+        let records = try octoberTwelfthDepartures()
+        // Exercise the persisted origin snapshot as well as the in-memory board.
+        let restored = try JSONDecoder().decode([DepartureV2].self, from: JSONEncoder().encode(records))
+        for departures in [records, restored, Array(restored.reversed())] {
+            let result = octoberTwelfthMatch(departures)
+            #expect(result.departure?.serviceID == "9632411VICTRIE_")
+            #expect(result.departure?.departureTime.actual == "16:44")
+            #expect(result.eligibleServiceIDs == ["9632411VICTRIE_"])
+        }
+    }
+
+    @Test func undatedAliasStillRequiresDatedActualEvidenceAndMatchingIdentity() throws {
+        let conflicts: [(staff: [String: Any], other: [String: Any])] = [
+            ([:], ["timestamp": NSNull()]),
+            ([:], ["departure_time": ["scheduled": "16:42", "estimated": "16:42"]]),
+            (["platform": "4"], [:]),
+            (["departure_time": ["scheduled": "16:42", "estimated": "16:43", "actual": "16:43"]], [:]),
+            (["serviceID": "staff_202610118088407_VIC_20261011T164200_P"], [:]),
+            (["serviceID": "staff_202610128088407_VIC_20261012T162700_P"], [:]),
+            (["timestamp": "2026-10-12T15:46:35Z"], [:])
+        ]
+        for conflict in conflicts {
+            let result = octoberTwelfthMatch(try octoberTwelfthDepartures(
+                staffChanges: conflict.staff, publicChanges: conflict.other))
+            #expect(result.departure == nil)
+            #expect(result.eligibleServiceIDs.count == 2)
+        }
+    }
+
+    @Test func undatedForecastCannotMatchBeforeTheConfirmedDeparture() throws {
+        let records = try octoberTwelfthDepartures(publicChanges: [
+            "departure_time": ["scheduled": "16:42", "estimated": "16:47", "actual": "16:47"]
+        ])
+        let result = octoberTwelfthMatch(records)
+        #expect(result.departure == nil)
+        #expect(result.eligibleServiceIDs.isEmpty)
+    }
+
+    @Test func confirmedStaffDepartureAlsoResolvesAnUndatedPublicForecast() throws {
+        let records = try octoberTwelfthDepartures(staffChanges: [
+            "departure_time": ["scheduled": "16:42", "estimated": "16:44", "actual": "16:44"],
+            "timestamp": "2026-10-12T15:46:00Z"
+        ], publicChanges: [
+            "departure_time": ["scheduled": "16:42", "estimated": "16:42"],
+            "timestamp": NSNull()
+        ])
+        #expect(octoberTwelfthMatch(records).departure?.serviceID
+            == "staff_202610128088407_VIC_20261012T164200_P")
+    }
+
+    private func octoberTwelfthMatch(_ departures: [DepartureV2]) -> JourneyServiceMatchingPolicy.Match {
+        JourneyServiceMatchingPolicy.match(
+            departures: departures, recentDepartures: [], from: origin, to: destination,
+            detectedAt: ISO8601DateFormatter().date(from: "2026-10-12T15:46:37Z")!,
+            originArrivedAt: ISO8601DateFormatter().date(from: "2026-10-12T15:30:44Z")!
+        )
+    }
+
+    private func octoberTwelfthDepartures(
+        staffChanges: [String: Any] = [:], publicChanges: [String: Any] = [:]
+    ) throws -> [DepartureV2] {
+        // IDs, timetable and detection times come from the report. Platform and actual
+        // departure are representative values: the export omits these recovered fields.
+        var staff: [String: Any] = [
+            "serviceID": "staff_202610128088407_VIC_20261012T164200_P",
+            "serviceType": "train", "platform": "3", "isCancelled": false,
+            "departure_time": ["scheduled": "16:42", "estimated": "16:42"]
+        ]
+        var other = staff
+        other["serviceID"] = "9632411VICTRIE_"
+        other["departure_time"] = ["scheduled": "16:42", "estimated": "16:44", "actual": "16:44"]
+        other["timestamp"] = "2026-10-12T15:46:00Z"
+        staff.merge(staffChanges) { _, new in new }
+        other.merge(publicChanges) { _, new in new }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode([DepartureV2].self, from: JSONSerialization.data(withJSONObject: [staff, other]))
+    }
+
     @Test func octoberFirstDelayed0742IsOneTrainAcrossStaffAndPublicFeeds() throws {
         let records = try octoberFirstRecentDepartures()
         let result = JourneyServiceMatchingPolicy.match(

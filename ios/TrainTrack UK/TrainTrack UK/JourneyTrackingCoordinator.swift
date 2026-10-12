@@ -2040,7 +2040,16 @@ final class JourneyTrackingCoordinator: ObservableObject {
                     "journey_id": active.id.uuidString,
                     "requested_service_ids": ids,
                     "loaded_service_ids": ids.filter { DeparturesStore.shared.serviceDetailsById[$0] != nil },
-                    "recovered_service_ids": recoveredEvidence.map(\.serviceID)
+                    "recovered_service_ids": recoveredEvidence.map(\.serviceID),
+                    "recovered_departures": recoveredEvidence.map { evidence in
+                        [
+                            "service_id": evidence.serviceID,
+                            "scheduled": evidence.scheduledDeparture,
+                            "actual": evidence.actualDeparture ?? "unknown",
+                            "platform": evidence.platform ?? "unknown",
+                            "observed_at": ISO8601DateFormatter().string(from: evidence.evidenceObservedAt)
+                        ]
+                    }
                 ])
                 match = JourneyServiceMatchingPolicy.match(
                     departures: departures, recentDepartures: recentDepartures, from: from, to: to,
@@ -2946,6 +2955,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 "scheduled": departure.departureTime.scheduled,
                 "estimated": departure.departureTime.estimated,
                 "actual": departure.departureTime.actual ?? "unknown",
+                "platform": departure.platform ?? "unknown",
                 "observed_at": departure.evidenceObservedAt.map { ISO8601DateFormatter().string(from: $0) } ?? "unknown",
                 "display_time": JourneyItineraryBuilder.departureDisplayTime(departure),
                 "cancelled": departure.isCancelled

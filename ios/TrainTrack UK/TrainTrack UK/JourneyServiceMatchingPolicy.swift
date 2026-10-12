@@ -84,33 +84,44 @@ enum JourneyServiceMatchingPolicy {
 
     /// The staff and public feeds use different IDs for the same departure.
     /// Collapse only a one-to-one pair with a matching dated timetable/platform,
-    /// backed by a newer actual departure from either feed. Same-feed or conflicting
+    /// backed by a dated actual departure from either feed. Same-feed or conflicting
     /// records remain ambiguous. Retain the ID that supplies the confirmed evidence.
     private static func coalescingFeedAliases(_ candidates: [Candidate], fromCRS: String) -> [Candidate] {
-        Dictionary(grouping: candidates, by: \.scheduledDepartureAt).values.flatMap { group -> [Candidate] in
+        let timetableFormatter = DateFormatter()
+        timetableFormatter.locale = Locale(identifier: "en_US_POSIX")
+        timetableFormatter.timeZone = TimeZone(identifier: "Europe/London")
+        timetableFormatter.dateFormat = "yyyyMMdd'T'HHmmss"
+        return Dictionary(grouping: candidates, by: \.scheduledDepartureAt).values.flatMap { group -> [Candidate] in
             guard group.count == 2,
                   let staff = group.first(where: {
                       $0.departure.serviceID.range(of: "^staff_[0-9]{15}_[A-Z]{3}_[0-9]{8}T[0-9]{6}_P$",
                           options: .regularExpression) != nil
                   }),
                   staff.departure.serviceID.split(separator: "_")[2].uppercased() == fromCRS.uppercased(),
+                  staff.departure.serviceID.split(separator: "_")[3]
+                    == timetableFormatter.string(from: staff.scheduledDepartureAt),
                   let other = group.first(where: { $0.departure.serviceID != staff.departure.serviceID }),
                   other.departure.serviceID.range(of: "^[0-9]+[A-Z_]+$", options: .regularExpression) != nil,
                   staff.departure.serviceType == "train", other.departure.serviceType == "train",
                   staff.departure.isCancelled == other.departure.isCancelled,
                   let platform = staff.departure.platform?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !platform.isEmpty, platform.caseInsensitiveCompare("TBC") != .orderedSame,
-                  platform == other.departure.platform?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  let staffObserved = staff.departure.evidenceObservedAt,
-                  let otherObserved = other.departure.evidenceObservedAt else { return group }
+                  platform == other.departure.platform?.trimmingCharacters(in: .whitespacesAndNewlines) else { return group }
+            let staffObserved = staff.departure.evidenceObservedAt
+            let otherObserved = other.departure.evidenceObservedAt
+            // A cached forecast can lack provider provenance. It must not block a
+            // dated actual for the same dated service, but cannot establish freshness
+            // for another actual. Never manufacture an observation time for it.
             if let actual = staff.actualDepartureAt,
+               let staffObserved,
                other.actualDepartureAt == nil || other.actualDepartureAt == actual,
-               staffObserved >= otherObserved {
+               otherObserved.map({ staffObserved >= $0 }) ?? (other.actualDepartureAt == nil) {
                 return [staff]
             }
             if let actual = other.actualDepartureAt,
+               let otherObserved,
                staff.actualDepartureAt == nil || staff.actualDepartureAt == actual,
-               otherObserved >= staffObserved {
+               staffObserved.map({ otherObserved >= $0 }) ?? (staff.actualDepartureAt == nil) {
                 return [other]
             }
             return group
