@@ -83,7 +83,7 @@ enum JourneyServiceMatchingPolicy {
     }
 
     /// The staff and public feeds use different IDs for the same departure.
-    /// Collapse only a one-to-one pair with a matching dated timetable/platform,
+    /// Collapse only a one-to-one pair with a matching dated timetable and no platform conflict,
     /// backed by a dated actual departure from either feed. Same-feed or conflicting
     /// records remain ambiguous. Retain the ID that supplies the confirmed evidence.
     private static func coalescingFeedAliases(_ candidates: [Candidate], fromCRS: String) -> [Candidate] {
@@ -103,10 +103,17 @@ enum JourneyServiceMatchingPolicy {
                   let other = group.first(where: { $0.departure.serviceID != staff.departure.serviceID }),
                   other.departure.serviceID.range(of: "^[0-9]+[A-Z_]+$", options: .regularExpression) != nil,
                   staff.departure.serviceType == "train", other.departure.serviceType == "train",
-                  staff.departure.isCancelled == other.departure.isCancelled,
-                  let platform = staff.departure.platform?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !platform.isEmpty, platform.caseInsensitiveCompare("TBC") != .orderedSame,
-                  platform == other.departure.platform?.trimmingCharacters(in: .whitespacesAndNewlines) else { return group }
+                  staff.departure.isCancelled == other.departure.isCancelled else { return group }
+            // Missing/withheld platforms are not evidence of different trains.
+            // Keep rejecting a pair when both feeds supply conflicting platforms.
+            func knownPlatform(_ value: String?) -> String? {
+                guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !value.isEmpty, value.caseInsensitiveCompare("TBC") != .orderedSame else { return nil }
+                return value
+            }
+            if let staffPlatform = knownPlatform(staff.departure.platform),
+               let otherPlatform = knownPlatform(other.departure.platform),
+               staffPlatform != otherPlatform { return group }
             let staffObserved = staff.departure.evidenceObservedAt
             let otherObserved = other.departure.evidenceObservedAt
             // A cached forecast can lack provider provenance. It must not block a

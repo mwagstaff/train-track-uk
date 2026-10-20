@@ -7,6 +7,72 @@ struct JourneyServiceMatchingPolicyTests {
     private let origin = Station(crs: "VIC", name: "London Victoria", longitude: "-0.1442", latitude: "51.4951")
     private let destination = Station(crs: "KTH", name: "Kent House", longitude: "-0.0458", latitude: "51.4127")
 
+    @Test func octoberNineteenthMissingPlatformsResolveToConfirmed1712Service() throws {
+        let records = try octoberTwelfthDepartures(staffChanges: [
+            "serviceID": "staff_202610198088416_VIC_20261019T171200_P",
+            "platform": NSNull(),
+            "departure_time": ["scheduled": "17:12", "estimated": "17:12"]
+        ], publicChanges: [
+            "serviceID": "9857195VICTRIE_", "platform": NSNull(),
+            "departure_time": ["scheduled": "17:12", "estimated": "17:15", "actual": "17:15"],
+            "timestamp": "2026-10-19T16:18:38Z"
+        ])
+        let restored = try JSONDecoder().decode([DepartureV2].self, from: JSONEncoder().encode(records))
+        for departures in [records, restored, Array(restored.reversed())] {
+            let result = JourneyServiceMatchingPolicy.match(
+                departures: departures, recentDepartures: [], from: origin, to: destination,
+                detectedAt: ISO8601DateFormatter().date(from: "2026-10-19T16:18:36Z")!,
+                originArrivedAt: ISO8601DateFormatter().date(from: "2026-10-19T16:04:34Z")!
+            )
+            #expect(result.departure?.serviceID == "9857195VICTRIE_")
+            #expect(result.departure?.departureTime.actual == "17:15")
+            #expect(result.eligibleServiceIDs == ["9857195VICTRIE_"])
+        }
+    }
+
+    @Test func missingPlatformDoesNotConflictWithKnownPlatformInEitherFeed() throws {
+        for unknown: Any in [NSNull(), "", "  ", "TBC", " tbc "] {
+            for staffHasActual in [false, true] {
+                for staffHasPlatform in [false, true] {
+                    var staff: [String: Any] = ["platform": staffHasPlatform ? "3" : unknown]
+                    var other: [String: Any] = ["platform": staffHasPlatform ? unknown : "3"]
+                    if staffHasActual {
+                        staff["departure_time"] = ["scheduled": "16:42", "estimated": "16:44", "actual": "16:44"]
+                        staff["timestamp"] = "2026-10-12T15:46:00Z"
+                        other["departure_time"] = ["scheduled": "16:42", "estimated": "16:42"]
+                        other["timestamp"] = NSNull()
+                    }
+                    let result = octoberTwelfthMatch(try octoberTwelfthDepartures(
+                        staffChanges: staff, publicChanges: other))
+                    #expect(result.departure?.serviceID == (staffHasActual
+                        ? "staff_202610128088407_VIC_20261012T164200_P" : "9632411VICTRIE_"))
+                }
+            }
+        }
+    }
+
+    @Test func missingPlatformsStillRequireConsistentDatedActualEvidence() throws {
+        let conflicts: [[String: Any]] = [
+            ["timestamp": NSNull()],
+            ["departure_time": ["scheduled": "16:42", "estimated": "16:42"]]
+        ]
+        for conflict in conflicts {
+            var other: [String: Any] = ["platform": NSNull()]
+            other.merge(conflict) { _, new in new }
+            let result = octoberTwelfthMatch(try octoberTwelfthDepartures(
+                staffChanges: ["platform": NSNull()], publicChanges: other))
+            #expect(result.departure == nil)
+            #expect(result.eligibleServiceIDs.count == 2)
+        }
+        let future = octoberTwelfthMatch(try octoberTwelfthDepartures(
+            staffChanges: ["platform": NSNull()], publicChanges: [
+                "platform": NSNull(),
+                "departure_time": ["scheduled": "16:42", "estimated": "16:47", "actual": "16:47"]
+            ]))
+        #expect(future.departure == nil)
+        #expect(future.eligibleServiceIDs.isEmpty)
+    }
+
     @Test func octoberTwelfthUndatedStaffSnapshotResolvesToConfirmedPublicService() throws {
         let records = try octoberTwelfthDepartures()
         // Exercise the persisted origin snapshot as well as the in-memory board.
@@ -116,8 +182,7 @@ struct JourneyServiceMatchingPolicyTests {
         let conflicts: [[String: Any]] = [
             ["providerObservedAt": "2026-10-01T07:50:00Z"],
             ["actualDeparture": "07:48", "actualDepartureAt": "2026-10-01T06:48:00Z"],
-            ["platform": "3"],
-            ["platform": "TBC"]
+            ["platform": "3"]
         ]
         for conflict in conflicts {
             let result = JourneyServiceMatchingPolicy.match(
