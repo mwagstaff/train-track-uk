@@ -967,7 +967,8 @@ final class JourneyTrackingCoordinator: ObservableObject {
             originArrivedAt: previousCandidate?.originArrivedAt,
             candidateDepartures: previousCandidate?.candidateDepartures ?? [],
             activeFrom: candidateStart,
-            recoveryObservations: previousCandidate?.recoveryObservations
+            recoveryObservations: previousCandidate?.recoveryObservations,
+            lastOriginPresenceAt: previousCandidate?.lastOriginPresenceAt
         )
         for existing in armedCandidates {
             candidate.inheritBoardingEvidence(from: existing, now: now)
@@ -1230,7 +1231,8 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 ? JourneyServiceMatchRecoveryContext(
                     plannedLegIndex: 0, fromStation: origin, detectedAt: detectedAt,
                     departures: candidate.candidateDepartures
-                ) : nil
+                ) : nil,
+            lastOriginPresenceAt: candidate.lastOriginPresenceAt
         )
         armedCandidates.removeAll()
         persistCheckpoint()
@@ -1327,7 +1329,8 @@ final class JourneyTrackingCoordinator: ObservableObject {
             updatedAt: last.observedAt,
             originDepartureWasMissed: true,
             scheduleOccurrenceStart: candidate.activeFrom,
-            scheduleOccurrenceEnd: candidate.activeUntil
+            scheduleOccurrenceEnd: candidate.activeUntil,
+            lastOriginPresenceAt: candidate.lastOriginPresenceAt
         )
     }
 
@@ -1484,6 +1487,17 @@ final class JourneyTrackingCoordinator: ObservableObject {
 
     func evaluateLocation(_ location: CLLocation, detectedAt receivedAt: Date = Date()) async {
         let detectedAt = location.timestamp
+        if activeJourney == nil {
+            var changed = false
+            for index in armedCandidates.indices {
+                guard let origin = armedCandidates[index].stations.first else { continue }
+                if armedCandidates[index].recordOriginPresence(
+                    rawDistance: origin.distance(from: location), accuracy: location.horizontalAccuracy,
+                    observedAt: detectedAt, receivedAt: receivedAt
+                ) { changed = true }
+            }
+            if changed { persistCheckpoint() }
+        }
         guard var active = activeJourney else {
             ClientDiagnosticsLogger.log("journey_location", "location_ignored_no_active_journey", metadata: [
                 "latitude": location.coordinate.latitude,
@@ -2006,6 +2020,9 @@ final class JourneyTrackingCoordinator: ObservableObject {
         )
         let preferredServiceID = LiveActivityManager.shared.preferredServiceID(fromCRS: from.crs, toCRS: to.crs)
         let originArrivedAt = active.originArrivalForServiceMatching(from: from)
+        let lastOriginPresenceAt = active.plannedLegIndex == 0
+            && from.crs.caseInsensitiveCompare(active.plannedOrigin.crs) == .orderedSame
+            ? active.lastOriginPresenceAt : nil
         var match = forceUnmatchedService ? JourneyServiceMatchingPolicy.Match.unmatched : JourneyServiceMatchingPolicy.match(
             departures: departures,
             recentDepartures: recentDepartures,
@@ -2013,6 +2030,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
             to: to,
             detectedAt: detectedAt,
             originArrivedAt: originArrivedAt,
+            lastOriginPresenceAt: lastOriginPresenceAt,
             preferredServiceID: preferredServiceID,
             preferredDeparture: preferredDeparture
         )
@@ -2053,7 +2071,8 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 ])
                 match = JourneyServiceMatchingPolicy.match(
                     departures: departures, recentDepartures: recentDepartures, from: from, to: to,
-                    detectedAt: detectedAt, originArrivedAt: originArrivedAt
+                    detectedAt: detectedAt, originArrivedAt: originArrivedAt,
+                    lastOriginPresenceAt: lastOriginPresenceAt
                 )
             }
         }
@@ -2074,6 +2093,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
             "time_difference_minutes": selectedDifference,
             "recent_departure_count": recentDepartures.count,
             "origin_arrived_at": originArrivedAt,
+            "last_origin_presence_at": lastOriginPresenceAt,
             "confidence": confidence,
             "eligible_service_ids": match.eligibleServiceIDs,
             "rebound_from_service_id": reboundFromServiceID

@@ -3,6 +3,7 @@ import Foundation
 enum JourneyServiceMatchingPolicy {
     static let departureDetectionLookback: TimeInterval = 30 * 60
     static let departureDetectionTolerance: TimeInterval = 2 * 60
+    static let feedActualDepartureTolerance: TimeInterval = 3 * 60
 
     /// Bound fallback lookups to trains around the original departure observation.
     static func detailRecoveryServiceIDs(
@@ -116,6 +117,14 @@ enum JourneyServiceMatchingPolicy {
                staffPlatform != otherPlatform { return group }
             let staffObserved = staff.departure.evidenceObservedAt
             let otherObserved = other.departure.evidenceObservedAt
+            // Feeds can report slightly different actual times for the same service.
+            // Keep the later report (including its ID and provenance) so this cannot
+            // make a train eligible before both feeds say it departed.
+            if let staffActual = staff.actualDepartureAt, let otherActual = other.actualDepartureAt,
+               staffObserved != nil, otherObserved != nil, staffActual != otherActual,
+               abs(staffActual.timeIntervalSince(otherActual)) <= feedActualDepartureTolerance {
+                return [staffActual > otherActual ? staff : other]
+            }
             // A cached forecast can lack provider provenance. It must not block a
             // dated actual for the same dated service, but cannot establish freshness
             // for another actual. Never manufacture an observation time for it.
@@ -180,6 +189,7 @@ enum JourneyServiceMatchingPolicy {
         to: Station,
         detectedAt: Date,
         originArrivedAt: Date?,
+        lastOriginPresenceAt: Date? = nil,
         preferredServiceID: String? = nil,
         preferredDeparture: DepartureV2? = nil
     ) -> Match {
@@ -259,10 +269,16 @@ enum JourneyServiceMatchingPolicy {
             )
         }
 
-        let earliestDeparture = max(
+        var earliestDeparture = max(
             detectedAt.addingTimeInterval(-departureDetectionLookback),
             originArrivedAt?.addingTimeInterval(-departureDetectionTolerance) ?? .distantPast
         )
+        // A later reliable fix at the origin rules out trains that left while
+        // the passenger was still there. Retain tolerance for station size and timing.
+        if let presence = lastOriginPresenceAt, let arrival = originArrivedAt,
+           presence >= arrival, presence <= detectedAt {
+            earliestDeparture = max(earliestDeparture, presence.addingTimeInterval(-departureDetectionTolerance))
+        }
         let eligible = coalescingFeedAliases(Array(candidatesByID.values), fromCRS: from.crs).filter { candidate in
             guard !candidate.departure.isCancelled else { return false }
             if candidate.hasUnresolvedDelay {

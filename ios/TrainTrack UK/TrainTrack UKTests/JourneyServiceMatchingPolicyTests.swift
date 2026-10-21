@@ -7,6 +7,109 @@ struct JourneyServiceMatchingPolicyTests {
     private let origin = Station(crs: "VIC", name: "London Victoria", longitude: "-0.1442", latitude: "51.4951")
     private let destination = Station(crs: "KTH", name: "Kent House", longitude: "-0.0458", latitude: "51.4127")
 
+    @Test func octoberTwentyFirstActualDiscrepancyResolvesWithinThreeMinutes() throws {
+        for laterMinute in [43, 45, 46] {
+            for staffIsLater in [true, false] {
+                let later = "07:\(laterMinute)"
+                let records = try octoberTwelfthDepartures(staffChanges: [
+                    "serviceID": "staff_202610218086990_KTH_20261021T074200_P", "platform": "1",
+                    "departure_time": ["scheduled": "07:42", "estimated": later,
+                                       "actual": staffIsLater ? later : "07:42"],
+                    "timestamp": "2026-10-21T06:46:15Z"
+                ], publicChanges: [
+                    "serviceID": "9925621KENTHOS_", "platform": "1",
+                    "departure_time": ["scheduled": "07:42", "estimated": "07:42",
+                                       "actual": staffIsLater ? "07:42" : later],
+                    "timestamp": "2026-10-21T06:46:21Z"
+                ])
+                for ordered in [records, Array(records.reversed())] {
+                    let result = JourneyServiceMatchingPolicy.match(
+                        departures: ordered, recentDepartures: [], from: destination, to: origin,
+                        detectedAt: ISO8601DateFormatter().date(from: "2026-10-21T06:46:12Z")!,
+                        originArrivedAt: ISO8601DateFormatter().date(from: "2026-10-21T06:36:27Z")!)
+                    if laterMinute <= 45 {
+                        #expect(result.departure?.serviceID == (staffIsLater
+                            ? "staff_202610218086990_KTH_20261021T074200_P" : "9925621KENTHOS_"))
+                        #expect(result.departure?.departureTime.actual == later)
+                        #expect(result.eligibleServiceIDs.count == 1)
+                    } else {
+                        #expect(result.departure == nil)
+                        #expect(result.eligibleServiceIDs.count == 2)
+                    }
+                }
+            }
+        }
+    }
+
+    @Test func actualDiscrepancyCannotSelectTrainBeforeLaterReportedDeparture() throws {
+        let records = try octoberFirstRecentDepartures(staffChanges: [
+            "actualDeparture": "07:54", "actualDepartureAt": "2026-10-01T06:54:00Z"
+        ], publicChanges: [
+            "actualDeparture": "07:51", "actualDepartureAt": "2026-10-01T06:51:00Z"
+        ])
+        let result = JourneyServiceMatchingPolicy.match(
+            departures: [], recentDepartures: records, from: destination, to: origin,
+            detectedAt: octoberFirst("06:52:20"), originArrivedAt: octoberFirst("06:38:01"))
+        #expect(result.departure == nil)
+        #expect(result.eligibleServiceIDs.isEmpty)
+    }
+
+    @Test func octoberTwentiethLaterOriginPresenceExcludesAlreadyDepartedTrain() throws {
+        let records = try octoberTwelfthDepartures(staffChanges: [
+            "serviceID": "staff_202610208088420_VIC_20261020T172700_P",
+            "platform": NSNull(), "departure_time": ["scheduled": "17:27", "estimated": "17:27"]
+        ], publicChanges: [
+            "serviceID": "9891538VICTRIE_", "platform": "3",
+            "departure_time": ["scheduled": "17:12", "estimated": "17:14", "actual": "17:14"],
+            "timestamp": "2026-10-20T16:31:15Z"
+        ])
+        let arrival = ISO8601DateFormatter().date(from: "2026-10-20T16:15:47Z")!
+        let detected = ISO8601DateFormatter().date(from: "2026-10-20T16:31:12Z")!
+        let presence = ISO8601DateFormatter().date(from: "2026-10-20T16:20:36Z")!
+        func resolve(_ presence: Date?) -> JourneyServiceMatchingPolicy.Match {
+            JourneyServiceMatchingPolicy.match(departures: records, recentDepartures: [],
+                from: origin, to: destination, detectedAt: detected, originArrivedAt: arrival,
+                lastOriginPresenceAt: presence)
+        }
+        #expect(resolve(nil).departure == nil)
+        #expect(resolve(presence).departure?.serviceID == "staff_202610208088420_VIC_20261020T172700_P")
+        // Ignore evidence outside this boarding interval, and retain the timing tolerance.
+        #expect(resolve(arrival.addingTimeInterval(-60)).departure == nil)
+        #expect(resolve(detected.addingTimeInterval(60)).departure == nil)
+        #expect(resolve(arrival.addingTimeInterval(10)).departure == nil)
+    }
+
+    @Test func originPresenceRequiresFreshAccurateInsideFixAndSurvivesPersistence() throws {
+        let arrival = date("17:15")
+        let presence = arrival.addingTimeInterval(300)
+        var candidate = ArmedJourneyHistoryCandidate(subscriptionId: "presence", source: .scheduled,
+            stations: [origin, destination], createdAt: arrival, activeUntil: arrival.addingTimeInterval(3600),
+            originArrivedAt: arrival, candidateDepartures: [])
+        let accepted = candidate.recordOriginPresence(rawDistance: 80, accuracy: 20,
+            observedAt: presence, receivedAt: presence.addingTimeInterval(1))
+        #expect(accepted)
+        for (distance, accuracy, observed, received) in [
+            (80.0, 60.0, presence.addingTimeInterval(10), presence.addingTimeInterval(10)),
+            (120.0, 20.0, presence.addingTimeInterval(10), presence.addingTimeInterval(10)),
+            (80.0, -1.0, presence.addingTimeInterval(10), presence.addingTimeInterval(10)),
+            (80.0, 20.0, presence.addingTimeInterval(10), presence.addingTimeInterval(100)),
+            (80.0, 20.0, presence.addingTimeInterval(10), presence),
+            (80.0, 20.0, arrival, arrival)
+        ] {
+            let accepted = candidate.recordOriginPresence(rawDistance: distance, accuracy: accuracy,
+                observedAt: observed, receivedAt: received)
+            #expect(!accepted)
+        }
+        let restored = try JSONDecoder().decode(ArmedJourneyHistoryCandidate.self,
+            from: JSONEncoder().encode(candidate))
+        #expect(restored.lastOriginPresenceAt == presence)
+        #expect(restored.originArrivedAt == arrival)
+        var legacy = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(candidate)) as? [String: Any])
+        legacy.removeValue(forKey: "lastOriginPresenceAt")
+        #expect(try JSONDecoder().decode(ArmedJourneyHistoryCandidate.self,
+            from: JSONSerialization.data(withJSONObject: legacy)).lastOriginPresenceAt == nil)
+    }
+
     @Test func octoberNineteenthMissingPlatformsResolveToConfirmed1712Service() throws {
         let records = try octoberTwelfthDepartures(staffChanges: [
             "serviceID": "staff_202610198088416_VIC_20261019T171200_P",
@@ -181,7 +284,7 @@ struct JourneyServiceMatchingPolicyTests {
     @Test func publicActualEvidenceMustBeNewerAndNonConflicting() throws {
         let conflicts: [[String: Any]] = [
             ["providerObservedAt": "2026-10-01T07:50:00Z"],
-            ["actualDeparture": "07:48", "actualDepartureAt": "2026-10-01T06:48:00Z"],
+            ["actualDeparture": "07:45", "actualDepartureAt": "2026-10-01T06:45:00Z"],
             ["platform": "3"]
         ]
         for conflict in conflicts {
@@ -227,7 +330,7 @@ struct JourneyServiceMatchingPolicyTests {
             ([:], ["platform": "3"]),
             ([:], ["serviceType": "bus"]),
             ([:], ["serviceID": "staff_202610018086991_KTH_20261001T074200_P"]),
-            ([:], ["actualDeparture": "07:48", "actualDepartureAt": "2026-10-01T06:48:00Z"]),
+            ([:], ["actualDeparture": "07:45", "actualDepartureAt": "2026-10-01T06:45:00Z"]),
             ([:], ["providerObservedAt": "2026-10-01T07:50:00Z"]),
             (["actualDeparture": NSNull(), "actualDepartureAt": NSNull()], [:])
         ]

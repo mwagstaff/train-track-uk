@@ -222,6 +222,17 @@ struct ArmedJourneyHistoryCandidate: Codable, Hashable, Identifiable {
     var candidateDepartures: [DepartureV2]
     var activeFrom: Date? = nil
     var recoveryObservations: [JourneyRecoveryObservation]? = nil
+    var lastOriginPresenceAt: Date? = nil
+
+    /// Require the entire accuracy circle to be inside the origin, using the fix time.
+    mutating func recordOriginPresence(rawDistance: Double, accuracy: Double, observedAt: Date, receivedAt: Date) -> Bool {
+        guard let originArrivedAt, isCurrent(at: observedAt),
+              observedAt >= originArrivedAt, observedAt > (lastOriginPresenceAt ?? .distantPast),
+              (0...60).contains(receivedAt.timeIntervalSince(observedAt)),
+              (0...50).contains(accuracy), rawDistance >= 0, rawDistance + accuracy <= 125 else { return false }
+        lastOriginPresenceAt = observedAt
+        return true
+    }
 
     var isCurrent: Bool {
         isCurrent(at: Date())
@@ -263,6 +274,9 @@ struct ArmedJourneyHistoryCandidate: Codable, Hashable, Identifiable {
               let arrivedAt = other.originArrivedAt,
               (0...24 * 60 * 60).contains(now.timeIntervalSince(arrivedAt)) else { return }
         originArrivedAt = min(originArrivedAt ?? arrivedAt, arrivedAt)
+        if let presence = other.lastOriginPresenceAt, presence <= now {
+            lastOriginPresenceAt = max(lastOriginPresenceAt ?? presence, presence)
+        }
         let existingIDs = Set(candidateDepartures.map(\.serviceID))
         candidateDepartures.append(contentsOf: other.candidateDepartures.filter {
             !existingIDs.contains($0.serviceID)
@@ -384,6 +398,7 @@ struct ActiveJourneyHistoryCheckpoint: Codable, Hashable, Identifiable {
     var scheduleOccurrenceEnd: Date? = nil
     // Absence also persists an explicit manual service/unlisted choice: it is never retried.
     var serviceMatchRecovery: JourneyServiceMatchRecoveryContext? = nil
+    var lastOriginPresenceAt: Date? = nil
 
     var plannedOrigin: Station { plannedStations.first! }
     var plannedDestination: Station { plannedStations.last! }
