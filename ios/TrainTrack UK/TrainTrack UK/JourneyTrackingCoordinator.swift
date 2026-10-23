@@ -2081,11 +2081,11 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 let recoveredEvidence = ids.compactMap { id -> RecentDepartureV2? in
                     guard let details = DeparturesStore.shared.serviceDetailsById[id] else { return nil }
                     return JourneyServiceMatchingPolicy.departureEvidence(
-                        serviceID: id, details: details, from: from, to: to, detectedAt: detectedAt
+                        serviceID: id, details: details, from: from, to: to, detectedAt: detectedAt, now: Date()
                     )
                 }
                 recentDepartures += recoveredEvidence
-                log("service_detail_recovery_evaluated", "Checked actual departures before retrying the service match", metadata: [
+                log("service_detail_recovery_evaluated", "Refreshed departure evidence before retrying the service match", metadata: [
                     "journey_id": active.id.uuidString,
                     "requested_service_ids": ids,
                     "loaded_service_ids": ids.filter { DeparturesStore.shared.serviceDetailsById[$0] != nil },
@@ -2095,6 +2095,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
                             "service_id": evidence.serviceID,
                             "scheduled": evidence.scheduledDeparture,
                             "actual": evidence.actualDeparture ?? "unknown",
+                            "estimated": evidence.estimatedDeparture ?? "unknown",
                             "platform": evidence.platform ?? "unknown",
                             "observed_at": ISO8601DateFormatter().string(from: evidence.evidenceObservedAt)
                         ]

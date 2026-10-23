@@ -287,7 +287,8 @@ struct ArmedJourneyHistoryCandidate: Codable, Hashable, Identifiable {
 
 struct JourneyServiceMatchRecoveryContext: Codable, Hashable {
     static let retryInterval: TimeInterval = 30
-    static let retryLifetime: TimeInterval = 15 * 60
+    // A suspended phone may not receive another update until near the destination.
+    static let retryLifetime: TimeInterval = 30 * 60
 
     let id: UUID
     let plannedLegIndex: Int

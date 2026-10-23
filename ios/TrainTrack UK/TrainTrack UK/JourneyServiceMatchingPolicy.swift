@@ -25,10 +25,12 @@ enum JourneyServiceMatchingPolicy {
             .compactMap { seen.insert($0.0).inserted ? $0.0 : nil }.prefix(4).map { $0 }
     }
 
-    /// Only an actual departure at the boarding station can resolve a stale forecast.
+    /// Refresh the exact service with an actual departure or a fresh timed forecast.
+    /// A forecast remains a forecast and must still pass the normal matching bounds.
     /// Generated-at anchors the service day so reused identifiers cannot select yesterday's train.
     static func departureEvidence(
-        serviceID: String, details: ServiceDetails, from: Station, to: Station, detectedAt: Date
+        serviceID: String, details: ServiceDetails, from: Station, to: Station, detectedAt: Date,
+        now: Date? = nil
     ) -> RecentDepartureV2? {
         guard details.crs.caseInsensitiveCompare(from.crs) == .orderedSame,
               details.isCancelled != true,
@@ -40,19 +42,29 @@ enum JourneyServiceMatchingPolicy {
               let observedAt = SiriRailTime.parseISO(details.generatedAt),
               let scheduledText = details.std,
               let scheduled = JourneyHistoryTime.date(for: scheduledText, near: observedAt),
-              let actualText = details.atd,
-              let actual = JourneyHistoryTime.date(
-                  for: actualText.caseInsensitiveCompare("On time") == .orderedSame ? details.std : actualText,
-                  near: scheduled
-              ),
-              abs(scheduled.timeIntervalSince(detectedAt)) <= departureDetectionLookback,
-              actual <= detectedAt else { return nil }
+              abs(scheduled.timeIntervalSince(detectedAt)) <= departureDetectionLookback else { return nil }
+        let actualText = details.atd
+        let actual = JourneyHistoryTime.date(
+            for: actualText?.caseInsensitiveCompare("On time") == .orderedSame ? details.std : actualText,
+            near: scheduled
+        )
+        let estimate = JourneyHistoryTime.date(
+            for: details.etd?.caseInsensitiveCompare("On time") == .orderedSame ? details.std : details.etd,
+            near: scheduled
+        )
+        if actualText != nil {
+            guard let actual, actual <= detectedAt else { return nil }
+        } else {
+            // Do not re-date an old forecast simply because details were fetched again.
+            guard SiriRailTime.isFresh(observedAt, now: now ?? detectedAt, maximumAge: 90),
+                  let estimate, max(scheduled, estimate) <= detectedAt else { return nil }
+        }
         return RecentDepartureV2(
             serviceID: serviceID, serviceType: details.serviceType, fromCRS: from.crs, toCRS: to.crs,
             scheduledDeparture: scheduledText, estimatedDeparture: details.etd,
-            actualDeparture: actualText.caseInsensitiveCompare("On time") == .orderedSame ? details.std : actualText,
+            actualDeparture: actualText?.caseInsensitiveCompare("On time") == .orderedSame ? details.std : actualText,
             scheduledDepartureAt: scheduled,
-            estimatedDepartureAt: JourneyHistoryTime.date(for: details.etd, near: scheduled),
+            estimatedDepartureAt: estimate,
             actualDepartureAt: actual, platform: details.platform, isCancelled: false,
             lastObservedAt: observedAt, providerObservedAt: observedAt
         )

@@ -57,7 +57,7 @@ struct JourneyServiceRecoveryTests {
         let restored = try JSONDecoder().decode(ActiveJourneyHistoryCheckpoint.self, from: JSONEncoder().encode(original))
         let recovery = try #require(restored.serviceMatchRecovery)
         #expect(recovery.interruptedFallback(in: restored, at: date("17:45")) == nil)
-        let resumed = try #require(recovery.interruptedFallback(in: restored, at: date("17:50")))
+        let resumed = try #require(recovery.interruptedFallback(in: restored, at: date("18:01")))
         #expect(resumed.phase == .inTransit)
         #expect(resumed.legs.count == 1)
         #expect(resumed.currentLeg?.detectedDepartureAt == date("17:30"))
@@ -164,7 +164,9 @@ struct JourneyServiceRecoveryTests {
         #expect(!recovery.shouldRetry(in: active, at: date("17:30").addingTimeInterval(29)))
         #expect(recovery.shouldRetry(in: active, at: date("17:30").addingTimeInterval(30)))
         #expect(recovery.shouldRetry(in: active, at: date("17:45")))
-        #expect(!recovery.shouldRetry(in: active, at: date("17:45").addingTimeInterval(1)))
+        #expect(recovery.shouldRetry(in: active, at: date("17:50")))
+        #expect(recovery.shouldRetry(in: active, at: date("18:00")))
+        #expect(!recovery.shouldRetry(in: active, at: date("18:00").addingTimeInterval(1)))
         #expect(!recovery.shouldRetry(in: active, at: date("17:29")))
     }
 
