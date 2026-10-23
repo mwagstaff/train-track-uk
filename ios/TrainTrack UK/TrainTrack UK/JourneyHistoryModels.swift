@@ -223,6 +223,7 @@ struct ArmedJourneyHistoryCandidate: Codable, Hashable, Identifiable {
     var activeFrom: Date? = nil
     var recoveryObservations: [JourneyRecoveryObservation]? = nil
     var lastOriginPresenceAt: Date? = nil
+    var recoveryStations: [Station]? = nil
 
     /// Require the entire accuracy circle to be inside the origin, using the fix time.
     mutating func recordOriginPresence(rawDistance: Double, accuracy: Double, observedAt: Date, receivedAt: Date) -> Bool {

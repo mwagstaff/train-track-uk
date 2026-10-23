@@ -2,6 +2,19 @@ import CoreLocation
 import Foundation
 
 nonisolated enum StationDetectionPolicy {
+    static let approachRadiusMeters: CLLocationDistance = 750
+    static let maximumApproachSamplingSeconds: TimeInterval = 10 * 60
+
+    static func approachSamplingDuration(rawDistance: CLLocationDistance, accuracy: CLLocationAccuracy,
+                                         observedAt: Date, now: Date, startedAt: Date?) -> TimeInterval? {
+        let age = now.timeIntervalSince(observedAt)
+        guard rawDistance.isFinite, rawDistance >= 0, accuracy.isFinite, (0...140).contains(accuracy),
+              (0...45).contains(age), rawDistance - accuracy <= approachRadiusMeters else { return nil }
+        let elapsed = now.timeIntervalSince(startedAt ?? now)
+        guard elapsed >= 0, elapsed < maximumApproachSamplingSeconds else { return nil }
+        return min(120, maximumApproachSamplingSeconds - elapsed)
+    }
+
     static let maximumMonitoredConditions = 20
     static let conditionsPerStationCoordinate = 2
     static let departureAccuracyMarginMeters: CLLocationDistance = 50

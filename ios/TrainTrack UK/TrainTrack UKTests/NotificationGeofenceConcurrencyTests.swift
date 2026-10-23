@@ -52,6 +52,24 @@ struct NotificationGeofenceConcurrencyTests {
         ))
     }
 
+    @Test func burstTimeoutRetainsExplicitSessionUntilTheJourneyEnds() {
+        for precisionActive in [true, false] {
+            #expect(BackgroundActivitySessionPolicy.shouldRetainSession(
+                hasActiveGeofences: true, hasExplicitJourneyTarget: true,
+                isHighSensitivityTracking: precisionActive, usesWhenInUseAuthorization: false
+            ))
+        }
+        #expect(!BackgroundActivitySessionPolicy.shouldRetainSession(
+            hasActiveGeofences: false, hasExplicitJourneyTarget: false,
+            isHighSensitivityTracking: false, usesWhenInUseAuthorization: false
+        ))
+        // An unrelated saved schedule must not retain a finished explicit session.
+        #expect(!BackgroundActivitySessionPolicy.shouldRetainSession(
+            hasActiveGeofences: true, hasExplicitJourneyTarget: false,
+            isHighSensitivityTracking: false, usesWhenInUseAuthorization: false
+        ))
+    }
+
     @Test func scheduledGeofencesDoNotKeepBackgroundSessionAlive() {
         #expect(!BackgroundActivitySessionPolicy.shouldRetainSession(
             hasActiveGeofences: true,

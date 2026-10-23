@@ -278,6 +278,10 @@ final class NotificationSubscriptionStore: ObservableObject {
             NotificationMuteRequestSender.shared.retryPendingMuteRequests(trigger: "subscription-refresh")
             await syncGeofences()
             await refreshScheduledRecoveryGeometry()
+            // Retry optional route enrichment after a failed/offline registration.
+            for candidate in JourneyTrackingCoordinator.shared.armedCandidates where candidate.source == .adhoc {
+                await JourneyTrackingCoordinator.shared.prepareAdHocRecovery(subscriptionID: candidate.subscriptionId)
+            }
         } catch {
             lastError = error.localizedDescription
         }
@@ -450,6 +454,9 @@ final class NotificationSubscriptionStore: ObservableObject {
             await JourneyTrackingCoordinator.shared.arm(subscription: subscription, source: historySource)
         }
         await syncGeofences()
+        if historySource == .adhoc {
+            await JourneyTrackingCoordinator.shared.prepareAdHocRecovery(subscriptionID: subscription.id)
+        }
         return subscription
     }
 
@@ -1045,12 +1052,40 @@ final class NotificationSubscriptionStore: ObservableObject {
         guard !routes.isEmpty else { return }
         isRefreshingRecoveryGeometry = true
         defer { isRefreshingRecoveryGeometry = false }
+        let refreshed = await fetchRecoveryGeometry(routes: routes)
+        guard !Task.isCancelled else { return }
+        for index in cachedScheduledActivations.indices {
+            var geometries = cachedScheduledActivations[index].recoveryGeometries ?? []
+            for leg in cachedScheduledActivations[index].subscription.legs where leg.enabled {
+                let from = leg.from.uppercased()
+                let to = leg.to.uppercased()
+                let key = "\(from)_\(to)"
+                guard routes[key] != nil else { continue }
+                let previous = geometries.first { $0.from == from && $0.to == to }
+                geometries.removeAll { $0.from == from && $0.to == to }
+                geometries.append(PersistedScheduledRecoveryGeometry(
+                    from: from, to: to, stations: refreshed[key] ?? previous?.stations ?? [], attemptedAt: now
+                ))
+            }
+            cachedScheduledActivations[index].recoveryGeometries = geometries
+        }
+        persistScheduledActivations()
+        await syncGeofences()
+    }
+
+    func fetchAdHocRecoveryStations(from: Station, to: Station) async -> [Station]? {
+        let key = "\(from.crs.uppercased())_\(to.crs.uppercased())"
+        let geometry = await fetchRecoveryGeometry(routes: [key: (from.crs.uppercased(), to.crs.uppercased())])
+        guard !Task.isCancelled, let stations = geometry[key] else { return nil }
+        return stations
+    }
+
+    private func fetchRecoveryGeometry(routes: [String: (from: String, to: String)]) async -> [String: [Station]] {
         let stations = StationsService.shared.stations.reduce(into: locallyCachedScheduledStations) { result, station in
             if station.hasUsableCoordinate { result[station.crs.uppercased()] = station }
         }
 
-        // Origin and destination conditions are already installed. Bound this optional
-        // enrichment so saving a schedule never depends on a lengthy network response.
+        // Origin monitoring is already installed. Bound optional route enrichment.
         let work = Task { @MainActor () -> [String: [Station]] in
             var boards = DeparturesStore.shared.departuresByPair
             let missingRoutes = routes.filter { (boards[$0.key] ?? []).isEmpty }.map(\.value)
@@ -1089,29 +1124,11 @@ final class NotificationSubscriptionStore: ObservableObject {
             work.cancel()
         }
         defer { timeout.cancel() }
-        let refreshed = await withTaskCancellationHandler {
+        return await withTaskCancellationHandler {
             await work.value
         } onCancel: {
             work.cancel()
         }
-        guard !Task.isCancelled else { return }
-        for index in cachedScheduledActivations.indices {
-            var geometries = cachedScheduledActivations[index].recoveryGeometries ?? []
-            for leg in cachedScheduledActivations[index].subscription.legs where leg.enabled {
-                let from = leg.from.uppercased()
-                let to = leg.to.uppercased()
-                let key = "\(from)_\(to)"
-                guard routes[key] != nil else { continue }
-                let previous = geometries.first { $0.from == from && $0.to == to }
-                geometries.removeAll { $0.from == from && $0.to == to }
-                geometries.append(PersistedScheduledRecoveryGeometry(
-                    from: from, to: to, stations: refreshed[key] ?? previous?.stations ?? [], attemptedAt: now
-                ))
-            }
-            cachedScheduledActivations[index].recoveryGeometries = geometries
-        }
-        persistScheduledActivations()
-        await syncGeofences()
     }
 
     private func logGeofenceEligibility(eligible: [NotificationSubscription]) {

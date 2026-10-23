@@ -80,12 +80,12 @@ enum JourneyRecoveryPolicy {
         routeStations: [Station]
     ) -> [JourneyRecoveryObservation]? {
         let age = receivedAt.timeIntervalSince(observedAt)
-        guard candidate.source == .scheduled,
-              candidate.isRetained(at: receivedAt),
-              let activeFrom = candidate.activeFrom,
-              let activeUntil = candidate.activeUntil,
+        let activeFrom = candidate.source == .scheduled ? candidate.activeFrom : candidate.createdAt
+        let recoveryGrace = candidate.source == .scheduled ? StationDetectionPolicy.recoveryLifetime : 0
+        guard candidate.isRetained(at: receivedAt),
+              let activeFrom, let activeUntil = candidate.activeUntil,
               observedAt >= activeFrom,
-              observedAt < activeUntil.addingTimeInterval(StationDetectionPolicy.recoveryLifetime),
+              observedAt < activeUntil.addingTimeInterval(recoveryGrace),
               age >= 0, age <= StationDetectionPolicy.recoveryLifetime,
               station.crs.caseInsensitiveCompare(candidate.stations.first?.crs ?? "") != .orderedSame,
               let stationIndex = routeStations.firstIndex(where: {
@@ -968,7 +968,8 @@ final class JourneyTrackingCoordinator: ObservableObject {
             candidateDepartures: previousCandidate?.candidateDepartures ?? [],
             activeFrom: candidateStart,
             recoveryObservations: previousCandidate?.recoveryObservations,
-            lastOriginPresenceAt: previousCandidate?.lastOriginPresenceAt
+            lastOriginPresenceAt: previousCandidate?.lastOriginPresenceAt,
+            recoveryStations: previousCandidate?.recoveryStations
         )
         for existing in armedCandidates {
             candidate.inheritBoardingEvidence(from: existing, now: now)
@@ -996,6 +997,35 @@ final class JourneyTrackingCoordinator: ObservableObject {
                 destinationStation: destinationStation
             )
         }
+    }
+
+    func prepareAdHocRecovery(subscriptionID: String) async {
+        guard let candidate = armedCandidates.first(where: {
+            $0.subscriptionId == subscriptionID && $0.source == .adhoc && $0.isCurrent
+        }), candidate.stations.count >= 2, candidate.recoveryStations == nil else { return }
+        let stations = await NotificationSubscriptionStore.shared.fetchAdHocRecoveryStations(
+            from: candidate.stations[0], to: candidate.stations[1]
+        )
+        guard !Task.isCancelled, let stations,
+              let index = armedCandidates.firstIndex(where: {
+                  $0.subscriptionId == subscriptionID && $0.source == .adhoc && $0.isCurrent
+                      && $0.createdAt == candidate.createdAt && $0.stations == candidate.stations
+              }) else { return }
+        armedCandidates[index].recoveryStations = stations
+        persistCheckpoint()
+        await refreshMonitoringConditions()
+    }
+
+    func recoveryStations(subscriptionID: String, from: String, to: String) -> [Station] {
+        guard let candidate = armedCandidates.first(where: {
+            $0.subscriptionId == subscriptionID && $0.source == .adhoc && $0.isCurrent
+                && $0.stations.count >= 2
+                && $0.stations[0].crs.caseInsensitiveCompare(from) == .orderedSame
+                && $0.stations[1].crs.caseInsensitiveCompare(to) == .orderedSame
+        }) else { return [] }
+        var seen = Set([from.uppercased()])
+        return (Array((candidate.recoveryStations ?? []).prefix(2)) + [candidate.stations[1]])
+            .filter { $0.hasUsableCoordinate && seen.insert($0.crs.uppercased()).inserted }
     }
 
     func disarm(subscriptionID: String) {
@@ -1328,8 +1358,8 @@ final class JourneyTrackingCoordinator: ObservableObject {
             serviceDepartedStationAt: nil,
             updatedAt: last.observedAt,
             originDepartureWasMissed: true,
-            scheduleOccurrenceStart: candidate.activeFrom,
-            scheduleOccurrenceEnd: candidate.activeUntil,
+            scheduleOccurrenceStart: candidate.source == .scheduled ? candidate.activeFrom : nil,
+            scheduleOccurrenceEnd: candidate.source == .scheduled ? candidate.activeUntil : nil,
             lastOriginPresenceAt: candidate.lastOriginPresenceAt
         )
     }
@@ -1344,16 +1374,17 @@ final class JourneyTrackingCoordinator: ObservableObject {
         receivedAt: Date = Date()
     ) async -> Bool {
         guard activeJourney == nil, !isFinishingJourney, !isResumingJourney,
-              !hasInProgressAdHocJourney,
               let index = armedCandidates.firstIndex(where: {
                   $0.subscriptionId == subscriptionID && $0.stations.count >= 2
                       && $0.stations[0].crs.caseInsensitiveCompare(from) == .orderedSame
                       && $0.stations[1].crs.caseInsensitiveCompare(to) == .orderedSame
                       && $0.isRetained(at: receivedAt)
               }) else { return false }
-        let routeStations = NotificationSubscriptionStore.shared.locallyCachedScheduledRecoveryStations(
-            from: from, to: to
-        )
+        let isScheduled = armedCandidates[index].source == .scheduled
+        guard !isScheduled || !hasInProgressAdHocJourney else { return false }
+        let routeStations = isScheduled
+            ? NotificationSubscriptionStore.shared.locallyCachedScheduledRecoveryStations(from: from, to: to)
+            : recoveryStations(subscriptionID: subscriptionID, from: from, to: to)
         guard let observations = JourneyRecoveryPolicy.observations(
             appending: station, observedAt: detectedAt, receivedAt: receivedAt,
             candidate: armedCandidates[index], routeStations: routeStations

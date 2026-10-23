@@ -943,6 +943,58 @@ struct JourneyHistoryTests {
         #expect(columns[5].isEmpty)
     }
 
+    @Test @MainActor func replacementJourneyRecoversAfterTwoDownstreamStations() throws {
+        let start = Date(timeIntervalSince1970: 2_000_000_000)
+        let origin = Station(crs: "KTH", name: "Kent House", longitude: "-0.045786", latitude: "51.412659")
+        let first = Station(crs: "PNE", name: "Penge East", longitude: "-0.055566", latitude: "51.419125")
+        let second = Station(crs: "SYH", name: "Sydenham Hill", longitude: "-0.079444", latitude: "51.433002")
+        let destination = Station(crs: "BFR", name: "Blackfriars", longitude: "-0.103", latitude: "51.511")
+        let route = [first, second, destination]
+        var candidate = ArmedJourneyHistoryCandidate(
+            subscriptionId: "replacement", source: .adhoc, stations: [origin, destination],
+            createdAt: start, activeUntil: start.addingTimeInterval(3600),
+            originArrivedAt: nil, candidateDepartures: [], recoveryStations: [first, second]
+        )
+        let firstAt = start.addingTimeInterval(40 * 60)
+        let firstObservations: [JourneyRecoveryObservation] = try #require(JourneyRecoveryPolicy.observations(
+            appending: first, observedAt: firstAt, receivedAt: firstAt,
+            candidate: candidate, routeStations: route
+        ))
+        candidate.recoveryObservations = firstObservations
+        #expect(JourneyTrackingCoordinator.recoveredCheckpoint(from: candidate) == nil)
+        for invalidAt in [start.addingTimeInterval(-1), start.addingTimeInterval(3600), firstAt.addingTimeInterval(1)] {
+            #expect(JourneyRecoveryPolicy.observations(
+                appending: second, observedAt: invalidAt, receivedAt: invalidAt,
+                candidate: candidate, routeStations: route
+            ) == nil)
+        }
+        let secondAt = firstAt.addingTimeInterval(180)
+        let secondObservations: [JourneyRecoveryObservation] = try #require(JourneyRecoveryPolicy.observations(
+            appending: second, observedAt: secondAt, receivedAt: secondAt,
+            candidate: candidate, routeStations: route
+        ))
+        candidate.recoveryObservations = secondObservations
+        #expect(JourneyRecoveryPolicy.observations(
+            appending: first, observedAt: secondAt.addingTimeInterval(60), receivedAt: secondAt.addingTimeInterval(60),
+            candidate: candidate, routeStations: route
+        ) == nil)
+        let restored = try JSONDecoder().decode(ArmedJourneyHistoryCandidate.self, from: JSONEncoder().encode(candidate))
+        #expect(restored.recoveryStations == [first, second])
+        var legacyJSON = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(candidate)) as? [String: Any])
+        legacyJSON.removeValue(forKey: "recoveryStations")
+        let legacy = try JSONDecoder().decode(ArmedJourneyHistoryCandidate.self, from: JSONSerialization.data(withJSONObject: legacyJSON))
+        #expect(legacy.recoveryStations == nil)
+        let checkpoint = try #require(JourneyTrackingCoordinator.recoveredCheckpoint(from: restored))
+        #expect(checkpoint.source == .adhoc)
+        #expect(checkpoint.plannedOrigin == origin)
+        #expect(checkpoint.plannedDestination == destination)
+        #expect(checkpoint.originDepartureWasMissed == true)
+        #expect(checkpoint.currentLeg?.serviceID == nil)
+        #expect(checkpoint.currentLeg?.detectedDepartureAt == nil)
+        #expect(checkpoint.scheduleOccurrenceStart == nil)
+        #expect(checkpoint.scheduleOccurrenceEnd == nil)
+    }
+
     @Test @MainActor func completedScheduledOccurrenceStaysHandledAfterItsCardIsDismissed() throws {
         let start = Date(timeIntervalSince1970: 2_000_000_000)
         let window = DateInterval(start: start, duration: 2 * 60 * 60)

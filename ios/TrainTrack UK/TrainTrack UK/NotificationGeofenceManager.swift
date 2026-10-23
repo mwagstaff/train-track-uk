@@ -151,6 +151,7 @@ struct StationArrivalTarget: Codable {
 }
 
 private struct StationArrivalConfirmationState: Codable {
+    var approachSamplingStartedAt: Date?
     var occurrenceStart: Date?
     var confirmationStartedAt: Date?
     var lastQualifiedAt: Date?
@@ -196,7 +197,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         // Region delivery is best effort; these radii are product thresholds, not accuracy guarantees.
         static let arrivalRegionRadiusMeters: CLLocationDistance = 150
         static let arrivalThresholdMeters: CLLocationDistance = 125
-        static let activationDistanceMeters: CLLocationDistance = 450
+        static let activationDistanceMeters = StationDetectionPolicy.approachRadiusMeters
         static let maxActivationAccuracyExpansionMeters: CLLocationDistance = 120
         static let acceptableAccuracyBufferMeters: CLLocationDistance = 50
         static let acceptableAccuracyMinMeters: CLLocationAccuracy = 60
@@ -297,7 +298,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     // CLBackgroundActivitySession (iOS 17+) keeps a bounded precision-sampling burst alive
     // after a monitoring event. Always-authorized CLMonitor conditions do not need one held
     // for the whole journey; doing that would keep the blue indicator visible and waste
-    // battery. A longer-lived session is retained only for the degraded When In Use case.
+    // battery. Retain a longer-lived session for explicit journeys and When In Use authorization.
     //
     // Stored as Any? to avoid @available spreading everywhere.
     private var backgroundActivitySession: Any?
@@ -1048,10 +1049,13 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             return
         }
         guard #available(iOS 17.0, *) else { return }
-        let keepForWhenInUse = !force
-            && (hasLocationTrackingWork || !monitoredConditionIdentifiers.isEmpty)
-            && manager.authorizationStatus == .authorizedWhenInUse
-        guard !keepForWhenInUse else { return }
+        let shouldRetain = !force && BackgroundActivitySessionPolicy.shouldRetainSession(
+            hasActiveGeofences: hasLocationTrackingWork || !monitoredConditionIdentifiers.isEmpty,
+            hasExplicitJourneyTarget: hasExplicitJourneyTargetRequiringBackgroundTracking,
+            isHighSensitivityTracking: trackingMode == .highSensitivity,
+            usesWhenInUseAuthorization: manager.authorizationStatus == .authorizedWhenInUse
+        )
+        guard !shouldRetain else { return }
 
         if let session = backgroundActivitySession as? CLBackgroundActivitySession {
             session.invalidate()
@@ -1218,10 +1222,10 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         for target in prioritized where selectedTargets[target.identifier] != nil {
             guard regions.count < conditionLimit else { break }
             let identifier = "\(approachRegionPrefix):\(target.subscriptionId):\(target.from):\(target.to)"
-            regions[identifier] = CLCircularRegion(center: target.station.coordinate, radius: 500, identifier: identifier)
+            regions[identifier] = CLCircularRegion(center: target.station.coordinate, radius: StationDetectionPolicy.approachRadiusMeters, identifier: identifier)
         }
-        for target in prioritized where selectedTargets[target.identifier] != nil && target.isScheduledActivation == true {
-            for station in NotificationSubscriptionStore.shared.locallyCachedScheduledRecoveryStations(from: target.from, to: target.to) {
+        for target in prioritized where selectedTargets[target.identifier] != nil {
+            for station in recoveryStations(for: target) {
                 guard regions.count < conditionLimit else { break }
                 let identifier = "\(recoveryRegionPrefix):\(target.subscriptionId):\(target.from):\(target.to):\(station.crs.uppercased())"
                 regions[identifier] = CLCircularRegion(center: station.coordinate, radius: 250, identifier: identifier)
@@ -1229,6 +1233,15 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         }
 
         return (regions, selectedTargets, max(0, targets.count - selectedTargets.count))
+    }
+
+    private func recoveryStations(for target: StationArrivalTarget) -> [Station] {
+        if target.isScheduledActivation == true {
+            return NotificationSubscriptionStore.shared.locallyCachedScheduledRecoveryStations(from: target.from, to: target.to)
+        }
+        return JourneyTrackingCoordinator.shared.recoveryStations(
+            subscriptionID: target.subscriptionId, from: target.from, to: target.to
+        )
     }
 
     private func isTargetActiveNow(_ target: StationArrivalTarget, now: Date = Date()) -> Bool {
@@ -1714,9 +1727,15 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             now.timeIntervalSince($0) <= ArrivalConfig.confirmationTimeoutSeconds
         } ?? false
 
-        if candidateDistance <= activationDistance,
-           Date().timeIntervalSince(location.timestamp) <= ArrivalConfig.staleLocationCutoffSeconds {
-            startHighSensitivityTracking(reason: "within-activation-distance")
+        let receivedAt = Date()
+        if let duration = StationDetectionPolicy.approachSamplingDuration(
+            rawDistance: rawDistance, accuracy: horizontalAccuracy,
+            observedAt: location.timestamp, now: receivedAt, startedAt: state.approachSamplingStartedAt
+        ) {
+            state.approachSamplingStartedAt = state.approachSamplingStartedAt ?? receivedAt
+            startHighSensitivityTracking(reason: "within-activation-distance", duration: duration)
+        } else if rawDistance - max(horizontalAccuracy, 0) > StationDetectionPolicy.approachRadiusMeters {
+            state.approachSamplingStartedAt = nil
         }
 
         if candidateDistance > activationDistance, state.confirmationStartedAt == nil {
@@ -1952,12 +1971,15 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
         if tier == .recovery {
             guard isInside, let crs = identifier.split(separator: ":").last else { return }
             let targetIdentifier = regionIdentifier(subscriptionId: parsed.subscriptionId, from: parsed.from, to: parsed.to)
-            guard monitoredTargets[targetIdentifier]?.isScheduledActivation == true else { return }
-            guard let station = NotificationSubscriptionStore.shared
-                .locallyCachedScheduledRecoveryStations(from: parsed.from, to: parsed.to)
-                .first(where: { $0.crs.caseInsensitiveCompare(String(crs)) == .orderedSame }) else { return }
-            guard await NotificationSubscriptionStore.shared.armScheduledJourneyForRecoveryFromCache(
-                subscriptionID: parsed.subscriptionId, from: parsed.from, to: parsed.to, observedAt: observedAt) else { return }
+            guard let target = monitoredTargets[targetIdentifier],
+                  let station = recoveryStations(for: target)
+                    .first(where: { $0.crs.caseInsensitiveCompare(String(crs)) == .orderedSame }) else { return }
+            if target.isScheduledActivation == true {
+                guard await NotificationSubscriptionStore.shared.armScheduledJourneyForRecoveryFromCache(
+                    subscriptionID: parsed.subscriptionId, from: parsed.from, to: parsed.to, observedAt: observedAt) else { return }
+            } else {
+                guard target.isActive(at: observedAt), target.isActive() else { return }
+            }
             let recovered = await JourneyTrackingCoordinator.shared.handleRecoveryStationEntry(
                 subscriptionID: parsed.subscriptionId, from: parsed.from, to: parsed.to,
                 station: station, detectedAt: observedAt)

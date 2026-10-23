@@ -6,6 +6,42 @@ import Testing
 struct StationObservationPolicyTests {
     private let deliveredAt = Date(timeIntervalSince1970: 18 * 60 * 60)
 
+    @Test func kentHouseApproachStartsPrecisionBeforeTheMissedStationVisit() throws {
+        let origin = CLLocation(latitude: 51.412659, longitude: -0.045786)
+        let fix = CLLocation(latitude: 51.409673001766784, longitude: -0.04042274304617727)
+        let distance = fix.distance(from: origin)
+        #expect(distance > 450 && distance < 510)
+        #expect(StationDetectionPolicy.approachSamplingDuration(
+            rawDistance: distance, accuracy: 8.484159, observedAt: deliveredAt,
+            now: deliveredAt, startedAt: nil
+        ) == 120)
+        // Keep sampling through the walk from the 08:53 fix to arrival around 09:00.
+        let sevenMinutesLater = deliveredAt.addingTimeInterval(7 * 60)
+        #expect(StationDetectionPolicy.approachSamplingDuration(
+            rawDistance: 200, accuracy: 8, observedAt: sevenMinutesLater,
+            now: sevenMinutesLater, startedAt: deliveredAt
+        ) == 120)
+        let nearLimit = deliveredAt.addingTimeInterval(590)
+        #expect(StationDetectionPolicy.approachSamplingDuration(
+            rawDistance: 200, accuracy: 8, observedAt: nearLimit,
+            now: nearLimit, startedAt: deliveredAt
+        ) == 10)
+        let atLimit = deliveredAt.addingTimeInterval(600)
+        #expect(StationDetectionPolicy.approachSamplingDuration(
+            rawDistance: 200, accuracy: 8, observedAt: atLimit,
+            now: atLimit, startedAt: deliveredAt
+        ) == nil)
+    }
+
+    @Test func approachSamplingRejectsDistantStaleAndInaccurateLocations() {
+        for (distance, accuracy, age) in [(851.0, 4.4, 0.0), (772, 1000, 0), (499, 8, 46), (499, 8, -1)] {
+            #expect(StationDetectionPolicy.approachSamplingDuration(
+                rawDistance: distance, accuracy: accuracy,
+                observedAt: deliveredAt.addingTimeInterval(-age), now: deliveredAt, startedAt: nil
+            ) == nil)
+        }
+    }
+
     @Test func delayedStationObservationRemainsRecoverableAtDelivery() {
         let observedAt = deliveredAt.addingTimeInterval(-4 * 60)
 
