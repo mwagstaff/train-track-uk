@@ -4,6 +4,15 @@ import JourneyActivityShared
 @testable import TrainTrack_UK
 
 struct LiveActivityExclusivityTests {
+    @Test
+    func scheduledDepartureRegistrationStopsAfterBoardingOrCompletion() {
+        for phase in [JourneyActivityAttributes.JourneyPhase.pendingStart, .atStart, .enRoute, .arrived] {
+            #expect(!ScheduledNotificationLiveSessionRegistrar.allowsDepartureRegistration(phase: phase, isMuted: true))
+            #expect(ScheduledNotificationLiveSessionRegistrar.allowsDepartureRegistration(phase: phase, isMuted: false)
+                    == (phase == .pendingStart || phase == .atStart))
+        }
+    }
+
     private typealias Candidate = LiveActivityExclusivityPolicy.Candidate
 
     @Test

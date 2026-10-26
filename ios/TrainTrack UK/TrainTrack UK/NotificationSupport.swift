@@ -286,6 +286,13 @@ func notificationAPNsSandboxEnabled() -> Bool {
 
 @MainActor
 enum ScheduledNotificationLiveSessionRegistrar {
+    nonisolated static func allowsDepartureRegistration(
+        phase: JourneyActivityAttributes.JourneyPhase = .pendingStart,
+        isMuted: Bool
+    ) -> Bool {
+        !isMuted && (phase == .pendingStart || phase == .atStart)
+    }
+
     static func ensureLiveSession(
         existingLiveSessionID: String?,
         from: String,
@@ -298,6 +305,10 @@ enum ScheduledNotificationLiveSessionRegistrar {
         source: String,
         metadata: [String: Any?]
     ) async -> String? {
+        guard allowsDepartureRegistration(isMuted: NotificationMuteStorage.isMutedToday(from: from, to: to)) else {
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "live_session_skipped_muted", metadata: metadata)
+            return nil
+        }
         guard !ScheduledLiveActivityAutoStartManager.shared.shouldSkipForAdHocJourney(scheduleKey: scheduleKey) else {
             ClientDiagnosticsLogger.log("scheduled_live_activity", "live_session_skipped_adhoc_in_progress", metadata: metadata)
             return nil
@@ -340,6 +351,10 @@ enum ScheduledNotificationLiveSessionRegistrar {
             return subscriptionId
         }
 
+        guard allowsDepartureRegistration(isMuted: NotificationMuteStorage.isMutedToday(from: from, to: to)) else {
+            ClientDiagnosticsLogger.log("scheduled_live_activity", "live_session_skipped_muted", metadata: metadata)
+            return nil
+        }
         guard !ScheduledLiveActivityAutoStartManager.shared.shouldSkipForAdHocJourney(scheduleKey: scheduleKey) else {
             ClientDiagnosticsLogger.log("scheduled_live_activity", "live_session_skipped_adhoc_in_progress", metadata: logMetadata)
             return nil

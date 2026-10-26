@@ -2274,7 +2274,11 @@ final class LiveActivityManager: ObservableObject {
         toCRS: String
     ) async {
         if activity.content.state.scheduleKey?.hasPrefix("planner:") == true { return }
-        guard trackedActivities[activity.id] != nil, isUsableSystemActivity(activity) else { return }
+        guard trackedActivities[activity.id] != nil, isUsableSystemActivity(activity),
+              ScheduledNotificationLiveSessionRegistrar.allowsDepartureRegistration(
+                phase: activity.content.state.journeyPhase,
+                isMuted: NotificationMuteStorage.isMutedToday(from: fromCRS, to: toCRS)
+              ) else { return }
         guard !notificationLiveSessionEnsuredActivityIDs.contains(activity.id) else { return }
         guard let scheduleKey = scheduledActivityKey(for: activity) else {
             ClientDiagnosticsLogger.log("live_activity", "remote_started_live_session_skipped_missing_schedule", metadata: [
@@ -2306,6 +2310,10 @@ final class LiveActivityManager: ObservableObject {
 
         guard trackedActivities[activity.id] != nil,
               isUsableSystemActivity(activity),
+              ScheduledNotificationLiveSessionRegistrar.allowsDepartureRegistration(
+                phase: activity.content.state.journeyPhase,
+                isMuted: NotificationMuteStorage.isMutedToday(from: fromCRS, to: toCRS)
+              ),
               !JourneyTrackingCoordinator.shared.hasInProgressAdHocJourney else { return }
 
         let liveSessionID = await ScheduledNotificationLiveSessionRegistrar.ensureLiveSession(

@@ -120,8 +120,53 @@ test('an in-flight poll save cannot recreate a retired live session', async () =
     assert.deepEqual(deletedIds, [subscription.id]);
 });
 
+test('completion followed by scheduled re-registration cannot revive departure pushes', async () => {
+    const manager = testManager();
+    manager._deleteFromMongo = async () => {};
+    const scheduled = await manager.upsertSubscription(scheduledRegistration());
+    const original = await manager.upsertSubscription(victoriaToKentHouseLiveRegistration({
+        liveSessionOrigin: 'scheduled'
+    }));
+    await manager.reconcileJourneyCompletion({ deviceId: 'device-1', from: 'VIC', to: 'KTH' });
+    assert.equal(manager.subscriptions.has(original.id), false);
+
+    const recreated = await manager.upsertSubscription(victoriaToKentHouseLiveRegistration({
+        liveSessionOrigin: 'scheduled'
+    }));
+    const stored = manager.subscriptions.get(recreated.id);
+    assert.deepEqual(stored.mutedByLegDay, manager.subscriptions.get(scheduled.id).mutedByLegDay);
+    assert.equal(manager.getActiveSubscriptionForPush(recreated.id, stored.legs[0], 'update'), null);
+
+    const reverse = await manager.upsertSubscription(registration({ liveSessionOrigin: 'scheduled' }));
+    assert.equal(manager.isMutedToday(manager.subscriptions.get(reverse.id), 'KTH-VIC'), false);
+    const otherDevice = await manager.upsertSubscription(victoriaToKentHouseLiveRegistration({
+        liveSessionOrigin: 'scheduled', deviceId: 'device-2'
+    }));
+    assert.equal(manager.isMutedToday(manager.subscriptions.get(otherDevice.id), 'VIC-KTH'), false);
+    const manual = await manager.upsertSubscription(victoriaToKentHouseLiveRegistration());
+    assert.equal(manager.isMutedToday(manager.subscriptions.get(manual.id), 'VIC-KTH'), false);
+
+});
+
+test('send-time check observes a parent mute added after live-session registration', async () => {
+    const manager = testManager();
+    const scheduled = await manager.upsertSubscription(scheduledRegistration());
+    const live = await manager.upsertSubscription(victoriaToKentHouseLiveRegistration({
+        liveSessionOrigin: 'scheduled'
+    }));
+    const stored = manager.subscriptions.get(live.id);
+    await manager.muteScheduledLegsForToday({
+        deviceId: 'device-1', legs: stored.legs, reason: 'journey_completed_reconciliation'
+    });
+    assert.deepEqual(stored.mutedByLegDay, {});
+    assert.equal(manager.getActiveSubscriptionForPush(live.id, stored.legs[0], 'update'), null);
+    manager.subscriptions.get(scheduled.id).mutedByLegDay['VIC-KTH'] = '2000-01-01';
+    assert.equal(manager.isMutedToday(stored, 'VIC-KTH'), false);
+});
+
 function testManager() {
     const manager = new NotificationSubscriptionManager();
+    manager.auditScheduledPushToStartReadiness = async () => {};
     manager._saveSubscription = async () => {};
     manager.recordSubscriptionAudit = async () => {};
     return manager;

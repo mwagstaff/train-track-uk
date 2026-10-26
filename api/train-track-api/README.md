@@ -187,6 +187,12 @@ Set `DEVICE_DATA_DELETION_API_KEY` on the server and keep it restricted to autho
 
 Deletion coordination is process-local. The current deployment must remain a single Node.js service process while this endpoint is in use; add a distributed deletion lock before horizontally scaling the API.
 
+## Departure alerts after boarding or completion
+
+A scheduled-origin live session inherits the matching scheduled leg's current-day mute for the same device and direction. Polling and the final push check also consult that scheduled mute, so a late registration cannot restart departure alerts after journey completion. Manual live sessions remain independent; previous-day mutes do not block today's alerts.
+
+When investigating a late alert, compare the completion reconciliation and subsequent live-session creation in the subscription audit log. The recreated session should contain the inherited `mutedByLegDay`; a send suppressed by a current mute logs `suppress_push` with reason `muted`. Regression coverage is in `test/live-session-origin.test.js`.
+
 ## Prometheus Metrics
 
 - Endpoint: `GET /metrics` (Prometheus exposition format)

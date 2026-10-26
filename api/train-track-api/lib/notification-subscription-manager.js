@@ -424,6 +424,20 @@ export class NotificationSubscriptionManager {
             lastActiveAt: existing?.lastActiveAt || null
         };
 
+        // A late ActivityKit registration must not revive departure alerts after boarding/completion.
+        if (source === LIVE_SESSION_SOURCE && resolvedLiveSessionOrigin === 'scheduled') {
+            subscription.mutedByLegDay = { ...subscription.mutedByLegDay };
+            subscription.mutedAtByLegDay = { ...subscription.mutedAtByLegDay };
+            for (const leg of normalizedLegs) {
+                const legKey = `${leg.from}-${leg.to}`;
+                const parent = this.mutedScheduledSubscriptionForLeg(subscription, legKey);
+                if (parent) {
+                    subscription.mutedByLegDay[legKey] = parent.mutedByLegDay[legKey];
+                    subscription.mutedAtByLegDay[legKey] = parent.mutedAtByLegDay?.[legKey];
+                }
+            }
+        }
+
         this.subscriptions.set(subscription.id, subscription);
         try {
             await this._saveSubscription(subscription);
@@ -1885,10 +1899,20 @@ export class NotificationSubscriptionManager {
     }
 
     isMutedToday(subscription, legKey) {
-        const mutedDate = subscription.mutedByLegDay?.[legKey];
-        if (!mutedDate) return false;
+        if (subscription.mutedByLegDay?.[legKey] === currentScheduleDateKey()) return true;
+        return this.subscriptionSource(subscription) === LIVE_SESSION_SOURCE
+            && normalizeLiveSessionOrigin(subscription.liveSessionOrigin) === 'scheduled'
+            && Boolean(this.mutedScheduledSubscriptionForLeg(subscription, legKey));
+    }
+
+    mutedScheduledSubscriptionForLeg(subscription, legKey) {
         const todayKey = currentScheduleDateKey();
-        return mutedDate === todayKey;
+        return [...this.subscriptions.values()].find((candidate) =>
+            candidate.deviceId === subscription.deviceId
+            && this.subscriptionSource(candidate) === SCHEDULED_SOURCE
+            && candidate.legs?.some((leg) => `${leg.from}-${leg.to}` === legKey)
+            && candidate.mutedByLegDay?.[legKey] === todayKey
+        );
     }
 
     getSubscriptionCount() {
