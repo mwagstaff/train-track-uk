@@ -189,7 +189,7 @@ export async function syncTimetable({ config = timetableIngestionConfig(), sourc
         const previous = await optionalJson(join(directory, 'ingestion-state.json')).catch(() => null);
         state = { ...(previous?.schemaVersion === 1 ? previous : {}), schemaVersion: 1,
             enabled: config.enabled, inProgress: true, intervalSeconds: config.intervalSeconds,
-            lastCheckAt: new Date().toISOString(), lastErrorCode: null, lastDownloadBytes: 0, worker: { pid: process.pid, hostname: hostname() },
+            lastCheckAt: new Date().toISOString(), lastErrorCode: null, lastErrorMessage: null, lastFinishedAt: null, phase: 'checking', lastDownloadBytes: 0, worker: { pid: process.pid, hostname: hostname() },
             active: await activeSummary(directory) };
         if (!dryRun) await atomicJson(join(directory, 'ingestion-state.json'), state);
         if (config.datasetPath) throw ingestionError('CONFIG_INVALID', 'Unset PLANNER_DATASET_PATH before enabling managed ingestion; it pins searches to a fixed snapshot.');
@@ -220,15 +220,19 @@ export async function syncTimetable({ config = timetableIngestionConfig(), sourc
             state.lastDownloadBytes += archive.bytes;
             if (!candidate || archive.sha256 !== fullArchiveSha256) {
                 await ensureStagingSpace(root);
+                state.phase = 'inspecting_full';
                 const inspected = await inspectSource(archive.path, options);
                 if (inspected.feedMode !== 'full') throw ingestionError('INVALID_DELIVERY', 'The full object must contain a complete MCA package.');
                 const currentDate = candidate?.metadata.generationDate ?? initialActive?.metadata?.source?.generationDate;
                 if (!currentDate || inspected.generationDate >= currentDate) {
                     // Do not replace an effective daily snapshot by an older
                     // monthly baseline just because its S3 object was uploaded.
-                    if (candidate && inspected.generationDate === currentDate && inspected.sequence !== candidate.metadata.sequence) {
+                    const newerFullRevision = candidate && inspected.sequence === nextDeliverySequence(candidate.metadata.sequence)
+                        && Date.parse(full.lastModified) > Date.parse(appliedRemote.full?.lastModified);
+                    if (candidate && inspected.generationDate === currentDate && inspected.sequence !== candidate.metadata.sequence && !newerFullRevision) {
                         throw ingestionError('INVALID_DELIVERY', 'Monthly and active delivery sequences conflict on the same publication date.');
                     }
+                    state.phase = 'building_full';
                     const target = join(root, 'canonical', digest(`full\0${inspected.contentHash}`));
                     candidate = await canonicalCandidate(archive.path, target, null, options);
                     baselineSequence = candidate.metadata.sequence;
@@ -239,6 +243,7 @@ export async function syncTimetable({ config = timetableIngestionConfig(), sourc
         }
         if (!candidate) throw ingestionError('INVALID_DELIVERY', 'Monthly delivery is older than the active snapshot; a current full baseline is required to initialise safe daily imports.');
         state.pendingGap = null;
+        state.phase = 'checking_update';
         if (update && objectIdentity(update) !== objectIdentity(appliedRemote.update)) {
             const archive = await cachedArchive(source, update, root, options);
             state.lastDownloadBytes += archive.bytes;
@@ -262,6 +267,7 @@ export async function syncTimetable({ config = timetableIngestionConfig(), sourc
                 throw ingestionError('INVALID_DELIVERY', 'Daily payload changed without a new sequence/publication date.');
             }
         }
+        state.phase = 'validating_snapshot';
         let activated = false, snapshot;
         if (candidate.metadata.canonicalHash !== committed?.canonicalHash) {
             const delivery = { managed: true, canonicalPath: candidate.path, canonicalHash: candidate.metadata.canonicalHash,
@@ -283,6 +289,7 @@ export async function syncTimetable({ config = timetableIngestionConfig(), sourc
         state.lastResult = state.pendingGap ? 'gap' : activated ? 'activated' : 'unchanged';
         state.lastErrorCode = state.pendingGap ? 'UPDATE_GAP' : null;
         state.inProgress = false;
+        state.lastFinishedAt = new Date().toISOString();
         state.lastDurationMs = Date.now() - started;
         if (!dryRun) {
             await atomicJson(join(directory, 'ingestion-state.json'), state);
@@ -298,6 +305,18 @@ export async function syncTimetable({ config = timetableIngestionConfig(), sourc
             state.inProgress = false;
             state.lastResult = 'error';
             state.lastErrorCode = boundedCode(error);
+            state.lastFinishedAt = new Date().toISOString();
+            // Only fixed application messages are safe to expose; never persist upstream text.
+            const safeMessages = new Set([
+                'Monthly and active delivery sequences conflict on the same publication date.',
+                'Daily and active delivery sequences conflict on the same publication date.',
+                'Daily payload changed without a new sequence/publication date.',
+                'Active snapshot and its canonical timetable commit disagree.',
+                'The required full timetable object is missing.',
+                'The full object must contain a complete MCA package.',
+                'The daily object must contain a CFA update package.'
+            ]);
+            state.lastErrorMessage = safeMessages.has(error.message) ? error.message : `Timetable ingestion failed during ${state.phase} (${state.lastErrorCode}).`;
             state.lastDurationMs = Date.now() - started;
             // Activation is the commit: recover its summary even if the process
             // failed between active.json rename and the observational state save.

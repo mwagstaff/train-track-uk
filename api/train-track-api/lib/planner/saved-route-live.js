@@ -239,10 +239,12 @@ export class SavedRouteLive {
         return { status: available ? 'available' : board.dataStatus === 'live' && !uncertain ? 'empty' : 'unknown',
             snapshot: publicSnapshot(board, rows), expiresAt: iso(context.oldest + 60000),
             ...(Number.isFinite(departureAt) ? { departureAt: iso(departureAt) } : {}),
+            // A lone through train is not a full departure board (for example KTH–BFR).
+            supplementWithConnections: available && availableRows.length < 3 && availableRows.some(row => mode(row) === 'rail'),
             compareWithConnections: available && availableRows.every(row => mode(row) === 'replacementBus') };
     }
 
-    async refresh(plan, request, { signal, timeLocked = false } = {}) {
+    async refresh(plan, request, { signal, timeLocked = false, onDiagnostic = () => {} } = {}) {
         const context = this.context(signal), now = this.now(), realtime = request.realtime ?? 'apply';
         const source = plan.result, connections = createConnectionIndex(plan.connections);
         // Live evidence has a four-hour horizon, but that is not the timetable
@@ -311,6 +313,12 @@ export class SavedRouteLive {
                 }
             }
         }
+        onDiagnostic({ templateCount: source.journeys?.length ?? 0, topologyCount: topologies.size,
+            composedCount: journeys.length, blockedCount: disrupted.length, limited: context.limited || truncated,
+            legOptions: [...options].slice(0, MAX_PAIRS).map(([pair, legs]) => ({ pair, count: legs.length,
+                upcoming: legs.filter(leg => instant(leg.departure) >= now).length,
+                cancelled: legs.filter(leg => leg.live?.cancelled).length,
+                unknown: legs.filter(leg => leg.live?.status === 'unknown').length })) });
         const selected = rank(journeys), disruptedPage = rank(disrupted);
         const checked = [...selected, ...disruptedPage].flatMap(journey => journey.legs).filter(leg => leg.live);
         const observed = checked.length ? Math.min(...checked.map(leg => instant(leg.live.updatedAt))) : null;

@@ -20,7 +20,7 @@ async function idle(manager) {
 function fixture(t, overrides = {}) {
     let now = start, currentVersion = version;
     const records = overrides.records ?? new Map();
-    const calls = [], directCalls = [], refreshCalls = [], logs = [], retained = [];
+    const calls = [], directCalls = [], refreshCalls = [], logs = [], retained = [], diagnostics = [];
     let statuses = 0;
     const result = () => ({ journeys: [{ id: 'trip', departure: new Date(now + 60000).toISOString(),
         arrival: new Date(now + 1200000).toISOString(), legs: [] }], dataset: { version: currentVersion, scheduledOnly: true },
@@ -52,9 +52,9 @@ function fixture(t, overrides = {}) {
         const row = { input, updates: [], finishes: [] }; logs.push(row);
         return { update: value => row.updates.push(value), finish: value => row.finishes.push(value) };
     } };
-    const manager = new SavedRouteBoards(service, { live, cache, now: () => now, searchLog, ...overrides.options });
+    const manager = new SavedRouteBoards(service, { live, cache, now: () => now, searchLog, diagnosticLog: line => diagnostics.push(JSON.parse(line)), ...overrides.options });
     t.after(() => manager.close());
-    return { manager, cache, service, records, calls, directCalls, refreshCalls, logs, retained, result,
+    return { manager, cache, service, records, calls, directCalls, refreshCalls, logs, retained, diagnostics, result,
         advance: ms => { now += ms; }, setVersion: value => { currentVersion = value; }, statuses: () => statuses };
 }
 
@@ -71,6 +71,38 @@ test('direct departures use no timetable metadata, planner, cache or search logs
     assert.equal(f.calls.length, 0);
     assert.equal(f.logs.length, 0);
     assert.equal(f.records.size, 0);
+});
+
+test('a sparse direct train board publishes mixed options even when the direct train is earliest', async t => {
+    const pending = deferred();
+    const snapshot = { departures: [{ serviceID: 'only-direct-train' }], dataStatus: 'live' };
+    const direct = { status: 'available', supplementWithConnections: true,
+        departureAt: new Date(start + 30000).toISOString(), snapshot };
+    const f = fixture(t, { direct: () => direct, call: () => pending.promise });
+    await f.manager.get(body);
+    for (let i = 0; i < 10 && !f.calls.length; i++) await tick();
+    const loading = (await f.manager.get(body)).boards[0];
+    assert.equal(loading.source, 'direct');
+    assert.deepEqual(loading.direct, snapshot, 'keep the live train visible while routing');
+    assert.equal(loading.status, 'refreshing');
+    assert.equal(f.calls[0].payload.includeDirect, true, 'the plan must retain through trains');
+    assert.equal(f.calls[0].payload.request.time, new Date(start).toISOString());
+    pending.resolve({ result: f.result(), connections: {} });
+    await idle(f.manager);
+    const board = (await f.manager.get(body)).boards[0];
+    assert.equal(board.source, 'planned', 'an earlier direct train must not hide the other options');
+    assert.ok(board.result.journeys.length);
+    assert.equal(f.calls.length, 1);
+    const request = normalizeRouteBoards(body, start)[0].request;
+    assert.notEqual(savedRoutePlanKey(request, version), savedRoutePlanKey(request, version, { includeDirect: false }));
+});
+
+test('a sparse direct train stays visible when its connecting search fails', async t => {
+    const snapshot = { departures: [{ serviceID: 'only-direct-train' }], dataStatus: 'live' };
+    const f = fixture(t, { direct: () => ({ status: 'available', supplementWithConnections: true, snapshot }),
+        call: async () => { throw new PlannerError('SEARCH_TIMEOUT', 'Timed out'); } });
+    await f.manager.get(body); await idle(f.manager);
+    assert.deepEqual((await f.manager.get(body)).boards[0].direct, snapshot);
 });
 
 test('a later direct replacement bus cannot suppress an earlier connecting journey', async t => {
@@ -209,6 +241,8 @@ test('confirmed empty direct board plans once and refreshes only cached topology
     assert.equal(f.calls[0].payload.request.windowMinutes, 360);
     assert.equal(f.calls[0].payload.request.realtime, 'off');
     assert.deepEqual(f.calls[0].payload.request.via, ['BMS']);
+    assert.equal(f.calls[0].payload.request.algorithm, 'raptor');
+    assert.equal(f.calls[0].payload.includeDirect, true);
     assert.equal(f.calls[0].options.priority, 'background');
     assert.equal(f.logs.length, 1);
     assert.equal(f.logs[0].input.cacheStatus, 'miss');
@@ -274,6 +308,32 @@ test('cache identity includes date, dataset and required route options but exclu
         assert.notEqual(key, savedRoutePlanKey({ ...request, ...changed }, version));
     }
     assert.notEqual(key, savedRoutePlanKey(request, 'b'.repeat(64)));
+});
+
+test('incomplete empty discovery is retried instead of poisoning the two-hour cache', async t => {
+    let complete = false;
+    const f = fixture(t, { call: async (_method, _payload, _options, result) => ({
+        result: complete ? result() : { ...result(), journeys: [], search: { searchTruncated: true } }, connections: {}
+    }) });
+    await f.manager.get(body); await idle(f.manager);
+    const failed = (await f.manager.get(body)).boards[0];
+    assert.equal(failed.error.code, 'SEARCH_INCOMPLETE');
+    assert.equal(f.records.size, 0);
+    complete = true;
+    f.advance(21000);
+    await f.manager.get(body); await idle(f.manager);
+    assert.equal(f.calls.length, 2);
+    assert.ok((await f.manager.get(body)).boards[0].result.journeys.length);
+});
+
+test('an incomplete empty persisted plan is not served as a ready board', async t => {
+    const f = fixture(t);
+    const request = normalizeRouteBoards(body, start)[0].request;
+    f.records.set(savedRoutePlanKey(request, version), { computedAt: start, expiresAt: start + 7200000,
+        profile: { result: { ...f.result(), journeys: [], search: { searchTruncated: true } }, connections: {} } });
+    await f.manager.get(body); await idle(f.manager);
+    assert.equal(f.calls.length, 1);
+    assert.ok((await f.manager.get(body)).boards[0].result.journeys.length);
 });
 
 test('empty fallback results are cached and not replanned every live poll', async t => {
@@ -531,4 +591,24 @@ test('entry and per-client admission bounds retain finite pending work', async t
     assert.equal(f.calls.length, 1);
     held.resolve(); await idle(f.manager);
     assert.equal(f.calls.length, 3);
+});
+
+
+test('diagnostics identify the serving policy, cache, router and live-refresh result without caller data', async t => {
+    const f = fixture(t);
+    const response = await f.manager.get(body, { client: 'private-client', network: 'private-network' });
+    assert.equal(response.policy, 'saved-route-raptor-v2');
+    await idle(f.manager);
+    assert.ok(f.diagnostics.some(row => row.event === 'saved-route.cache' && row.hit === false));
+    assert.ok(f.diagnostics.some(row => row.event === 'saved-route.plan-start' && row.includeDirect));
+    assert.ok(f.diagnostics.some(row => row.event === 'saved-route.plan-result' && row.resultCount === 1));
+    assert.ok(f.diagnostics.some(row => row.event === 'saved-route.refresh' && row.upcomingCount === 1));
+    for (const row of f.diagnostics) {
+        assert.equal(row.policy, response.policy);
+        assert.equal(row.origin, 'KTH');
+        assert.equal(row.destination, 'VIC');
+        assert.ok(Number.isFinite(Date.parse(row.at)));
+        assert.ok((row.departures?.length ?? 0) <= 5);
+    }
+    assert.ok(!JSON.stringify(f.diagnostics).includes('private-'));
 });

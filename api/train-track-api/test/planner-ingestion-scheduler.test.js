@@ -69,6 +69,7 @@ test('enabled scheduler checks immediately and hourly in a bounded separate proc
   fixture.advance(3599999); assert.equal(fixture.calls.length, 1);
   fixture.advance(1); assert.equal(fixture.calls.length, 2);
   assert.match(fixture.logs.join('\n'), /Timetable check completed/);
+  assert.ok(fixture.logs.every(line => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /.test(line)));
 });
 
 test('manual and timer checks cannot overlap; only close releases a running child, not an error event', t => {

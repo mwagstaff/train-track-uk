@@ -1166,7 +1166,9 @@ app.post('/api/v2/live_activities/status', async (req, res) => {
         status_observed_at_ms,
         arrival_time,
         arrival_delay_minutes,
-        completed_at
+        completed_at,
+        activity_id,
+        leg_context
     } = req.body || {};
     const { canonicalDeviceId, fallbackDeviceIds } = resolveRequestDeviceIds(req, device_id);
     const validPhases = new Set(['pending_start', 'at_start', 'en_route', 'arrived']);
@@ -1179,6 +1181,8 @@ app.post('/api/v2/live_activities/status', async (req, res) => {
             fromStation: from || null,
             toStation: to || null,
             phase,
+            activityId: typeof activity_id === 'string' ? activity_id : null,
+            legContext: leg_context,
             preferredServiceId: typeof service_id === 'string' ? service_id : null,
             serviceMatchConfirmed: typeof service_match_confirmed === 'boolean' ? service_match_confirmed : null,
             statusObservedAtMs: typeof status_observed_at_ms === 'number' ? status_observed_at_ms : null,

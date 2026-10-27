@@ -52,6 +52,7 @@ struct SavedRouteBoardProgress: Decodable {
 struct SavedRouteBoardsResponse: Decodable {
     let apiVersion: Int
     let boards: [SavedRouteBoard]
+    var policy: String? = nil
 }
 
 /// The v4 server has verified that this train serves every required stop.
@@ -210,8 +211,12 @@ final class SavedRoutePlannerStore {
             // Shared board profiles include past hours. Count 24 hours from the
             // requested departure time, not the beginning of that cache bucket.
             let from = canContinue ? max(window!.from, primary.result!.search.time) : now()
-            let until = canContinue ? min(window!.to, from.addingTimeInterval(24 * 60 * 60))
-                : primary.direct?.departures.isEmpty == false ? from.addingTimeInterval(6 * 60 * 60) : from
+            // A result page is not coverage of its entire search window. Continue
+            // after its last departure; only an empty complete search covers the window.
+            // Direct boards establish no coverage for connecting journeys at all.
+            let lastDeparture = primary.result?.journeys.map(\.departure).max()
+            let until = canContinue ? min(window!.to, from.addingTimeInterval(24 * 60 * 60),
+                lastDeparture.map { max(from, $0.addingTimeInterval(1)) } ?? window!.to) : from
             var created = SavedRouteQuery(group: group)
             created.time = PlannerTime.iso8601(until)
             laterQueries[routeID] = LaterSearch(query: created, from: from, searchedUntil: until)
@@ -354,6 +359,9 @@ final class SavedRoutePlannerStore {
                             self.fail(key: key, message: "Departure options could not be read. Please try again.")
                             continue
                         }
+                        let journeys = board.result?.journeys ?? []
+                        let upcoming = journeys.filter { $0.departure >= self.now() }.count
+                        ClientPerf.log("savedRoutes.board route=\(query.origin)-\(query.destination) policy=\(response.policy ?? "unreported") source=\(board.source ?? "unknown") status=\(board.status) phase=\(board.progress?.phase ?? "none") algorithm=\(board.result?.search.algorithm ?? "unreported") returned=\(journeys.count) upcoming=\(upcoming) direct=\(board.direct?.departures.count ?? 0) truncated=\(board.result?.search.searchTruncated == true) computedAt=\(board.computedAt.map(PlannerTime.iso8601) ?? "none") error=\(board.error?.code ?? "none")")
                         let previous = self.states[key]?.board
                         if board.source == "direct" {
                             board.result = nil

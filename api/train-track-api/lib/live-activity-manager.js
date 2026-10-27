@@ -114,6 +114,13 @@ export class LiveActivityManager {
             autoEndOnArrival = existing.autoEndOnArrival;
         }
 
+        if (existing?.legContext) {
+            displayName = existing.displayName;
+            deepLinkFromStation = existing.deepLinkFromStation;
+            deepLinkToStation = existing.deepLinkToStation;
+            preferredServiceId = existing.preferredServiceId;
+        }
+
         // Track token changes for debugging
         const tokenPreview = this.maskToken(pushToken);
         const isTokenUpdate = existing && existing.pushToken !== pushToken;
@@ -156,6 +163,7 @@ export class LiveActivityManager {
             createdAt: existing?.createdAt || new Date().toISOString(),
             lastSnapshot: existing?.lastSnapshot || null,
             preferredDepartureSnapshot: existing?.preferredDepartureSnapshot || null,
+            legContext: existing?.legContext || null,
             serviceMatchConfirmed: existing?.serviceMatchConfirmed ?? null,
             lastJourneyStatusObservedAtMs: existing?.lastJourneyStatusObservedAtMs ?? null,
             lastPushAt: existing?.lastPushAt || null,
@@ -363,13 +371,22 @@ export class LiveActivityManager {
             if (subscription.scheduleKey?.startsWith(PLANNER_SCHEDULE_PREFIX)) {
                 return await this.pollPlannerSubscription(subscription, { force, dryRun });
             }
+            const statusVersion = subscription.lastJourneyStatusObservedAtMs;
+            const leg = subscription.legContext;
+            let earliestDepartureMs = leg?.earliestDepartureMs || 0;
+            if (leg?.connection && leg.feederServiceId) {
+                const feeder = await getServiceDetails(leg.feederServiceId).catch(() => null);
+                const arrival = this.arrivalTimeForDestination(feeder, leg.from);
+                if (arrival) earliestDepartureMs = this.connectionTime(arrival);
+            }
             const snapshot = this.applyLastKnownPlatforms(
                 await this.getDeparturesSnapshot(
-                    subscription.fromStation,
-                    subscription.toStation,
-                    subscription.preferredServiceId,
+                    leg?.from || subscription.fromStation,
+                    leg?.to || subscription.toStation,
+                    leg?.connection ? null : subscription.preferredServiceId,
                     {
-                        journeyPhase: subscription.journeyPhase,
+                        earliestDepartureMs: leg?.connection ? Math.max(earliestDepartureMs, Date.now()) : null,
+                        journeyPhase: leg?.connection ? 'pending_start' : subscription.journeyPhase,
                         previousSnapshot: subscription.lastSnapshot,
                         preferredDepartureSnapshot: subscription.preferredDepartureSnapshot
                     }
@@ -377,6 +394,7 @@ export class LiveActivityManager {
                 subscription.lastSnapshot
             );
             if (subscription.evicted) return { sent: false, reason: 'activity_evicted' };
+            if (subscription.lastJourneyStatusObservedAtMs !== statusVersion) return { sent: false, reason: 'journey_changed' };
             const appIsActive = this.shouldShowAppActive(subscription);
             const appIsActiveChanged = Boolean(subscription.appIsActive) !== appIsActive;
             const hasChanged = force || appIsActiveChanged || !this.snapshotsEqual(snapshot, subscription.lastSnapshot);
@@ -396,7 +414,7 @@ export class LiveActivityManager {
 
             const hasUnconfirmedJourney = subscription.serviceMatchConfirmed === false
                 && (subscription.journeyPhase === 'en_route' || subscription.journeyPhase === 'arrived');
-            if (snapshot.departures.length === 0 && !hasUnconfirmedJourney) {
+            if (snapshot.departures.length === 0 && !hasUnconfirmedJourney && !leg) {
                 this.log(`[live-activity] no_departures ${subscription.deviceId}/${subscription.activityId}`);
                 return { sent: false, reason: 'no_departures', snapshot };
             }
@@ -681,7 +699,8 @@ export class LiveActivityManager {
         {
             journeyPhase = 'pending_start',
             previousSnapshot = null,
-            preferredDepartureSnapshot = null
+            preferredDepartureSnapshot = null,
+            earliestDepartureMs = null
         } = {}
     ) {
         const result = await getTrainTimes(fromStation, toStation);
@@ -708,8 +727,23 @@ export class LiveActivityManager {
                 ? previousService
                 : (preferredDepartureSnapshot?.serviceID === preferredServiceId ? preferredDepartureSnapshot : null);
             if (retainedService) normalizedAll.push(retainedService);
+            else {
+                const details = await getServiceDetails(preferredServiceId).catch(() => null);
+                if (details) normalizedAll.push({ serviceID: preferredServiceId,
+                    scheduled: details.std, estimated: details.etd || details.std,
+                    platform: details.platform, destination: details.destination,
+                    length: details.length, isCancelled: Boolean(details.isCancelled) });
+            }
         }
 
+        if (Number.isFinite(earliestDepartureMs)) {
+            for (let i = normalizedAll.length - 1; i >= 0; i--) {
+                const departure = normalizedAll[i];
+                if (departure.isCancelled || this.connectionTime(this.getDisplayTime(departure.estimated, departure.scheduled)) < earliestDepartureMs) {
+                    normalizedAll.splice(i, 1);
+                }
+            }
+        }
         const sortedUpcoming = this.sortDepartures(normalizedAll);
         const departures = isInProgress
             ? normalizedAll.filter((dep) => dep.serviceID === preferredServiceId).slice(0, 1)
@@ -976,6 +1010,13 @@ export class LiveActivityManager {
         return [preferred, ...remainingUpcoming].slice(0, 3);
     }
 
+    connectionTime(timeString, now = Date.now()) {
+        const date = moment(timeString, 'HH:mm');
+        if (!date.isValid()) return Number.MAX_SAFE_INTEGER;
+        if (now - date.valueOf() > 6 * 60 * 60 * 1000) date.add(1, 'day');
+        return date.valueOf();
+    }
+
     parseTime(timeString) {
         if (!timeString) return Number.MAX_SAFE_INTEGER;
         const parsed = moment(timeString, 'HH:mm');
@@ -986,7 +1027,8 @@ export class LiveActivityManager {
         if (subscription.scheduleKey?.startsWith(PLANNER_SCHEDULE_PREFIX) && subscription.lastPlannerContent) {
             return { ...subscription.lastPlannerContent, activityID: subscription.activityId, revision: subscription.revision || 0 };
         }
-        const isInProgress = subscription.journeyPhase === 'en_route' || subscription.journeyPhase === 'arrived';
+        const connection = subscription.legContext?.connection === true && subscription.journeyPhase !== 'arrived';
+        const isInProgress = !connection && (subscription.journeyPhase === 'en_route' || subscription.journeyPhase === 'arrived');
         const isUnconfirmed = isInProgress && subscription.serviceMatchConfirmed === false;
         const primary = isUnconfirmed ? {} : (isInProgress && subscription.preferredServiceId
             ? snapshot.departures.find((departure) => departure.serviceID === subscription.preferredServiceId) || {}
@@ -1009,10 +1051,10 @@ export class LiveActivityManager {
 
         const platform = this.ensureString(isInProgress ? primary.arrivalPlatform : primary.platform);
         const journeyStationNames = this.journeyStationNames(subscription);
-        const destinationTitle = isArrived
+        const destinationTitle = subscription.legContext?.toName || (isArrived
             ? journeyStationNames.destination
-            : this.ensureString(primaryPlace(primary.destination)?.locationName);
-        const routeTitle = this.ensureOptionalString(subscription.displayName);
+            : this.ensureString(primaryPlace(primary.destination)?.locationName));
+        const routeTitle = subscription.legContext?.routeTitle || this.ensureOptionalString(subscription.displayName);
         const deepLinkFromCRS = this.ensureOptionalString(subscription.deepLinkFromStation) || this.ensureString(subscription.fromStation);
         const deepLinkToCRS = this.ensureOptionalString(subscription.deepLinkToStation) || this.ensureString(subscription.toStation);
         const upcomingDepartures = (isInProgress ? [] : snapshot.departures.slice(1)).map((dep) => ({
@@ -1025,8 +1067,9 @@ export class LiveActivityManager {
         }));
 
         return {
-            fromCRS: this.ensureString(subscription.fromStation),
-            toCRS: this.ensureString(subscription.toStation),
+            fromCRS: subscription.legContext?.from || this.ensureString(subscription.fromStation),
+            connectionStationName: connection ? subscription.legContext.fromName : null,
+            toCRS: subscription.legContext?.to || this.ensureString(subscription.toStation),
             routeTitle,
             deepLinkFromCRS,
             deepLinkToCRS,
@@ -1039,7 +1082,7 @@ export class LiveActivityManager {
             platform,
             estimated,
             isCancelled: Boolean(primary.isCancelled),
-            statusText: isArrived ? null : (isUnconfirmed ? 'Train not yet confirmed' : this.buildStatusText(primary)),
+            statusText: connection ? (snapshot.departures.length ? `Next leg to ${subscription.legContext.toName}` : 'No onward departure available') : isArrived ? null : (isUnconfirmed ? 'Train not yet confirmed' : this.buildStatusText(primary)),
             delayMinutes,
             arrivalDelayMinutes,
             upcomingDepartures,
@@ -1767,6 +1810,8 @@ export class LiveActivityManager {
         fromStation = null,
         toStation = null,
         phase,
+        activityId = null,
+        legContext = null,
         preferredServiceId = null,
         serviceMatchConfirmed = null,
         statusObservedAtMs = null,
@@ -1791,6 +1836,7 @@ export class LiveActivityManager {
             const subscriptionTo = String(
                 subscription.deepLinkToStation || subscription.toStation || ''
             ).toUpperCase();
+            if (activityId) return subscription.activityId === activityId;
             return (!fromCode || subscriptionFrom === fromCode)
                 && (!toCode || subscriptionTo === toCode);
         });
@@ -1809,6 +1855,24 @@ export class LiveActivityManager {
                     return { sent: false };
                 }
                 subscription.lastJourneyStatusObservedAtMs = statusObservedAtMs;
+            }
+            if (legContext && /^[A-Z]{3}$/.test(legContext.from) && /^[A-Z]{3}$/.test(legContext.to)
+                && typeof legContext.route_title === 'string'
+                && typeof legContext.from_name === 'string' && typeof legContext.to_name === 'string') {
+                const nextContext = { from: legContext.from, to: legContext.to,
+                    fromName: legContext.from_name.slice(0, 100), toName: legContext.to_name.slice(0, 100),
+                    routeTitle: legContext.route_title.slice(0, 250), connection: legContext.connection === true,
+                    feederServiceId: typeof legContext.feeder_service_id === 'string' ? legContext.feeder_service_id : null,
+                    earliestDepartureMs: Number.isFinite(legContext.earliest_departure_ms) ? legContext.earliest_departure_ms : 0 };
+                if (subscription.legContext?.from !== nextContext.from || subscription.legContext?.connection !== nextContext.connection) {
+                    subscription.lastSnapshot = null;
+                    subscription.preferredDepartureSnapshot = null;
+                    subscription.preferredServiceId = null;
+                }
+                subscription.legContext = nextContext;
+                subscription.deepLinkFromStation = fromCode;
+                subscription.deepLinkToStation = toCode;
+                subscription.displayName = nextContext.routeTitle;
             }
             subscription.journeyPhase = phase;
             subscription.autoEndOnDeparture = false;

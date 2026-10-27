@@ -633,6 +633,7 @@ private func callToActionTitle(for state: JourneyActivityAttributes.ContentState
 }
 
 private func primaryTimeLabel(for state: JourneyActivityAttributes.ContentState) -> String {
+    if let station = state.connectionStationName { return "Next from \(station)" }
     switch state.journeyPhase {
     case .enRoute:
         return "Est. arrival"

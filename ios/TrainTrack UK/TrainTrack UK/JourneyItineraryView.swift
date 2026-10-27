@@ -727,3 +727,18 @@ struct JourneyItineraryView: View {
         selectedServiceIDs.joined(separator: ",")
     }
 }
+
+/// Near-miss services remain visible but never drive onward journey estimates.
+enum ConnectionDeparturePolicy {
+    static func isVisible(_ departure: DepartureV2, arrival: Date?, now: Date = Date()) -> Bool {
+        guard let arrival else { return true }
+        guard let date = JourneyItineraryBuilder.date(for: JourneyItineraryBuilder.departureDisplayTime(departure), now: now) else { return false }
+        return date >= arrival.addingTimeInterval(-3 * 60)
+    }
+
+    static func isUnlikely(_ departure: DepartureV2, arrival: Date?, now: Date = Date()) -> Bool {
+        guard let arrival,
+              let date = JourneyItineraryBuilder.date(for: JourneyItineraryBuilder.departureDisplayTime(departure), now: now) else { return false }
+        return date < arrival
+    }
+}

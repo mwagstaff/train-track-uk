@@ -2,6 +2,20 @@ import CoreLocation
 import SwiftUI
 
 enum InProgressJourneyPresentation {
+    static func servicePickerDepartures(
+        _ departures: [RecentDepartureV2],
+        isMoreLikely: (RecentDepartureV2, RecentDepartureV2) -> Bool
+    ) -> [RecentDepartureV2] {
+        let chronological = departures.sorted {
+            if $0.scheduledDepartureAt != $1.scheduledDepartureAt {
+                return $0.scheduledDepartureAt < $1.scheduledDepartureAt
+            }
+            return $0.serviceID < $1.serviceID
+        }
+        guard let mostLikely = chronological.min(by: isMoreLikely) else { return [] }
+        return [mostLikely] + chronological.filter { $0.id != mostLikely.id }
+    }
+
     static func nextServiceDeparture(
         from departures: [DepartureV2],
         now: Date = Date()
@@ -47,7 +61,7 @@ struct InProgressJourneyView: View {
     @ObservedObject private var coordinator = JourneyTrackingCoordinator.shared
     @StateObject private var location = LocationManagerPhone()
 
-    @AppStorage("inProgressSelectedSubscriptionID") private var selectedSubscriptionID = ""
+    @AppStorage(JourneyUpdateActions.selectedSubscriptionKey) private var selectedSubscriptionID = ""
     @State private var mapSelection: InProgressMapSelection?
     @State private var isShowingServicePicker = false
     @State private var stageAdvanceConfirmation: StageAdvanceConfirmation?
@@ -313,38 +327,8 @@ struct InProgressJourneyView: View {
 
     @ViewBuilder
     private func departureContext(group: JourneyGroup) -> some View {
-        if let legGroup = departureContextGroup(from: group),
-           let journey = legGroup.legs.first {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Next departures")
-                    .font(.headline)
-                JourneyCard(
-                    group: legGroup,
-                    isFavourite: false,
-                    defaultDepartureCount: 3,
-                    isLiveActive: true,
-                    scheduledSubscriptions: [],
-                    canAddSchedule: false,
-                    isBusy: false,
-                    isInteractive: true,
-                    isExpanded: false,
-                    canReverseJourney: false,
-                    isJourneyReversed: false,
-                    onToggleExpanded: {},
-                    onToggleJourneyReversed: {},
-                    onOpenDeparture: { journey, departure in
-                        mapSelection = mapSelection(for: departure, journey: journey)
-                    },
-                    onToggleFavourite: {},
-                    onToggleJourneyUpdates: {},
-                    onAddJourneySchedule: {},
-                    onEditJourneySchedule: { _ in },
-                    onRemoveJourney: {},
-                    showsHeader: false,
-                    allowsExpansion: false
-                )
-            }
-
+        remainingDepartureCards(group: group, firstIndex: currentLegIndex + (coordinator.activeJourney?.phase == .atInterchange ? 1 : 0))
+        if let journey = departureContextJourney {
             if let nextDeparture {
                 miniMap(
                     selection: mapSelection(for: nextDeparture, journey: journey),
@@ -381,23 +365,32 @@ struct InProgressJourneyView: View {
                 description: Text("Your journey is still being tracked. You can choose your train below.")
             )
             .frame(minHeight: 180)
+            nextLegDepartures(group: group)
         }
     }
 
-    @ViewBuilder
     private func nextLegDepartures(group: JourneyGroup) -> some View {
-        if let nextLegGroup = nextLegGroup(from: group),
-           let nextLeg = nextLegGroup.legs.first {
+        remainingDepartureCards(group: group, firstIndex: currentLegIndex + 1)
+    }
+
+    private func connectionArrival(group: JourneyGroup, legIndex: Int) -> Date? {
+        guard legIndex > currentLegIndex,
+              let first = activeDeparture ?? nextDeparture,
+              let itinerary = remainingItinerary(group: group, departure: first),
+              itinerary.legs.indices.contains(legIndex - currentLegIndex - 1) else { return nil }
+        return itinerary.legs[legIndex - currentLegIndex - 1].arrivalDate
+    }
+
+    private func remainingDepartureCards(group: JourneyGroup, firstIndex: Int) -> some View {
+        ForEach(Array(group.legs.indices.dropFirst(firstIndex)), id: \.self) { index in
+            let leg = group.legs[index]
             VStack(alignment: .leading, spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Next leg departures")
-                        .font(.headline)
-                    Text("\(nextLeg.fromStation.name) to \(nextLeg.toStation.name)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text("Leg \(index + 1) departures: \(leg.fromStation.name) to \(leg.toStation.name)")
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: false, vertical: true)
                 JourneyCard(
-                    group: nextLegGroup,
+                    group: JourneyGroup(id: group.id, legs: [leg]),
                     isFavourite: false,
                     defaultDepartureCount: 3,
                     isLiveActive: true,
@@ -419,7 +412,8 @@ struct InProgressJourneyView: View {
                     onEditJourneySchedule: { _ in },
                     onRemoveJourney: {},
                     showsHeader: false,
-                    allowsExpansion: false
+                    allowsExpansion: false,
+                    connectionArrival: connectionArrival(group: group, legIndex: index)
                 )
             }
         }
@@ -945,13 +939,6 @@ struct InProgressJourneyView: View {
         return JourneyGroup(id: group.id, legs: [leg])
     }
 
-    private func departureContextGroup(from group: JourneyGroup) -> JourneyGroup? {
-        if coordinator.activeJourney?.phase == .atInterchange {
-            return nextLegGroup(from: group)
-        }
-        return remainingGroup(from: group)
-    }
-
     private var refreshKey: String {
         let groupKey = selectedGroup?.legs.map { "\($0.fromStation.crs)-\($0.toStation.crs)" }.joined(separator: "|") ?? "none"
         let phase = coordinator.activeJourney?.phase.rawValue ?? "inactive"
@@ -1306,10 +1293,10 @@ private struct RecentServicePicker: View {
     @State private var hasLoadedPreviousDepartures = false
 
     private var departures: [RecentDepartureV2] {
-        recentStore.departures(
-            fromCRS: journey.fromStation.crs,
-            toCRS: journey.toStation.crs
-        ).sorted(by: isMoreLikely)
+        InProgressJourneyPresentation.servicePickerDepartures(
+            recentStore.departures(fromCRS: journey.fromStation.crs, toCRS: journey.toStation.crs),
+            isMoreLikely: isMoreLikely
+        )
     }
 
     var body: some View {

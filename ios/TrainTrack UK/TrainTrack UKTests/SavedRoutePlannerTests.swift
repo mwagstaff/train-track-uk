@@ -410,6 +410,31 @@ struct SavedRoutePlannerTests {
         #expect(state.message == error.message)
     }
 
+    @Test func directBoardDoesNotSkipSixHoursWhenRequestingMoreDepartures() async throws {
+        let client = RouteBoardStub()
+        client.apiVersion = 4
+        client.source = "direct"
+        let departure = DepartureV2(departureTime: .init(scheduled: "09:03", estimated: "On time"),
+            serviceType: "train", platform: "2", isCancelled: false, length: 8,
+            destination: [], origin: nil, serviceID: "direct", delayReason: nil, cancelReason: nil, timestamp: now)
+        client.direct = JourneyDeparturesSnapshot(departures: [departure], dataStatus: .live, lastSuccessfulUpdate: now)
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "BFR"])
+        await store.refresh(groups: [route])
+        client.requests = []
+        client.source = "planned"
+        client.direct = nil
+        client.result = try result(journeys: [journey(departure: now.addingTimeInterval(60))])
+
+        await store.searchLater(for: route)
+
+        let query = try #require(client.requests.first?.first)
+        #expect(query.time == PlannerTime.iso8601(now))
+        #expect(query.origin == "KTH")
+        #expect(query.destination == "BFR")
+        #expect(store.laterState(for: route)?.result?.journeys.first?.departure == now.addingTimeInterval(60))
+    }
+
     @Test func moreDeparturesSearchesTheFollowingSixHourWindowWithoutChangingSavedStops() async throws {
         let client = RouteBoardStub()
         client.result = try result()
@@ -429,6 +454,19 @@ struct SavedRoutePlannerTests {
         await store.searchLater(for: route)
         #expect(client.requests.count == 1)
         #expect(store.laterState(for: route)?.result != nil)
+    }
+
+    @Test func moreDeparturesContinuesAfterTheLastResultInsteadOfSkippingTheSearchWindow() async throws {
+        let client = RouteBoardStub()
+        let last = now.addingTimeInterval(45 * 60)
+        client.result = try result(journeys: [journey(departure: now.addingTimeInterval(60)), journey(departure: last)])
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "BFR"])
+        await store.refresh(groups: [route])
+        client.requests = []
+        client.result = try result(journeys: [journey(departure: last.addingTimeInterval(15 * 60))], from: last.addingTimeInterval(1))
+        await store.searchLater(for: route)
+        #expect(client.requests.first?.first?.time == PlannerTime.iso8601(last.addingTimeInterval(1)))
     }
 
     @Test func moreDeparturesStopsPollingOnceScheduledOptionsAreAvailable() async throws {
@@ -801,6 +839,72 @@ struct SavedRoutePlannerTests {
             "departure": "2026-10-26T01:30:00Z", "arrival": "2026-10-26T02:00:00Z"]
         let tomorrow = try PlannerTime.decoder().decode(PlannedJourney.Leg.self, from: JSONSerialization.data(withJSONObject: raw))
         #expect(!PlannerTrainTracking.matchesBoard(departure, leg: tomorrow, now: observed))
+    }
+
+    @Test func startingReturnRoutePersistsItsDirectionAndActualTrainLegs() throws {
+        let route = group(["BFR", "KTH"])
+        let stations = group(["BFR", "HNH", "KTH"]).stationSequence
+        let plan = try trackingPlan(["BFR", "HNH", "KTH"])
+        let tracked = try #require(JourneyUpdateActions.trackingGroup(for: route, plan: plan, stations: stations))
+        #expect(tracked.stationSequence.map(\.crs) == ["BFR", "HNH", "KTH"])
+        #expect(tracked.legs.count == 2)
+        #expect(tracked.legs.map(\.legIndex) == [0, 1])
+        #expect(JourneyUpdateActions.liveSessionRouteKey(for: tracked) == "BFR-KTH")
+        #expect(JourneyUpdateActions.trackingGroup(for: route,
+            plan: try trackingPlan(["KTH", "HNH", "BFR"]), stations: stations) == nil)
+        let outward = try #require(JourneyUpdateActions.trackingGroup(for: group(["KTH", "BFR"]),
+            plan: try trackingPlan(["KTH", "HNH", "BFR"]), stations: stations))
+        #expect(outward.stationSequence.map(\.crs) == ["KTH", "HNH", "BFR"])
+    }
+
+    @Test func newlyStartedSessionReplacesPreviouslySelectedOppositeDirection() throws {
+        let suite = "started-session-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("outward-session", forKey: JourneyUpdateActions.selectedSubscriptionKey)
+        JourneyUpdateActions.selectStartedSession("return-session", defaults: defaults)
+        #expect(defaults.string(forKey: JourneyUpdateActions.selectedSubscriptionKey) == "return-session")
+    }
+
+    @Test func trackingRouteDoesNotInventAnInterchangeForADirectTrain() throws {
+        let route = group(["BFR", "KTH"])
+        let tracked = try #require(JourneyUpdateActions.trackingGroup(for: route,
+            plan: try trackingPlan(["BFR", "KTH"]), stations: route.stationSequence))
+        #expect(tracked.legs.count == 1)
+        #expect(JourneyUpdateActions.trackingGroup(for: route,
+            plan: try trackingPlan(["BFR", "HNH", "KTH"]), stations: route.stationSequence) == nil)
+    }
+
+    @Test func playSkipsWalkingOptionAndStartsNextRailJourneyFromProductionBoard() throws {
+        // BFR-KTH response on 27 Oct: 10:29 via Clock House + walk, then 10:51 via Herne Hill.
+        let data = Data(#"""
+        [{"id":"903de2bad650d2b0202b430526636bc6d95987e7e16d4e9fc2fe8431fe3188cb.8f52d9401aeda6bdd8f1e5299535c1b8","departure":"2026-10-27T10:29:00.000Z","arrival":"2026-10-27T11:19:00.000Z","durationMinutes":50,"changes":1,"legs":[{"kind":"vehicle","mode":"rail","from":{"crs":"BFR","name":"London Blackfriars"},"to":{"crs":"LBG","name":"London Bridge"},"departure":"2026-10-27T10:29:00.000Z","arrival":"2026-10-27T10:34:00.000Z"},{"kind":"transfer","mode":"interchange","from":{"crs":"LBG","name":"London Bridge"},"to":{"crs":"LBG","name":"London Bridge"},"departure":"2026-10-27T10:34:00.000Z","arrival":"2026-10-27T10:44:00.000Z"},{"kind":"vehicle","mode":"rail","from":{"crs":"LBG","name":"London Bridge"},"to":{"crs":"CLK","name":"Clock House"},"departure":"2026-10-27T10:48:00.000Z","arrival":"2026-10-27T11:08:00.000Z"},{"kind":"transfer","mode":"walk","from":{"crs":"CLK","name":"Clock House"},"to":{"crs":"KTH","name":"Kent House"},"departure":"2026-10-27T11:08:00.000Z","arrival":"2026-10-27T11:19:00.000Z"}]},{"id":"903de2bad650d2b0202b430526636bc6d95987e7e16d4e9fc2fe8431fe3188cb.9e9baec0039afb99716f9dd223b9eee1","departure":"2026-10-27T10:51:00.000Z","arrival":"2026-10-27T11:31:00.000Z","durationMinutes":40,"changes":1,"legs":[{"kind":"vehicle","mode":"rail","from":{"crs":"BFR","name":"London Blackfriars"},"to":{"crs":"HNH","name":"Herne Hill"},"departure":"2026-10-27T10:51:00.000Z","arrival":"2026-10-27T11:04:00.000Z"},{"kind":"transfer","mode":"interchange","from":{"crs":"HNH","name":"Herne Hill"},"to":{"crs":"HNH","name":"Herne Hill"},"departure":"2026-10-27T11:04:00.000Z","arrival":"2026-10-27T11:08:00.000Z"},{"kind":"vehicle","mode":"rail","from":{"crs":"HNH","name":"Herne Hill"},"to":{"crs":"KTH","name":"Kent House"},"departure":"2026-10-27T11:22:00.000Z","arrival":"2026-10-27T11:31:00.000Z"}]}]
+        """#.utf8)
+        let plans = try PlannerTime.decoder().decode([PlannedJourney].self, from: data)
+        let time = try #require(ISO8601DateFormatter().date(from: "2026-10-27T10:25:00Z"))
+        let route = group(["BFR", "KTH"])
+        let stations = group(["BFR", "LBG", "CLK", "HNH", "KTH"]).stationSequence
+        #expect(JourneyUpdateActions.trackingGroup(for: route, plan: plans[0], stations: stations) == nil)
+        let tracked = try #require(JourneyUpdateActions.firstTrackingGroup(for: route,
+            plans: plans, stations: stations, now: time))
+        #expect(tracked.stationSequence.map(\.crs) == ["BFR", "HNH", "KTH"])
+        #expect(JourneyUpdateActions.firstTrackingGroup(for: route,
+            plans: [plans[0]], stations: stations, now: time) == nil)
+        #expect(JourneyUpdateActions.firstTrackingGroup(for: route,
+            plans: plans, stations: stations, now: time.addingTimeInterval(3600)) == nil)
+    }
+
+    private func trackingPlan(_ codes: [String]) throws -> PlannedJourney {
+        let legs: [[String: Any]] = zip(codes, codes.dropFirst()).enumerated().map { index, pair in
+            ["kind": "vehicle", "mode": "rail", "from": ["crs": pair.0, "name": pair.0],
+             "to": ["crs": pair.1, "name": pair.1],
+             "departure": PlannerTime.iso8601(now.addingTimeInterval(Double(index * 1200))),
+             "arrival": PlannerTime.iso8601(now.addingTimeInterval(Double(index * 1200 + 900)))]
+        }
+        let raw: [String: Any] = ["id": "tracking-plan", "departure": PlannerTime.iso8601(now),
+            "arrival": PlannerTime.iso8601(now.addingTimeInterval(2400)), "durationMinutes": 40,
+            "changes": legs.count - 1, "legs": legs]
+        return try PlannerTime.decoder().decode(PlannedJourney.self, from: JSONSerialization.data(withJSONObject: raw))
     }
 
     private func journey(live: PlannerLiveAnnotation? = nil, departure: Date? = nil) throws -> PlannedJourney {

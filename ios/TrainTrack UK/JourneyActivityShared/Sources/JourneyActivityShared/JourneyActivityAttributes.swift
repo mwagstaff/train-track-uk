@@ -65,6 +65,7 @@ public struct JourneyActivityAttributes: Codable, Hashable {
     public struct ContentState: Codable, Hashable {
         public var fromCRS: String
         public var toCRS: String
+        public var connectionStationName: String? = nil
         public var routeTitle: String?
         public var deepLinkFromCRS: String?
         public var deepLinkToCRS: String?
@@ -170,11 +171,12 @@ public struct JourneyActivityAttributes: Codable, Hashable {
         }
 
         private enum CodingKeys: String, CodingKey {
-            case fromCRS, toCRS, routeTitle, deepLinkFromCRS, deepLinkToCRS, destinationTitle, arrivalLabel, scheduledDeparture, length, platform, estimated, isCancelled, statusText, delayMinutes, arrivalDelayMinutes, upcomingDepartures, lastUpdated, activityID, revision, appIsActive, journeyUpdatesEnabled, scheduleKey, windowStart, windowEnd, journeyPhase, journeyStartName, journeyDestinationName
+            case connectionStationName, fromCRS, toCRS, routeTitle, deepLinkFromCRS, deepLinkToCRS, destinationTitle, arrivalLabel, scheduledDeparture, length, platform, estimated, isCancelled, statusText, delayMinutes, arrivalDelayMinutes, upcomingDepartures, lastUpdated, activityID, revision, appIsActive, journeyUpdatesEnabled, scheduleKey, windowStart, windowEnd, journeyPhase, journeyStartName, journeyDestinationName
         }
 
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
+            connectionStationName = try container.decodeIfPresent(String.self, forKey: .connectionStationName)
             fromCRS = try container.decode(String.self, forKey: .fromCRS)
             toCRS = try container.decode(String.self, forKey: .toCRS)
             routeTitle = try container.decodeIfPresent(String.self, forKey: .routeTitle)

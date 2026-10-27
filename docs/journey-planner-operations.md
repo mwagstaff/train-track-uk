@@ -773,3 +773,79 @@ existing header controls still have 30-point minimum frames. Clipping checks
 remain enabled, and the planner/largest-text scenarios passed hit-region
 audits. Previews are saved in `.release-prep/journey-times-20260918/` locally.
 These changes have not been deployed.
+
+### Same-day full-feed revisions and incident evidence
+
+A later full feed may advance the sequence on the same publication date (observed
+26 October 2026: 001 at 11:46 UTC, then 002 at 21:00 UTC). The importer accepts
+only the next sequence when S3 LastModified is newer than the committed full
+object. Other same-day sequence conflicts still fail closed. Normal compact
+validation, coverage-change protection and atomic activation remain mandatory.
+
+Planner console lines now carry UTC event timestamps. Ingestion state records
+lastFinishedAt, phase and a safe lastErrorMessage in addition to lastErrorCode;
+upstream output remains suppressed to avoid credential leakage. The scheduler
+logs a bounded result summary from its own child's persisted state. AIOps reads
+an allowlisted state summary and explicit timestamped log events. Its
+planner-ingestion runbook requires ingestion success and source resolution;
+HTTP health alone does not prove timetable freshness. Legacy untimestamped
+lines cannot be retrospectively dated and remain historical evidence only.
+
+Verified 26 October 2026: Mini activated sequence 002 at 22:45:24 UTC; Sky
+Prometheus reported ingestion error=0 and Alertmanager had no planner alert.
+AIOps on Sky collected timestamped events and the ingestion summary through its
+restricted peer runner; an in-memory replay of the original alert used the new
+runbook, found no evidence quality gaps, and verified source clearance without
+sending a duplicate notification. Both responders and private runners were updated.
+Mini now runs the planner as a system LaunchDaemon; the generic deployer could
+not perform its privileged restart, so deployment was completed through the
+already-installed restricted train-track-boot-service-admin restart helper.
+Functional smoke checks passed for KTH-VIC (including queued search), KTH-INV,
+ABD-PNZ and HHD-NRW. CLK-CDB returned no journeys for 27 October at 09:00 on
+both the old 001 and new 002 datasets; that broader pre-existing routing case
+remains outside this ingestion fix.
+
+The original incident e7c9887e-ef99-4e56-8492-839640efed9d recorded source
+resolution at 22:47:45 UTC; its Pushover and email resolution notifications were
+marked delivered. Its historical needs_review assessment is retained. Validation:
+52 focused ingestion tests passed (one optional national-corpus test skipped),
+85 AIOps Node tests and 21 Python tests passed; TypeScript checking passed.
+
+
+### Saved-route board diagnostics (27 October 2026)
+
+The v4 route-boards envelope now reports `policy: saved-route-raptor-v2`.
+A response without this marker is from an earlier saved-route implementation.
+After deploying the standalone planner on Mini, verify this through the public
+Sky gateway, rather than assuming an API-only Sky deployment updated the planner.
+The current implementation creates RAPTOR plans and uses a new cache namespace;
+it must not reuse a pre-deployment `original` plan under the old policy.
+
+Structured `saved-route.*` lines in the planner process log include UTC `at`,
+policy, route station codes and requested time. Events cover direct-board choice,
+cache hit/rejection and age, plan start/result/error, live composition and refresh.
+Result summaries report algorithm, returned/upcoming/disrupted counts, truncation,
+window, live status and at most five departure timestamps. Live composition adds
+bounded per-station-pair option counts to distinguish missing legs from rejected
+connections. No device tokens, caller/network identifiers or provider payloads
+are logged. These events run during actual checks, not each polling response.
+
+The iOS `savedRoutes.board` diagnostic reports the received policy, source, phase,
+algorithm, returned/upcoming/direct counts, truncation, computation time and error
+code. Correlate route and timestamps with the server events. `unreported` policy
+plus `original` algorithm and an old computation time indicates old serving code;
+a RAPTOR plan with results followed by an empty live composition indicates a
+refresh problem instead. Keep the response `x-request-id` with captured evidence.
+
+Deployment verification at 09:55 UTC: Mini still had the 09:16
+`saved-route-direct-first-v1` file before this targeted deployment. Only
+`saved-route-boards.js` and `saved-route-live.js` were copied from the local
+checkout; prior copies are retained under Mini's
+`~/.local/share/train-track-planner/deployment-checks/20261027-bfr-diagnostics`.
+The restricted service helper restarted `com.train-track-planner.api`. Public
+v4 responses then reported `saved-route-raptor-v2`, RAPTOR and five BFR–KTH
+options, including 10:06–10:46 and 10:21–11:01. Logs confirmed five planned
+results and five retained after live refresh (scheduled times; live confirmation
+unavailable). A subsequent public read still returned five options; service PID
+and restart count remained stable, health was OK, and both deployed file hashes
+matched local sources. The optional iOS board diagnostics require an app rebuild.

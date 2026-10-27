@@ -95,6 +95,44 @@ struct InProgressOfflineTests {
         #expect(InProgressJourneyPresentation.savedArrivalTime(for: leg, destinationCRS: "BNE") == nil)
     }
 
+    @Test func connectionWindowIncludesThreeMinutesEarlyAndUsesLiveTimes() {
+        let now = Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 27, hour: 7, minute: 40))!
+        let arrival = JourneyItineraryBuilder.date(for: "07:57", now: now)!
+        func departure(_ scheduled: String, _ estimated: String) -> DepartureV2 {
+            DepartureV2(departureTime: DepartureTimeV2(scheduled: scheduled, estimated: estimated),
+                serviceType: "train", platform: "1", isCancelled: false, length: nil,
+                destination: [], origin: nil, serviceID: scheduled, delayReason: nil, cancelReason: nil, timestamp: nil)
+        }
+        #expect(!ConnectionDeparturePolicy.isVisible(departure("07:53", "07:53"), arrival: arrival, now: now))
+        #expect(ConnectionDeparturePolicy.isVisible(departure("07:54", "07:54"), arrival: arrival, now: now))
+        #expect(ConnectionDeparturePolicy.isUnlikely(departure("07:54", "07:54"), arrival: arrival, now: now))
+        #expect(!ConnectionDeparturePolicy.isUnlikely(departure("07:57", "07:57"), arrival: arrival, now: now))
+        #expect(!ConnectionDeparturePolicy.isUnlikely(departure("07:54", "08:01"), arrival: arrival, now: now))
+        #expect(ConnectionDeparturePolicy.isVisible(departure("07:50", "08:01"), arrival: arrival, now: now))
+        #expect(ConnectionDeparturePolicy.isVisible(departure("07:50", "07:50"), arrival: nil, now: now))
+    }
+
+    @Test func servicePickerPinsSuggestionThenOrdersOtherServicesByScheduledDate() {
+        let midnight = Date(timeIntervalSince1970: 1_800_000_000)
+        func departure(_ id: String, offset: Double, delayedBy: Double = 0) -> RecentDepartureV2 {
+            let date = midnight.addingTimeInterval(offset)
+            return RecentDepartureV2(serviceID: id, serviceType: "train", fromCRS: "BFR", toCRS: "HNH",
+                scheduledDeparture: "00:00", estimatedDeparture: nil, actualDeparture: nil,
+                scheduledDepartureAt: date, estimatedDepartureAt: date.addingTimeInterval(delayedBy),
+                actualDepartureAt: nil, platform: nil, isCancelled: false, lastObservedAt: midnight)
+        }
+        let input = [departure("suggestion", offset: 1800), departure("late", offset: 900),
+            departure("previous-day", offset: -60, delayedBy: 3600), departure("tie-b", offset: 0),
+            departure("tie-a", offset: 0)]
+        let ordered = InProgressJourneyPresentation.servicePickerDepartures(input) { left, right in
+            left.id == "suggestion" && right.id != "suggestion"
+        }
+        #expect(ordered.map(\.id) == ["suggestion", "previous-day", "tie-a", "tie-b", "late"])
+        #expect(Set(ordered.map(\.id)).count == input.count)
+        #expect(InProgressJourneyPresentation.servicePickerDepartures([]) { _, _ in false }.isEmpty)
+        #expect(InProgressJourneyPresentation.servicePickerDepartures([input[0]]) { _, _ in false } == [input[0]])
+    }
+
     private func isolatedDefaults() -> UserDefaults {
         let suite = "InProgressOfflineTests-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!

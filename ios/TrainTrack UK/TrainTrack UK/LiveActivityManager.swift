@@ -147,6 +147,7 @@ final class LiveActivityManager: ObservableObject {
         var fallbackEndTimer: Timer?
     }
     private var trackedActivities: [String: TrackedActivity] = [:] // keyed by activity.id
+    private var explicitRouteLegs: [UUID: [Journey]] = [:]
     private var journeyPhaseUpdateIDs: [String: UUID] = [:]
     private var preferredActivityID: String?
     private var activitiesBeingDiscarded: Set<String> = []
@@ -446,7 +447,14 @@ final class LiveActivityManager: ObservableObject {
             let routeState = activity.content.state
             let deepLinkFrom = (routeState.deepLinkFromCRS ?? routeState.fromCRS).uppercased()
             let deepLinkTo = (routeState.deepLinkToCRS ?? routeState.toCRS).uppercased()
-            guard deepLinkFrom == startCRS, deepLinkTo == destinationCRS else { continue }
+            let matchesFirstLeg = checkpoint?.plannedStations.count ?? 0 > 2
+                && routeState.fromCRS.caseInsensitiveCompare(startCRS) == .orderedSame
+                && routeState.toCRS.caseInsensitiveCompare(checkpoint?.plannedStations[1].crs ?? "") == .orderedSame
+            guard (deepLinkFrom == startCRS && deepLinkTo == destinationCRS) || matchesFirstLeg else { continue }
+            if let checkpoint, checkpoint.plannedStations.count > 2 {
+                await updateMultiLegActivity(activity, checkpoint: checkpoint, phase: phase, observedAt: statusObservedAt, routeKey: routeKey, updateID: updateID)
+                continue
+            }
             guard !LiveActivityInProgressUpdatePolicy.isPreBoardingReset(
                 from: routeState.journeyPhase, to: phase
             ) else { continue }
@@ -617,6 +625,106 @@ final class LiveActivityManager: ObservableObject {
         }
     }
 
+    private func updateMultiLegActivity(
+        _ activity: Activity<JourneyActivityAttributes>,
+        checkpoint: ActiveJourneyHistoryCheckpoint,
+        phase: JourneyActivityAttributes.JourneyPhase,
+        observedAt: Date,
+        routeKey: String,
+        updateID: UUID
+    ) async {
+        let store = DeparturesStore.shared
+        let index = checkpoint.plannedLegIndex
+        let stations = checkpoint.plannedStations
+        guard stations.indices.contains(index + 1) else { return }
+        let current = checkpoint.currentLeg
+        if let serviceID = current?.serviceID {
+            _ = await store.ensureServiceDetails(for: [serviceID], force: true)
+        }
+        let isConnection = phase != .arrived && index + 2 < stations.count
+        let displayedIndex = isConnection ? index + 1 : index
+        let journey = Journey(fromStation: stations[displayedIndex], toStation: stations[displayedIndex + 1])
+        var earliest: Date?
+        if isConnection {
+            let time = current?.serviceID.flatMap { store.serviceDetailsById[$0] }?.allStations.first {
+                $0.crs.caseInsensitiveCompare(stations[index + 1].crs) == .orderedSame
+            }.map(callingPointDisplayTime)
+                ?? InProgressJourneyPresentation.savedArrivalTime(for: current, destinationCRS: stations[index + 1].crs)
+            earliest = JourneyItineraryBuilder.date(for: time)
+            await store.refreshSpecificJourney(fromCRS: journey.fromStation.crs, toCRS: journey.toStation.crs)
+        }
+        let selected = isConnection ? JourneyItineraryBuilder.selectDeparture(
+            from: store.departures(for: journey), noEarlierThan: max(earliest ?? Date(), Date())
+        ) : nil
+        var state = activity.content.state
+        state.fromCRS = journey.fromStation.crs
+        state.toCRS = journey.toStation.crs
+        state.deepLinkFromCRS = checkpoint.plannedOrigin.crs
+        state.deepLinkToCRS = checkpoint.plannedDestination.crs
+        state.routeTitle = "\(checkpoint.plannedOrigin.name) → \(checkpoint.plannedDestination.name)"
+        state.journeyStartName = checkpoint.plannedOrigin.name
+        state.journeyDestinationName = checkpoint.plannedDestination.name
+        state.destinationTitle = journey.toStation.name
+        state.journeyPhase = phase
+        state.connectionStationName = isConnection ? journey.fromStation.name : nil
+        state.upcomingDepartures = []
+        state.arrivalDelayMinutes = nil
+        state.revision = nil
+        state.lastUpdated = Date()
+        state.length = selected?.length
+        state.platform = selected?.platform ?? "TBC"
+        state.isCancelled = selected?.isCancelled ?? false
+        state.delayMinutes = 0
+        state.estimated = "—"
+        state.scheduledDeparture = selected?.departureTime.scheduled
+        state.arrivalLabel = nil
+        state.statusText = isConnection ? "No onward departure available" : "Train not yet confirmed"
+        if isConnection, let selected {
+            state.estimated = JourneyItineraryBuilder.departureDisplayTime(selected)
+            state.delayMinutes = calculateDelayMinutes(scheduled: selected.departureTime.scheduled, estimated: state.estimated)
+            state.statusText = "Next leg to \(journey.toStation.name)"
+        } else if !isConnection, let current {
+            state.estimated = InProgressJourneyPresentation.savedArrivalTime(for: current, destinationCRS: journey.toStation.crs) ?? "—"
+            if let serviceID = current.serviceID, let details = store.serviceDetailsById[serviceID] {
+                if let point = details.allStations.first(where: { $0.crs.caseInsensitiveCompare(journey.toStation.crs) == .orderedSame }) {
+                    state.estimated = callingPointDisplayTime(point)
+                    state.platform = point.platform ?? "TBC"
+                }
+                let live = computeLiveStatus(from: details, within: journey.fromStation.crs, toCRS: journey.toStation.crs)
+                state.statusText = live?.text
+                state.delayMinutes = live?.delayMinutes ?? 0
+            }
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm"
+            state.arrivalLabel = (current.actualDepartureAt ?? current.scheduledDepartureAt).map { "Departed \(formatter.string(from: $0))" }
+            if phase == .arrived {
+                state.estimated = (current.actualArrivalAt ?? current.detectedArrivalAt ?? checkpoint.detectedArrivalAt).map(formatter.string(from:)) ?? state.estimated
+                state.statusText = nil
+                state.arrivalDelayMinutes = JourneyHistoryDelayPolicy.confirmedDelayMinutes(
+                    scheduledArrival: current.scheduledArrivalAt, actualArrival: current.actualArrivalAt)
+                state.delayMinutes = state.arrivalDelayMinutes ?? state.delayMinutes
+            }
+        }
+        guard journeyPhaseUpdateIDs[routeKey] == updateID,
+              JourneyTrackingCoordinator.shared.activeJourney?.plannedLegIndex == index || phase == .arrived else { return }
+        await activity.update(ActivityContent(state: state, staleDate: nil))
+        JourneyActivityLifecycleStore.update(activityID: activity.id, state: state)
+        guard journeyPhaseUpdateIDs[routeKey] == updateID else { return }
+        let context: [String: Any] = [
+            "from": journey.fromStation.crs, "to": journey.toStation.crs,
+            "from_name": journey.fromStation.name, "to_name": journey.toStation.name,
+            "route_title": state.routeTitle ?? "", "connection": isConnection,
+            "feeder_service_id": isConnection ? (current?.serviceID ?? "") : "",
+            "earliest_departure_ms": (earliest?.timeIntervalSince1970 ?? 0) * 1000
+        ]
+        _ = await sendLiveActivityJourneyStatus(
+            phase: phase, fromCRS: checkpoint.plannedOrigin.crs, toCRS: checkpoint.plannedDestination.crs,
+            preferredServiceID: isConnection ? nil : current?.serviceID,
+            serviceMatchConfirmed: isConnection || current?.serviceID != nil,
+            statusObservedAt: observedAt, activityID: activity.id, legContext: context
+        )
+    }
+
     private init() {
         startActivityLifecycleLogging()
         startPushToStartTokenObservation()
@@ -733,8 +841,10 @@ final class LiveActivityManager: ObservableObject {
         scheduleKey: String? = nil,
         windowStart: String? = nil,
         windowEnd: String? = nil,
-        validatePreferredService: (() -> Bool)? = nil
+        validatePreferredService: (() -> Bool)? = nil,
+        routeLegs: [Journey]? = nil
     ) async {
+        if let routeLegs { explicitRouteLegs = [journey.groupId: routeLegs] }
         func preferredSelectionIsValid() -> Bool {
             guard let validatePreferredService else { return true }
             guard let preferredServiceID, validatePreferredService() else { return false }
@@ -1525,8 +1635,9 @@ final class LiveActivityManager: ObservableObject {
         let trackedJourney = JourneyTrackingCoordinator.shared.activeJourney
             ?? JourneyTrackingCoordinator.shared.recentlyCompletedJourney
         if let trackedJourney,
-           trackedJourney.plannedOrigin.crs.caseInsensitiveCompare(route.deepLinkFromCRS) == .orderedSame,
-           trackedJourney.plannedDestination.crs.caseInsensitiveCompare(route.deepLinkToCRS) == .orderedSame {
+           ((trackedJourney.plannedOrigin.crs.caseInsensitiveCompare(route.deepLinkFromCRS) == .orderedSame
+             && trackedJourney.plannedDestination.crs.caseInsensitiveCompare(route.deepLinkToCRS) == .orderedSame)
+            || activityID.flatMap { trackedActivities[$0]?.activity.content.state.deepLinkFromCRS } == trackedJourney.plannedOrigin.crs) {
             if let currentLeg = trackedJourney.currentLeg,
                let serviceID = currentLeg.serviceID,
                currentLeg.serviceDetailsMayBeAvailable() {
@@ -1599,8 +1710,9 @@ final class LiveActivityManager: ObservableObject {
         let trackedJourney = JourneyTrackingCoordinator.shared.activeJourney
             ?? JourneyTrackingCoordinator.shared.recentlyCompletedJourney
         if let trackedJourney,
-           trackedJourney.plannedOrigin.crs.caseInsensitiveCompare(route.deepLinkFromCRS) == .orderedSame,
-           trackedJourney.plannedDestination.crs.caseInsensitiveCompare(route.deepLinkToCRS) == .orderedSame {
+           ((trackedJourney.plannedOrigin.crs.caseInsensitiveCompare(route.deepLinkFromCRS) == .orderedSame
+             && trackedJourney.plannedDestination.crs.caseInsensitiveCompare(route.deepLinkToCRS) == .orderedSame)
+            || activityID.flatMap { trackedActivities[$0]?.activity.content.state.deepLinkFromCRS } == trackedJourney.plannedOrigin.crs) {
             await updateJourneyPhase(
                 JourneyTrackingCoordinator.shared.activeJourney == nil ? .arrived : .enRoute,
                 startStation: trackedJourney.plannedOrigin,
@@ -1769,6 +1881,19 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func routePresentation(for journey: Journey) -> RoutePresentation {
+        let coordinator = JourneyTrackingCoordinator.shared
+        let suppliedStations = explicitRouteLegs[journey.groupId].flatMap { legs in
+            legs.first.map { [$0.fromStation] + legs.map(\.toStation) }
+        }
+        let routeStations = coordinator.activeJourney?.plannedStations
+            ?? suppliedStations
+            ?? coordinator.armedCandidates.first(where: {
+                $0.stations.first?.crs == journey.fromStation.crs && $0.stations.dropFirst().first?.crs == journey.toStation.crs
+            })?.stations
+        if let stations = routeStations, let first = stations.first, let last = stations.last,
+           first.crs == journey.fromStation.crs, stations.dropFirst().first?.crs == journey.toStation.crs {
+            return RoutePresentation(title: "\(first.name) → \(last.name)", deepLinkFromCRS: first.crs, deepLinkToCRS: last.crs)
+        }
         let legs = relevantJourneyLegs(for: journey)
         guard let firstLeg = legs.first, let lastLeg = legs.last else {
             return RoutePresentation(
@@ -1797,6 +1922,7 @@ final class LiveActivityManager: ObservableObject {
     }
 
     private func relevantJourneyLegs(for journey: Journey) -> [Journey] {
+        if let legs = explicitRouteLegs[journey.groupId] { return legs }
         guard let group = JourneyStore.shared.journeyGroups().first(where: { $0.id == journey.groupId }) else {
             return [journey]
         }
@@ -2715,7 +2841,9 @@ final class LiveActivityManager: ObservableObject {
         statusObservedAt: Date = Date(),
         arrivalTime: String? = nil,
         arrivalDelayMinutes: Int? = nil,
-        completedAt: Date? = nil
+        completedAt: Date? = nil,
+        activityID: String? = nil,
+        legContext: [String: Any]? = nil
     ) async -> Bool {
         let backgroundTask = AppBackgroundTaskToken(name: "live-activity-journey-status")
         defer { backgroundTask.end() }
@@ -2733,6 +2861,8 @@ final class LiveActivityManager: ObservableObject {
             "phase": phase.rawValue,
             "status_observed_at_ms": statusObservedAt.timeIntervalSince1970 * 1000
         ]
+        if let activityID { payload["activity_id"] = activityID }
+        if let legContext { payload["leg_context"] = legContext }
         if let preferredServiceID, !preferredServiceID.isEmpty {
             payload["service_id"] = preferredServiceID
         }

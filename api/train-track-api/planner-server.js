@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import express from 'express';
+import { format } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import { PlannerService, plannerConfig } from './lib/planner/service.js';
@@ -108,6 +109,14 @@ export function compressLargeResponses(req, res, next) {
 }
 
 async function main() {
+    // Timestamp every physical line, including multiline errors, at emission.
+    for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
+        const write = console[level].bind(console);
+        console[level] = (...args) => {
+            const at = new Date().toISOString();
+            for (const line of format(...args).split('\n')) write(/^\d{4}-\d{2}-\d{2}T/.test(line) ? line : `${at} ${line}`);
+        };
+    }
     const runtime = await createPlannerServer();
     runtime.listen();
     let stopping = false;

@@ -356,3 +356,25 @@ test('opt-in real full939/daily962 ingestion acceptance remains isolated, compac
     heapUsedMiB: Math.round(process.memoryUsage().heapUsed / 1024 ** 2), compactDatabaseBytes: validation.databaseBytes,
     schedules: imported.counts.schedules, routingCalls: imported.counts.routingCalls, pendingGap: result.pendingGap }));
 });
+
+for (const sequence of ['002', '999']) test(`same-day full revision ${sequence} requires forward sequence and newer publication`, async t => {
+  const f = await setup(t); await f.sync(); const before = await f.active();
+  const revised = await archive(f.root, 'revised', { sequence, records: [...schedule('C00001'), ...schedule('D00001')] });
+  await f.source.set('full', revised, { lastModified: '2026-09-18T21:00:00.000Z' });
+  if (sequence === '002') {
+    assert.equal((await f.sync()).result, 'activated');
+    assert.equal((await f.state()).active.currentSequence, '002');
+    assert.equal((await f.sync()).result, 'unchanged');
+  } else {
+    await assert.rejects(f.sync(), /sequences conflict/);
+    assert.deepEqual(await f.active(), before);
+    const state = await f.state();
+    assert.match(state.lastErrorMessage, /sequences conflict/);
+    assert.ok(Date.parse(state.lastFinishedAt) >= Date.parse(state.lastCheckAt));
+  }
+});
+test('same-day next full sequence with older object timestamp remains rejected', async t => {
+  const f = await setup(t); await f.sync();
+  await f.source.set('full', await archive(f.root, 'older', { sequence: '002' }), { lastModified: '2026-09-18T13:00:00.000Z' });
+  await assert.rejects(f.sync(), /sequences conflict/);
+});

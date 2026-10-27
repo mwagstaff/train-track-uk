@@ -1,4 +1,6 @@
 import { spawn as realSpawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timetableIngestionConfig } from './ingestion-source.js';
 
@@ -10,7 +12,7 @@ const TERMINATION_GRACE_MS = 5000;
 // loop. The CLI owns persistence, locking and validation; this owns scheduling.
 export function startTimetableIngestion({ config = timetableIngestionConfig(), spawn = realSpawn, logger = console, timers = DEFAULT_TIMERS } = {}) {
   let active = null, interval = null, stopped = false;
-  const log = (level, message) => logger[level]?.(`[planner-ingestion] ${message}`);
+  const log = (level, message) => logger[level]?.(`${new Date().toISOString()} [planner-ingestion] ${message}`);
   const unref = timer => { timer?.unref?.(); return timer; };
 
   function clearJobTimers(job) {
@@ -24,6 +26,14 @@ export function startTimetableIngestion({ config = timetableIngestionConfig(), s
     clearJobTimers(job);
     active = null;
     if (job.termination === 'stopped') return;
+    // Read only bounded state fields from this child; never echo its raw output.
+    if (job.child?.pid) readFile(join(config.dataDirectory, 'ingestion-state.json'), 'utf8').then(text => {
+      const state = JSON.parse(text);
+      if (state.worker?.pid !== job.child.pid || state.inProgress) return;
+      const safe = value => typeof value === 'string' && /^[a-zA-Z0-9_.:-]{1,80}$/.test(value) ? value : 'unavailable';
+      log(state.lastResult === 'error' || state.lastResult === 'gap' ? 'warn' : 'info',
+        `Result=${safe(state.lastResult)} error=${safe(state.lastErrorCode)} phase=${safe(state.phase)} checkedAt=${safe(state.lastCheckAt)} finishedAt=${safe(state.lastFinishedAt)} sequence=${safe(state.active?.currentSequence)}`);
+    }).catch(() => {});
     if (job.termination === 'timeout') log('warn', 'Timetable check ended after its time limit. Inspect ingestion state for details.');
     else if (code === 0 && !job.failed) log('info', 'Timetable check completed.');
     else log('warn', `Timetable check failed (exit code ${Number.isSafeInteger(code) && code >= 0 ? code : 'unavailable'}). Inspect ingestion state for details.`);

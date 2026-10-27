@@ -11,7 +11,7 @@ const PLAN_MS = 2 * 3600000;
 const LIVE_MS = 30000;
 const LEASE_MS = 120000;
 const MAX_PLAN_BYTES = 256 * 1024;
-const POLICY = 'saved-route-direct-first-v1';
+const POLICY = 'saved-route-raptor-v2';
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const identity = request => ({ origin: request.origin, destination: request.destination, via: request.via,
     maxChanges: request.maxChanges, allowedModes: request.allowedModes,
@@ -19,22 +19,22 @@ const identity = request => ({ origin: request.origin, destination: request.dest
 const errorValue = error => ({ code: error?.code ?? 'LIVE_UNAVAILABLE',
     message: error instanceof PlannerError ? error.message : 'Live departures are temporarily unavailable. Please try again.' });
 
-export function savedRoutePlanKey(request, version, { timeLocked = false } = {}) {
-    return digest({ policy: POLICY, routing: POLICY_VERSION, excludeDirect: !timeLocked, version,
+export function savedRoutePlanKey(request, version, { timeLocked = false, includeDirect = true } = {}) {
+    return digest({ policy: POLICY, routing: POLICY_VERSION, excludeDirect: !includeDirect, version,
         date: londonDate(request.time), ...(timeLocked ? { time: request.time } : {}), request: identity(request) });
 }
 
 // V4 checks the lightweight direct board before touching timetable metadata or
-// the planner. A replacement-bus-only board is also compared with connecting
-// journeys so a much later through bus cannot hide the next usable departure.
+// the planner. Sparse train boards are supplemented with connecting options.
+// Replacement-bus-only boards are compared so a late bus cannot hide an earlier connection.
 export class SavedRouteBoards {
     constructor(service, { live = new SavedRouteLive({ tubeProvider: service?.config?.tubeTrackEnabled ? new TubeTrackProvider() : null }), cache = new RouteBoardCache({
         collection: () => getMongoCollection('planner_saved_route_plans_v1'), maxEntries: 64, maxBytes: 8 * 1024 * 1024
-    }), now = Date.now, searchLog = noOpPlannerSearchLog, maxEntries = 64, maxLive = 4,
+    }), now = Date.now, searchLog = noOpPlannerSearchLog, diagnosticLog = line => console.info(line), maxEntries = 64, maxLive = 4,
     // Plans share the routing pool; keep one worker free for interactive searches.
     maxActive = Math.max(1, (service?.workerCount ?? 1) - 1),
     maxPending = 8, maxPerClient = 4, maxPerNetwork = 4 } = {}) {
-        Object.assign(this, { service, live, cache, now, searchLog, maxEntries, maxLive, maxActive, maxPending, maxPerClient, maxPerNetwork });
+        Object.assign(this, { service, live, cache, now, searchLog, diagnosticLog, maxEntries, maxLive, maxActive, maxPending, maxPerClient, maxPerNetwork });
         this.entries = new Map();
         this.jobs = new Map();
         this.queue = [];
@@ -45,6 +45,23 @@ export class SavedRouteBoards {
         this.closed = false;
         this.sweep = setInterval(() => { this.prune(); this.pumpLive(); this.pump(); }, 10000);
         this.sweep.unref();
+    }
+
+    diagnostic(event, request, fields = {}) {
+        // Public route/timing metadata only: no client, network or provider identifiers.
+        this.diagnosticLog(JSON.stringify({ event: `saved-route.${event}`, at: new Date(this.now()).toISOString(),
+            policy: POLICY, origin: request.origin, destination: request.destination, via: request.via,
+            requestedTime: request.time, ...fields }));
+    }
+
+    resultSummary(result) {
+        const journeys = result?.journeys ?? [];
+        return { algorithm: result?.search?.algorithm ?? null, resultCount: journeys.length,
+            upcomingCount: journeys.filter(journey => Date.parse(journey.departure) >= this.now()).length,
+            disruptedCount: result?.disruptedJourneys?.length ?? 0,
+            truncated: result?.search?.searchTruncated === true, provisional: result?.search?.provisional === true,
+            window: result?.search?.window ?? null, liveStatus: result?.live?.status ?? null,
+            departures: journeys.slice(0, 5).map(journey => journey.departure) };
     }
 
     get active() { return this.running.values().next().value ?? null; }
@@ -75,7 +92,7 @@ export class SavedRouteBoards {
             return this.present(entry, route.id);
         });
         this.pumpLive();
-        return { apiVersion: 4, boards };
+        return { apiVersion: 4, policy: POLICY, boards };
     }
 
     schedule(entry) {
@@ -120,6 +137,7 @@ export class SavedRouteBoards {
             this.activeLive.add(entry);
             this.update(entry, controller.signal).catch(error => {
                 if (!controller.signal.aborted) {
+                    this.diagnostic('update-error', entry.request, { code: error.code ?? 'LIVE_UNAVAILABLE' });
                     if (entry.directCandidate) {
                         entry.source = 'direct';
                         entry.value = this.directValue(entry.directCandidate);
@@ -152,8 +170,10 @@ export class SavedRouteBoards {
         if (!entry.timeLocked) {
             const direct = await this.live.direct(request, { signal });
             if (signal.aborted) return;
+            this.diagnostic('direct', request, { status: direct.status, count: direct.snapshot?.departures?.length ?? 0,
+                supplement: direct.supplementWithConnections === true, compare: direct.compareWithConnections === true });
             entry.nextCheckAt = this.now() + LIVE_MS;
-            if (direct.status === 'available' && !direct.compareWithConnections) {
+            if (direct.status === 'available' && !direct.compareWithConnections && !direct.supplementWithConnections) {
                 this.detach(entry, 'superseded');
                 entry.directCandidate = null;
                 entry.plannedResult = null;
@@ -187,7 +207,10 @@ export class SavedRouteBoards {
             throw new PlannerError('DATASET_UNAVAILABLE', metadata.reason || 'The timetable is temporarily unavailable.', 503);
         }
         const version = metadata.dataset.version;
-        const key = savedRoutePlanKey(request, version, { timeLocked: entry.timeLocked });
+        // Empty live boards do not require excluding scheduled direct services.
+        // Live refresh handles cancellations; all saved routes can use RAPTOR.
+        const includeDirect = true;
+        const key = savedRoutePlanKey(request, version, { timeLocked: entry.timeLocked, includeDirect });
         if (entry.job && entry.job.key !== key) this.detach(entry, 'superseded');
         // Polls can check for the return of direct trains while this shared job
         // runs, but must not race its cache write or replace its final result.
@@ -200,7 +223,10 @@ export class SavedRouteBoards {
         if (!entry.plan) {
             const stored = await this.cache.get(key);
             if (signal.aborted) return;
-            if (stored?.expiresAt > this.now() && this.validPlan(stored.profile, version)) {
+            const usable = stored?.expiresAt > this.now() && this.validPlan(stored.profile, version);
+            this.diagnostic('cache', request, { hit: Boolean(usable), stored: Boolean(stored),
+                ageMs: stored ? this.now() - stored.computedAt : null, ...this.resultSummary(stored?.profile?.result) });
+            if (usable) {
                 entry.plan = { ...stored, key };
                 const result = this.provisionalResult(stored.profile, entry.mode);
                 this.service.retainResult?.(result);
@@ -214,16 +240,19 @@ export class SavedRouteBoards {
         }
         if (!entry.plan) {
             this.plan(entry, { ...request, realtime: 'off',
-                ...(entry.timeLocked && !request.via.length ? { algorithm: 'raptor' } : {}) }, version, key);
+                algorithm: 'raptor' }, version, key, includeDirect);
             return;
         }
         this.detach(entry, 'superseded');
         try {
-            const result = await this.live.refresh(entry.plan.profile, request, { signal, timeLocked: entry.timeLocked });
+            const result = await this.live.refresh(entry.plan.profile, request, { signal, timeLocked: entry.timeLocked,
+                onDiagnostic: fields => this.diagnostic('live-composition', request, fields) });
             if (signal.aborted) {
                 observation?.finish({ status: 'other', outcome: 'cancelled', finishedAt: new Date(this.now()) });
                 return;
             }
+            this.diagnostic('refresh', request, { planCount: entry.plan.profile.result.journeys.length,
+                planAgeMs: this.now() - entry.plan.computedAt, ...this.resultSummary(result) });
             this.service.retainResult?.(result);
             entry.plannedResult = result;
             entry.value = this.preferredValue(result, entry.directCandidate);
@@ -233,6 +262,7 @@ export class SavedRouteBoards {
             observation?.finish({ status: 'success', outcome: result.journeys.length ? 'completed' : 'empty',
                 resultCount: result.journeys.length, firstResultAt: new Date(this.now()), finishedAt: new Date(this.now()) });
         } catch (error) {
+            this.diagnostic('refresh-error', request, { code: error.code ?? 'LIVE_UNAVAILABLE', cancelled: signal.aborted });
             observation?.finish({ status: signal.aborted ? 'other' : 'fail', outcome: signal.aborted ? 'cancelled' : 'failed',
                 errorCode: error.code ?? 'LIVE_UNAVAILABLE', finishedAt: new Date(this.now()) });
             throw error;
@@ -240,7 +270,9 @@ export class SavedRouteBoards {
     }
 
     validPlan(profile, version) {
-        return Array.isArray(profile?.result?.journeys) && profile.result.dataset?.version === version
+        return Array.isArray(profile?.result?.journeys)
+            && !(profile.result.journeys.length === 0 && profile.result.search?.searchTruncated)
+            && profile.result.dataset?.version === version
             && Buffer.byteLength(JSON.stringify(profile)) <= MAX_PLAN_BYTES;
     }
 
@@ -262,16 +294,17 @@ export class SavedRouteBoards {
             .map(journey => Date.parse(journey.departure))
             .filter(value => Number.isFinite(value) && value >= now));
         const directAt = Date.parse(direct?.departureAt);
-        if (direct && (!Number.isFinite(plannedAt) || Number.isFinite(directAt) && directAt <= plannedAt)) {
+        const supplementsDirect = direct?.supplementWithConnections && Number.isFinite(plannedAt);
+        if (direct && !supplementsDirect && (!Number.isFinite(plannedAt) || Number.isFinite(directAt) && directAt <= plannedAt)) {
             return this.directValue(direct);
         }
         return { source: 'planned', result, at: now };
     }
 
-    plan(entry, request, version, key) {
+    plan(entry, request, version, key, includeDirect = false) {
         let job = this.jobs.get(key);
         if (!job) {
-            job = { key, request, version, ...entry.owner, entries: new Set(), queuedAt: this.now(), phase: 'queued',
+            job = { key, request, version, includeDirect, ...entry.owner, entries: new Set(), queuedAt: this.now(), phase: 'queued',
                 controller: new AbortController(), observation: this.searchLog.start({ source: 'saved-route', request,
                     startedAt: new Date(this.now()), datasetVersion: version, cacheStatus: 'miss' }) };
             this.jobs.set(key, job);
@@ -299,10 +332,12 @@ export class SavedRouteBoards {
 
     run(job) {
         this.running.add(job);
+        this.diagnostic('plan-start', job.request, { includeDirect: job.includeDirect,
+            queueMs: this.now() - job.queuedAt, dataset: job.version });
         const config = this.service.config ?? {};
         job.observation.update({ metricsDelta: { admissionQueueMs: Math.max(0, this.now() - job.queuedAt) } });
         Promise.resolve().then(() => this.service.call('savedRoutePlan', { request: job.request, version: job.version,
-            includeDirect: job.entries.values().next().value?.timeLocked === true }, {
+            includeDirect: job.includeDirect }, {
             priority: 'background', signal: job.controller.signal, queueTimeoutMs: config.jobQueueTimeoutMs ?? 480000,
             execution: { timeoutMs: config.jobTimeoutMs ?? 600000, maxOperations: config.jobMaxOperations ?? 1000000000,
                 cpuDutyCycle: config.jobCpuDutyCycle ?? 0.5 },
@@ -314,6 +349,10 @@ export class SavedRouteBoards {
             onTelemetry: value => job.observation.update(value)
         })).then(async profile => {
             if (job.controller.signal.aborted) return;
+            this.diagnostic('plan-result', job.request, this.resultSummary(profile?.result));
+            if (profile?.result?.journeys?.length === 0 && profile.result.search?.searchTruncated) {
+                throw new PlannerError('SEARCH_INCOMPLETE', 'The search could not check the full time window. Please try again.', 503);
+            }
             if (!this.validPlan(profile, job.version)) {
                 throw new PlannerError('PROFILE_TOO_LARGE', 'This saved route could not be cached. Please use the journey planner.', 422);
             }
@@ -338,6 +377,7 @@ export class SavedRouteBoards {
                 resultCount: profile.result.journeys.length, firstResultAt: new Date(this.now()), finishedAt: new Date(this.now()) });
         }).catch(error => {
             if (job.controller.signal.aborted) return;
+            this.diagnostic('plan-error', job.request, { code: error.code ?? 'DATASET_UNAVAILABLE' });
             for (const entry of job.entries) {
                 if (entry.directCandidate) {
                     entry.source = 'direct';

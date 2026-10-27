@@ -87,6 +87,15 @@ test('direct departures use the shared fresh pair lookup without detail requests
     assert.equal(result.expiresAt, new Date(now + 60000).toISOString());
     assert.equal(result.departureAt, utc('12:05'));
     assert.equal(result.compareWithConnections, false);
+    assert.equal(result.supplementWithConnections, true);
+});
+
+test('a full direct train board keeps the lightweight path', async () => {
+    const f = fixture();
+    f.board('ORG', 'DST', [row('D1', '12:05'), row('D2', '12:20'), row('D3', '12:35')]);
+    const result = await f.helper.direct(request);
+    assert.equal(result.supplementWithConnections, false);
+    assert.equal(result.compareWithConnections, false);
 });
 
 test('a replacement-bus-only direct board requests a connecting-journey comparison', async () => {

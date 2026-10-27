@@ -85,3 +85,28 @@ and passed after its timeout. The iOS build emitted existing unrelated actor
 isolation and extension-version warnings.
 
 The backend has not been deployed and the iOS change has not been released.
+
+
+## Multi-leg route handover (27 October 2026)
+
+The iOS status request can now include `activity_id` and `leg_context` for a
+tracked multi-leg route. The activity ID is matched only within the authenticated
+device. The context carries the displayed station pair, station names, full route
+title, connection flag, feeder service ID and earliest connection time. It is
+persisted with the Live Activity subscription and retained during token rotation.
+Older clients continue to use the existing route/phase contract.
+
+While riding an intermediate leg, the API refreshes the feeder arrival and shows
+the next viable departure from the interchange. After boarding the final leg it
+queries that leg's service and shows arrival at the user's destination. The
+published phase remains `en_route`; `connectionStationName` tells the widget to
+label its primary time as the next departure. Late polls and older status requests
+must not restore the previous leg. No new automatic recovery permission or alert
+routing is introduced.
+
+Deploy the API before distributing the rebuilt iOS app. Verify on an iPhone with
+Kent House → Herne Hill → Farringdon: all unstarted numbered departure cards at
+Kent House, onward departure while riding to Herne Hill, then Farringdon ETA after
+boarding there. Background APNs delivery, Dynamic Type and light/dark appearance
+still require device acceptance. Local simulator/API tests do not establish
+production deployment or APNs delivery.

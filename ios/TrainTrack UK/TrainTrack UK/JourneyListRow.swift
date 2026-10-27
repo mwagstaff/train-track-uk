@@ -164,6 +164,7 @@ struct JourneyCard: View {
     let onRemoveJourney: () -> Void
     var showsHeader: Bool = true
     var allowsExpansion: Bool = true
+    var connectionArrival: Date? = nil
     var plannedBoard: SavedRouteBoardState? = nil
     var laterBoard: SavedRouteBoardState? = nil
     var onSearchLater: (() async -> Void)? = nil
@@ -205,6 +206,7 @@ struct JourneyCard: View {
         }
         return depStore.departures(for: firstLeg).filter {
             JourneyCardPresentation.isUpcomingDeparture($0)
+                && ConnectionDeparturePolicy.isVisible($0, arrival: connectionArrival)
         }
     }
 
@@ -241,9 +243,14 @@ struct JourneyCard: View {
         )
     }
 
-    private var usesPlannedJourneys: Bool {
-        plannedBoard?.hasPlannedResult == true
+    private var displayedPlannedBoard: SavedRouteBoardState? {
+        if plannedBoard?.hasPlannedResult == true { return plannedBoard }
+        // The expanded search includes direct trains too; render one ordered list.
+        if isExpanded, laterBoard?.hasPlannedResult == true { return laterBoard }
+        return nil
     }
+
+    private var usesPlannedJourneys: Bool { displayedPlannedBoard != nil }
 
     private var awaitingPlannedResults: Bool {
         guard let plannedBoard else { return false }
@@ -251,7 +258,7 @@ struct JourneyCard: View {
     }
 
     private func hasVisibleDepartures(_ presentation: Presentation) -> Bool {
-        if usesPlannedJourneys { return !(plannedBoard?.upcomingJourneys(at: Date()).isEmpty ?? true) }
+        if usesPlannedJourneys { return !(displayedPlannedBoard?.upcomingJourneys(at: Date()).isEmpty ?? true) }
         if awaitingPlannedResults && !presentation.upcomingDepartures.isEmpty { return true }
         return !presentation.displayedSummaries.isEmpty
     }
@@ -292,7 +299,7 @@ struct JourneyCard: View {
                     .padding(.horizontal, 16)
             }
 
-            if usesPlannedJourneys, let plannedBoard {
+            if usesPlannedJourneys, let plannedBoard = displayedPlannedBoard {
                 SavedRouteBoardView(state: plannedBoard, routeKey: group.stationSequence.map(\.crs).joined(separator: "-"), departureCount: defaultDepartureCount,
                     isInteractive: isInteractive, isExpanded: isExpanded,
                     onRetry: nil,
@@ -376,6 +383,18 @@ struct JourneyCard: View {
                     onNewJourney: onNewJourney
                 )
             }
+            }
+
+            if isExpanded && laterBoard?.isPending == true {
+                ProgressView("Finding more departures…")
+                    .font(.caption)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+            } else if usesDirectDepartures && plannedBoard?.isPending == true {
+                ProgressView("Checking connecting journeys…")
+                    .font(.caption)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
             }
 
             if showsLaterDeparturesControl(canExpand: presentation.canExpand) {
@@ -729,7 +748,16 @@ struct JourneyCard: View {
     }
 
     private func styledDepartureRow(_ summary: Summary, isLast: Bool, presentation: Presentation) -> some View {
-        departureRow(summary, presentation: presentation)
+        VStack(alignment: .leading, spacing: 6) {
+            departureRow(summary, presentation: presentation)
+                .opacity(ConnectionDeparturePolicy.isUnlikely(summary.firstDeparture, arrival: connectionArrival) ? 0.55 : 1)
+            if ConnectionDeparturePolicy.isUnlikely(summary.firstDeparture, arrival: connectionArrival) {
+                Label("Unlikely connection — departs before you arrive at \(firstLeg.fromStation.name).", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.yellow)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.leading, 16)
             .padding(.trailing, 16)

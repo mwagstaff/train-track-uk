@@ -279,15 +279,23 @@ test('RAPTOR indexing is lazy, reuses an immutable dated graph and releases it w
     assert.equal(engine.networks.size, 1);
 });
 
-test('time-locked saved-route work can include direct RAPTOR journeys', async t => {
-    const { engine, originalCalls } = fixture(t);
-    const profile = await engine.savedRoutePlan({
-        request: { ...body, algorithm: 'raptor', via: [] },
-        version,
-        includeDirect: true
-    });
-    assert.equal(profile.result.search.algorithm, 'raptor');
-    assert.ok(profile.result.journeys.length > 0);
+test('saved-route work supports RAPTOR with and without required intermediate stations', async t => {
+    const { engine, repo, originalCalls } = fixture(t);
+    for (const service of repo.resolveServices('2026-09-18').services) {
+        const time = service.calls[0].departure + 10 * 60000;
+        service.calls.splice(1, 0, { station: 'BBB', arrival: time, departure: time,
+            canBoard: true, canAlight: true });
+    }
+    for (const via of [[], ['BBB']]) {
+        const profile = await engine.savedRoutePlan({
+            request: { ...body, algorithm: 'raptor', via },
+            version,
+            includeDirect: true
+        });
+        assert.equal(profile.result.search.algorithm, 'raptor');
+        assert.deepEqual(profile.result.search.via, via);
+        assert.ok(profile.result.journeys.length > 0);
+    }
     assert.equal(originalCalls(), 0);
 });
 

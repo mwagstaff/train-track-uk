@@ -2,6 +2,42 @@ import Foundation
 
 @MainActor
 enum JourneyUpdateActions {
+    static let selectedSubscriptionKey = "inProgressSelectedSubscriptionID"
+
+    static func selectStartedSession(_ id: String, defaults: UserDefaults = .standard) {
+        defaults.set(id, forKey: selectedSubscriptionKey)
+    }
+
+    /// A saved route describes required stops; a planner result describes actual trains.
+    static func trackingGroup(for group: JourneyGroup, plan: PlannedJourney, stations: [Station]) -> JourneyGroup? {
+        let trains = plan.legs.filter { $0.kind == "vehicle" }
+        guard !trains.isEmpty, trains.allSatisfy({ $0.mode == "rail" && $0.live?.isCancelled != true }),
+              plan.legs.allSatisfy({ $0.kind == "vehicle" || ($0.isTrainChange && $0.from.crs == $0.to.crs) }),
+              trains.first?.from.crs == group.startStation.crs,
+              trains.last?.to.crs == group.endStation.crs,
+              zip(trains, trains.dropFirst()).allSatisfy({ $0.to.crs == $1.from.crs }) else { return nil }
+        let known = group.stationSequence + stations
+        var legs: [Journey] = []
+        for (index, train) in trains.enumerated() {
+            guard let from = known.first(where: { $0.crs == train.from.crs }),
+                  let to = known.first(where: { $0.crs == train.to.crs }) else { return nil }
+            legs.append(Journey(id: UUID(), groupId: group.id, legIndex: index,
+                fromStation: from, toStation: to, createdAt: group.legs[0].createdAt, favorite: false))
+        }
+        return JourneyGroup(id: group.id, legs: legs)
+    }
+
+    static func firstTrackingGroup(
+        for group: JourneyGroup, plans: [PlannedJourney], stations: [Station], now: Date
+    ) -> JourneyGroup? {
+        for plan in plans.filter({ $0.departure >= now }).sorted(by: { $0.departure < $1.departure }) {
+            if let resolved = trackingGroup(for: group, plan: plan, stations: stations) {
+                return resolved
+            }
+        }
+        return nil
+    }
+
     static func scheduledRouteKey(for group: JourneyGroup) -> String {
         let crs = group.stationSequence.map { $0.crs.uppercased() }
         let forward = crs.joined(separator: "-")
@@ -14,7 +50,7 @@ enum JourneyUpdateActions {
     }
 
     static func start(
-        group: JourneyGroup,
+        group requestedGroup: JourneyGroup,
         scheduledSubscription: NotificationSubscription?,
         liveSession: NotificationSubscription?,
         liveActivityDurationMinutes: Int,
@@ -24,6 +60,7 @@ enum JourneyUpdateActions {
         preferredServiceID: String? = nil,
         validatePreferredService: (() -> Bool)? = nil
     ) async -> Bool {
+        var group = requestedGroup
         let allowed = await NotificationAuthorizationManager.ensureAuthorized()
         guard !Task.isCancelled else { return false }
         guard allowed else {
@@ -71,7 +108,26 @@ enum JourneyUpdateActions {
             activityManager.lastMessage = PlannerTrainTracking.unavailable.message
             return false
         }
-        let legsForActivity = Array(group.legs.prefix(3))
+        // Use the same directional board the user saw, without treating a timetable ID
+        // as evidence that they have boarded a particular train.
+        if preferredServiceID == nil {
+            let planner = SavedRoutePlannerStore.shared
+            var board = planner.state(for: requestedGroup)
+            if board.board == nil {
+                await planner.refresh(groups: [requestedGroup])
+                board = planner.state(for: requestedGroup)
+            }
+            if board.hasPlannedResult {
+                guard let resolved = firstTrackingGroup(for: requestedGroup,
+                    plans: board.result?.journeys ?? [], stations: StationsService.shared.stations, now: Date()) else {
+                    ToastStore.shared.show("No rail-only journey is available to track. Routes with walking, bus or Tube legs cannot be started here.", icon: "exclamationmark.triangle.fill")
+                    return false
+                }
+                group = resolved
+            }
+        }
+        guard !Task.isCancelled else { return false }
+        let legsForActivity = group.legs
         guard await startLiveActivities(
             for: legsForActivity,
             activityManager: activityManager,
@@ -91,7 +147,8 @@ enum JourneyUpdateActions {
                 pushToken: pushToken,
                 liveActivityDurationMinutes: liveActivityDurationMinutes
             )
-            _ = try await notificationStore.upsertLiveSession(request)
+            let startedSession = try await notificationStore.upsertLiveSession(request)
+            selectStartedSession(startedSession.id)
             if validatePreferredService == nil {
                 await activityManager.setJourneyUpdatesEnabled(
                     for: legsForActivity,
@@ -139,7 +196,8 @@ enum JourneyUpdateActions {
                 preferredServiceID: preferredServiceID,
                 triggeredByUser: true,
                 bypassSuppression: true,
-                validatePreferredService: validatePreferredService
+                validatePreferredService: validatePreferredService,
+                routeLegs: journeys
             )
         }
 

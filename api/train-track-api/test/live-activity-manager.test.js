@@ -480,3 +480,89 @@ test('station delay crosses midnight without becoming on time', () => {
     assert.equal(liveActivityManager.calculateDelay('23:58', '00:07'), 9);
     assert.equal(liveActivityManager.calculateDelay('23:58', '23:57'), 0);
 });
+
+
+test('multi-leg activity repairs route, shows onward departure, then final destination ETA', async () => {
+    const manager = new LiveActivityManager();
+    const subscription = { deviceId: 'multi-device', activityId: 'multi-activity',
+        fromStation: 'KTH', toStation: 'HNH', deepLinkFromStation: 'KTH', deepLinkToStation: 'STP',
+        displayName: 'Kent House → London St Pancras International via HNH',
+        journeyPhase: 'en_route', preferredServiceId: 'first-train',
+        lastSnapshot: { departures: [{ serviceID: 'first-train', arrivalTime: '07:58' }] } };
+    manager.subscriptions.set(manager.buildKey(subscription.deviceId, subscription.activityId), subscription);
+    manager.saveSubscriptionToMongo = async () => {};
+    manager.pollSubscription = async () => ({ sent: true });
+    const context = { from: 'HNH', to: 'ZFD', from_name: 'Herne Hill', to_name: 'Farringdon',
+        route_title: 'Kent House → Farringdon', connection: true, feeder_service_id: 'first-train', earliest_departure_ms: 1000 };
+    await manager.handleJourneyPhase('multi-device', { activityId: 'multi-activity', fromStation: 'KTH', toStation: 'ZFD',
+        phase: 'en_route', statusObservedAtMs: 1000, legContext: context });
+    assert.equal(subscription.lastSnapshot, null);
+    assert.equal(subscription.deepLinkToStation, 'ZFD');
+    assert.deepEqual(manager.serializeSubscription(subscription).legContext, subscription.legContext);
+    const snapshot = { fetchedAt: '2026-10-27T07:49:00Z', departures: [{ serviceID: 'second-train',
+        scheduled: '07:57', estimated: '08:01', arrivalTime: '08:16', platform: '1', arrivalPlatform: '3',
+        departedTime: '08:04', destination: [{ locationName: 'St Albans' }] }] };
+    const connection = manager.buildContentState(subscription, snapshot);
+    assert.equal(connection.routeTitle, 'Kent House → Farringdon');
+    assert.equal(connection.connectionStationName, 'Herne Hill');
+    assert.equal(connection.destinationTitle, 'Farringdon');
+    assert.equal(connection.estimated, '08:01');
+    assert.equal(connection.platform, '1');
+    assert.equal(connection.journeyPhase, 'en_route');
+    await manager.handleJourneyPhase('multi-device', { activityId: 'multi-activity', fromStation: 'KTH', toStation: 'ZFD',
+        phase: 'en_route', statusObservedAtMs: 2000, preferredServiceId: 'second-train', legContext: { ...context, connection: false } });
+    const finalLeg = manager.buildContentState(subscription, snapshot);
+    assert.equal(finalLeg.connectionStationName, null);
+    assert.equal(finalLeg.estimated, '08:16');
+    assert.equal(finalLeg.destinationTitle, 'Farringdon');
+    assert.equal(finalLeg.arrivalLabel, 'Departed 08:04');
+    await manager.handleJourneyPhase('multi-device', { activityId: 'multi-activity', phase: 'en_route',
+        statusObservedAtMs: 1500, legContext: context });
+    assert.equal(subscription.legContext.connection, false);
+    assert.equal(subscription.preferredServiceId, 'second-train');
+    // An activity ID must still belong to the authenticated device.
+    assert.equal((await manager.handleJourneyPhase('different-device', { activityId: 'multi-activity', phase: 'en_route',
+        legContext: context })).updated, 0);
+});
+
+test('token rotation retains the tracked multi-leg route and connection context', () => {
+    const manager = new LiveActivityManager();
+    const existing = { deviceId: 'multi-device', activityId: 'multi-token', fromStation: 'KTH', toStation: 'HNH',
+        deepLinkFromStation: 'KTH', deepLinkToStation: 'ZFD', displayName: 'Kent House → Farringdon',
+        journeyPhase: 'en_route', legContext: { from: 'HNH', to: 'ZFD', connection: true } };
+    const key = manager.buildKey(existing.deviceId, existing.activityId);
+    manager.subscriptions.set(key, existing);
+    manager.evictDuplicateSessionsForDevice = () => { manager.subscriptions.delete(key); return []; };
+    const updated = manager.registerSubscription({ ...existing, pushToken: 'rotated', journeyPhase: 'pending_start',
+        displayName: 'Kent House → St Pancras', deepLinkToStation: 'STP' });
+    assert.equal(updated.deepLinkToStation, 'ZFD');
+    assert.equal(updated.displayName, 'Kent House → Farringdon');
+    assert.deepEqual(updated.legContext, existing.legContext);
+});
+
+
+test('an in-flight poll cannot restore the previous leg after a status change', async () => {
+    const manager = new LiveActivityManager();
+    const subscription = { deviceId: 'poll-device', activityId: 'poll-activity', fromStation: 'KTH', toStation: 'HNH',
+        journeyPhase: 'en_route', lastJourneyStatusObservedAtMs: 1000 };
+    manager.getDeparturesSnapshot = async () => {
+        subscription.lastJourneyStatusObservedAtMs = 2000;
+        return { fetchedAt: new Date().toISOString(), departures: [{ serviceID: 'old-train' }] };
+    };
+    manager.pushClient = { sendLiveActivityUpdate: async () => { assert.fail('stale leg must not be pushed'); } };
+    const result = await manager.pollSubscription(subscription, { force: true });
+    assert.equal(result.reason, 'journey_changed');
+    assert.equal(subscription.lastSnapshot, undefined);
+});
+
+test('multi-leg empty onward board clears the previous train', () => {
+    const content = liveActivityManager.buildContentState({ fromStation: 'KTH', toStation: 'HNH',
+        journeyPhase: 'en_route', preferredServiceId: 'old-train',
+        legContext: { from: 'HNH', to: 'ZFD', fromName: 'Herne Hill', toName: 'Farringdon',
+            routeTitle: 'Kent House → Farringdon', connection: true } },
+        { fetchedAt: new Date().toISOString(), departures: [] });
+    assert.equal(content.connectionStationName, 'Herne Hill');
+    assert.equal(content.statusText, 'No onward departure available');
+    assert.equal(content.arrivalLabel, null);
+    assert.notEqual(content.estimated, '07:58');
+});
