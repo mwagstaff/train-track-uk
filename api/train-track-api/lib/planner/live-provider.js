@@ -1,5 +1,6 @@
 import { getWithRetry } from '../upstream-api-client.js';
 import { LIVE_CONCURRENCY } from './upstream-broker.js';
+import { normalizeStaffDepartureBoard, parseStaffServiceReference } from '../staff-departures.js';
 
 // Public LDBWS JSON supplies board-relative IDs and clock times, not Darwin
 // UID/RID/origin dates. Preserve these observations for separate strict matching.
@@ -74,7 +75,14 @@ export class PlannerLiveProvider {
         throw new TypeError('Invalid live service reference');
       }
       const key = `details:${station}:${serviceID}`;
-      unique.set(key, { kind: 'details', station, serviceID, key, url: `${DETAILS_URL}${encodeURIComponent(serviceID)}` });
+      if (serviceID.startsWith('staff_')) {
+        const reference = parseStaffServiceReference(serviceID);
+        if (!reference || reference.station !== station) throw new TypeError('Invalid staff service reference');
+        unique.set(key, { kind: 'staffDetails', station, serviceID, key, type: reference.type,
+          url: `${STAFF_BOARD_URL}${station}/${reference.scheduled}?numRows=149&timeWindow=2&services=${reference.type}` });
+      } else {
+        unique.set(key, { kind: 'details', station, serviceID, key, url: `${DETAILS_URL}${encodeURIComponent(serviceID)}` });
+      }
     }
     return this.fetchBatch([...unique.values()], 'details', options);
   }
@@ -109,7 +117,7 @@ export class PlannerLiveProvider {
         const request = requests[cursor++];
         const cached = this.cached(request.key, options.now ?? this.now());
         if (cached) { result[resultKey].push(cached); continue; }
-        const key = this.credentials()[request.kind === 'staff' ? 'staff' : request.kind === 'board' ? 'board' : 'details'];
+        const key = this.credentials()[request.kind.startsWith('staff') ? 'staff' : request.kind === 'board' ? 'board' : 'details'];
         if (!key) { result.errors.push(failure(request, 'credentialsUnavailable')); continue; }
         if (!this.inflight.has(request.key) && budget.used >= budget.limit) {
           result.limited = true;
@@ -170,13 +178,19 @@ export class PlannerLiveProvider {
     try {
       boundedSignal.throwIfAborted();
       const response = await this.request({
-        api: item.kind === 'staff' ? 'rail_staff_departure_board' : item.kind === 'board' ? 'rail_departure_board' : 'rail_service_details',
-        operation: item.kind === 'staff' ? 'get_departure_board_with_details' : item.kind === 'board' ? 'get_departure_board' : 'get_service_details',
+        api: item.kind.startsWith('staff') ? 'rail_staff_departure_board' : item.kind === 'board' ? 'rail_departure_board' : 'rail_service_details',
+        operation: item.kind.startsWith('staff') ? 'get_departure_board_with_details' : item.kind === 'board' ? 'get_departure_board' : 'get_service_details',
         url: item.url, headers: { 'x-apikey': apiKey },
         timeoutMs: TIMEOUT_MS, maxRetries: 0, signal: boundedSignal
       });
       boundedSignal.throwIfAborted();
       const fetchedAt = new Date(fixedNow ?? this.now()).toISOString();
+      if (item.kind === 'staffDetails') {
+        // Staff IDs are local dated identities, not public GetServiceDetails IDs.
+        // Select the exact train; never attach a neighbouring service's evidence.
+        const detail = normalizeStaffDepartureBoard(response.data, item).details.get(item.serviceID);
+        return normalizeDetails(detail, item, fetchedAt);
+      }
       return item.kind === 'staff' ? normalizeStaffBoard(response.data, item, fetchedAt)
         : item.kind === 'board' ? normalizeBoard(response.data, item, fetchedAt)
         : normalizeDetails(response.data, item, fetchedAt);
