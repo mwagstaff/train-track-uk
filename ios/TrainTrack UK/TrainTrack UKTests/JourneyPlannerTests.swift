@@ -569,14 +569,28 @@ struct JourneyPlannerTests {
         #expect(JourneyCardPresentation.liveProgressLabel(onTime) == onTime.text)
     }
 
-    @Test func trainFormationOnlyShowsForShortTrainsOrKnownLoading() {
-        #expect(!TrainLengthIndicator(cars: 8, warningThreshold: 4).isNotable)
-        #expect(TrainLengthIndicator(cars: 4, warningThreshold: 4).isNotable)
-        #expect(!TrainLengthIndicator(cars: nil, warningThreshold: 4).isNotable)
+    @Test func trainLengthPreferenceUsesTheShortTrainThreshold() {
+        let long = TrainLengthIndicator(cars: 8, warningThreshold: 4)
+        #expect(long.visibleCarCount(shortTrainsOnly: false) == 8)
+        #expect(long.visibleCarCount(shortTrainsOnly: true) == nil)
+        #expect(TrainLengthIndicator(cars: 4, warningThreshold: 4).visibleCarCount(shortTrainsOnly: true) == 4)
+        #expect(TrainLengthIndicator(cars: 8, warningThreshold: 8).visibleCarCount(shortTrainsOnly: true) == 8)
+        #expect(TrainLengthIndicator(cars: nil, warningThreshold: 4).visibleCarCount(shortTrainsOnly: false) == nil)
+        let loaded = CoachLoadingV1(number: "1", position: 1, percentage: 40, band: nil, coachClass: nil)
+        #expect(TrainLengthIndicator(cars: 8, warningThreshold: 4, carriageLoading: [loaded])
+            .visibleCarCount(shortTrainsOnly: true) == nil)
+    }
+
+    @Test func trainFormationShowsEveryKnownLength() {
+        #expect(TrainLengthIndicator(cars: 8, warningThreshold: 4).carCount == 8)
+        #expect(TrainLengthIndicator(cars: 12, warningThreshold: 1).carCount == 12)
+        #expect(TrainLengthIndicator(cars: 4, warningThreshold: 4).carCount == 4)
+        #expect(TrainLengthIndicator(cars: nil, warningThreshold: 4).carCount == nil)
+        #expect(TrainLengthIndicator(cars: 0, warningThreshold: 4).carCount == nil)
         let unknown = CoachLoadingV1(number: "1", position: 1, percentage: nil, band: nil, coachClass: nil)
         let known = CoachLoadingV1(number: "2", position: 2, percentage: 40, band: nil, coachClass: nil)
-        #expect(!TrainLengthIndicator(cars: 8, warningThreshold: 4, carriageLoading: [unknown]).isNotable)
-        #expect(TrainLengthIndicator(cars: 8, warningThreshold: 4, carriageLoading: [unknown, known]).isNotable)
+        #expect(TrainLengthIndicator(cars: 8, warningThreshold: 4, carriageLoading: [unknown]).carCount == 8)
+        #expect(TrainLengthIndicator(cars: nil, warningThreshold: 4, carriageLoading: [unknown, known]).carCount == 2)
     }
 
     @Test func partlyConfirmedJourneyHeadlinesTheFirstTrainsStatus() {

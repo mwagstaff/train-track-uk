@@ -281,7 +281,7 @@ function normalizeDetails(raw, item, fetchedAt) {
       if (!Array.isArray(group?.callingPoint) || group.callingPoint.length > 256) throw malformed();
       return { ...pick(group, ['serviceType', 'serviceChangeRequired', 'assocIsCancelled']), callingPoint: group.callingPoint.map(point => {
         assertObject(point);
-        return pick(point, ['crs', 'st', 'et', 'at', 'isCancelled', 'cancelReason', 'delayReason', 'uncertainty', 'affectedByDiversion', 'rerouteDelay']);
+        return pick(point, ['crs', 'locationName', 'st', 'et', 'at', 'isCancelled', 'cancelReason', 'delayReason', 'uncertainty', 'affectedByDiversion', 'rerouteDelay']);
       }) };
     });
   }

@@ -427,3 +427,64 @@ test('full branch dates span midnight in both directions and malformed outside-s
     assert.equal(actual.serviceCallingPoints, undefined);
     assert.equal(actual.callingPoints.length, 2, 'valid ridden section remains available');
 });
+
+
+test('partial cancellation names the skipped stop and explains the passenger endpoints (Clock House to London Bridge)', async () => {
+    const f = fixture();
+    const selected = leg('CLK', 'LBG', '12:05', '12:30');
+    selected.from.name = 'Clock House';
+    selected.to.name = 'London Bridge';
+    f.board('CLK', 'LBG', [row('SKIP', '12:05', { futureCancellation: true })]);
+    f.details('CLK', 'SKIP', '12:05', [point('LEW', '12:15', { locationName: 'Lewisham', isCancelled: true, et: 'Cancelled' }),
+        point('LBG', '12:30'), point('CHX', '12:40')]);
+    const result = await f.helper.refresh(plan([selected]), { ...request, origin: 'CLK', destination: 'LBG' });
+    const live = result.journeys[0].legs[0].live;
+    assert.equal(live.cancelled, false);
+    assert.equal(live.status, 'partCancelled');
+    assert.deepEqual(live.warnings, [
+        'Your boarding stop at Clock House and arrival stop at London Bridge are not cancelled.',
+        'This train will not stop at: Lewisham.',
+        'No cancellation reason has been supplied.'
+    ]);
+});
+
+test('cancellations beyond the selected arrival retain their station names and reasons', async () => {
+    const f = fixture();
+    f.board('ORG', 'DST', [row('SKIP', '12:05')]);
+    f.details('ORG', 'SKIP', '12:05', [point('DST', '12:30'),
+        point('END', '12:40', { locationName: 'Terminus', isCancelled: true, cancelReason: 'A signalling fault.' })], { futureCancellation: true });
+    const result = await f.helper.refresh(plan([leg('ORG', 'DST', '12:05', '12:30')]), request);
+    const live = result.journeys[0].legs[0].live;
+    assert.equal(live.status, 'partCancelled');
+    assert.ok(live.warnings.includes('This train will not stop at: Terminus.'));
+    assert.ok(live.warnings.includes('Cancellation reason: A signalling fault.'));
+    assert.ok(live.warnings[0].includes('are not cancelled'));
+});
+
+test('unlocated future cancellation never claims the passenger is unaffected, including on another branch', async () => {
+    for (const otherBranch of [false, true]) {
+        const f = fixture();
+        f.board('ORG', 'DST', [row('UNKNOWN', '12:05', { futureCancellation: true })]);
+        f.details('ORG', 'UNKNOWN', '12:05', [point('DST', '12:30')]);
+        if (otherBranch) f.records.get('ORG:UNKNOWN').detail.subsequentCallingPoints.push({ callingPoint: [point('ALT', '12:40', { isCancelled: true })] });
+        const result = await f.helper.refresh(plan([leg('ORG', 'DST', '12:05', '12:30')]), request);
+        const live = result.disruptedJourneys[0].legs[0].live;
+        assert.equal(live.status, 'unknown');
+        assert.equal(live.partCancelled, true);
+        assert.ok(live.warnings[0].includes('impact on your ORG to DST journey is not yet confirmed'));
+        assert.ok(!live.warnings.some(warning => warning.includes('are not cancelled') || warning.includes('ALT')));
+    }
+});
+
+test('cancelled boarding and arrival stops explicitly identify the impact', async () => {
+    for (const boarding of [false, true]) {
+        const f = fixture();
+        f.board('ORG', 'DST', [row('CANCEL', '12:05', { isCancelled: boarding })]);
+        f.details('ORG', 'CANCEL', '12:05', [point('DST', '12:30', { isCancelled: !boarding })]);
+        const result = await f.helper.refresh(plan([leg('ORG', 'DST', '12:05', '12:30')]), request);
+        const live = result.disruptedJourneys[0].legs[0].live;
+        assert.equal(live.cancelled, true);
+        assert.ok(live.warnings.includes(boarding ? 'Boarding at ORG is cancelled.' : 'Arrival at DST is cancelled.'));
+        assert.ok(!live.warnings.some(warning => warning.includes('are not cancelled')));
+    }
+});

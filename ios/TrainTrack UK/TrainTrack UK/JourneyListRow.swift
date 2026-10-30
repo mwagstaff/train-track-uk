@@ -1105,6 +1105,7 @@ struct JourneyCard: View {
 }
 
 struct TrainLengthIndicator: View {
+    @AppStorage("showOnlyShortTrainLengths") private var showOnlyShortTrainLengths = false
     let cars: Int?
     let warningThreshold: Int
     let carriageLoading: [CoachLoadingV1]?
@@ -1115,7 +1116,7 @@ struct TrainLengthIndicator: View {
         self.carriageLoading = carriageLoading
     }
 
-    private var carCount: Int? {
+    var carCount: Int? {
         let loadingCount = carriageLoading?.count ?? 0
         let knownCount = max(cars ?? 0, loadingCount)
         return knownCount > 0 ? knownCount : nil
@@ -1128,15 +1129,13 @@ struct TrainLengthIndicator: View {
         }
     }
 
-    /// A full formation on every row is noise; it earns its space for short trains or when
-    /// coach loading is known.
-    var isNotable: Bool {
-        guard let carCount else { return false }
-        return carCount <= warningThreshold || orderedLoading.contains { $0.percentage != nil }
+    func visibleCarCount(shortTrainsOnly: Bool) -> Int? {
+        guard let carCount, !shortTrainsOnly || carCount <= warningThreshold else { return nil }
+        return carCount
     }
 
     var body: some View {
-        if let carCount, isNotable {
+        if let carCount = visibleCarCount(shortTrainsOnly: showOnlyShortTrainLengths) {
             HStack(spacing: 2) {
                 ViewThatFits(in: .horizontal) {
                     formation(carCount)

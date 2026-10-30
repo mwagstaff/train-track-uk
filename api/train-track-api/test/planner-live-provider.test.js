@@ -12,7 +12,7 @@ const details = (crs = 'ECR') => ({ crs, generatedAt: '2026-09-16T11:59:55Z', st
   operatorCode: 'SN', isCancelled: true,
   previousCallingPoints: [{ callingPoint: [{ crs: 'VIC', st: '12:20', at: '12:40' }] }],
   subsequentCallingPoints: [
-    { callingPoint: [{ crs: 'GTW', st: '13:00', et: '13:25', isCancelled: true }, { crs: 'BTN', st: '13:40', et: 'Delayed' }] },
+    { callingPoint: [{ crs: 'GTW', locationName: 'Gatwick Airport', st: '13:00', et: '13:25', isCancelled: true }, { crs: 'BTN', st: '13:40', et: 'Delayed' }] },
     { serviceChangeRequired: false, assocIsCancelled: true, callingPoint: [{ crs: 'LIT', st: '14:10', et: 'Cancelled' }] }
   ]
 });

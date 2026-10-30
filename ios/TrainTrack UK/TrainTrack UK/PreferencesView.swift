@@ -18,6 +18,7 @@ enum JourneySortMode: String, CaseIterable, Identifiable {
 
 struct PreferencesView: View {
     @AppStorage("minShortTrainCars") private var minShortTrainCars: Int = 4
+    @AppStorage("showOnlyShortTrainLengths") private var showOnlyShortTrainLengths = false
     @AppStorage("distanceVeryCloseMiles") private var veryCloseMiles: Double = 3
     @AppStorage("distanceModeratelyCloseMiles") private var moderatelyCloseMiles: Double = 5
     @AppStorage("liveActivityDurationMinutes") private var liveActivityDurationMinutes: Int = 60
@@ -225,6 +226,7 @@ struct PreferencesView: View {
             }
 
             Section {
+                Toggle("Only show lengths for short trains", isOn: $showOnlyShortTrainLengths)
                 Stepper(value: $minShortTrainCars, in: 1...12) {
                     HStack {
                         Text("Highlight trains with")
@@ -233,11 +235,11 @@ struct PreferencesView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text("Shows a warning icon next to train length when the train has the configured number of carriages or fewer. Default is 4.")
+                Text("Trains with this number of carriages or fewer are highlighted as short. When the switch is on, lengths for longer trains are hidden. Default is 4.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } header: {
-                RailwayBackgroundSectionHeader(title: "Warnings")
+                RailwayBackgroundSectionHeader(title: "Train lengths")
             }
 
             Section {

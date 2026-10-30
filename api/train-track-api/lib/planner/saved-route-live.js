@@ -406,12 +406,31 @@ export class SavedRouteLive {
         const last = calls.at(-1), departure = calls[0].departure, arrival = last.arrival;
         if (instant(arrival) < instant(departure)) return null;
         const cancelled = boardCancelled || last.live.cancelled;
-        const partCancelled = calls.some(call => call.live.cancelled) || Boolean(detail.futureCancellation);
-        const uncertain = detail.futureCancellation && !calls.some(call => call.live.cancelled) || detail.futureDelay
+        // Keep the selected through portion separate from joining/dividing branches.
+        // A skipped intermediate call does not cancel travel through that station.
+        const previousPoints = detail.previousCallingPoints?.[0]?.serviceChangeRequired
+            ? [] : detail.previousCallingPoints?.[0]?.callingPoint ?? [];
+        const cancelledPoints = [...previousPoints, ...path.group.callingPoint].filter(isCancelled);
+        const futureCancellation = detail.futureCancellation || row.futureCancellation;
+        const unknownCancellation = Boolean(futureCancellation) && !path.group.callingPoint.some(isCancelled);
+        const partCancelled = calls.some(call => call.live.cancelled) || cancelledPoints.length > 0 || Boolean(futureCancellation);
+        const uncertain = unknownCancellation || detail.futureDelay
             && !calls.some(call => call.live.status === 'delayed') || !Number.isFinite(times.expected) || !last.live.arrival;
-        const warnings = unique([row.cancelReason, row.delayReason, detail.cancelReason, detail.delayReason,
-            ...calls.flatMap(call => call.live.warnings), ...(cancelled ? ['This part of the train journey is cancelled.'] : []),
-            ...(partCancelled && !cancelled ? ['This train has cancellations at other stops.'] : []),
+        const section = `${template.from.name} to ${template.to.name}`;
+        const cancellationReasons = unique([row.cancelReason, detail.cancelReason, ...cancelledPoints.map(point => point.cancelReason)]);
+        const cancellationWarnings = !cancelled && !partCancelled ? [] : [
+            cancelled ? `Your ${section} train journey is affected by cancellation.`
+                : unknownCancellation ? `A cancellation is reported on this train, but its impact on your ${section} journey is not yet confirmed.`
+                    : `Your boarding stop at ${template.from.name} and arrival stop at ${template.to.name} are not cancelled.`,
+            ...(boardCancelled ? [`Boarding at ${template.from.name} is cancelled.`] : []),
+            ...(last.live.cancelled ? [`Arrival at ${template.to.name} is cancelled.`] : []),
+            ...(cancelledPoints.length ? [`This train will not stop at: ${unique(cancelledPoints.map(point => point.locationName ?? point.crs)).join(', ')}.`] : []),
+            ...(unknownCancellation ? ['The affected stops have not been confirmed by the live feed.'] : []),
+            ...(cancellationReasons.length ? cancellationReasons.map(reason => `Cancellation reason: ${reason}`)
+                : ['No cancellation reason has been supplied.'])
+        ];
+        const warnings = unique([...cancellationWarnings, row.delayReason, detail.delayReason,
+            ...calls.flatMap(call => call.live.warnings).filter(warning => !cancellationReasons.includes(warning)),
             ...(uncertain ? ['Live times are not confirmed for every part of this train journey.'] : [])]);
         const live = { status: cancelled ? 'cancelled' : uncertain ? 'unknown' : calls.some(call => call.live.status === 'delayed') ? 'delayed'
             : partCancelled ? 'partCancelled' : 'onTime', updatedAt: iso(observed), cancelled, partCancelled, warnings,
