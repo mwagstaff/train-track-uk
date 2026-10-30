@@ -12,7 +12,7 @@ function activity(overrides = {}) {
 
 for (const differentRoute of [false, true]) {
     test(`device keeps ongoing ad hoc activity when schedule registers (${differentRoute ? 'different' : 'same'} route)`, () => {
-        const manager = new LiveActivityManager();
+        const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
         manager.deleteSubscriptionFromMongo = async () => {};
         const manual = activity();
         const scheduled = activity({ activityId: 'scheduled', scheduleKey: 'VIC-KTH|16:00|18:00|2026-09-08',
@@ -27,7 +27,7 @@ for (const differentRoute of [false, true]) {
 }
 
 test('device has one activity even when only two scheduled activities exist', async () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     manager.deleteSubscriptionFromMongo = async () => {};
     const ended = [];
     manager.sendEndPushForEvictedSubscription = async (entry) => ended.push(entry.activityId);
@@ -41,7 +41,7 @@ test('device has one activity even when only two scheduled activities exist', as
 });
 
 test('an arrived ad hoc activity does not displace a new scheduled activity', () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     manager.deleteSubscriptionFromMongo = async () => {};
     for (const entry of [activity({ journeyPhase: 'arrived' }), activity({ activityId: 'scheduled', scheduleKey: 'schedule' })]) {
         manager.subscriptions.set(manager.buildKey(entry.deviceId, entry.activityId), entry);
@@ -50,7 +50,7 @@ test('an arrived ad hoc activity does not displace a new scheduled activity', ()
 });
 
 test('late scheduled registration is ended before it can be saved or polled', () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     const manual = activity();
     manager.subscriptions.set(manager.buildKey(manual.deviceId, manual.activityId), manual);
     manager.deleteSubscriptionFromMongo = async () => {};
@@ -171,7 +171,7 @@ test('device reports a locally tracked conflict using the same persisted notice 
 });
 
 test('duplicate dismissal works without departures and preserves the current notification session', async () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     const duplicate = activity({ activityId: 'scheduled', pushToken: 'test-token', scheduleKey: 'scheduled' });
     manager.getDeparturesSnapshot = async () => { throw new Error('No departure data'); };
     manager.deleteSubscriptionFromMongo = async () => {};
@@ -189,7 +189,7 @@ test('duplicate dismissal works without departures and preserves the current not
 });
 
 test('a poll awaiting departures cannot update an evicted duplicate', async () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     let releaseSnapshot;
     manager.getDeparturesSnapshot = async () => new Promise((resolve) => { releaseSnapshot = resolve; });
     manager.pushClient.sendLiveActivityUpdate = async () => assert.fail('evicted activity must not receive an update');

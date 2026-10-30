@@ -254,7 +254,7 @@ test('live updates use the saved train, preserve it across app registration and 
     h.subscription.plannerState = { legIndex: 0, status: 'started' };
     const original = { scheduler: notificationSubscriptionManager.plannerScheduler,
         subscriptions: notificationSubscriptionManager.subscriptions, hydrated: notificationSubscriptionManager.hasHydratedFromMongo };
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     clearInterval(manager.pollTimer);
     const pushes = [];
     manager.pushClient = { sendLiveActivityUpdate: async (token, payload) => { pushes.push(payload); return { status: 200 }; } };
@@ -331,7 +331,7 @@ test('all-departures starts with the route board and follows the current train l
 test('empty or failed route boards never masquerade as the selected service', async () => {
     const h = harness();
     h.subscription.plannerState = { legIndex: 0 };
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     clearInterval(manager.pollTimer);
     manager.getDeparturesSnapshot = async () => ({ departures: [], fetchedAt: new Date().toISOString() });
     assert.equal((await manager.buildPlannerRouteContent(h.subscription)).statusText, 'No upcoming departures');

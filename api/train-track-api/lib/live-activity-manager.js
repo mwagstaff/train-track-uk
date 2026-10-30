@@ -9,7 +9,8 @@ import { notificationSubscriptionManager } from './notification-subscription-man
 import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
 import { minutesUntilDeparture } from './live-activity-departure-order.js';
 import { allowDeviceData } from './device-data-deletion-state.js';
-import { PLANNER_SCHEDULE_PREFIX } from './planner-journey-schedule.js';
+import { PLANNER_SCHEDULE_PREFIX, isRail } from './planner-journey-schedule.js';
+import { allowsPlatformNotification, connectionNotification, loadNotificationPreferences } from './journey-notification-policy.js';
 
 const DEFAULT_POLL_INTERVAL_SECONDS = Number(process.env.LIVE_ACTIVITY_POLL_INTERVAL_SECONDS || '20');
 const DEFAULT_END_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_END_AFTER_SECONDS || '7200'); // default 2 hours
@@ -17,20 +18,35 @@ const DEFAULT_STALE_DATE_REFRESH_SECONDS = Number(process.env.LIVE_ACTIVITY_STAL
 const APP_CHECKIN_WARNING_AFTER_SECONDS = Number(process.env.LIVE_ACTIVITY_APP_CHECKIN_WARNING_AFTER_SECONDS || '120');
 const DEFAULT_MAX_ACTIVE_PER_DEVICE = 1;
 const JOURNEY_COMPLETION_GRACE_MS = 10 * 60 * 1000;
+const londonClock = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 
 function isPreBoardingReset(currentPhase, incomingPhase) {
-    return ['en_route', 'arrived'].includes(currentPhase)
-        && ['pending_start', 'at_start'].includes(incomingPhase);
+    return (currentPhase === 'at_start' && incomingPhase === 'pending_start')
+        || (['en_route', 'arrived'].includes(currentPhase)
+            && ['pending_start', 'at_start'].includes(incomingPhase));
+}
+
+function normalizeRemainingConnections(value) {
+    if (!Array.isArray(value)) return [];
+    return value.slice(0, 32).filter(leg => /^[A-Z]{3}$/.test(leg?.from) && /^[A-Z]{3}$/.test(leg?.to)
+        && typeof leg.service_id === 'string' && leg.service_id.length > 0 && leg.service_id.length <= 200
+        && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(leg.scheduled)).map(leg => ({
+        from: leg.from, to: leg.to, serviceID: leg.service_id, scheduled: leg.scheduled,
+        fromName: typeof leg.from_name === 'string' ? leg.from_name.slice(0, 100) : leg.from,
+        toName: typeof leg.to_name === 'string' ? leg.to_name.slice(0, 100) : leg.to
+    }));
 }
 
 export class LiveActivityManager {
-    constructor() {
+    constructor(options = {}) {
         this.subscriptions = new Map();
         this.pushClient = new LiveActivityPushClient();
         this.pollIntervalMs = DEFAULT_POLL_INTERVAL_SECONDS * 1000;
         this.isPolling = false;
         this.pollTimer = null;
         this.deletedDeviceIds = new Set();
+        this.getNotificationPreferences = options.getNotificationPreferences || loadNotificationPreferences;
+        this.getConnectionDetails = options.getConnectionDetails || getServiceDetails;
         this.startPollingLoop();
     }
 
@@ -171,6 +187,7 @@ export class LiveActivityManager {
             tokenUpdatedAt: new Date().toISOString(),
             appIsActive: existing?.appIsActive ?? false,
             cancelledDepartureAlertsSent: existing?.cancelledDepartureAlertsSent || {},
+            connectionAlertState: existing?.connectionAlertState || {},
             journeyPhase: ['pending_start', 'at_start', 'en_route', 'arrived'].includes(journeyPhase)
                 ? journeyPhase
                 : (existing?.journeyPhase || 'pending_start'),
@@ -395,6 +412,11 @@ export class LiveActivityManager {
             );
             if (subscription.evicted) return { sent: false, reason: 'activity_evicted' };
             if (subscription.lastJourneyStatusObservedAtMs !== statusVersion) return { sent: false, reason: 'journey_changed' };
+            const preferences = await this.getNotificationPreferences(subscription.deviceId);
+            const connections = connectionNotification(
+                preferences.connectionAlerts === false ? [] : await this.connectionObservations(subscription), subscription.connectionAlertState, preferences
+            );
+            if (subscription.evicted || subscription.lastJourneyStatusObservedAtMs !== statusVersion) return { sent: false, reason: 'journey_changed' };
             const appIsActive = this.shouldShowAppActive(subscription);
             const appIsActiveChanged = Boolean(subscription.appIsActive) !== appIsActive;
             const hasChanged = force || appIsActiveChanged || !this.snapshotsEqual(snapshot, subscription.lastSnapshot);
@@ -403,7 +425,11 @@ export class LiveActivityManager {
             // This prevents iOS from marking the activity as stale and stops displaying updates
             const needsStaleDateRefresh = this.shouldRefreshStaleDate(subscription);
 
-            if (!hasChanged && !needsStaleDateRefresh) {
+            if (!hasChanged && !needsStaleDateRefresh && !connections.alert) {
+                if (!dryRun && JSON.stringify(subscription.connectionAlertState) !== JSON.stringify(connections.state)) {
+                    subscription.connectionAlertState = connections.state;
+                    await this.saveSubscriptionToMongo(subscription);
+                }
                 this.log(`[live-activity] no_change ${subscription.deviceId}/${subscription.activityId}`);
                 return { sent: false, reason: 'no_change', snapshot };
             }
@@ -421,7 +447,9 @@ export class LiveActivityManager {
 
             const payload = this.buildPayload(subscription, snapshot, {
                 appIsActive,
-                markCancellationAlerts: !dryRun
+                markCancellationAlerts: !dryRun,
+                preferences,
+                connectionAlert: connections.alert
             });
 
             if (dryRun) {
@@ -449,6 +477,10 @@ export class LiveActivityManager {
                 return { sent: false, reason: 'bad_token', snapshot, payload, pushResponse };
             }
 
+            if (!(pushResponse?.status >= 200 && pushResponse.status < 300)) {
+                return { sent: false, reason: 'push_failed', snapshot, payload, pushResponse };
+            }
+            subscription.connectionAlertState = connections.state;
             subscription.lastSnapshot = snapshot;
             const preferredDeparture = snapshot.departures.find(
                 (departure) => departure.serviceID === subscription.preferredServiceId
@@ -489,6 +521,50 @@ export class LiveActivityManager {
         }
     }
 
+    async connectionObservations(subscription) {
+        if (subscription.journeyPhase !== 'en_route' || !subscription.journeyUpdatesEnabled
+            || !subscription.legContext?.connection) return [];
+        const connections = subscription.legContext.remainingConnections || [];
+        const observations = await Promise.all(connections.map(async leg => {
+            const details = await this.getConnectionDetails(leg.serviceID).catch(() => null);
+            if (!details || details.error || details.crs !== leg.from || details.std !== leg.scheduled) return null;
+            // An actual departure means this is no longer a future connection.
+            if (details.atd && details.atd !== 'Cancelled') return null;
+            const destination = (details.subsequentCallingPoints || []).flatMap(group => group.callingPoint || [])
+                .find(call => call.crs === leg.to);
+            const estimated = details.etd || leg.scheduled;
+            return {
+                key: `${leg.from}-${leg.to}:${leg.serviceID}:${leg.scheduled}`,
+                label: `${leg.scheduled} ${leg.fromName} → ${leg.toName}`,
+                cancelled: details.isCancelled === true || details.etd === 'Cancelled' || details.atd === 'Cancelled'
+                    || destination?.isCancelled === true || destination?.et === 'Cancelled' || destination?.at === 'Cancelled',
+                unknownDelay: estimated.trim().toLowerCase() === 'delayed',
+                delayMinutes: this.calculateDelay(leg.scheduled, estimated)
+            };
+        }));
+        return observations.filter(Boolean);
+    }
+
+    async plannerConnectionObservations(schedule) {
+        const state = schedule.plannerState;
+        if (!state?.journeyStarted || state.completed || state.missedConnection) return [];
+        const observations = await Promise.all(schedule.plannerJourney.legs.map(async (leg, index) => {
+            if (index < state.legIndex || !isRail(leg)) return null;
+            const live = index === state.legIndex && state.live ? state.live
+                : await notificationSubscriptionManager.plannerScheduler.resolver.resolve(leg).catch(() => null);
+            if (!live || live.actualDeparture) return null;
+            return {
+                key: `${index}:${leg.uid}:${leg.originDate}:${leg.departure}`,
+                label: `${londonClock.format(new Date(leg.departure))} ${leg.from.name} → ${leg.to.name}`,
+                cancelled: live.from?.cancelled === true || live.to?.cancelled === true,
+                unknownDelay: live.from?.departureUnknown === true,
+                delayMinutes: Number.isFinite(live.from?.departure)
+                    ? Math.max(0, Math.round((live.from.departure - Date.parse(leg.departure)) / 60000)) : 0
+            };
+        }));
+        return observations.filter(Boolean);
+    }
+
     async buildPlannerRouteContent(schedule) {
         const plan = schedule.plannerJourney;
         const leg = plan.legs[schedule.plannerState.legIndex];
@@ -522,12 +598,26 @@ export class LiveActivityManager {
         }
         const content = await notificationSubscriptionManager.plannerScheduler.snapshot(schedule);
         if (subscription.evicted || notificationSubscriptionManager.subscriptions.get(schedule.id) !== schedule) return { sent: false, reason: 'cancelled' };
+        const preferences = await this.getNotificationPreferences(subscription.deviceId);
+        const connections = connectionNotification(
+            preferences.connectionAlerts === false ? [] : await this.plannerConnectionObservations(schedule), subscription.connectionAlertState, preferences
+        );
+        if (subscription.evicted || notificationSubscriptionManager.subscriptions.get(schedule.id) !== schedule) return { sent: false, reason: 'cancelled' };
         const comparable = value => JSON.stringify(value && { ...value, lastUpdated: 0, activityID: null, revision: 0 });
-        if (!force && comparable(content) === comparable(subscription.lastPlannerContent) && !this.shouldRefreshStaleDate(subscription)) return { sent: false, reason: 'no_change' };
+        if (!force && !connections.alert && comparable(content) === comparable(subscription.lastPlannerContent) && !this.shouldRefreshStaleDate(subscription)) {
+            if (!dryRun && JSON.stringify(subscription.connectionAlertState) !== JSON.stringify(connections.state)) {
+                subscription.connectionAlertState = connections.state;
+                await this.saveSubscriptionToMongo(subscription);
+            }
+            return { sent: false, reason: 'no_change' };
+        }
         const payload = { aps: { timestamp: Math.floor(Date.now() / 1000), event: 'update',
             'stale-date': Math.floor(Date.now() / 1000) + 300,
             'content-state': { ...content, activityID: subscription.activityId, revision: subscription.revision || 0 } } };
-        if (content.isCancelled && !subscription.lastPlannerContent?.isCancelled) {
+        if (connections.alert) {
+            payload.aps.alert = connections.alert;
+            payload.aps.sound = 'default';
+        } else if (!schedule.plannerState.journeyStarted && content.isCancelled && !subscription.lastPlannerContent?.isCancelled) {
             payload.aps.alert = { title: 'Train cancelled', body: content.routeTitle };
         }
         if (dryRun) return { sent: false, reason: 'dry_run', payload };
@@ -539,6 +629,7 @@ export class LiveActivityManager {
             return { sent: false, reason: 'bad_token' };
         }
         if (!(result?.status >= 200 && result.status < 300)) return { sent: false, reason: 'push_failed' };
+        subscription.connectionAlertState = connections.state;
         subscription.lastPlannerContent = content;
         subscription.lastPushAt = new Date().toISOString();
         subscription.revision = (subscription.revision || 0) + 1;
@@ -783,7 +874,7 @@ export class LiveActivityManager {
         };
     }
 
-    buildPayload(subscription, snapshot, { end = false, appIsActive = false, markCancellationAlerts = true } = {}) {
+    buildPayload(subscription, snapshot, { end = false, appIsActive = false, markCancellationAlerts = true, preferences = {}, connectionAlert = null } = {}) {
         const aps = {
             timestamp: moment(snapshot.fetchedAt).unix(),
             event: end ? 'end' : 'update',
@@ -798,7 +889,7 @@ export class LiveActivityManager {
             aps['stale-date'] = moment(snapshot.fetchedAt).add(5, 'minutes').unix();
 
             // Add an alert for significant changes so iOS shows a banner notification
-            const alert = this.buildAlert(subscription, subscription.lastSnapshot, snapshot, { markCancellationAlerts });
+            const alert = connectionAlert || this.buildAlert(subscription, subscription.lastSnapshot, snapshot, { markCancellationAlerts, preferences });
             if (alert) {
                 aps.alert = alert;
                 aps.sound = 'default';
@@ -825,8 +916,12 @@ export class LiveActivityManager {
      * Returns null if no significant change is detected or if the snapshots represent
      * different services (to avoid false alerts on service rotations).
      */
-    buildAlert(subscription, prevSnapshot, newSnapshot, { markCancellationAlerts = true } = {}) {
+    buildAlert(subscription, prevSnapshot, newSnapshot, { markCancellationAlerts = true, preferences = {} } = {}) {
         if (!prevSnapshot || !newSnapshot) return null;
+        if (subscription.journeyPhase === 'arrived') return null;
+        // The connection monitor owns disruptions for exact remaining itinerary services.
+        // A changing departure board must not alert for alternative trains on the route.
+        const monitoringConnections = subscription.journeyPhase === 'en_route' && subscription.legContext?.connection;
         const prev = prevSnapshot.departures[0];
         const next = newSnapshot.departures[0];
         if (!prev || !next) return this.buildSubsequentCancellationAlert(subscription, prevSnapshot, newSnapshot, { markCancellationAlerts });
@@ -836,7 +931,7 @@ export class LiveActivityManager {
         const primaryServiceChanged = prev.serviceID && next.serviceID && prev.serviceID !== next.serviceID;
 
         // Cancellation
-        if (!primaryServiceChanged && !prev.isCancelled && next.isCancelled && !this.hasCancellationAlertBeenSent(subscription, next)) {
+        if (!monitoringConnections && !primaryServiceChanged && !prev.isCancelled && next.isCancelled && !this.hasCancellationAlertBeenSent(subscription, next)) {
             this.markCancellationAlertSent(subscription, next, markCancellationAlerts);
             const time = next.scheduled ? ` ${next.scheduled}` : '';
             return {
@@ -857,7 +952,9 @@ export class LiveActivityManager {
         // Alert when the primary service gains a platform or changes platform.
         const previousPlatform = this.normalizePlatform(prev.platform);
         const nextPlatform = this.normalizePlatform(next.platform);
-        if (nextPlatform && previousPlatform !== nextPlatform) {
+        const atStation = subscription.journeyPhase === 'at_start'
+            || (monitoringConnections && subscription.legContext.atStation === true);
+        if (nextPlatform && previousPlatform !== nextPlatform && allowsPlatformNotification(preferences, atStation)) {
             const title = this.ensureString(subscription?.displayName, 'Platform update');
             if (!previousPlatform) {
                 return {
@@ -874,7 +971,7 @@ export class LiveActivityManager {
         // Significant delay increase: new delay ≥ 5 min AND at least 3 min worse than before
         const prevDelay = this.calculateDelay(prev.scheduled, prev.estimated);
         const nextDelay = this.calculateDelay(next.scheduled, next.estimated);
-        if (nextDelay >= 5 && nextDelay >= prevDelay + 3) {
+        if (!monitoringConnections && nextDelay >= 5 && nextDelay >= prevDelay + 3) {
             return {
                 title: 'Delay Update',
                 body: `Your train is now running ${nextDelay} minutes late.`
@@ -885,7 +982,7 @@ export class LiveActivityManager {
     }
 
     buildSubsequentCancellationAlert(subscription, prevSnapshot, newSnapshot, { markCancellationAlerts = true } = {}) {
-        if (!subscription?.journeyUpdatesEnabled) {
+        if (!subscription?.journeyUpdatesEnabled || ['en_route', 'arrived'].includes(subscription.journeyPhase)) {
             return null;
         }
 
@@ -1863,7 +1960,9 @@ export class LiveActivityManager {
                     fromName: legContext.from_name.slice(0, 100), toName: legContext.to_name.slice(0, 100),
                     routeTitle: legContext.route_title.slice(0, 250), connection: legContext.connection === true,
                     feederServiceId: typeof legContext.feeder_service_id === 'string' ? legContext.feeder_service_id : null,
-                    earliestDepartureMs: Number.isFinite(legContext.earliest_departure_ms) ? legContext.earliest_departure_ms : 0 };
+                    earliestDepartureMs: Number.isFinite(legContext.earliest_departure_ms) ? legContext.earliest_departure_ms : 0,
+                    atStation: legContext.at_station === true,
+                    remainingConnections: normalizeRemainingConnections(legContext.remaining_connections) };
                 if (subscription.legContext?.from !== nextContext.from || subscription.legContext?.connection !== nextContext.connection) {
                     subscription.lastSnapshot = null;
                     subscription.preferredDepartureSnapshot = null;

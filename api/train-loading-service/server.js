@@ -46,26 +46,28 @@ const stomp = new DarwinStompClient({
   onMessage: (frame) => {
     processChain = processChain
       .then(() => processDarwinFrame({ frame, store, recentEvents, metrics }))
-      .catch((error) => console.error("[darwin] message processing failed", error?.message ?? error));
+      .catch((error) => console.error(new Date().toISOString(), "[darwin] message processing failed", error?.message ?? error));
   },
   onState: (status) => {
     metrics.onStompState(status);
-    console.log(`[darwin] state=${status.state}`);
+    console.log(new Date().toISOString(), `[darwin] state=${status.state}`);
   },
   onSequenceGap: ({ expected, received }) => {
     metrics.onSequenceGap();
-    console.error(`[darwin] sequence gap: expected=${expected} received=${received}`);
+    console.error(new Date().toISOString(), `[darwin] sequence gap: expected=${expected} received=${received}`);
   },
-  onError: (error) => console.error("[darwin]", error.message),
+  onError: (error) => console.error(new Date().toISOString(), "[darwin]", error.message),
 });
 
-const health = new HealthMonitor({ store, stomp, metrics });
+const health = new HealthMonitor({ store, stomp, metrics,
+  onChange: (status) => console.log(new Date().toISOString(), "[health]", JSON.stringify(status)),
+});
 await health.start();
 stomp.start();
 
 const app = createApp({ resolver, health, metrics, maxBatchSize: config.maxBatchSize });
 const server = app.listen(config.port, () => {
-  console.log(
+  console.log(new Date().toISOString(),
     `Train loading service listening on port ${config.port}; `
     + `interest=${config.interestSeconds}s cache=${config.recentCacheSeconds}s TTL=${config.ttlSeconds}s`,
   );
@@ -80,7 +82,7 @@ const pruneTimer = setInterval(() => {
 pruneTimer.unref?.();
 
 async function shutdown(signal) {
-  console.log(`[shutdown] ${signal}`);
+  console.log(new Date().toISOString(), `[shutdown] ${signal}`);
   clearInterval(pruneTimer);
   health.stop();
   stomp.stop();

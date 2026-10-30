@@ -31,6 +31,10 @@ struct PreferencesView: View {
     @AppStorage(NotificationPreferences.summaryKey, store: NotificationPreferences.store) private var notifySummary: Bool = true
     @AppStorage(NotificationPreferences.delaysKey, store: NotificationPreferences.store) private var notifyDelays: Bool = true
     @AppStorage(NotificationPreferences.platformKey, store: NotificationPreferences.store) private var notifyPlatform: Bool = true
+    @AppStorage(NotificationPreferences.platformOnlyNearStationKey) private var platformOnlyNearStation = true
+    @AppStorage(NotificationPreferences.connectionAlertsKey) private var connectionAlerts = true
+    @AppStorage(NotificationPreferences.connectionDelayMinutesKey) private var connectionDelayMinutes = NotificationPreferences.defaultConnectionDelayMinutes
+    @AppStorage(NotificationPreferences.connectionUnknownDelayKey) private var connectionUnknownDelay = true
     @EnvironmentObject var notificationStore: NotificationSubscriptionStore
     @EnvironmentObject private var railwayBackgroundStore: RailwayBackgroundStore
     @State private var showTroubleshootingShare = false
@@ -38,6 +42,7 @@ struct PreferencesView: View {
     @State private var notificationPreferencesError: String? = nil
     @State private var notificationPreferencesSyncTask: Task<Void, Never>? = nil
     @State private var devicePreferencesSyncTask: Task<Void, Never>? = nil
+    @State private var devicePreferencesError: String?
 
     private var journeySortMode: Binding<JourneySortMode> {
         Binding(
@@ -76,7 +81,11 @@ struct PreferencesView: View {
             transferWarningThresholdMinutes,
             notifySummary,
             notifyDelays,
-            notifyPlatform
+            notifyPlatform,
+            platformOnlyNearStation,
+            connectionAlerts,
+            connectionDelayMinutes,
+            connectionUnknownDelay
         ].map { "\($0)" }.joined(separator: "|")
     }
 
@@ -96,7 +105,11 @@ struct PreferencesView: View {
             transferWarningThresholdMinutes: transferWarningThresholdMinutes,
             notificationSummary: notifySummary,
             notificationDelays: notifyDelays,
-            notificationPlatform: notifyPlatform
+            notificationPlatform: notifyPlatform,
+            platformOnlyNearStation: platformOnlyNearStation,
+            connectionAlerts: connectionAlerts,
+            connectionDelayMinutes: min(30, max(1, connectionDelayMinutes)),
+            connectionUnknownDelay: connectionUnknownDelay
         )
     }
 
@@ -106,6 +119,11 @@ struct PreferencesView: View {
                 Toggle(NotificationType.summary.displayName, isOn: notificationTypeBinding(.summary))
                 Toggle(NotificationType.delays.displayName, isOn: notificationTypeBinding(.delays))
                 Toggle(NotificationType.platform.displayName, isOn: notificationTypeBinding(.platform))
+                Toggle("Platform updates only near the station", isOn: $platformOnlyNearStation)
+                    .disabled(!notifyPlatform)
+                Text("Platform alerts start at the same station boundary as your welcome notification.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 Text("Pick at least one notification type.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -114,8 +132,28 @@ struct PreferencesView: View {
                         .font(.footnote)
                         .foregroundStyle(.red)
                 }
+                if let devicePreferencesError {
+                    Text(devicePreferencesError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
             } header: {
                 RailwayBackgroundSectionHeader(title: "Notification Preferences")
+            }
+
+            Section {
+                Toggle("Notify about remaining connections", isOn: $connectionAlerts)
+                if connectionAlerts {
+                    Stepper(value: $connectionDelayMinutes, in: 1...30) {
+                        Text("Minimum delay: \(connectionDelayMinutes) min")
+                    }
+                    Toggle("Notify when delay length is unknown", isOn: $connectionUnknownDelay)
+                }
+                Text("During a journey, get alerts if a remaining connection is cancelled or delayed. Cancellations always qualify when this is enabled.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } header: {
+                RailwayBackgroundSectionHeader(title: "Connection Alerts")
             }
 
             Section {
@@ -387,7 +425,14 @@ struct PreferencesView: View {
         devicePreferencesSyncTask = Task {
             try? await Task.sleep(nanoseconds: 250_000_000)
             guard !Task.isCancelled else { return }
-            try? await NetworkServicePhone.shared.syncDevicePreferences(snapshot)
+            do {
+                try await NetworkServicePhone.shared.syncDevicePreferences(snapshot)
+                guard !Task.isCancelled else { return }
+                devicePreferencesError = nil
+            } catch {
+                guard !Task.isCancelled else { return }
+                devicePreferencesError = "Notification settings could not sync. Reopen Preferences to retry."
+            }
         }
     }
 

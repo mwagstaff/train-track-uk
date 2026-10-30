@@ -122,8 +122,8 @@ test('arrived live activity content keeps the client-confirmed arrival when serv
 });
 
 test('live activity alerts when a platform is first assigned', () => {
-    const manager = new LiveActivityManager();
-    const alert = manager.buildAlert({ displayName: 'Kent House → London Victoria' }, {
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
+    const alert = manager.buildAlert({ displayName: 'Kent House → London Victoria', journeyPhase: 'at_start' }, {
         departures: [{ serviceID: 'service-1', scheduled: '08:27', platform: null }]
     }, {
         departures: [{ serviceID: 'service-1', scheduled: '08:27', platform: '2' }]
@@ -136,8 +136,8 @@ test('live activity alerts when a platform is first assigned', () => {
 });
 
 test('live activity alerts when an assigned platform changes number', () => {
-    const manager = new LiveActivityManager();
-    const alert = manager.buildAlert({ displayName: 'Kent House → London Victoria' }, {
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
+    const alert = manager.buildAlert({ displayName: 'Kent House → London Victoria', journeyPhase: 'at_start' }, {
         departures: [{ serviceID: 'service-1', scheduled: '08:27', platform: '3' }]
     }, {
         departures: [{ serviceID: 'service-1', scheduled: '08:27', platform: '5' }]
@@ -150,7 +150,7 @@ test('live activity alerts when an assigned platform changes number', () => {
 });
 
 test('live activity keeps the last numbered platform when the feed returns TBC', () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     const previousSnapshot = {
         departures: [{ serviceID: 'service-1', scheduled: '08:27', platform: '3' }]
     };
@@ -163,7 +163,7 @@ test('live activity keeps the last numbered platform when the feed returns TBC',
 });
 
 test('journey phase pins the live activity to the service matched on device', async () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     const subscription = {
         deviceId: 'device-1',
         activityId: 'activity-1',
@@ -197,7 +197,7 @@ test('journey phase pins the live activity to the service matched on device', as
 });
 
 test('unconfirmed boarding never promotes the next departure and can recover a confirmed service', async () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     const next = { serviceID: 'next-1742', scheduled: '17:42', departedTime: '17:42' };
     const caught = { serviceID: 'caught-1727', scheduled: '17:27', departedTime: '17:27' };
     const subscription = {
@@ -251,7 +251,7 @@ test('unconfirmed boarding never promotes the next departure and can recover a c
 for (const currentPhase of ['en_route', 'arrived']) {
     for (const resetPhase of ['pending_start', 'at_start']) {
         test(`${resetPhase} cannot reset a ${currentPhase} activity or block a train correction`, async () => {
-            const manager = new LiveActivityManager();
+            const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
             const subscription = {
                 deviceId: 'phase-device', activityId: 'phase-activity',
                 fromStation: 'KTH', toStation: 'VIC', journeyPhase: currentPhase,
@@ -282,7 +282,7 @@ for (const currentPhase of ['en_route', 'arrived']) {
         });
 
         test(`late ${resetPhase} registration preserves a ${currentPhase} train and refreshes its token`, () => {
-            const manager = new LiveActivityManager();
+            const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
             const existing = {
                 deviceId: 'register-device', activityId: 'register-activity',
                 fromStation: 'KTH', toStation: 'VIC', journeyPhase: currentPhase,
@@ -310,7 +310,7 @@ for (const currentPhase of ['en_route', 'arrived']) {
 }
 
 test('a new activity can still begin in the pre-boarding phase', async () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     const subscription = { deviceId: 'new-device', activityId: 'new-activity', journeyPhase: 'pending_start' };
     manager.subscriptions.set(manager.buildKey(subscription.deviceId, subscription.activityId), subscription);
     manager.saveSubscriptionToMongo = async () => {};
@@ -320,7 +320,7 @@ test('a new activity can still begin in the pre-boarding phase', async () => {
 });
 
 test('unconfirmed journey pushes a clearing update even with no matching departures', async () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     const subscription = {
         deviceId: 'empty-match-device', activityId: 'empty-match-activity',
         fromStation: 'VIC', toStation: 'KTH', journeyPhase: 'en_route',
@@ -347,7 +347,7 @@ test('unconfirmed journey pushes a clearing update even with no matching departu
 });
 
 test('arrived journey phase schedules the live activity to end ten minutes after completion', async () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     const completedAt = new Date(Date.now() - 60_000);
     const subscription = {
         deviceId: 'device-arrived',
@@ -378,7 +378,7 @@ test('arrived journey phase schedules the live activity to end ten minutes after
 });
 
 test('unregister waits for matching notification live sessions to be deleted', async () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     const subscription = {
         deviceId: 'device-dismissed',
         activityId: 'activity-dismissed',
@@ -408,7 +408,7 @@ test('unregister waits for matching notification live sessions to be deleted', a
 });
 
 test('unregister preserves notification tracking after the journey starts', async () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     const subscription = {
         deviceId: 'device-en-route',
         activityId: 'activity-en-route',
@@ -427,7 +427,7 @@ test('unregister preserves notification tracking after the journey starts', asyn
 });
 
 test('unregisters every Live Activity belonging to a dismissed schedule', async () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     const subscriptions = ['activity-1', 'activity-2'].map((activityId) => ({
         deviceId: 'device-scheduled',
         activityId,
@@ -483,7 +483,7 @@ test('station delay crosses midnight without becoming on time', () => {
 
 
 test('multi-leg activity repairs route, shows onward departure, then final destination ETA', async () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     const subscription = { deviceId: 'multi-device', activityId: 'multi-activity',
         fromStation: 'KTH', toStation: 'HNH', deepLinkFromStation: 'KTH', deepLinkToStation: 'STP',
         displayName: 'Kent House → London St Pancras International via HNH',
@@ -526,7 +526,7 @@ test('multi-leg activity repairs route, shows onward departure, then final desti
 });
 
 test('token rotation retains the tracked multi-leg route and connection context', () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     const existing = { deviceId: 'multi-device', activityId: 'multi-token', fromStation: 'KTH', toStation: 'HNH',
         deepLinkFromStation: 'KTH', deepLinkToStation: 'ZFD', displayName: 'Kent House → Farringdon',
         journeyPhase: 'en_route', legContext: { from: 'HNH', to: 'ZFD', connection: true } };
@@ -542,7 +542,7 @@ test('token rotation retains the tracked multi-leg route and connection context'
 
 
 test('an in-flight poll cannot restore the previous leg after a status change', async () => {
-    const manager = new LiveActivityManager();
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
     const subscription = { deviceId: 'poll-device', activityId: 'poll-activity', fromStation: 'KTH', toStation: 'HNH',
         journeyPhase: 'en_route', lastJourneyStatusObservedAtMs: 1000 };
     manager.getDeparturesSnapshot = async () => {

@@ -2382,6 +2382,12 @@ final class JourneyTrackingCoordinator: ObservableObject {
             "is_interchange": active.phase == .atInterchange,
             "detected_at": detectedAt
         ])
+        if active.phase == .atInterchange {
+            await LiveActivityManager.shared.updateJourneyPhase(
+                .enRoute, startStation: active.plannedOrigin,
+                destinationStation: active.plannedDestination, checkpoint: active
+            )
+        }
         await refreshMonitoringConditions()
     }
 

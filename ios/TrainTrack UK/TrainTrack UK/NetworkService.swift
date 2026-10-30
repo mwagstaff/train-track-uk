@@ -130,6 +130,10 @@ struct DevicePreferencesPayload: Codable, Sendable {
     let notificationSummary: Bool
     let notificationDelays: Bool
     let notificationPlatform: Bool
+    let platformOnlyNearStation: Bool
+    let connectionAlerts: Bool
+    let connectionDelayMinutes: Int
+    let connectionUnknownDelay: Bool
 }
 
 private struct DelayRepayOperatorResponse: Decodable {
@@ -172,7 +176,11 @@ enum DevicePreferencesSync {
             transferWarningThresholdMinutes: defaults.object(forKey: "transferWarningThresholdMinutes") as? Int ?? 3,
             notificationSummary: NotificationPreferences.isEnabled(.summary),
             notificationDelays: NotificationPreferences.isEnabled(.delays),
-            notificationPlatform: NotificationPreferences.isEnabled(.platform)
+            notificationPlatform: NotificationPreferences.isEnabled(.platform),
+            platformOnlyNearStation: NotificationPreferences.enabledByDefault(NotificationPreferences.platformOnlyNearStationKey),
+            connectionAlerts: NotificationPreferences.enabledByDefault(NotificationPreferences.connectionAlertsKey),
+            connectionDelayMinutes: NotificationPreferences.connectionDelayMinutes(),
+            connectionUnknownDelay: NotificationPreferences.enabledByDefault(NotificationPreferences.connectionUnknownDelayKey)
         )
     }
 

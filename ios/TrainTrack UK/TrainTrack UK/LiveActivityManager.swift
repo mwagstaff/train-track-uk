@@ -656,6 +656,9 @@ final class LiveActivityManager: ObservableObject {
         let selected = isConnection ? JourneyItineraryBuilder.selectDeparture(
             from: store.departures(for: journey), noEarlierThan: max(earliest ?? Date(), Date())
         ) : nil
+        let remainingConnections = isConnection
+            ? await remainingConnectionPayload(stations: Array(stations[displayedIndex...]), firstDeparture: selected)
+            : []
         var state = activity.content.state
         state.fromCRS = journey.fromStation.crs
         state.toCRS = journey.toStation.crs
@@ -705,7 +708,7 @@ final class LiveActivityManager: ObservableObject {
                 state.delayMinutes = state.arrivalDelayMinutes ?? state.delayMinutes
             }
         }
-        guard journeyPhaseUpdateIDs[routeKey] == updateID,
+        guard !Task.isCancelled, journeyPhaseUpdateIDs[routeKey] == updateID,
               JourneyTrackingCoordinator.shared.activeJourney?.plannedLegIndex == index || phase == .arrived else { return }
         await activity.update(ActivityContent(state: state, staleDate: nil))
         JourneyActivityLifecycleStore.update(activityID: activity.id, state: state)
@@ -715,7 +718,11 @@ final class LiveActivityManager: ObservableObject {
             "from_name": journey.fromStation.name, "to_name": journey.toStation.name,
             "route_title": state.routeTitle ?? "", "connection": isConnection,
             "feeder_service_id": isConnection ? (current?.serviceID ?? "") : "",
-            "earliest_departure_ms": (earliest?.timeIntervalSince1970 ?? 0) * 1000
+            "earliest_departure_ms": (earliest?.timeIntervalSince1970 ?? 0) * 1000,
+            "at_station": checkpoint.stationEvents.last.map {
+                $0.kind == .arrival && $0.station.crs == journey.fromStation.crs
+            } ?? false,
+            "remaining_connections": remainingConnections
         ]
         _ = await sendLiveActivityJourneyStatus(
             phase: phase, fromCRS: checkpoint.plannedOrigin.crs, toCRS: checkpoint.plannedDestination.crs,
@@ -723,6 +730,32 @@ final class LiveActivityManager: ObservableObject {
             serviceMatchConfirmed: isConnection || current?.serviceID != nil,
             statusObservedAt: observedAt, activityID: activity.id, legContext: context
         )
+    }
+
+    private func remainingConnectionPayload(stations: [Station], firstDeparture: DepartureV2?) async -> [[String: Any]] {
+        let store = DeparturesStore.shared
+        var result: [[String: Any]] = []
+        var departure = firstDeparture
+        var earliest: Date?
+        for index in 0..<max(0, stations.count - 1) {
+            let journey = Journey(fromStation: stations[index], toStation: stations[index + 1])
+            if index > 0 {
+                guard let earliest else { break }
+                await store.refreshSpecificJourney(fromCRS: journey.fromStation.crs, toCRS: journey.toStation.crs)
+                departure = JourneyItineraryBuilder.selectDeparture(from: store.departures(for: journey), noEarlierThan: earliest)
+            }
+            guard !Task.isCancelled, let selected = departure else { break }
+            result.append([
+                "from": journey.fromStation.crs, "to": journey.toStation.crs,
+                "from_name": journey.fromStation.name, "to_name": journey.toStation.name,
+                "service_id": selected.serviceID, "scheduled": selected.departureTime.scheduled
+            ])
+            _ = await store.ensureServiceDetails(for: [selected.serviceID])
+            earliest = JourneyItineraryBuilder.arrivalInfo(
+                for: selected, at: journey.toStation.crs, serviceDetailsByID: store.serviceDetailsById, now: Date()
+            ).date
+        }
+        return result
     }
 
     private init() {

@@ -1,5 +1,7 @@
 export class HealthMonitor {
-  constructor({ store, stomp, metrics, checkIntervalMs = 10_000 }) {
+  constructor({ store, stomp, metrics, checkIntervalMs = 10_000, onChange = () => {} }) {
+    this.onChange = onChange;
+    this.previousState = null;
     this.store = store;
     this.stomp = stomp;
     this.metrics = metrics;
@@ -30,6 +32,15 @@ export class HealthMonitor {
       this.lastMongoError = error.message;
     }
     this.lastMongoCheckAt = new Date().toISOString();
+    const status = this.status();
+    const key = JSON.stringify([status.ready, status.mongo.healthy, status.feed.healthy, status.feed.state]);
+    if (key !== this.previousState) {
+      this.previousState = key;
+      // Bounded state only: do not copy arbitrary broker/database error text.
+      this.onChange({ checkedAt: status.checkedAt, ready: status.ready, mongoHealthy: status.mongo.healthy,
+        feedHealthy: status.feed.healthy, state: status.feed.state, lastMessageAt: status.feed.lastMessageAt,
+        messageAgeSeconds: status.feed.messageAgeSeconds, transportAgeSeconds: status.feed.transportAgeSeconds });
+    }
   }
 
   status() {

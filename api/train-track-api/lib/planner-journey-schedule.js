@@ -174,6 +174,7 @@ export class PlannerJourneyScheduler {
             state.live = null;
             if (isRail(leg)) {
                 try { state.live = await this.resolver.resolve(leg, now); } catch { /* Retain the dated timetable, never substitute another train. */ }
+                if (state.live?.actualDeparture || state.live?.actualArrival || state.previousArrival) state.journeyStarted = true;
                 if (state.live?.actualArrival && !state.live?.to?.cancelled) {
                     state.previousArrival = state.live.to?.arrival ?? now;
                     if (state.legIndex === plan.legs.length - 1) state.completed = true;

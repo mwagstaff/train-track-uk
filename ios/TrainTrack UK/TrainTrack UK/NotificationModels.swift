@@ -45,6 +45,19 @@ enum NotificationPreferences {
     static let summaryKey = "notificationPreferences.summary"
     static let delaysKey = "notificationPreferences.delays"
     static let platformKey = "notificationPreferences.platform"
+    static let platformOnlyNearStationKey = "notificationPreferences.platformOnlyNearStation"
+    static let connectionAlertsKey = "notificationPreferences.connectionAlerts"
+    static let connectionDelayMinutesKey = "notificationPreferences.connectionDelayMinutes"
+    static let connectionUnknownDelayKey = "notificationPreferences.connectionUnknownDelay"
+    static let defaultConnectionDelayMinutes = 5
+
+    static func enabledByDefault(_ key: String, defaults: UserDefaults = store) -> Bool {
+        defaults.object(forKey: key) as? Bool ?? true
+    }
+
+    static func connectionDelayMinutes(defaults: UserDefaults = store) -> Int {
+        min(30, max(1, defaults.object(forKey: connectionDelayMinutesKey) as? Int ?? defaultConnectionDelayMinutes))
+    }
 
     static func selectedTypes() -> [NotificationType] {
         let selected = NotificationType.allCases.filter { isEnabled($0) }

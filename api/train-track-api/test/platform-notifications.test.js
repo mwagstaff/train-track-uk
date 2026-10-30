@@ -3,6 +3,44 @@ import test from 'node:test';
 
 import { NotificationSubscriptionManager } from '../lib/notification-subscription-manager.js';
 
+test('default platform preference waits for welcome arrival and does not replay suppressed changes', async () => {
+    const { manager, notifications, subscription, leg } = await testSetup();
+    subscription.journeyPhaseByLeg = {};
+    await manager.sendUpdateNotifications(subscription, leg, 'VIC-KTH', departures(departure('1')), ['platform']);
+    await manager.sendUpdateNotifications(subscription, leg, 'VIC-KTH', departures(departure('2')), ['platform']);
+    assert.equal(notifications.length, 0);
+    await manager.recordJourneyPhase(subscription.deviceId, { fromStation: 'VIC', toStation: 'KTH', phase: 'at_start' });
+    await manager.sendUpdateNotifications(subscription, leg, 'VIC-KTH', departures(departure('2')), ['platform']);
+    assert.equal(notifications.length, 0);
+    await manager.sendUpdateNotifications(subscription, leg, 'VIC-KTH', departures(departure('3')), ['platform']);
+    assert.equal(notifications.length, 1);
+});
+
+test('station state is scoped to the route, day and most recent phase', async () => {
+    const { manager, subscription, leg } = await testSetup();
+    subscription.journeyPhaseByLeg = {};
+    await manager.recordJourneyPhase(subscription.deviceId, { fromStation: 'KTH', toStation: 'VIC', phase: 'at_start' });
+    assert.equal(manager.isAtStation(subscription, leg, 'VIC-KTH'), false);
+    await manager.recordJourneyPhase(subscription.deviceId, { fromStation: 'VIC', toStation: 'KTH', phase: 'at_start', statusObservedAtMs: Date.now() - 86400000 });
+    assert.equal(manager.isAtStation(subscription, leg, 'VIC-KTH'), false);
+    await manager.recordJourneyPhase(subscription.deviceId, { fromStation: 'VIC', toStation: 'KTH', phase: 'at_start', statusObservedAtMs: Date.now() - 1000 });
+    assert.equal(manager.isAtStation(subscription, leg, 'VIC-KTH'), true);
+    await manager.recordJourneyPhase(subscription.deviceId, { fromStation: 'VIC', toStation: 'KTH', phase: 'pending_start' });
+    assert.equal(manager.isAtStation(subscription, leg, 'VIC-KTH'), true);
+    await manager.recordJourneyPhase(subscription.deviceId, { fromStation: 'VIC', toStation: 'KTH', phase: 'en_route' });
+    await manager.recordJourneyPhase(subscription.deviceId, { fromStation: 'VIC', toStation: 'KTH', phase: 'at_start', statusObservedAtMs: Date.now() - 2000 });
+    assert.equal(manager.isAtStation(subscription, leg, 'VIC-KTH'), false);
+});
+
+test('opting out permits platform notifications before station arrival', async () => {
+    const { manager, notifications, subscription, leg } = await testSetup();
+    subscription.journeyPhaseByLeg = {};
+    manager.getNotificationPreferences = async () => ({ platformOnlyNearStation: false });
+    await manager.sendUpdateNotifications(subscription, leg, 'VIC-KTH', departures(departure('1')), ['platform']);
+    await manager.sendUpdateNotifications(subscription, leg, 'VIC-KTH', departures(departure('2')), ['platform']);
+    assert.equal(notifications.length, 1);
+});
+
 test('notifies when the next train is assigned a platform', async () => {
     const { manager, notifications, subscription, leg } = await testSetup();
 
@@ -142,7 +180,7 @@ for (const activity of [
 }
 
 async function testSetup() {
-    const manager = new NotificationSubscriptionManager();
+    const manager = new NotificationSubscriptionManager({ getNotificationPreferences: async () => ({}) });
     const notifications = [];
     manager._saveSubscription = async () => {};
     manager.recordSubscriptionAudit = async () => {};
@@ -172,6 +210,7 @@ async function testSetup() {
         source: 'scheduled'
     });
     const subscription = manager.subscriptions.get(created.id);
+    await manager.recordJourneyPhase(subscription.deviceId, { fromStation: 'VIC', toStation: 'KTH', phase: 'at_start' });
 
     return { manager, notifications, subscription, leg: subscription.legs[0] };
 }

@@ -1177,6 +1177,9 @@ app.post('/api/v2/live_activities/status', async (req, res) => {
     }
 
     try {
+        await notificationSubscriptionManager.recordJourneyPhase(canonicalDeviceId, {
+            fromStation: from, toStation: to, phase, statusObservedAtMs: status_observed_at_ms, legContext: leg_context
+        });
         const result = await liveActivityManager.handleJourneyPhase(canonicalDeviceId, {
             fromStation: from || null,
             toStation: to || null,

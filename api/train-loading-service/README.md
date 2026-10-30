@@ -136,3 +136,53 @@ https://api.skynolimit.dev/train-track-loading/api/v1
 
 Rollback consists of stopping only the loading service; existing
 `/train-track/api/v2` traffic is unaffected.
+
+## Darwin readiness incident runbook
+
+Registered service `train-loading-service` runs on Sky, systemd user unit
+`com.train-loading-service.api.service`, port 3017; Mini owns its monitoring and
+AIOps incidents. Logs are `~/dev/train-loading-service/train-loading-service.log`
+and `.error.log`. Public readiness is
+`https://api.skynolimit.dev/train-track-loading/health/ready`.
+
+On a readiness 503, retain the JSON body: `mongo.healthy` and `feed.healthy`
+identify the failing dependency. Compare `checkedAt`, `lastMessageAt`, transport
+and message ages, state, reconnect count and lastError with the alert window.
+A subscribed socket and heartbeats do not prove fresh MESSAGE delivery. The
+message freshness default is five minutes; the transport watchdog is 45 seconds.
+The existing public availability alert persists for two minutes. AIOps now
+collects this structured body even on 503, plus liveness and Darwin metrics.
+Darwin state/error logs carry UTC event times; health changes are logged once per
+transition, including a stale feed while still subscribed. No new recovery
+authority or more aggressive polling/reconnection is introduced.
+
+If the process and Mongo are healthy but messages are stale or the broker refuses
+connections, allow the existing reconnect/backoff and escalate persistent upstream
+failure. Do not restart the service, clear Mongo, or treat connected status alone
+as recovery. For genuine process/Mongo failures investigate those independently;
+automated recovery remains subject to the registered approval policy. Verify fresh
+messages, Mongo, local/public readiness and source resolution after recovery.
+Existing loading records can remain stale/unknown; restored feed health does not
+prove that every missed update was replayed.
+
+28 October 2026, incident `INC-d1f1aaab-20261028T1246Z`: historical metrics show
+MESSAGE delivery stopping around 12:39 UTC, readiness failing around 12:44,
+and recovery around 13:03. Collected-time logs record broker ECONNREFUSED during
+12:59 and subscription restoration at 13:00; readiness reports connectedAt
+13:00:09.959Z. The process remained running with zero restarts. This establishes
+an interrupted feed and refused connections, not the provider's internal cause.
+AIOps originally discarded the 503 body and had no fresh timestamped application
+logs at first investigation. The new darwin-feed runbook and bounded readiness
+collector address that evidence gap.
+
+Verification: deployed timestamp/health-transition logging to Sky and AIOps
+collectors/runbooks to both responders. Mini's restricted peer collection returns
+current readiness, liveness and timestamped events. An isolated in-memory replay
+of the original incident confirms source clearance and no quality gaps, without
+sending duplicate notifications or executing recovery. Public readiness returned
+HTTP 200 using the monitoring user agent, and no loading-service alert remained.
+38 loading tests, 23 AIOps Python tests and all 18 focused AIOps lesson tests pass;
+the full Node suite has 86 passes and one existing infrastructure coverage failure
+for MongoBackupStale/MongoRestoreTestStale (outside this change). TypeScript and
+diff checks pass. The shared Service logs dashboard now uses a 24-column,
+24-row panel on Mini and Sky; Mini was visually checked in the browser.

@@ -2,6 +2,35 @@
 
 API for the [TrainTrack UK](https://apps.apple.com/gb/app/traintrack-uk/id6504205950) app.
 
+## Journey notification preferences
+
+The app uploads device settings to `POST /api/v2/device_preferences`. Missing new
+settings default to `platformOnlyNearStation: true`, `connectionAlerts: true`,
+`connectionDelayMinutes: 5` (clamped to 1–30) and `connectionUnknownDelay: true`.
+Platform banners require the same `at_start` station-arrival signal that triggers
+the welcome notification, unless the proximity preference is disabled. Ordinary
+notification subscriptions persist this signal per route and London date; Live
+Activities use their journey phase and the detected interchange arrival.
+
+During a journey, connection alerts monitor only unboarded itinerary services:
+dated train identities for planner journeys, and the exact remaining service IDs
+sent in `leg_context.remaining_connections` for tracked saved routes. They cover
+cancellations (including the destination call), delays at or above the chosen
+threshold, and optionally delays without an estimate. Alternative trains on the
+same departure board do not trigger these proactive alerts. Alerts are delivered
+with the active Live Activity, combine simultaneous connection changes, and retain
+deduplication state only after APNs accepts the push. Completed journeys stop
+connection monitoring; a feed failure is never treated as an unknown delay.
+
+Validate with:
+
+```sh
+node --test test/journey-notification-policy.test.js test/platform-notifications.test.js test/live-activity-manager.test.js test/planner-journey-schedule.test.js
+```
+
+After deploying the API and installing the updated iOS app, verify welcome-boundary behaviour and background APNs delivery
+on an iPhone; local fixtures and simulator checks cannot prove device delivery.
+
 ## Live National Rail disruptions
 
 `GET /api/v2/disruptions/live` returns published, currently active, unplanned

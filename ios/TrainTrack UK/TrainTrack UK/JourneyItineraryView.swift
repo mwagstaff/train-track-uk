@@ -356,7 +356,7 @@ enum JourneyItineraryBuilder {
         return candidate
     }
 
-    private static func arrivalInfo(
+    static func arrivalInfo(
         for departure: DepartureV2,
         at destinationCRS: String,
         serviceDetailsByID: [String: ServiceDetails],

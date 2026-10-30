@@ -10,6 +10,7 @@ import { holidayModeStore } from './holiday-mode-store.js';
 import { COLLECTIONS, getMongoCollection } from './mongo-client.js';
 import { sleep } from './retry-utils.js';
 import { allowDeviceData } from './device-data-deletion-state.js';
+import { allowsPlatformNotification, loadNotificationPreferences } from './journey-notification-policy.js';
 import { normalizePlannerSchedule, PlannerJourneyScheduler } from './planner-journey-schedule.js';
 import {
     buildMuteNotificationPlan,
@@ -66,6 +67,7 @@ export class NotificationSubscriptionManager {
         this.deletedDeviceIds = new Set();
         this.getDeviceLiveActivities = options.getDeviceLiveActivities || (() => []);
         this.getDeviceTrackingSessions = options.getDeviceTrackingSessions || (() => []);
+        this.getNotificationPreferences = options.getNotificationPreferences || loadNotificationPreferences;
         this.scheduledStartTasks = new Map();
         this.scheduleSkipTasks = new Map();
         this.getPlannerPushToken = options.getPlannerPushToken || (deviceId => pushToStartTokenStore.get(deviceId));
@@ -417,6 +419,7 @@ export class NotificationSubscriptionManager {
             lastActivationPromptSentByLeg: resetScheduledDeliveryState ? {} : (existing?.lastActivationPromptSentByLeg || {}),
             lastPushToStartMissingLoggedByLeg: resetScheduledDeliveryState ? {} : (existing?.lastPushToStartMissingLoggedByLeg || {}),
             lastStateByLeg: resetScheduledDeliveryState ? {} : (existing?.lastStateByLeg || {}),
+            journeyPhaseByLeg: existing?.journeyPhaseByLeg || {},
             mutedByLegDay: resetScheduledDeliveryState ? {} : (existing?.mutedByLegDay || {}),
             mutedAtByLegDay: resetScheduledDeliveryState ? {} : (existing?.mutedAtByLegDay || {}),
             pushTokenInvalidAt: null,
@@ -1454,6 +1457,38 @@ export class NotificationSubscriptionManager {
         }
     }
 
+    async recordJourneyPhase(deviceId, { fromStation, toStation, phase, statusObservedAtMs, legContext } = {}) {
+        if (!fromStation || !toStation || !['pending_start', 'at_start', 'en_route', 'arrived'].includes(phase)) return;
+        const observedAtMs = Number.isFinite(statusObservedAtMs) ? statusObservedAtMs : Date.now();
+        const dateKey = currentScheduleDateKey();
+        if (currentScheduleDateKey(new Date(observedAtMs)) !== dateKey) return;
+        for (const subscription of this.subscriptions.values()) {
+            if (subscription.deviceId !== deviceId) continue;
+            if (!subscription.legs.some(leg => leg.from === fromStation)
+                || !subscription.legs.some(leg => leg.to === toStation)) continue;
+            const from = legContext?.from || fromStation;
+            for (const leg of subscription.legs.filter(leg => leg.from === from)) {
+                const key = `${leg.from}-${leg.to}`;
+                const previous = subscription.journeyPhaseByLeg?.[key];
+                if (previous?.dateKey === dateKey && (previous.observedAtMs > observedAtMs
+                    || (previous.phase === 'at_start' && phase === 'pending_start')
+                    || (['en_route', 'arrived'].includes(previous.phase) && ['pending_start', 'at_start'].includes(phase)))) continue;
+                subscription.journeyPhaseByLeg ||= {};
+                subscription.journeyPhaseByLeg[key] = { phase, dateKey, observedAtMs,
+                    atStation: phase === 'at_start' || (phase === 'en_route' && legContext?.at_station === true) };
+            }
+            await this._saveSubscription(subscription);
+        }
+    }
+
+    isAtStation(subscription, leg, legKey) {
+        const state = subscription.journeyPhaseByLeg?.[legKey];
+        if (state?.dateKey === currentScheduleDateKey()) return state.atStation === true;
+        return this.getDeviceLiveActivities(subscription.deviceId).some(activity =>
+            !activity.evicted && activity.journeyPhase === 'at_start'
+            && activity.fromStation === leg.from && activity.toStation === leg.to);
+    }
+
     async sendUpdateNotifications(subscription, leg, legKey, snapshot, notificationTypes = getEffectiveNotificationTypes(subscription)) {
         if (this.isMutedToday(subscription, legKey)) {
             return;
@@ -1462,6 +1497,8 @@ export class NotificationSubscriptionManager {
             ? 'scheduled_update'
             : 'live_session_update';
         const previous = subscription.lastStateByLeg[legKey] || {};
+        const preferences = notificationTypes.includes('platform')
+            ? await this.getNotificationPreferences(subscription.deviceId) : {};
         const nextState = {};
         const nextDepartureServiceID = snapshot.departures[0]?.serviceID || null;
 
@@ -1509,7 +1546,8 @@ export class NotificationSubscriptionManager {
                 }
             }
 
-            if (notificationTypes.includes('platform')) {
+            if (notificationTypes.includes('platform')
+                && allowsPlatformNotification(preferences, this.isAtStation(subscription, leg, legKey))) {
                 const previousPlatform = normalizePlatform(prev.platform);
                 if (isNextDeparture && current.platform && previousPlatform !== current.platform) {
                     await this.sendNotification(
@@ -1592,7 +1630,8 @@ export class NotificationSubscriptionManager {
                 session.from === leg.from && session.to === leg.to
             )
             || this.getDeviceLiveActivities(activeSubscription.deviceId).some((activity) =>
-                activity.fromStation === leg.from && activity.toStation === leg.to
+                ((activity.fromStation === leg.from && activity.toStation === leg.to)
+                    || activity.legContext?.remainingConnections?.some(connection => connection.from === leg.from && connection.to === leg.to))
                     && activity.journeyPhase === 'en_route'
                     && (!activity.endAt || Date.parse(activity.endAt) > Date.now())
             )
