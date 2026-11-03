@@ -512,6 +512,69 @@ struct JourneyServiceMatchingPolicyTests {
         #expect(match([forecast, rival]).departure == nil)
     }
 
+    @Test func novemberThirdDelayedTrainRecoversDespiteMinutePrecisionAtOriginCutoff() throws {
+        let detectedAt = date("17:32").addingTimeInterval(25)
+        let presence = date("17:32").addingTimeInterval(12)
+        let board = [departure("17:27"), departure("17:42")]
+        func resolve(_ evidence: [RecentDepartureV2]) -> JourneyServiceMatchingPolicy.Match {
+            JourneyServiceMatchingPolicy.match(departures: board, recentDepartures: evidence,
+                from: origin, to: destination, detectedAt: detectedAt,
+                originArrivedAt: date("17:17").addingTimeInterval(58), lastOriginPresenceAt: presence)
+        }
+        #expect(resolve([]).departure == nil)
+        let actual = try #require(JourneyServiceMatchingPolicy.departureEvidence(
+            serviceID: "17:27", details: recoveryDetails(actual: "17:30"),
+            from: origin, to: destination, detectedAt: detectedAt))
+        #expect(resolve([actual]).departure?.serviceID == "17:27")
+        let earlier = try #require(JourneyServiceMatchingPolicy.departureEvidence(
+            serviceID: "17:27", details: recoveryDetails(actual: "17:29"),
+            from: origin, to: destination, detectedAt: detectedAt))
+        #expect(resolve([earlier]).departure == nil)
+    }
+
+    @Test func locationRecoveryRequiresTwoDistinctActualCallingPointsOnTheSameDatedRoute() throws {
+        func details(actual: Bool = true, day: Int = 9) throws -> ServiceDetails {
+            try JSONDecoder().decode(ServiceDetails.self, from: JSONSerialization.data(withJSONObject: [
+                "generatedAt": ISO8601DateFormatter().string(from: date("18:20", day: day)),
+                "serviceType": "train", "locationName": "Victoria", "crs": "VIC", "std": "17:27",
+                "subsequentCallingPoints": [["callingPoint": [
+                    ["locationName": "Brixton", "crs": "BRX", "st": "17:34", actual ? "at" : "et": "17:37"],
+                    ["locationName": "Herne Hill", "crs": "HNH", "st": "17:36", actual ? "at" : "et": "17:40"],
+                    ["locationName": "Kent House", "crs": "KTH", "st": "17:47"]
+                ]]]
+            ]))
+        }
+        let brixton = Station(crs: "BRX", name: "Brixton", longitude: "-0.11", latitude: "51.46")
+        let herneHill = Station(crs: "HNH", name: "Herne Hill", longitude: "-0.10", latitude: "51.45")
+        let observations = [
+            JourneyRecoveryObservation(station: brixton, observedAt: date("17:38")),
+            JourneyRecoveryObservation(station: herneHill, observedAt: date("17:41"))
+        ]
+        func corroborates(_ details: ServiceDetails, _ sightings: [JourneyRecoveryObservation]) -> Bool {
+            JourneyServiceMatchingPolicy.hasCorroboratingStationObservations(
+                details: details, from: origin, to: destination, detectedAt: date("17:32"),
+                observations: sightings)
+        }
+        #expect(corroborates(try details(), observations))
+        #expect(!corroborates(try details(actual: false), observations))
+        #expect(!corroborates(try details(day: 8), observations))
+        #expect(!corroborates(try details(), [observations[0], observations[0]]))
+        #expect(!corroborates(try details(), [
+            JourneyRecoveryObservation(station: brixton, observedAt: date("17:50")),
+            JourneyRecoveryObservation(station: herneHill, observedAt: date("17:53"))
+        ]))
+        let match = JourneyServiceMatchingPolicy.match(
+            departures: [departure("17:27"), departure("17:42")], recentDepartures: [],
+            from: origin, to: destination, detectedAt: date("17:32"), originArrivedAt: date("17:17"),
+            lastOriginPresenceAt: date("17:32"), corroboratedServiceIDs: ["17:27"])
+        #expect(match.departure?.serviceID == "17:27")
+        // A corroboration never makes a train departing after the original exit eligible.
+        #expect(JourneyServiceMatchingPolicy.match(
+            departures: [departure("17:42")], recentDepartures: [], from: origin, to: destination,
+            detectedAt: date("17:32"), originArrivedAt: date("17:17"),
+            corroboratedServiceIDs: ["17:42"]).departure == nil)
+    }
+
     private func recoveryDetails(actual: String = "17:38", crs: String = "VIC",
         destinationCRS: String = "KTH", day: Int = 9, cancelled: Bool = false) throws -> ServiceDetails {
         let data = try JSONSerialization.data(withJSONObject: [

@@ -31,6 +31,30 @@ node --test test/journey-notification-policy.test.js test/platform-notifications
 After deploying the API and installing the updated iOS app, verify welcome-boundary behaviour and background APNs delivery
 on an iPhone; local fixtures and simulator checks cannot prove device delivery.
 
+## Recovering an unconfirmed boarded train
+
+Automatic matching retains the original departure observation and refreshes exact
+service evidence every 30 seconds while the app is executing, as well as on
+location updates and launch/foreground recovery. iOS suspension can delay those
+attempts. Recovery continues for the active leg rather than expiring after 30
+minutes; completion, manual correction, and the 24-hour journey safety limit stop
+it. Two distinct station sightings aligned with actual calling-point times can
+corroborate an otherwise stale origin forecast. Timetable-only sightings do not.
+
+Exact dated staff-service lookups retain suppressed departures when the feed
+supplies an actual departure. Ordinary passenger boards still exclude those
+entries, and hidden platforms remain hidden. This resolves the 3 November 2026
+17:27 VIC–KTH incident: the suppressed service departed at 17:30:47, with official
+arrival at 17:52. Minute-resolution matching also includes the cutoff minute so
+truncating 17:30:47 to 17:30 does not reject this service.
+
+Validate with `node --test test/staff-departures.test.js` and the iOS
+`JourneyServiceMatchingPolicyTests` / `JourneyServiceRecoveryTests`. For a new
+incident, correlate `service_detail_recovery_evaluated` (loaded, missing, and
+unavailable service IDs) and `service_match_resolved` with the exact dated service
+response and persisted `live_activity_payloads`. APNs acceptance alone does not
+establish receipt or successful train identification on the phone.
+
 ## Live National Rail disruptions
 
 `GET /api/v2/disruptions/live` returns published, currently active, unplanned

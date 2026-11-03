@@ -299,6 +299,7 @@ struct JourneyServiceMatchRecoveryContext: Codable, Hashable {
     var departures: [DepartureV2]
     var legID: UUID?
     var lastAttemptAt: Date?
+    var stationObservations: [JourneyRecoveryObservation]?
 
     init(
         plannedLegIndex: Int,
@@ -328,7 +329,6 @@ struct JourneyServiceMatchRecoveryContext: Codable, Hashable {
 
     func shouldRetry(in checkpoint: ActiveJourneyHistoryCheckpoint, at now: Date) -> Bool {
         guard canApply(to: checkpoint), now >= detectedAt,
-              now.timeIntervalSince(detectedAt) <= Self.retryLifetime,
               lastAttemptAt.map({ now.timeIntervalSince($0) >= Self.retryInterval }) != false else { return false }
         return legID == nil || checkpoint.currentLeg?.hasKnownCallingPattern != true
     }
@@ -344,7 +344,7 @@ struct JourneyServiceMatchRecoveryContext: Codable, Hashable {
         )
         guard var updated = applying(leg, to: checkpoint) else { return nil }
         updated.phase = .inTransit
-        updated.serviceMatchRecovery = nil
+        // Keep retrying the original observation after resuming an interrupted match.
         updated.serviceMatchConfidence = 0
         updated.backendSessionID = nil
         updated.updatedAt = now

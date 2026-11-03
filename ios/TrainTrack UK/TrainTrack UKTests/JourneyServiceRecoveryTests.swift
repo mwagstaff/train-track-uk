@@ -66,7 +66,8 @@ struct JourneyServiceRecoveryTests {
         #expect(resumed.currentLeg?.fromStation == original.plannedOrigin)
         #expect(resumed.currentLeg?.toStation == original.plannedDestination)
         #expect(resumed.stationEvents == original.stationEvents)
-        #expect(resumed.serviceMatchRecovery == nil)
+        #expect(resumed.serviceMatchRecovery?.id == recovery.id)
+        #expect(resumed.serviceMatchRecovery?.shouldRetry(in: resumed, at: date("18:02")) == true)
         #expect(recovery.interruptedFallback(in: resumed, at: date("17:51")) == nil)
         #expect(recovery.applying(leg(detectedAt: recovery.detectedAt), to: resumed) == nil)
     }
@@ -157,7 +158,7 @@ struct JourneyServiceRecoveryTests {
         #expect(!active.matchesInTransitService(journeyID: active.id, legID: legID, serviceID: "confirmed-choice"))
     }
 
-    @Test func retriesAreThrottledAndExpireWithoutChangingObservationTime() throws {
+    @Test func retriesAreThrottledAndContinueThroughoutTheActiveJourney() throws {
         var active = checkpoint()
         active.serviceMatchRecovery?.lastAttemptAt = date("17:30")
         let recovery = try #require(active.serviceMatchRecovery)
@@ -166,7 +167,8 @@ struct JourneyServiceRecoveryTests {
         #expect(recovery.shouldRetry(in: active, at: date("17:45")))
         #expect(recovery.shouldRetry(in: active, at: date("17:50")))
         #expect(recovery.shouldRetry(in: active, at: date("18:00")))
-        #expect(!recovery.shouldRetry(in: active, at: date("18:00").addingTimeInterval(1)))
+        #expect(recovery.shouldRetry(in: active, at: date("18:00").addingTimeInterval(1)))
+        #expect(recovery.shouldRetry(in: active, at: date("20:00")))
         #expect(!recovery.shouldRetry(in: active, at: date("17:29")))
     }
 

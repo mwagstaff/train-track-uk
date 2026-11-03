@@ -235,6 +235,8 @@ final class JourneyTrackingCoordinator: ObservableObject {
     private var earlyExitEvidence = JourneyEarlyExitPolicy()
     private var unexpectedStationEvidence = JourneyEarlyExitPolicy()
     private var serviceMatchingAttempts: Set<UUID> = []
+    private var serviceRecoveryTask: Task<Void, Never>?
+    private var serviceRecoveryTaskID: UUID?
 
     private init() {
         restoreCheckpoint()
@@ -1590,6 +1592,18 @@ final class JourneyTrackingCoordinator: ObservableObject {
               destinationEvaluation.rejectionReason != "stale_location" else {
             return
         }
+        if active.serviceMatchRecovery != nil, location.horizontalAccuracy <= 75,
+           locationAge >= 0, locationAge <= 90,
+           let nearest = StationsService.shared.stations
+            .filter({ $0.crs != active.serviceMatchRecovery?.fromStation.crs
+                && $0.hasUsableCoordinate && $0.distance(from: location) <= 150 })
+            .min(by: { $0.distance(from: location) < $1.distance(from: location) }) {
+            var observations = active.serviceMatchRecovery?.stationObservations ?? []
+            if observations.last.map({ detectedAt.timeIntervalSince($0.observedAt) >= 30 }) ?? true {
+                observations.append(JourneyRecoveryObservation(station: nearest, observedAt: detectedAt))
+                active.serviceMatchRecovery?.stationObservations = Array(observations.suffix(24))
+            }
+        }
         active.lastProcessedLocationTimestamp = detectedAt
         activeJourney = active
         persistCheckpoint()
@@ -1874,6 +1888,10 @@ final class JourneyTrackingCoordinator: ObservableObject {
               let active = activeJourney,
               let recovery = active.serviceMatchRecovery,
               !serviceMatchingAttempts.contains(recovery.id) else { return }
+        if Date().timeIntervalSince(active.detectedDepartureAt) > Self.maximumActiveJourneyDuration {
+            await finishJourney(outcome: .uncertain, completedAt: Date())
+            return
+        }
         if let fallback = recovery.interruptedFallback(in: active, at: Date()) {
             activeJourney = fallback
             persistCheckpoint()
@@ -2089,6 +2107,8 @@ final class JourneyTrackingCoordinator: ObservableObject {
                     "journey_id": active.id.uuidString,
                     "requested_service_ids": ids,
                     "loaded_service_ids": ids.filter { DeparturesStore.shared.serviceDetailsById[$0] != nil },
+                    "unavailable_service_ids": ids.filter { DeparturesStore.shared.unavailableServiceIDs.contains($0) },
+                    "missing_service_ids": ids.filter { DeparturesStore.shared.serviceDetailsById[$0] == nil },
                     "recovered_service_ids": recoveredEvidence.map(\.serviceID),
                     "recovered_departures": recoveredEvidence.map { evidence in
                         [
@@ -2101,10 +2121,18 @@ final class JourneyTrackingCoordinator: ObservableObject {
                         ]
                     }
                 ])
+                let corroboratedIDs = Set(ids.filter { id in
+                    guard let details = DeparturesStore.shared.serviceDetailsById[id] else { return false }
+                    return JourneyServiceMatchingPolicy.hasCorroboratingStationObservations(
+                        details: details, from: from, to: to, detectedAt: detectedAt,
+                        observations: activeJourney?.serviceMatchRecovery?.stationObservations ?? []
+                    )
+                })
                 match = JourneyServiceMatchingPolicy.match(
                     departures: departures, recentDepartures: recentDepartures, from: from, to: to,
                     detectedAt: detectedAt, originArrivedAt: originArrivedAt,
-                    lastOriginPresenceAt: lastOriginPresenceAt
+                    lastOriginPresenceAt: lastOriginPresenceAt,
+                    corroboratedServiceIDs: corroboratedIDs
                 )
             }
         }
@@ -2966,7 +2994,32 @@ final class JourneyTrackingCoordinator: ObservableObject {
         return (kind, journeyID, String(parts[2]).uppercased())
     }
 
+    private func maintainServiceRecoveryTask() {
+        let recoveryID = activeJourney.flatMap { active in
+            active.serviceMatchRecovery.flatMap { $0.canApply(to: active) ? $0.id : nil }
+        }
+        guard recoveryID != serviceRecoveryTaskID else { return }
+        // A successful match removes its recovery context while finishing the
+        // Live Activity update. Let that guarded operation finish before exiting.
+        if serviceRecoveryTaskID.map({ !serviceMatchingAttempts.contains($0) }) ?? true {
+            serviceRecoveryTask?.cancel()
+        }
+        serviceRecoveryTask = nil
+        serviceRecoveryTaskID = recoveryID
+        guard let recoveryID else { return }
+        serviceRecoveryTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled, self?.serviceRecoveryTaskID == recoveryID {
+                do {
+                    try await Task.sleep(for: .seconds(JourneyServiceMatchRecoveryContext.retryInterval))
+                } catch { return }
+                guard !Task.isCancelled, self?.serviceRecoveryTaskID == recoveryID else { return }
+                await self?.refreshActiveServiceRecovery()
+            }
+        }
+    }
+
     private func persistCheckpoint() {
+        maintainServiceRecoveryTask()
         let envelope = JourneyHistoryCheckpointEnvelope(
             armedCandidates: armedCandidates,
             activeJourney: activeJourney,

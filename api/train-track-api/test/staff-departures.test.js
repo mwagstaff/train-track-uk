@@ -255,3 +255,24 @@ test('failed earlier-station refresh preserves the last good route and retries a
     assert.deepEqual((await provider.getDetails(kentHouseID)).previousCallingPoints, first.previousCallingPoints);
     assert.equal(calls.filter(url => url.includes('/ORP/')).length, 3);
 });
+
+test('departed suppressed 17:27 VIC service remains recoverable by exact dated identity', async () => {
+    const raw = JSON.parse(fs.readFileSync(new URL('./fixtures/victoria-departed-20261103.json', import.meta.url)));
+    const id = 'staff_202611038088420_VIC_20261103T172700_P';
+    assert.equal(raw.trainServices[0].serviceIsSupressed, true);
+    assert.equal(normalizeStaffDepartureBoard(raw, { station: 'VIC' }).board.trainServices.length, 0);
+    const provider = new StaffDepartures({ credentials: () => 'test', request: async () => ({ data: raw }) });
+    const details = await provider.getDetails(id);
+    assert.equal(details.atd, '17:30');
+    assert.equal(details.platform, undefined); // suppression does not reveal hidden platforms
+    assert.equal(details.subsequentCallingPoints[0].callingPoint.find(p => p.crs === 'KTH').at, '17:52');
+    assert.equal((await provider.getDetails(id.replace('T172700', 'T174200'))).unavailable, true);
+    for (const changes of [
+        { departureType: 'Forecast' }, { atdSpecified: false }, { isDeleted: true },
+        { isOperationalCall: true }, { isPassengerService: false }, { atd: 'invalid' }
+    ]) {
+        const changed = structuredClone(raw);
+        Object.assign(changed.trainServices[0], changes);
+        assert.equal(normalizeStaffDepartureBoard(changed, { station: 'VIC', serviceID: id }).details.size, 0);
+    }
+});

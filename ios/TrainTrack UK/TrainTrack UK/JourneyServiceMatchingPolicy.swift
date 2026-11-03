@@ -70,6 +70,47 @@ enum JourneyServiceMatchingPolicy {
         )
     }
 
+    /// Two independent station/time sightings can corroborate a train whose
+    /// origin forecast never advanced. Timetable predictions alone are insufficient.
+    static func hasCorroboratingStationObservations(
+        details: ServiceDetails, from: Station, to: Station, detectedAt: Date,
+        observations: [JourneyRecoveryObservation]
+    ) -> Bool {
+        guard details.crs.caseInsensitiveCompare(from.crs) == .orderedSame,
+              details.isCancelled != true,
+              let generatedAt = SiriRailTime.parseISO(details.generatedAt),
+              let scheduled = JourneyHistoryTime.date(for: details.std, near: generatedAt),
+              abs(scheduled.timeIntervalSince(detectedAt)) <= departureDetectionLookback,
+              scheduled <= detectedAt else { return false }
+        // Never use a later actual departure to justify an earlier boarding.
+        if let actual = details.atd,
+           let departedAt = JourneyHistoryTime.date(for: actual, near: scheduled),
+           departedAt > detectedAt { return false }
+        for branch in details.subsequentCallingPoints ?? [] {
+            guard let destinationIndex = branch.callingPoint.firstIndex(where: {
+                $0.crs.caseInsensitiveCompare(to.crs) == .orderedSame && $0.isCancelled != true
+            }) else { continue }
+            let calls = branch.callingPoint.prefix(destinationIndex + 1)
+            var matchedStations = Set<String>()
+            var lastIndex = -1
+            for observation in observations.sorted(by: { $0.observedAt < $1.observedAt })
+                where observation.observedAt > detectedAt {
+                guard let index = calls.firstIndex(where: {
+                    $0.crs.caseInsensitiveCompare(observation.station.crs) == .orderedSame
+                        && $0.isCancelled != true
+                }), index >= lastIndex,
+                let actual = calls[index].at,
+                let actualAt = JourneyHistoryTime.date(for: actual, near: scheduled),
+                actualAt >= detectedAt,
+                abs(actualAt.timeIntervalSince(observation.observedAt)) <= 120 else { continue }
+                lastIndex = index
+                matchedStations.insert(observation.station.crs.uppercased())
+            }
+            if matchedStations.count >= 2 { return true }
+        }
+        return false
+    }
+
     struct Match {
         let departure: DepartureV2?
         let scheduledDepartureAt: Date?
@@ -203,7 +244,8 @@ enum JourneyServiceMatchingPolicy {
         originArrivedAt: Date?,
         lastOriginPresenceAt: Date? = nil,
         preferredServiceID: String? = nil,
-        preferredDeparture: DepartureV2? = nil
+        preferredDeparture: DepartureV2? = nil,
+        corroboratedServiceIDs: Set<String> = []
     ) -> Match {
         // A user's explicit correction remains authoritative, including when
         // they select a service just before it departs.
@@ -301,7 +343,13 @@ enum JourneyServiceMatchingPolicy {
                         $0 >= detectedAt.addingTimeInterval(-departureDetectionLookback)
                     } ?? true)
             }
-            return candidate.effectiveDepartureAt >= earliestDeparture
+            // Feed clocks have minute precision. Compare against the start of the
+            // cutoff minute: 17:30:47 is represented as 17:30, not an early train.
+            let cutoffMinute = Date(timeIntervalSince1970:
+                floor(earliestDeparture.timeIntervalSince1970 / 60) * 60)
+            let corroborated = candidate.actualDepartureAt == nil
+                && corroboratedServiceIDs.contains(candidate.departure.serviceID)
+            return (candidate.effectiveDepartureAt >= cutoffMinute || corroborated)
                 && candidate.effectiveDepartureAt <= detectedAt
         }
         // A region exit is an upper bound on departure, not an exact boarding time.

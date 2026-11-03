@@ -92,7 +92,13 @@ export function normalizeStaffDepartureBoard(raw, { station, destination, type =
     const details = new Map();
     const services = list(raw[field]).filter(service => (!serviceID || staffServiceReference(service, station, type) === serviceID)
         && (!rid || service.rid === rid)
-        && publicCall(service)
+        // Suppression removes a departed train from passenger boards, but must
+        // not erase its actual movement when refreshing that exact dated train.
+        && (publicCall(service) || (serviceID
+            && staffServiceReference(service, station, type) === serviceID
+            && service.departureType === 'Actual' && specified(service, 'atd')
+            && clock(service.atd) && service.isOperationalCall !== true
+            && service.isPass !== true && service.isOperational !== true))
         && service.isPassengerService !== false && service.isDeleted !== true
         && service.filterLocationOperational !== true).map(service => {
         const destinations = places(service.destination);
