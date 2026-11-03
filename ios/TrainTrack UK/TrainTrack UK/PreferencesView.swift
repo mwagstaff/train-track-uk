@@ -143,18 +143,18 @@ struct PreferencesView: View {
             }
 
             Section {
-                Toggle("Notify about remaining connections", isOn: $connectionAlerts)
+                Toggle("Notify about delays and connections", isOn: $connectionAlerts)
                 if connectionAlerts {
                     Stepper(value: $connectionDelayMinutes, in: 1...30) {
                         Text("Minimum delay: \(connectionDelayMinutes) min")
                     }
                     Toggle("Notify when delay length is unknown", isOn: $connectionUnknownDelay)
                 }
-                Text("During a journey, get alerts if a remaining connection is cancelled or delayed. Cancellations always qualify when this is enabled.")
+                Text("Get delay and cancellation alerts for your current train and any remaining connections, including journeys with just one train. Cancellations always qualify when alerts are enabled.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } header: {
-                RailwayBackgroundSectionHeader(title: "Connection Alerts")
+                RailwayBackgroundSectionHeader(title: "Delays and Connections")
             }
 
             Section {

@@ -29,7 +29,7 @@ final class NotificationPreferencesUITests: XCTestCase {
             reveal(nearStation, in: app)
             XCTAssertEqual(nearStation.value as? String, "1")
             screenshot(app, name: "Platform-preferences-\(largeText ? "dark-large" : "light")")
-            let connections = app.switches["Notify about remaining connections"]
+            let connections = app.switches["Notify about delays and connections"]
             reveal(connections, in: app)
             XCTAssertEqual(connections.value as? String, "1")
             let unknown = app.switches["Notify when delay length is unknown"]
