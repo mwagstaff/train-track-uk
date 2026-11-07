@@ -2784,7 +2784,10 @@ final class JourneyTrackingCoordinator: ObservableObject {
               let destination = candidate.stations.last else { return }
         let content = UNMutableNotificationContent()
         content.title = "\(origin.name) → \(destination.name)"
-        content.body = OriginWelcomeNotification.body(stationName: origin.name, departures: departures, now: now)
+        content.body = OriginWelcomeNotification.body(
+            stationName: origin.name, departures: departures, now: now,
+            shortTrainThreshold: UserDefaults.standard.object(forKey: "minShortTrainCars") as? Int ?? 4
+        )
         content.sound = .default
         content.categoryIdentifier = NotificationCategoryId.journeyHistory
         content.userInfo = [

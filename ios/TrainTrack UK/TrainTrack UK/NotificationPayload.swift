@@ -39,7 +39,8 @@ enum NotificationAlertType {
 
 /// The first greeting is independent of station-exit muting and the boarding alert.
 enum OriginWelcomeNotification {
-    static func body(stationName: String, departures: [DepartureV2], now: Date, calendar: Calendar = .current) -> String {
+    static func body(stationName: String, departures: [DepartureV2], now: Date,
+                     shortTrainThreshold: Int = 4, calendar: Calendar = .current) -> String {
         let greeting = "Welcome to \(stationName)."
         let minuteStart = calendar.dateInterval(of: .minute, for: now)?.start ?? now
         let upcoming = departures.compactMap { departure -> (DepartureV2, Date)? in
@@ -69,6 +70,10 @@ enum OriginWelcomeNotification {
            !platform.isEmpty, !upcoming.platformIsHidden {
             message += " from platform \(platform)"
         }
-        return message + "."
+        message += "."
+        if let cars = upcoming.length, cars > 0, cars <= shortTrainThreshold {
+            message += " It's short - only \(cars) car\(cars == 1 ? "" : "s") long."
+        }
+        return message
     }
 }

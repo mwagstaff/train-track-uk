@@ -47,15 +47,44 @@ struct OriginWelcomeNotificationTests {
             == "Welcome to Kent House. Next train 07:42 (delayed) from platform 2.")
     }
 
-    private func body(_ departures: [DepartureV2]) -> String {
-        OriginWelcomeNotification.body(stationName: "Kent House", departures: departures, now: now, calendar: calendar)
+    @Test func shortTrainWarningUsesInclusiveUserThreshold() {
+        #expect(body([train("07:42", length: 4)])
+            == "Welcome to Kent House. Next train 07:42 from platform 2. It's short - only 4 cars long.")
+        #expect(body([train("07:42", length: 8)], shortTrainThreshold: 8)
+            == "Welcome to Kent House. Next train 07:42 from platform 2. It's short - only 8 cars long.")
+        #expect(body([train("07:42", length: 4)], shortTrainThreshold: 3)
+            == "Welcome to Kent House. Next train 07:42 from platform 2.")
+    }
+
+    @Test func longUnknownAndInvalidLengthsDoNotWarn() {
+        for length: Int? in [nil, 0, -1, 5, 8] {
+            #expect(body([train("07:42", length: length)])
+                == "Welcome to Kent House. Next train 07:42 from platform 2.")
+        }
+    }
+
+    @Test func warningUsesSelectedTrainOnly() {
+        #expect(body([train("07:40", cancelled: true, length: 4), train("07:42", length: 8), train("07:57", length: 4)])
+            == "Welcome to Kent House. Next train 07:42 from platform 2.")
+        #expect(body([train("07:42", estimated: "08:00", length: 8), train("07:57", length: 4)])
+            == "Welcome to Kent House. Next train 07:57 from platform 2. It's short - only 4 cars long.")
+    }
+
+    @Test func singleCarWarningPreservesDelayAndHiddenPlatform() {
+        #expect(body([train("07:42", estimated: "07:45", hidden: true, length: 1)])
+            == "Welcome to Kent House. Next train 07:42 (expected 07:45). It's short - only 1 car long.")
+    }
+
+    private func body(_ departures: [DepartureV2], shortTrainThreshold: Int = 4) -> String {
+        OriginWelcomeNotification.body(stationName: "Kent House", departures: departures, now: now,
+                                       shortTrainThreshold: shortTrainThreshold, calendar: calendar)
     }
 
     private func train(_ scheduled: String, estimated: String? = nil, actual: String? = nil,
                        platform: String? = "2", cancelled: Bool = false, destinationCancelled: Bool = false,
-                       hidden: Bool = false) -> DepartureV2 {
+                       hidden: Bool = false, length: Int? = nil) -> DepartureV2 {
         DepartureV2(departureTime: DepartureTimeV2(scheduled: scheduled, estimated: estimated ?? scheduled, actual: actual),
-                    serviceType: "train", platform: platform, isCancelled: cancelled, length: nil,
+                    serviceType: "train", platform: platform, isCancelled: cancelled, length: length,
                     destination: [], origin: nil, serviceID: scheduled, delayReason: nil, cancelReason: nil,
                     timestamp: nil, filterLocationCancelled: destinationCancelled, platformIsHidden: hidden)
     }

@@ -36,6 +36,10 @@ non-origin dots were white, with no styling for the section before boarding.
   callbacks and same-route subscription replacement. Explicit boarding does not
   create a late welcome. Replayed arrivals older than two minutes are suppressed.
 - Tapping the welcome opens In Progress without muting the journey.
+- The welcome also warns when the selected next train's known positive car count
+  is at or below the current `minShortTrainCars` preference (default four):
+  “It's short - only 4 cars long.” Unknown lengths and longer trains do not warn.
+  This wording change requires an updated iOS build.
 - The API obtains the missing earlier calls on demand from the origin board,
   matching RID and the full dated boarding departure. Today's exact-service
   fixture recovers Orpington, Petts Wood, Bickley, Bromley South, Shortlands and

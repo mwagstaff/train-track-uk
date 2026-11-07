@@ -163,7 +163,7 @@ nonisolated struct DepartureEntityQuery: EntityQuery {
 
 struct GetNextFavouriteTrainIntent: AppIntent {
     static let title: LocalizedStringResource = "Get My Next Train"
-    static let description = IntentDescription("Get live departures for the default route selected in Siri & Shortcuts settings.")
+    static let description = IntentDescription("Get live departures for your default route.")
     static let openAppWhenRun = false
     static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
     @available(iOS 26.0, *)
@@ -224,7 +224,7 @@ struct GetNextTrainsForSavedRouteIntent: AppIntent {
 
 struct GetNextDeparturesIntent: AppIntent {
     static let title: LocalizedStringResource = "Get Train Departures"
-    static let description = IntentDescription("Get direct departures between two stations. Siri asks for any missing stations.")
+    static let description = IntentDescription("Get direct departures between two stations, prompting for any missing stations.")
     static let openAppWhenRun = false
     static let authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
     @available(iOS 26.0, *)
