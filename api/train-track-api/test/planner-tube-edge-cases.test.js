@@ -118,3 +118,24 @@ test('major-disruption option does not claim no alternative when a clear option 
     assert.match(warning, /Major disruption/);
     assert.doesNotMatch(warning, /No suitable|no alternative/i);
 });
+
+
+for (const originIsEndpoint of [true, false]) {
+    test(`waiting before TfL movement preserves ${originIsEndpoint ? 'origin departure' : 'interchange allowance'}`, async () => {
+        const provider = source(() => {
+            const option = journey(now + 70 * MINUTE);
+            // Walking access is a real movement and must remain in the journey.
+            option.legs = [{ ...option.legs[0], mode: 'walking', lines: [], arrivalTime: iso(72) },
+                { ...option.legs[0], mode: 'tram', departureTime: iso(72) }];
+            return [option];
+        });
+        const [connection] = await createTubeResolver(provider, { now: () => now })(index(),
+            { ...query, originIsEndpoint, destinationIsEndpoint: true });
+        assert.ok(validateTubeConnection(index(), connection));
+        assert.equal(connection.start, now + (originIsEndpoint ? 70 : 60) * MINUTE);
+        assert.equal(connection.breakdown.exitMinutes, originIsEndpoint ? 0 : 5);
+        assert.equal(connection.breakdown.waitingMinutes, originIsEndpoint ? 0 : 5);
+        assert.equal(connection.localJourney.steps[0].mode, 'walking');
+        assert.equal(connection.localJourney.steps[0].departureTime, iso(70));
+    });
+}

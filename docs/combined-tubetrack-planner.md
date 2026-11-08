@@ -37,3 +37,17 @@ No timetable migration is needed. Ship matching catalogues. See TubeTrack's
 `api/tube-track-api/docs/combined-journeys.md` for the app-facing response and
 freshness rules. Tests: `test/planner-combined.test.js` and
 `test/planner-combined-http.test.js`, plus existing router, TfL, live and job suites.
+
+
+### TfL origin departure times
+
+A TfL connection starting at the requested origin uses the first actual movement
+as its departure, including any walking access returned by TfL. Waiting before
+that movement is outside the journey. Otherwise live-result filtering can discard
+a future direct tram/Tube/DLR service as already departed when the search clock
+advances. Connections after an inbound train retain their interchange and waiting
+allowances. Regression coverage advances the clock during a direct tram lookup
+and checks that the service survives `realtime=apply` filtering.
+
+Deploy the TrainTrack journey planner for this correction; no TubeTrack API or
+iOS build is required.

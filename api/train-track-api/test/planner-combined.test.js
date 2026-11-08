@@ -203,3 +203,30 @@ test('v5 rail legs expose the shared TrainTrack operator branding catalogue', as
     const leg = result.journeys[0].legs.find(leg => leg.operator === 'SE');
     assert.deepEqual(leg.operatorBranding, { name: 'Southeastern', colour: '#1D2452' });
 });
+
+
+test('direct tram survives live filtering after the search clock advances', async () => {
+    const { engine, base } = fixture();
+    let clock = at('11:00');
+    engine.now = base.now = () => clock;
+    engine.provider.lookup = async ({ from, to, time, timeMode }) => {
+        clock = at('11:00') + 1000;
+        const departure = at('11:11'), arrival = at('11:24');
+        const fits = from === 'AAA' && to === 'BBB' && (timeMode === 'arriveBy'
+            ? Date.parse(time) >= arrival : Date.parse(time) <= departure);
+        const disruption = { status: 'noIssues', coverage: 'complete', issues: [], sources: [] };
+        return { status: 'available', expiresAt: iso(clock + 60000), meta: { updatedAt: iso(clock) },
+            journeys: fits ? [{ id: 'direct-tram', departureTime: iso(departure), arrivalTime: iso(arrival),
+                disruption, warnings: [], legs: [{ id: '0', mode: 'tram', instruction: 'Tram to East Croydon',
+                    from: { id: 'AAA', name: 'Elmers End' }, to: { id: 'BBB', name: 'East Croydon' },
+                    departureTime: iso(departure), arrivalTime: iso(arrival), durationMinutes: 13,
+                    lines: [{ id: 'tram', name: 'Tram' }], timing: 'estimated', warnings: [], stops: [], disruption }] }] : [] };
+    };
+    const result = await engine.search(request('AAA', 'BBB', { realtime: 'apply' }));
+    const tram = result.journeys.find(j => j.legs.some(l => l.localJourney?.steps.some(s => s.mode === 'tram')));
+    assert.ok(tram, 'A future tram must not be discarded as an already departed journey');
+    assert.equal(tram.departure, iso(at('11:11')));
+    assert.equal(tram.arrival, iso(at('11:24')));
+    assert.equal(tram.durationMinutes, 13);
+    assert.equal(tram.changes, 0);
+});

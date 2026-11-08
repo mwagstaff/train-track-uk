@@ -245,7 +245,11 @@ export function createTubeResolver(provider, { signal, check = () => {}, awaitIO
             for (const { option, assessment: risk } of usable) {
                 const movementStart = Date.parse(option.departureTime), movementEnd = Date.parse(option.arrivalTime);
                 const contingencyMinutes = risk.minor ? 5 : 0;
-                const start = reverse ? movementStart - parts.exitMinutes * MINUTE : query.arrival;
+                // Waiting before the first movement is not part of the journey.
+                // Using the search instant here makes a future TfL departure
+                // look departed by the time live-result filtering runs.
+                const start = reverse || query.originIsEndpoint
+                    ? movementStart - parts.exitMinutes * MINUTE : query.arrival;
                 const end = movementEnd + (parts.entryMinutes + parts.extraMinutes + contingencyMinutes) * MINUTE;
                 if (![start, end, movementStart, movementEnd].every(Number.isFinite) || movementEnd < movementStart
                     || movementStart < start + parts.exitMinutes * MINUTE
