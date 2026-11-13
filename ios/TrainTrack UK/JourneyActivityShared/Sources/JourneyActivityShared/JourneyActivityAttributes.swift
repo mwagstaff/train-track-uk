@@ -66,6 +66,14 @@ public struct JourneyActivityAttributes: Codable, Hashable {
         public var fromCRS: String
         public var toCRS: String
         public var connectionStationName: String? = nil
+        public var nextChangeStationName: String? = nil
+
+        public var nextChangeLabel: String? {
+            guard journeyPhase != .arrived,
+                  let station = nextChangeStationName?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !station.isEmpty else { return nil }
+            return station
+        }
         public var routeTitle: String?
         public var deepLinkFromCRS: String?
         public var deepLinkToCRS: String?
@@ -139,7 +147,8 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             windowEnd: String? = nil,
             journeyPhase: JourneyPhase = .pendingStart,
             journeyStartName: String? = nil,
-            journeyDestinationName: String? = nil
+            journeyDestinationName: String? = nil,
+            nextChangeStationName: String? = nil
         ) {
             self.fromCRS = fromCRS
             self.toCRS = toCRS
@@ -168,10 +177,12 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             self.journeyPhase = journeyPhase
             self.journeyStartName = journeyStartName
             self.journeyDestinationName = journeyDestinationName
+            self.nextChangeStationName = nextChangeStationName
         }
 
         private enum CodingKeys: String, CodingKey {
             case connectionStationName, fromCRS, toCRS, routeTitle, deepLinkFromCRS, deepLinkToCRS, destinationTitle, arrivalLabel, scheduledDeparture, length, platform, estimated, isCancelled, statusText, delayMinutes, arrivalDelayMinutes, upcomingDepartures, lastUpdated, activityID, revision, appIsActive, journeyUpdatesEnabled, scheduleKey, windowStart, windowEnd, journeyPhase, journeyStartName, journeyDestinationName
+            case nextChangeStationName
         }
 
         public init(from decoder: Decoder) throws {
@@ -203,6 +214,7 @@ public struct JourneyActivityAttributes: Codable, Hashable {
             journeyPhase = try container.decodeIfPresent(JourneyPhase.self, forKey: .journeyPhase) ?? .pendingStart
             journeyStartName = try container.decodeIfPresent(String.self, forKey: .journeyStartName)
             journeyDestinationName = try container.decodeIfPresent(String.self, forKey: .journeyDestinationName)
+            nextChangeStationName = try container.decodeIfPresent(String.self, forKey: .nextChangeStationName)
 
             // Handle lastUpdated as Unix timestamp (server sends integer seconds since epoch)
             if let timestamp = try? container.decode(Double.self, forKey: .lastUpdated) {
@@ -217,7 +229,38 @@ public struct JourneyActivityAttributes: Codable, Hashable {
     }
 
     public var displayName: String
-    public init(displayName: String) { self.displayName = displayName }
+    public var initialChange: InitialChange?
+
+    public struct InitialChange: Codable, Hashable {
+        public let fromCRS: String
+        public let toCRS: String
+        public let destinationCRS: String
+        public let stationName: String
+    }
+
+    public init(displayName: String, initialState: ContentState? = nil) {
+        self.displayName = displayName
+        if let state = initialState, let station = state.nextChangeLabel {
+            initialChange = InitialChange(fromCRS: state.fromCRS, toCRS: state.toCRS,
+                destinationCRS: state.deepLinkToCRS ?? state.toCRS, stationName: station)
+        }
+    }
+
+    /// Live pushes replace the whole content state. Keep the known itinerary
+    /// visible when a board-only update omits it, but never carry it to another leg.
+    public func nextChangeStation(for state: ContentState) -> String? {
+        guard state.journeyPhase != .arrived else { return nil }
+        if let station = state.nextChangeLabel { return station }
+        if let station = state.connectionStationName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !station.isEmpty { return station }
+        guard let change = initialChange,
+              change.fromCRS.caseInsensitiveCompare(state.fromCRS) == .orderedSame,
+              change.toCRS.caseInsensitiveCompare(state.toCRS) == .orderedSame,
+              change.destinationCRS.caseInsensitiveCompare(state.deepLinkToCRS ?? state.toCRS) == .orderedSame else {
+            return nil
+        }
+        return change.stationName
+    }
 }
 
 // Simple public symbols to help verify the package is visible from targets

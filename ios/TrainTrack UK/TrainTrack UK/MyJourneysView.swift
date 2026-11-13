@@ -26,7 +26,7 @@ struct MyJourneysView: View {
     @State private var selectedJourneyIds: Set<UUID> = []
     @State private var showMultiDeleteDialog = false
     @State private var scheduleDestination: NotificationScheduleDestination?
-    @State private var liveActionGroupIDs: Set<UUID> = []
+    @State private var liveActions: [UUID: JourneyUpdateOperation] = [:]
     @State private var expandedJourneyIDs: Set<UUID> = []
     @State private var reversedJourneyIDs: Set<UUID> = []
     @State private var cardDestination: JourneyCardNavigationDestination?
@@ -620,6 +620,11 @@ private extension MyJourneysView {
         let isReversed = reversedJourneyIDs.contains(group.id) && reverseGroup != nil
         let displayedGroup = isReversed ? (reverseGroup ?? group) : group
         let schedules = scheduledSubscriptions(for: displayedGroup)
+        let updateState = JourneyUpdateButtonState(
+            operation: liveActions[displayedGroup.id],
+            hasLiveSession: liveSession(for: displayedGroup) != nil,
+            hasLiveActivity: activityMgr.hasActiveActivity(for: displayedGroup)
+        )
 
         return HStack(spacing: 12) {
             if isSelecting {
@@ -631,10 +636,10 @@ private extension MyJourneysView {
                 defaultDepartureCount: JourneyCardPresentation.defaultDepartureCount(
                     journeyCount: visibleJourneys.count
                 ),
-                isLiveActive: liveSession(for: displayedGroup) != nil,
+                isLiveActive: updateState.isActive,
                 scheduledSubscriptions: schedules,
                 canAddSchedule: notificationStore.canCreateNew,
-                isBusy: liveActionGroupIDs.contains(displayedGroup.id),
+                isBusy: updateState.isBusy,
                 isInteractive: !isSelecting,
                 isExpanded: expandedJourneyIDs.contains(group.id),
                 canReverseJourney: reverseGroup != nil,
@@ -680,6 +685,7 @@ private extension MyJourneysView {
                     journeyPendingDelete = displayedGroup
                     showDeleteDialog = true
                 },
+                showsLiveActionProgress: updateState.showsProgress,
                 plannedBoard: routePlanner.state(for: displayedGroup),
                 laterBoard: routePlanner.laterState(for: displayedGroup),
                 onSearchLater: {
@@ -752,10 +758,12 @@ private extension MyJourneysView {
     }
 
     private func toggleJourneyUpdates(for group: JourneyGroup) {
-        guard liveActionGroupIDs.insert(group.id).inserted else { return }
+        guard liveActions[group.id] == nil else { return }
+        let session = liveSession(for: group)
+        liveActions[group.id] = session == nil ? .starting : .stopping
         Task {
-            defer { liveActionGroupIDs.remove(group.id) }
-            if let session = liveSession(for: group) {
+            defer { liveActions.removeValue(forKey: group.id) }
+            if let session {
                 do {
                     try await JourneyUpdateActions.stop(
                         session: session,

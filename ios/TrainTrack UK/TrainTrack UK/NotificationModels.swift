@@ -310,6 +310,15 @@ struct NotificationSubscription: Codable, Identifiable, Hashable {
         return "\(from) → \(to) via \(via.joined(separator: ", "))"
     }
 
+    func hasRemainingLegs(afterMutingFrom from: String, to: String, isMuted: (String, String) -> Bool) -> Bool {
+        legs.contains { leg in
+            leg.enabled
+                && !(leg.from.caseInsensitiveCompare(from) == .orderedSame
+                    && leg.to.caseInsensitiveCompare(to) == .orderedSame)
+                && !isMuted(leg.from, leg.to)
+        }
+    }
+
     var daysLabel: String {
         if scheduleKind == .oneOff {
             let dates = legs.compactMap(\.travelDate)

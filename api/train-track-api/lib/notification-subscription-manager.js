@@ -1489,8 +1489,27 @@ export class NotificationSubscriptionManager {
             && activity.fromStation === leg.from && activity.toStation === leg.to);
     }
 
+    allowsDepartureAlerts(subscription, leg) {
+        const legs = subscription.legs || [];
+        // Scheduled legs may be independent outbound/return journeys. Only a
+        // connected live itinerary has an ordered boarding boundary.
+        if (this.subscriptionSource(subscription) !== LIVE_SESSION_SOURCE || legs.length < 2
+            || !legs.slice(1).every((value, index) => legs[index].to === value.from)) return true;
+        const index = legs.findIndex(value => value.from === leg.from && value.to === leg.to);
+        const dateKey = currentScheduleDateKey();
+        const states = legs.map(value => subscription.journeyPhaseByLeg?.[`${value.from}-${value.to}`]);
+        if (states.some((state, position) => position > index && state?.dateKey === dateKey)) return false;
+        const state = states[index];
+        if (state?.dateKey === dateKey) {
+            return state.phase !== 'arrived' && (state.phase !== 'en_route' || state.atStation === true);
+        }
+        // Before boarding, only the origin's next train belongs to this journey.
+        // Exact onward-connection disruption alerts are handled by LiveActivityManager.
+        return index === 0;
+    }
+
     async sendUpdateNotifications(subscription, leg, legKey, snapshot, notificationTypes = getEffectiveNotificationTypes(subscription)) {
-        if (this.isMutedToday(subscription, legKey)) {
+        if (this.isMutedToday(subscription, legKey) || !this.allowsDepartureAlerts(subscription, leg)) {
             return;
         }
         const updateReason = this.subscriptionSource(subscription) === SCHEDULED_SOURCE
@@ -1511,7 +1530,8 @@ export class NotificationSubscriptionManager {
                 isCancelled: Boolean(dep.isCancelled),
                 platform,
                 estimated: dep.estimated || dep.scheduled,
-                scheduled: dep.scheduled
+                scheduled: dep.scheduled,
+                destination: dep.destination
             };
             nextState[serviceID] = current;
 
@@ -1622,6 +1642,8 @@ export class NotificationSubscriptionManager {
             return null;
         }
 
+        if (leg && !this.allowsDepartureAlerts(activeSubscription, leg)) return null;
+
         // Boarding can outlive the notification mute (for example, saving a
         // schedule resets delivery state). Recheck journey state immediately
         // before sending so the next train on the board cannot trigger alerts.
@@ -1633,6 +1655,8 @@ export class NotificationSubscriptionManager {
                 ((activity.fromStation === leg.from && activity.toStation === leg.to)
                     || activity.legContext?.remainingConnections?.some(connection => connection.from === leg.from && connection.to === leg.to))
                     && activity.journeyPhase === 'en_route'
+                    && !(activity.legContext?.connection && activity.legContext?.atStation
+                        && activity.legContext.from === leg.from && activity.legContext.to === leg.to)
                     && (!activity.endAt || Date.parse(activity.endAt) > Date.now())
             )
         )) {
@@ -1908,7 +1932,9 @@ export class NotificationSubscriptionManager {
             }));
         }
 
-        if (source === LIVE_SESSION_SOURCE) {
+        const hasRemainingLiveLegs = subscription.legs.some(candidate => candidate.enabled
+            && !this.isMutedToday(subscription, `${candidate.from}-${candidate.to}`));
+        if (source === LIVE_SESSION_SOURCE && !hasRemainingLiveLegs) {
             const liveSessionMuteReason = isStationExit
                 ? 'live_session_muted_on_station_exit'
                 : 'live_session_muted_on_arrival';
@@ -2630,6 +2656,8 @@ function compactDepartureStatus(dep) {
 }
 
 function buildDelayMessage(subscription, leg, dep) {
+    const itineraryMessage = buildItineraryDepartureMessage(subscription, leg, dep, 'delay');
+    if (itineraryMessage) return itineraryMessage;
     const platform = dep.platform ? ` (platform ${dep.platform})` : ' (platform TBC)';
     const body = `${dep.scheduled} expected ${dep.estimated}${platform}.`;
     return buildNotificationPayload(legRouteTitle(leg), body, buildLegMeta(subscription, leg, 'delay'), 'delay');
@@ -2646,10 +2674,43 @@ function buildPlatformMessage(subscription, leg, dep, previousPlatform) {
     if (!platform) {
         return null;
     }
+    const itineraryMessage = buildItineraryDepartureMessage(subscription, leg, dep, 'platform', previousPlatform);
+    if (itineraryMessage) return itineraryMessage;
     const body = previousPlatform
         ? `Platform alteration: ${dep.scheduled} - now platform ${platform}.`
         : `Platform announced: ${dep.scheduled} - platform ${platform}.`;
     return buildNotificationPayload(legRouteTitle(leg), body, buildLegMeta(subscription, leg, 'platform'), 'platform');
+}
+
+function buildItineraryDepartureMessage(subscription, leg, dep, type, previousPlatform = null) {
+    const legs = subscription.legs || [];
+    // Scheduled outbound/return legs are not an ordered itinerary.
+    if (subscription.source !== LIVE_SESSION_SOURCE || legs.length < 2
+        || !legs.slice(1).every((value, index) => legs[index].to === value.from)) return null;
+    const index = legs.findIndex(value => value.from === leg.from && value.to === leg.to);
+    if (index < 0) return null;
+    const destination = primaryPlace(dep.destination);
+    const destinationName = sanitizeDisplayLabel(destination?.locationName);
+    const via = sanitizeDisplayLabel(destination?.via);
+    const advertisedDestination = destinationName && via && !/\bvia\b/i.test(destinationName)
+        ? `${destinationName} ${/^via\b/i.test(via) ? via : `via ${via}`}` : destinationName;
+    const title = advertisedDestination
+        ? `${formatDepartureTime(dep)} to ${advertisedDestination}`
+        : `${formatDepartureTime(dep)} from ${legFromLabel(leg)}`;
+    const platform = normalizePlatform(dep.platform);
+    const location = `From ${legFromLabel(leg)} · Platform ${platform || 'TBC'}`;
+    const estimate = getValidDepartureTime(dep.estimated)
+        || (/^on time$/i.test(String(dep.estimated).trim()) ? getValidDepartureTime(dep.scheduled) : null);
+    const delay = calculateDelayMinutes(dep.scheduled, dep.estimated);
+    const timing = estimate
+        ? `Expected ${estimate}${delay > 0 ? ` · ${delay} min late` : ''}`
+        : 'Delayed · departure time not confirmed';
+    const platformUpdate = type === 'platform'
+        ? (previousPlatform ? `Platform changed: ${previousPlatform} → ${platform}\n` : 'Platform announced\n') : '';
+    const message = buildNotificationPayload(title, `${location}\n${platformUpdate}${timing}`,
+        buildLegMeta(subscription, leg, type), type);
+    message.payload.aps.alert.subtitle = `${index < legs.length - 1 ? 'Change' : 'Get off'} at ${legToLabel(leg)}`;
+    return message;
 }
 
 function normalizeMuteReason(reason) {

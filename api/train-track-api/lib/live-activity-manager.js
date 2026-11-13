@@ -103,6 +103,7 @@ export class LiveActivityManager {
         displayName,
         deepLinkFromStation,
         deepLinkToStation,
+        nextChangeStationName,
         preferredServiceId,
         useSandbox,
         muteOnArrival,
@@ -180,6 +181,9 @@ export class LiveActivityManager {
             lastSnapshot: existing?.lastSnapshot || null,
             preferredDepartureSnapshot: existing?.preferredDepartureSnapshot || null,
             legContext: existing?.legContext || null,
+            nextChangeStationName: nextChangeStationName === undefined
+                ? (existing?.nextChangeStationName || null)
+                : (typeof nextChangeStationName === 'string' ? nextChangeStationName.trim().slice(0, 100) || null : null),
             serviceMatchConfirmed: existing?.serviceMatchConfirmed ?? null,
             lastJourneyStatusObservedAtMs: existing?.lastJourneyStatusObservedAtMs ?? null,
             lastPushAt: existing?.lastPushAt || null,
@@ -1166,6 +1170,9 @@ export class LiveActivityManager {
         return {
             fromCRS: subscription.legContext?.from || this.ensureString(subscription.fromStation),
             connectionStationName: connection ? subscription.legContext.fromName : null,
+            nextChangeStationName: isArrived ? null : subscription.legContext
+                ? (connection ? subscription.legContext.fromName : null)
+                : (subscription.nextChangeStationName || null),
             toCRS: subscription.legContext?.to || this.ensureString(subscription.toStation),
             routeTitle,
             deepLinkFromCRS,

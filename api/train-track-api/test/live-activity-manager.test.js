@@ -505,6 +505,7 @@ test('multi-leg activity repairs route, shows onward departure, then final desti
     const connection = manager.buildContentState(subscription, snapshot);
     assert.equal(connection.routeTitle, 'Kent House → Farringdon');
     assert.equal(connection.connectionStationName, 'Herne Hill');
+    assert.equal(connection.nextChangeStationName, 'Herne Hill');
     assert.equal(connection.destinationTitle, 'Farringdon');
     assert.equal(connection.estimated, '08:01');
     assert.equal(connection.platform, '1');
@@ -513,6 +514,7 @@ test('multi-leg activity repairs route, shows onward departure, then final desti
         phase: 'en_route', statusObservedAtMs: 2000, preferredServiceId: 'second-train', legContext: { ...context, connection: false } });
     const finalLeg = manager.buildContentState(subscription, snapshot);
     assert.equal(finalLeg.connectionStationName, null);
+    assert.equal(finalLeg.nextChangeStationName, null);
     assert.equal(finalLeg.estimated, '08:16');
     assert.equal(finalLeg.destinationTitle, 'Farringdon');
     assert.equal(finalLeg.arrivalLabel, 'Departed 08:04');
@@ -538,6 +540,30 @@ test('token rotation retains the tracked multi-leg route and connection context'
     assert.equal(updated.deepLinkToStation, 'ZFD');
     assert.equal(updated.displayName, 'Kent House → Farringdon');
     assert.deepEqual(updated.legContext, existing.legContext);
+});
+
+test('registration retains the next change across pushes and token rotation but clears it on final arrival', () => {
+    const manager = new LiveActivityManager({ getNotificationPreferences: async () => ({}) });
+    const key = manager.buildKey('change-device', 'change-activity');
+    // Stop before persistence and push I/O, as in the token-rotation tests above.
+    manager.evictDuplicateSessionsForDevice = () => { manager.subscriptions.delete(key); return []; };
+    const input = { deviceId: 'change-device', activityId: 'change-activity', pushToken: 'token',
+        fromStation: 'BFR', toStation: 'HNH', journeyPhase: 'pending_start', nextChangeStationName: 'Herne Hill' };
+    const registered = manager.registerSubscription(input);
+    const snapshot = { fetchedAt: new Date().toISOString(), departures: [] };
+    assert.equal(manager.buildContentState(registered, snapshot).nextChangeStationName, 'Herne Hill');
+    assert.equal(manager.serializeSubscription(registered).nextChangeStationName, 'Herne Hill');
+    manager.subscriptions.set(key, registered);
+    const { nextChangeStationName, ...rotation } = input;
+    const rotated = manager.registerSubscription({ ...rotation, pushToken: 'rotated' });
+    assert.equal(manager.buildContentState(rotated, snapshot).nextChangeStationName, 'Herne Hill');
+    rotated.legContext = { connection: false, from: 'HNH', to: 'KTH' };
+    assert.equal(manager.buildContentState(rotated, snapshot).nextChangeStationName, null);
+    rotated.legContext = null;
+    rotated.journeyPhase = 'arrived';
+    assert.equal(manager.buildContentState(rotated, snapshot).nextChangeStationName, null);
+    const direct = manager.registerSubscription({ ...rotation, nextChangeStationName: null });
+    assert.equal(direct.nextChangeStationName, null);
 });
 
 

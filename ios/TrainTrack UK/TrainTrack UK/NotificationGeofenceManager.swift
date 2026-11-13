@@ -2499,8 +2499,9 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             DebugLogStore.shared.log(keepMsg, category: "Mute")
             debugLog("📍 \(keepMsg)")
         }
-        // Remove the live session locally so UI/geofences stop immediately, but do not
-        // DELETE it from the backend here. `/notifications/terminate` uses that server-side
+        // Keep onward legs monitored, removing the live session only after its
+        // final enabled leg is muted. Do not DELETE it from the backend here.
+        // `/notifications/terminate` uses that server-side
         // record to send the muted-status pushes, and deleting it first can race
         // the terminate request and cause a 404/no confirmation notification.
         await NotificationSubscriptionStore.shared.removeLiveSessionsLocally(containingFrom: from, to: to)

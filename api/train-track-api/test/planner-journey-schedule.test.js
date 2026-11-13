@@ -20,6 +20,19 @@ const train = (from = 'AAA', to = 'BBB', start = 0, end = 30) => ({
 });
 const plan = (leadMinutes = 60, legs = [train()]) => normalizePlannerSchedule({ leadMinutes, legs }, zero - 86400000);
 
+test('next change follows the itinerary and disappears on the final leg or completion', () => {
+    const subscription = { id: 'changes', plannerJourney: plan(60, [
+        train('BFR', 'HNH'), train('HNH', 'BRX', 35, 45), train('BRX', 'KTH', 50, 60)
+    ]) };
+    subscription.plannerJourney.legs[0].to.name = 'Herne Hill';
+    subscription.plannerJourney.legs[1].to.name = 'Brixton';
+    assert.equal(plannerContent(subscription, { legIndex: 0 }).nextChangeStationName, 'Herne Hill');
+    assert.equal(plannerContent(subscription, { legIndex: 1 }).nextChangeStationName, 'Brixton');
+    assert.equal(plannerContent(subscription, { legIndex: 2 }).nextChangeStationName, null);
+    assert.equal(plannerContent(subscription, { legIndex: 0, completed: true }).nextChangeStationName, null);
+    assert.equal(plannerContent({ id: 'direct', plannerJourney: plan() }, { legIndex: 0 }).nextChangeStationName, null);
+});
+
 function harness({ now = zero - 3600000, resolve = async () => null } = {}) {
     const owner = new NotificationSubscriptionManager({ plannerScheduler: { now: () => now, resolver: { resolve } },
         getPlannerPushToken: async () => ({ pushToStartToken: 'token', useSandbox: true }) });
@@ -186,10 +199,12 @@ test('arrival advances through a transfer to the selected connection, without st
     let content = await h.owner.plannerScheduler.snapshot(h.subscription);
     assert.equal(h.subscription.plannerState.legIndex, 1);
     assert.match(content.statusText, /Transfer/);
+    assert.equal(content.nextChangeStationName, 'BBB');
     h.setNow(zero + 36 * 60000);
     content = await h.owner.plannerScheduler.snapshot(h.subscription);
     assert.equal(h.subscription.plannerState.legIndex, 2);
     assert.equal(content.scheduleKey, 'planner:schedule');
+    assert.equal(content.nextChangeStationName, null);
     assert.equal(content.toCRS, 'CCC');
     assert.equal(h.pushes.length, 0);
 });
@@ -316,14 +331,21 @@ test('all-departures starts with the route board and follows the current train l
     h.owner.plannerScheduler.routeContent = async subscription => {
         const leg = subscription.plannerJourney.legs[subscription.plannerState.legIndex];
         seen.push(leg.from.crs);
-        return { ...plannerContent(subscription, subscription.plannerState), estimated: '08:55' };
+        const content = { ...plannerContent(subscription, subscription.plannerState), estimated: '08:55' };
+        delete content.nextChangeStationName; // Route boards do not own the itinerary.
+        return content;
     };
     await h.owner.plannerScheduler.poll(h.subscription);
     assert.equal(h.pushes[0].aps['content-state'].estimated, '08:55');
+    assert.equal(h.pushes[0].aps['content-state'].nextChangeStationName, 'BBB');
+    assert.deepEqual(h.pushes[0].aps.attributes.initialChange, {
+        fromCRS: 'AAA', toCRS: 'BBB', destinationCRS: 'CCC', stationName: 'BBB'
+    });
     h.setNow(zero + 31 * 60000);
     h.owner.plannerScheduler.resolver.resolve = async () => ({ actualArrival: true, to: { arrival: zero + 30 * 60000 } });
     const content = await h.owner.plannerScheduler.snapshot(h.subscription);
     assert.equal(content.fromCRS, 'BBB');
+    assert.equal(content.nextChangeStationName, null);
     assert.equal(content.toCRS, 'CCC');
     assert.deepEqual(seen, ['AAA', 'BBB']);
 });

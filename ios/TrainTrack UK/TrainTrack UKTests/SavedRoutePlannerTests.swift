@@ -729,6 +729,65 @@ struct SavedRoutePlannerTests {
         #expect(store.laterState(for: route)?.result != nil)
     }
 
+    @Test func liveAndTimetableConnectingJourneysMergeDespiteDifferentProviderIDs() throws {
+        let live = try connectingMergeJourney(id: "live", live: true)
+        let scheduled = try connectingMergeJourney(id: "timetable", live: false)
+        let options = SavedRouteJourneyPresentation.merged(primary: try result(journeys: [live]),
+            supplemental: try result(journeys: [scheduled]), at: now)
+        #expect(options.map(\.journey.id) == ["live"])
+        #expect(options[0].journey.legs[0].live?.status == "onTime")
+        let reversed = SavedRouteJourneyPresentation.merged(primary: try result(journeys: [scheduled]),
+            supplemental: try result(journeys: [live]), at: now)
+        #expect(reversed.map(\.journey.id) == ["live"])
+        let combined = SavedRouteJourneyPresentation.merged(primary: try result(journeys: [scheduled, live]),
+            supplemental: nil, at: now)
+        #expect(combined.map(\.journey.id) == ["live"])
+    }
+
+    @Test func sameHeadlineTimesDoNotMergeDifferentRoutesOperatorsOrAmbiguousTrains() throws {
+        let live = try connectingMergeJourney(id: "live", live: true)
+        for change in ["operator", "route", "time", "missing-id", "missing-calls"] {
+            let other = try connectingMergeJourney(id: change, live: false, change: change)
+            let options = SavedRouteJourneyPresentation.merged(primary: try result(journeys: [live]),
+                supplemental: try result(journeys: [other]), at: now)
+            #expect(options.count == 2)
+        }
+        let scheduled = try connectingMergeJourney(id: "timetable", live: false)
+        let otherLive = try connectingMergeJourney(id: "other-live", live: true)
+        let ambiguous = SavedRouteJourneyPresentation.merged(primary: try result(journeys: [live, otherLive]),
+            supplemental: try result(journeys: [scheduled]), at: now)
+        #expect(ambiguous.count == 3)
+    }
+
+    private func connectingMergeJourney(id: String, live: Bool, change: String? = nil) throws -> PlannedJourney {
+        let start = now.addingTimeInterval(600)
+        let time: (Int) -> String = { PlannerTime.iso8601(start.addingTimeInterval(Double($0 * 60))) }
+        let station: (String) -> [String: String] = { ["crs": $0, "name": $0] }
+        var legs: [[String: Any]] = []
+        for (index, from, to, departure, arrival) in [(0, "KTH", "HNH", 0, 12), (1, "HNH", "BFR", 15, 27)] {
+            if index == 1 {
+                legs.append(["kind": "transfer", "mode": "interchange", "from": station("HNH"), "to": station("HNH"),
+                    "departure": time(12), "arrival": time(live ? 15 : 14)])
+            }
+            var calls: [[String: Any]] = [["station": station(from), "departure": time(departure)],
+                ["station": station(to), "arrival": time(arrival)]]
+            if change == "route" { calls.insert(["station": station("ALT"), "arrival": time(departure + 2)], at: 1) }
+            var leg: [String: Any] = ["kind": "vehicle", "mode": "rail", "from": station(from), "to": station(to),
+                "operator": change == "operator" ? "OTHER" : index == 0 ? "SE" : "TL",
+                "departure": time(departure), "arrival": time(arrival),
+                "scheduledDeparture": time(departure + (change == "time" ? 1 : 0)), "scheduledArrival": time(arrival),
+                "callingPoints": calls]
+            if change != "missing-id" { leg["serviceId"] = live ? "live:\(from):\(id)-\(index)" : "schedule-\(index)" }
+            if change == "missing-calls" { leg.removeValue(forKey: "callingPoints") }
+            if live { leg["live"] = ["status": "onTime", "updatedAt": PlannerTime.iso8601(now), "platform": "2"] }
+            else { leg["originDate"] = "2027-01-15" }
+            legs.append(leg)
+        }
+        return try PlannerTime.decoder().decode(PlannedJourney.self, from: JSONSerialization.data(withJSONObject: [
+            "id": id, "departure": time(0), "arrival": time(27), "durationMinutes": 27, "changes": 1, "legs": legs
+        ]))
+    }
+
     @Test func earlierDeparturesDisappearFromCachedReadyRows() throws {
         var json = try #require(JSONSerialization.jsonObject(with: Data(JourneyPlannerTests.emptyResult.utf8)) as? [String: Any])
         json["journeys"] = [-1, 1].map { offset in

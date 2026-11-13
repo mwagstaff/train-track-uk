@@ -246,6 +246,12 @@ A scheduled-origin live session inherits the matching scheduled leg's current-da
 
 When investigating a late alert, compare the completion reconciliation and subsequent live-session creation in the subscription audit log. The recreated session should contain the inherited `mutedByLegDay`; a send suppressed by a current mute logs `suppress_push` with reason `muted`. Regression coverage is in `test/live-session-origin.test.js`.
 
+Connected multi-leg live sessions send ordinary departure alerts for the first leg before boarding, and for an onward leg only after station-arrival evidence activates it. They do not independently alert for the next train on every interchange board. Exact remaining-connection disruption alerts continue through the Live Activity policy. Muting a boarded leg retains the session while another enabled leg remains unmuted; the iOS store follows the same rule so interchange geofences remain available. Regression coverage is in `test/multi-leg-departure-notifications.test.js`.
+
+For these connected live itineraries, delay and platform notifications identify the scheduled time and advertised train destination in the title, with `Change at <station>` in the subtitle (or `Get off at <station>` on the final leg). The body retains the boarding station, platform, expected time and delay; platform updates also identify the alteration. A missing train destination falls back to the boarding station, never the interchange. Independent scheduled outbound/return legs retain their existing wording. This changes presentation only, not alert eligibility or delivery timing. Payload regression tests do not establish physical-device presentation or APNs delivery; verify a delivered delay and platform update after deployment.
+
+Completed Live Activities retain the arrival/history card for ten minutes from detected completion, then the server requests immediate dismissal. The app also has a local completion cleanup. Arrival detection and delivery of the final end push are separate events; compare the completion audit timestamp with Live Activity end delivery when investigating a lingering card.
+
 ## Prometheus Metrics
 
 - Endpoint: `GET /metrics` (Prometheus exposition format)

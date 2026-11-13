@@ -163,6 +163,7 @@ struct JourneyCard: View {
     let onEditJourneySchedule: (NotificationSubscription) -> Void
     let onRemoveJourney: () -> Void
     var showsHeader: Bool = true
+    var showsLiveActionProgress: Bool? = nil
     var allowsExpansion: Bool = true
     var connectionArrival: Date? = nil
     var plannedBoard: SavedRouteBoardState? = nil
@@ -580,7 +581,8 @@ struct JourneyCard: View {
             .buttonStyle(.plain)
             .disabled(isBusy)
             .accessibilityLabel(isLiveActive ? "Stop route updates" : "Start route updates")
-            .accessibilityValue(isLiveActive ? "Active" : "Inactive")
+            .accessibilityValue(showsJourneyUpdatesProgress
+                ? (isLiveActive ? "Stopping" : "Starting") : (isLiveActive ? "Active" : "Inactive"))
             .accessibilityHint(isLiveActive
                 ? "Stops live updates for this journey."
                 : "Starts updates for the saved route. Choose a train in journey details to track that train separately.")
@@ -591,12 +593,14 @@ struct JourneyCard: View {
 
     private var journeyUpdatesIndicator: some View {
         Group {
-            if isBusy { ProgressView().controlSize(.small) }
+            if showsJourneyUpdatesProgress { ProgressView().controlSize(.small) }
             else { journeyUpdatesImage }
         }
         .frame(minWidth: 30, minHeight: 30)
         .contentShape(Rectangle())
     }
+
+    private var showsJourneyUpdatesProgress: Bool { showsLiveActionProgress ?? isBusy }
 
     private var journeyUpdatesImage: some View {
         Image(systemName: isLiveActive ? "stop.fill" : "play.fill")

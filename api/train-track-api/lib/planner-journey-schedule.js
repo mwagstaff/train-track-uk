@@ -136,6 +136,7 @@ export function plannerContent(subscription, state, now = Date.now()) {
     if (state.missedConnection) status = 'Connection missed · choose another journey';
     if (state.completed) status = 'Journey complete';
     return { fromCRS: leg.from.crs, toCRS: leg.to.crs, routeTitle: title,
+        nextChangeStationName: plannerNextChangeStation(plan, state),
         deepLinkFromCRS: plan.legs[0].from.crs, deepLinkToCRS: plan.legs.at(-1).to.crs,
         destinationTitle: leg.to.name, arrivalLabel: rail && !cancelled ? `Arr ${clock(live?.to?.arrival ?? leg.arrival)}` : null,
         scheduledDeparture: clock(leg.departure), length: live?.from?.length ?? null,
@@ -146,6 +147,14 @@ export function plannerContent(subscription, state, now = Date.now()) {
         scheduleKey: plannerScheduleKey(subscription), windowStart: null, windowEnd: null,
         journeyPhase: state.completed ? 'arrived' : enRoute ? 'en_route' : 'pending_start',
         journeyStartName: leg.from.name, journeyDestinationName: leg.to.name };
+}
+
+function plannerNextChangeStation(plan, state) {
+    if (state.completed) return null;
+    const leg = plan.legs[state.legIndex];
+    const stationTransfer = leg.kind === 'transfer' && leg.mode === 'interchange' && leg.from.crs === leg.to.crs;
+    if (!isRail(leg) && !stationTransfer) return null;
+    return plan.legs.slice(state.legIndex + 1).some(isRail) ? leg.to.name : null;
 }
 
 export class PlannerJourneyScheduler {
@@ -194,6 +203,7 @@ export class PlannerJourneyScheduler {
         }
         const content = showAllDepartures && isRail(leg)
             ? await this.routeContent(subscription) : plannerContent(subscription, state, now);
+        content.nextChangeStationName = plannerNextChangeStation(plan, state);
         if ((plan.showAllDepartures === true) !== showAllDepartures) return this.snapshot(subscription);
         state.checkedAt = now;
         state.contentShowsAllDepartures = showAllDepartures;
@@ -243,7 +253,12 @@ export class PlannerJourneyScheduler {
             return this.startIfDue(subscription);
         }
         const payload = { aps: { timestamp: Math.floor(now / 1000), event: 'start', 'input-push-token': 1,
-            'attributes-type': 'JourneyActivityAttributes', attributes: { displayName: content.routeTitle },
+            'attributes-type': 'JourneyActivityAttributes', attributes: { displayName: content.routeTitle,
+                initialChange: content.nextChangeStationName ? {
+                    fromCRS: content.fromCRS, toCRS: content.toCRS,
+                    destinationCRS: content.deepLinkToCRS ?? content.toCRS,
+                    stationName: content.nextChangeStationName
+                } : null },
             'content-state': content, 'stale-date': Math.floor(now / 1000) + 300,
             alert: { title: 'Journey updates', body: `${clock(plan.departure)} ${content.routeTitle}`, sound: 'default' } } };
         let result;

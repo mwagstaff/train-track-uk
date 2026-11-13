@@ -624,11 +624,15 @@ final class NotificationSubscriptionStore: ObservableObject {
     func removeLiveSessionsLocally(containingFrom from: String, to: String) async {
         let fromCode = from.uppercased()
         let toCode = to.uppercased()
-        let originalCount = liveSessions.count
+        guard liveSessions.contains(where: { session in
+            session.legs.contains { $0.from.uppercased() == fromCode && $0.to.uppercased() == toCode }
+        }) else { return }
         liveSessions.removeAll { session in
             session.legs.contains(where: { $0.from.uppercased() == fromCode && $0.to.uppercased() == toCode })
+                && !session.hasRemainingLegs(afterMutingFrom: from, to: to) {
+                    NotificationMuteStorage.isMutedToday(from: $0, to: $1)
+                }
         }
-        guard liveSessions.count != originalCount else { return }
         hasLoadedRemoteState = true
         await syncGeofences()
     }

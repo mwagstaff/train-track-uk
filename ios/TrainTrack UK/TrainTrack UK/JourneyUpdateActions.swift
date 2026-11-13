@@ -1,5 +1,24 @@
 import Foundation
 
+enum JourneyUpdateOperation {
+    case starting, stopping
+}
+
+struct JourneyUpdateButtonState {
+    let operation: JourneyUpdateOperation?
+    let hasLiveSession: Bool
+    let hasLiveActivity: Bool
+
+    var isBusy: Bool { operation != nil }
+    var isActive: Bool { hasLiveSession || (operation == .starting && hasLiveActivity) }
+    // The widget is already visible while registration/recovery work finishes.
+    // Keep the action locked to avoid overlapping start/stop requests, but show
+    // the active control immediately instead of waiting for that network work.
+    var showsProgress: Bool {
+        operation == .stopping || (operation == .starting && !hasLiveActivity)
+    }
+}
+
 @MainActor
 enum JourneyUpdateActions {
     static let selectedSubscriptionKey = "inProgressSelectedSubscriptionID"

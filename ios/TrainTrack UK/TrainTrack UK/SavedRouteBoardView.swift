@@ -50,6 +50,7 @@ enum SavedRouteJourneyPresentation {
     ) -> [SavedRouteJourneyOption] {
         var seen = Set<String>()
         var options: [SavedRouteJourneyOption] = []
+        let journeys = [primary, supplemental].compactMap { $0 }.flatMap(\.journeys).filter { $0.departure >= now }
 
         // Preserve the primary board's copy when the supplemental timetable
         // search returns the same scheduled journey.
@@ -57,6 +58,17 @@ enum SavedRouteJourneyPresentation {
             for journey in response.journeys where journey.departure >= now {
                 let key = semanticKey(for: journey)
                 guard seen.insert(key).inserted else { continue }
+                // Saved live boards use provider IDs; the supplemental timetable
+                // uses schedule IDs. Coalesce only a unique cross-source match,
+                // preserving distinct trains that share the same headline times.
+                let aliases = journeys.filter { isLiveTimetableAlias(journey, $0) }
+                if aliases.count == 1,
+                   journeys.filter({ isLiveTimetableAlias(aliases[0], $0) }).count == 1 {
+                    let liveLegs = journey.legs.filter { $0.serviceId?.hasPrefix("live:") == true }.count
+                    let aliasLiveLegs = aliases[0].legs.filter { $0.serviceId?.hasPrefix("live:") == true }.count
+                    if aliasLiveLegs > liveLegs
+                        || options.contains(where: { isLiveTimetableAlias(journey, $0.journey) }) { continue }
+                }
                 options.append(SavedRouteJourneyOption(journey: journey, response: response, semanticKey: key))
             }
         }
@@ -121,6 +133,31 @@ enum SavedRouteJourneyPresentation {
         if let scheduled = leg.scheduledServiceId, !scheduled.isEmpty { return scheduled }
         if let live = leg.serviceId, !live.isEmpty { return live }
         return nil
+    }
+
+    private static func isLiveTimetableAlias(_ lhs: PlannedJourney, _ rhs: PlannedJourney) -> Bool {
+        guard lhs.changes == rhs.changes, lhs.legs.count == rhs.legs.count else { return false }
+        var hasAlias = false
+        for (left, right) in zip(lhs.legs, rhs.legs) {
+            guard left.kind == right.kind, left.mode == right.mode,
+                  left.from.crs == right.from.crs, left.to.crs == right.to.crs else { return false }
+            // Interchange waiting/access times can differ between the two sources.
+            if left.isTrainChange { continue }
+            guard (left.scheduledDeparture ?? left.departure) == (right.scheduledDeparture ?? right.departure),
+                  (left.scheduledArrival ?? left.arrival) == (right.scheduledArrival ?? right.arrival) else { return false }
+            guard left.kind == "vehicle" else {
+                if left.localJourney != right.localJourney { return false }
+                continue
+            }
+            guard let leftID = serviceID(for: left), let rightID = serviceID(for: right) else { return false }
+            if leftID == rightID { continue }
+            guard leftID.hasPrefix("live:") != rightID.hasPrefix("live:"),
+                  let operatorCode = left.operator, !operatorCode.isEmpty, operatorCode == right.operator,
+                  let leftCalls = left.callingPoints, let rightCalls = right.callingPoints,
+                  leftCalls.count >= 2, leftCalls.map(\.station.crs) == rightCalls.map(\.station.crs) else { return false }
+            hasAlias = true
+        }
+        return hasAlias
     }
 }
 

@@ -1,7 +1,71 @@
 import Foundation
+import ActivityKit
 import Testing
 import JourneyActivityShared
 @testable import TrainTrack_UK
+
+struct JourneyUpdateButtonStateTests {
+    @Test func startShowsActiveWidgetBeforeNotificationRegistrationFinishes() {
+        let preparing = JourneyUpdateButtonState(operation: .starting, hasLiveSession: false, hasLiveActivity: false)
+        #expect(preparing.showsProgress)
+        #expect(!preparing.isActive)
+
+        let visible = JourneyUpdateButtonState(operation: .starting, hasLiveSession: false, hasLiveActivity: true)
+        #expect(!visible.showsProgress)
+        #expect(visible.isActive)
+        #expect(visible.isBusy, "Repeated taps remain blocked while registration is pending")
+
+        let registered = JourneyUpdateButtonState(operation: .starting, hasLiveSession: true, hasLiveActivity: true)
+        #expect(!registered.showsProgress, "Recovery lookups must not bring back the spinner")
+        #expect(registered.isActive)
+        let completed = JourneyUpdateButtonState(operation: nil, hasLiveSession: true, hasLiveActivity: true)
+        #expect(!completed.isBusy)
+        #expect(completed.isActive)
+    }
+
+    @Test func failedStartReturnsToIdleAndStoppingStillShowsProgress() {
+        let failed = JourneyUpdateButtonState(operation: nil, hasLiveSession: false, hasLiveActivity: false)
+        #expect(!failed.showsProgress)
+        #expect(!failed.isActive)
+        #expect(!failed.isBusy)
+        for visible in [true, false] {
+            let stopping = JourneyUpdateButtonState(operation: .stopping, hasLiveSession: true, hasLiveActivity: visible)
+            #expect(stopping.showsProgress)
+            #expect(stopping.isBusy)
+        }
+    }
+
+    @Test func multiLegWidgetMatchesWholeRouteWithoutMatchingOtherJourneys() {
+        var state = JourneyActivityAttributes.ContentState(fromCRS: "KTH", toCRS: "HNH",
+            destinationTitle: "Herne Hill", arrivalLabel: nil, length: nil, platform: "2",
+            estimated: "09:27", statusText: nil, delayMinutes: 0, journeyPhase: .pendingStart)
+        state.deepLinkFromCRS = "KTH"
+        state.deepLinkToCRS = "BFR"
+        for activityState in [ActivityState.active, .stale] {
+            #expect(LiveActivityRouteState.isActive(state, activityState: activityState, fromCRS: "kth", toCRS: "bfr"))
+        }
+        #expect(!LiveActivityRouteState.isActive(state, activityState: .active, fromCRS: "BFR", toCRS: "KTH"))
+        #expect(!LiveActivityRouteState.isActive(state, activityState: .active, fromCRS: "KTH", toCRS: "HNH"))
+        state.fromCRS = "HNH"
+        state.toCRS = "BFR"
+        #expect(LiveActivityRouteState.isActive(state, activityState: .active, fromCRS: "KTH", toCRS: "BFR"))
+    }
+
+    @Test func pendingEndedDismissedAndArrivedActivitiesDoNotSignalSuccessfulStart() {
+        var state = JourneyActivityAttributes.ContentState(fromCRS: "KTH", toCRS: "VIC",
+            destinationTitle: "London Victoria", arrivalLabel: nil, length: nil, platform: "2",
+            estimated: "09:27", statusText: nil, delayMinutes: 0, journeyPhase: .pendingStart)
+        #expect(LiveActivityRouteState.isActive(state, activityState: .active, fromCRS: "KTH", toCRS: "VIC"))
+        for activityState in [ActivityState.ended, .dismissed] {
+            #expect(!LiveActivityRouteState.isActive(state, activityState: activityState, fromCRS: "KTH", toCRS: "VIC"))
+        }
+        if #available(iOS 26.0, *) {
+            #expect(!LiveActivityRouteState.isActive(state, activityState: .pending, fromCRS: "KTH", toCRS: "VIC"))
+        }
+        state.journeyPhase = .arrived
+        #expect(!LiveActivityRouteState.isActive(state, activityState: .active, fromCRS: "KTH", toCRS: "VIC"))
+    }
+}
 
 struct LiveActivityExclusivityTests {
     @Test

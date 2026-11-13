@@ -10,6 +10,16 @@ import UIKit
 // Type alias for convenience - ActivityAttributes conformance is now in the shared package
 typealias JourneyActivityAttributes = JourneyActivityShared.JourneyActivityAttributes
 
+enum LiveActivityRouteState {
+    static func isActive(_ state: JourneyActivityAttributes.ContentState, activityState: ActivityState,
+                         fromCRS: String, toCRS: String) -> Bool {
+        guard activityState == .active || activityState == .stale,
+              state.journeyPhase != .arrived else { return false }
+        return (state.deepLinkFromCRS ?? state.fromCRS).caseInsensitiveCompare(fromCRS) == .orderedSame
+            && (state.deepLinkToCRS ?? state.toCRS).caseInsensitiveCompare(toCRS) == .orderedSame
+    }
+}
+
 enum LiveActivityExclusivityPolicy {
     struct Candidate {
         let id: String
@@ -128,6 +138,7 @@ final class LiveActivityManager: ObservableObject {
         let title: String
         let deepLinkFromCRS: String
         let deepLinkToCRS: String
+        var nextChangeStationName: String? = nil
     }
 
     private let logger = Logger(subsystem: "dev.skynolimit.traintrack.app", category: "LiveActivityManager")
@@ -360,7 +371,7 @@ final class LiveActivityManager: ObservableObject {
         }
         do {
             let activity = try Activity<JourneyActivityAttributes>.request(
-                attributes: JourneyActivityAttributes(displayName: route.title),
+                attributes: JourneyActivityAttributes(displayName: route.title, initialState: state),
                 content: ActivityContent(state: state, staleDate: nil),
                 pushType: nil
             )
@@ -670,6 +681,7 @@ final class LiveActivityManager: ObservableObject {
         state.destinationTitle = journey.toStation.name
         state.journeyPhase = phase
         state.connectionStationName = isConnection ? journey.fromStation.name : nil
+        state.nextChangeStationName = isConnection ? journey.fromStation.name : nil
         state.upcomingDepartures = []
         state.arrivalDelayMinutes = nil
         state.revision = nil
@@ -768,6 +780,14 @@ final class LiveActivityManager: ObservableObject {
         activityUpdatesTask?.cancel()
         stateMonitorTasks.values.forEach { $0.cancel() }
         pushToStartTokenTask?.cancel()
+    }
+
+    /// Match the whole saved route even while the widget displays just its current leg.
+    func hasActiveActivity(for group: JourneyGroup) -> Bool {
+        currentSystemActivities().contains {
+            LiveActivityRouteState.isActive($0.content.state, activityState: $0.activityState,
+                fromCRS: group.startStation.crs, toCRS: group.endStation.crs)
+        }
     }
 
     /// Check if there's an active Live Activity for the given journey
@@ -1050,7 +1070,7 @@ final class LiveActivityManager: ObservableObject {
         }
         do {
             let route = routePresentation(for: journey)
-            let attr = JourneyActivityAttributes(displayName: route.title)
+            let attr = JourneyActivityAttributes(displayName: route.title, initialState: initial)
             debugLog("🚂 [LiveActivity] Attributes displayName=\(attr.displayName)")
 
             debugLog("🚂 [LiveActivity] Calling Activity.request()...")
@@ -1908,7 +1928,8 @@ final class LiveActivityManager: ObservableObject {
                 ? journey.toStation.name
                 : StationsService.shared.stations.first {
                     $0.crs.caseInsensitiveCompare(route.deepLinkToCRS) == .orderedSame
-                }?.name
+                }?.name,
+            nextChangeStationName: route.nextChangeStationName
         )
         return state
     }
@@ -1925,7 +1946,9 @@ final class LiveActivityManager: ObservableObject {
             })?.stations
         if let stations = routeStations, let first = stations.first, let last = stations.last,
            first.crs == journey.fromStation.crs, stations.dropFirst().first?.crs == journey.toStation.crs {
-            return RoutePresentation(title: "\(first.name) → \(last.name)", deepLinkFromCRS: first.crs, deepLinkToCRS: last.crs)
+            return RoutePresentation(title: "\(first.name) → \(last.name)", deepLinkFromCRS: first.crs,
+                                     deepLinkToCRS: last.crs,
+                                     nextChangeStationName: stations.count > 2 ? stations[1].name : nil)
         }
         let legs = relevantJourneyLegs(for: journey)
         guard let firstLeg = legs.first, let lastLeg = legs.last else {
@@ -1950,7 +1973,8 @@ final class LiveActivityManager: ObservableObject {
         return RoutePresentation(
             title: title,
             deepLinkFromCRS: firstLeg.fromStation.crs.uppercased(),
-            deepLinkToCRS: lastLeg.toStation.crs.uppercased()
+            deepLinkToCRS: lastLeg.toStation.crs.uppercased(),
+            nextChangeStationName: legs.count > 1 ? firstLeg.toStation.name : nil
         )
     }
 
@@ -3098,6 +3122,7 @@ final class LiveActivityManager: ObservableObject {
             "auto_end_on_departure": false,
             "journey_updates_enabled": journeyUpdatesEnabled
         ]
+        payload["next_change_station_name"] = tracked.activity.attributes.nextChangeStation(for: tracked.activity.content.state) as Any? ?? NSNull()
         let routeFromCRS = (deepLinkFromCRS ?? fromCRS).uppercased()
         let routeToCRS = (deepLinkToCRS ?? toCRS).uppercased()
         let coordinator = JourneyTrackingCoordinator.shared

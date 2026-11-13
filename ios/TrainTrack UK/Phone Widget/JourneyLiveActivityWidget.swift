@@ -279,15 +279,45 @@ struct LiveActivityLockScreenView: View {
         state.routeTitle ?? attributes.displayName
     }
 
+    private var nextChangeStation: String? {
+        attributes.nextChangeStation(for: state)
+    }
+
     var body: some View {
-        VStack(spacing: 12) {
-            Text(routeTitle)
-                .font(.headline)
-                .fontWeight(.semibold)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .multilineTextAlignment(.center)
+        if nextChangeStation != nil {
+            // Keep every detail inside the Lock Screen's height budget, even at
+            // larger text sizes or when the live status needs two lines.
+            ViewThatFits(in: .vertical) {
+                content
+                content.dynamicTypeSize(...DynamicTypeSize.large)
+                content.dynamicTypeSize(...DynamicTypeSize.small)
+            }
+            .frame(maxHeight: 160)
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
+        VStack(spacing: nextChangeStation == nil ? 12 : 4) {
+            VStack(spacing: 2) {
+                Text(routeTitle)
+                    .font(.headline)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .multilineTextAlignment(.center)
+
+                if let station = nextChangeStation {
+                    Text("\(Text("Change at ").foregroundStyle(.secondary))\(Text(station).fontWeight(.semibold))")
+                        .font(.subheadline)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .frame(maxWidth: .infinity)
+                        .accessibilityLabel("Change at \(station)")
+                }
+            }
 
             // Main departure info
             HStack(alignment: .top, spacing: 12) {
@@ -373,12 +403,13 @@ struct LiveActivityLockScreenView: View {
                     raisesLabel: primaryStatusText(for: state) != nil
                 )
                 .padding(.horizontal, -16)
-                .padding(.bottom, -16)
+                .padding(.bottom, nextChangeStation == nil ? -16 : -8)
             } else if !state.upcomingDepartures.isEmpty {
                 UpcomingDeparturesStrip(departures: state.upcomingDepartures)
             }
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.vertical, nextChangeStation == nil ? 16 : 8)
         .widgetURL(deepLinkURL)
     }
 }
@@ -673,6 +704,16 @@ extension JourneyActivityAttributes {
 }
 
 extension JourneyActivityAttributes.ContentState {
+    fileprivate static var nextChange: JourneyActivityAttributes.ContentState {
+        var state = onTime
+        state.fromCRS = "BFR"
+        state.toCRS = "HNH"
+        state.routeTitle = "London Blackfriars → Kent House"
+        state.destinationTitle = "Sutton (London) via Wimbledon"
+        state.nextChangeStationName = "Herne Hill"
+        return state
+    }
+
     fileprivate static var onTime: JourneyActivityAttributes.ContentState {
         JourneyActivityAttributes.ContentState(
             fromCRS: "VIC",
@@ -721,6 +762,13 @@ extension JourneyActivityAttributes.ContentState {
 } contentStates: {
     JourneyActivityAttributes.ContentState.onTime
     JourneyActivityAttributes.ContentState.delayed
+    JourneyActivityAttributes.ContentState.nextChange
+}
+
+#Preview("Next change — narrow, large text", traits: .fixedLayout(width: 371, height: 160)) {
+    LiveActivityLockScreenView(state: .nextChange, attributes: .preview)
+        .environment(\.dynamicTypeSize, .accessibility1)
+        .preferredColorScheme(.dark)
 }
 
 #Preview("Smart Stack — compact", traits: .fixedLayout(width: 172, height: 76)) {
