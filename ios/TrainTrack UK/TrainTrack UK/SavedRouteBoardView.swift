@@ -43,6 +43,11 @@ extension SavedRoutePlannerStore {
 }
 
 enum SavedRouteJourneyPresentation {
+    static func isDirectTrain(_ journey: PlannedJourney) -> Bool {
+        journey.changes == 0 && !journey.legs.isEmpty
+            && journey.legs.allSatisfy { $0.mode == "rail" }
+    }
+
     static func merged(
         primary: PlannerSearchResponse?,
         supplemental: PlannerSearchResponse?,
@@ -175,6 +180,8 @@ struct SavedRouteBoardView: View {
     /// gains a List chevron. The hosting screen pushes the chosen journey (and its semantic key) instead.
     var onOpenJourney: ((PlannerJourneyResponse, String) -> Void)? = nil
     var onNewJourney: (() -> Void)? = nil
+    var directTrainsOnly = false
+    var onShowIndirectJourneys: (() -> Void)? = nil
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 20)) { context in
@@ -188,16 +195,24 @@ struct SavedRouteBoardView: View {
                     primary: state.result,
                     supplemental: supplemental?.result,
                     at: context.date
-                )
+                ).filter { !directTrainsOnly || SavedRouteJourneyPresentation.isDirectTrain($0.journey) }
                 let hasResult = state.result != nil || supplemental?.result != nil
                 if hasResult {
                     if options.isEmpty && showsEmptyState && !state.isPending
                         && supplemental?.isPending != true && state.message == nil && supplemental?.message == nil {
                         let searched = supplemental ?? state
                         VStack(alignment: .leading, spacing: 12) {
-                            Text(searched.emptySearchMessage)
+                            Text(directTrainsOnly ? "No direct journeys found" : searched.emptySearchMessage)
                                 .foregroundStyle(.secondary)
-                            if searched.reachedSearchLimit {
+                            if directTrainsOnly, state.hasIndirectAlternatives, let onShowIndirectJourneys {
+                                Button("Tap to show available indirect journeys", action: onShowIndirectJourneys)
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(Color.accentColor)
+                                    .frame(minHeight: 44)
+                                    .disabled(!isInteractive)
+                                    .accessibilityIdentifier("saved-route.show-indirect")
+                            }
+                            if searched.reachedSearchLimit && !directTrainsOnly {
                                 Text("Use New journey to search for the specific date and time you’re interested in.")
                                     .foregroundStyle(.secondary)
                                 if let onNewJourney, isInteractive {
@@ -277,7 +292,7 @@ struct SavedRouteBoardView: View {
                         primary: state.result,
                         supplemental: supplemental?.result,
                         at: context.date
-                    )
+                    ).filter { !directTrainsOnly || SavedRouteJourneyPresentation.isDirectTrain($0.journey) }
                     if !disrupted.isEmpty {
                         DisclosureGroup("Disrupted journeys") {
                             ForEach(disrupted) { option in

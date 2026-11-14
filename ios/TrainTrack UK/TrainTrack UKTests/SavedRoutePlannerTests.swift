@@ -6,6 +6,192 @@ import Testing
 struct SavedRoutePlannerTests {
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
+    @Test func directOnlyPreferencePersistsPerRouteAndChangesRequestIdentity() throws {
+        let suite = "saved-route-preferences-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let route = group(["KTH", "VIC"])
+        let store = SavedRoutePlannerStore(client: RouteBoardStub(), defaults: defaults)
+        let original = store.query(for: route)
+        #expect(!store.directTrainsOnly(for: route))
+        #expect(original.maxChanges == nil)
+        store.setDirectTrainsOnly(true, for: route)
+        let restored = SavedRoutePlannerStore(client: RouteBoardStub(), defaults: try #require(UserDefaults(suiteName: suite)))
+        #expect(restored.directTrainsOnly(for: group(["KTH", "VIC"])))
+        #expect(!restored.directTrainsOnly(for: group(["VIC", "KTH"])))
+        #expect(!restored.directTrainsOnly(for: group(["KTH", "BFR", "VIC"])))
+        let query = restored.query(for: route)
+        #expect(query.id != original.id)
+        let json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(query)) as? [String: Any])
+        #expect(json["maxChanges"] as? Int == 0)
+        #expect(json["allowedModes"] as? [String] == ["rail"])
+        restored.setDirectTrainsOnly(false, for: route)
+        #expect(SavedRoutePlannerStore(client: RouteBoardStub(), defaults: defaults).query(for: route) == original)
+    }
+
+    @Test func repeatedMoreSearchesAdvanceAndKeepEveryLoadedPage() async throws {
+        let client = RouteBoardStub()
+        client.resultForQuery = { query in
+            let start = try self.queryDate(query)
+            return try self.result(journeys: [self.journey(departure: start.addingTimeInterval(600))], from: start)
+        }
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "VIC"])
+        await store.searchLater(for: route)
+        await store.searchMore(for: route)
+        await store.searchMore(for: route)
+        #expect(try client.requests.map { try queryDate($0[0]) } == [0, 601, 1202].map { now.addingTimeInterval(Double($0)) })
+        #expect(store.laterState(for: route)?.result?.journeys.map(\.departure) ==
+            [600, 1201, 1802].map { now.addingTimeInterval(Double($0)) })
+        // Collapsing and expanding reuses all the loaded pages.
+        await store.searchLater(for: route)
+        #expect(client.requests.count == 3)
+    }
+
+    @Test func repeatedPageReportsNoProgressAndRetryCanLoadLaterJourneys() async throws {
+        let client = RouteBoardStub()
+        let first = try journey(departure: now.addingTimeInterval(600))
+        client.result = try result(journeys: [first])
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["CLK", "LBG"])
+        await store.searchLater(for: route)
+        // The server repeats the previous page instead of advancing past the cursor.
+        await store.searchMore(for: route)
+        #expect(store.laterState(for: route)?.message == "The search could not check the full time window. Try again.")
+        #expect(store.laterState(for: route)?.isSearchingLater == false)
+        let cursor = try queryDate(#require(client.requests.last?.first))
+        let second = try journey(departure: now.addingTimeInterval(1200))
+        client.result = try result(journeys: [second], from: cursor)
+        await store.retryLater(for: route)
+        #expect(store.laterState(for: route)?.message == nil)
+        #expect(store.laterState(for: route)?.result?.journeys == [first, second])
+        #expect(try queryDate(#require(client.requests.last?.first)) == cursor)
+    }
+
+    @Test func failedNextPageKeepsLoadedJourneysAndMoreRetriesIt() async throws {
+        let client = RouteBoardStub()
+        let first = try journey(departure: now.addingTimeInterval(600))
+        client.result = try result(journeys: [first])
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "VIC"])
+        await store.searchLater(for: route)
+        client.failure = PlannerError(code: "NETWORK", message: "Offline")
+        await store.searchMore(for: route)
+        #expect(store.laterState(for: route)?.result?.journeys == [first])
+        #expect(store.laterState(for: route)?.message == "Offline")
+        client.failure = nil
+        let second = try journey(departure: now.addingTimeInterval(1200))
+        client.result = try result(journeys: [second], from: now.addingTimeInterval(601))
+        await store.searchMore(for: route)
+        #expect(store.laterState(for: route)?.result?.journeys == [first, second])
+    }
+
+    @Test func moreCanContinueBeyondAnEmptyDay() async throws {
+        let client = RouteBoardStub()
+        client.resultForQuery = { query in try self.result(from: self.queryDate(query)) }
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "VIC"])
+        await store.searchLater(for: route)
+        #expect(store.laterState(for: route)?.reachedSearchLimit == true)
+        await store.searchMore(for: route)
+        #expect(try queryDate(#require(client.requests.last?.first)) == now.addingTimeInterval(42 * 3600))
+        #expect(store.laterState(for: route)?.searchedWindow?.to == now.addingTimeInterval(48 * 3600))
+    }
+
+    @Test func directOnlyAppliesToPrimaryAndEveryLaterPage() async throws {
+        let suite = "saved-route-filter-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let client = RouteBoardStub()
+        client.resultForQuery = { query in
+            let start = try self.queryDate(query)
+            return try self.result(journeys: [self.journey(departure: start.addingTimeInterval(600))], from: start)
+        }
+        let store = SavedRoutePlannerStore(client: client, defaults: defaults, now: { now })
+        let route = group(["KTH", "VIC"])
+        await store.refresh(groups: [route])
+        await store.searchLater(for: route)
+        store.setDirectTrainsOnly(true, for: route)
+        #expect(store.laterState(for: route) == nil)
+        client.requests = []
+        await store.refresh(groups: [route])
+        await store.searchLater(for: route)
+        await store.searchMore(for: route)
+        #expect(client.requests.count == 3)
+        #expect(client.requests.allSatisfy { $0.allSatisfy { $0.maxChanges == 0 } })
+    }
+
+    @Test func defaultSearchFindsOvernightJourneysWithoutExpanding() async throws {
+        let client = RouteBoardStub()
+        client.result = try result(hours: 4)
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "BFR"])
+        await store.refresh(groups: [route])
+        #expect(store.displayState(for: route).isSearchingLater)
+        let overnight = try journey(departure: now.addingTimeInterval(21 * 3600))
+        client.resultForQuery = { query in
+            let start = try self.queryDate(query)
+            return try self.result(journeys: start >= self.now.addingTimeInterval(16 * 3600) ? [overnight] : [], from: start)
+        }
+        await store.prepareUpcoming(for: route)
+        #expect(store.displayState(for: route).result?.journeys == [overnight])
+        #expect(try client.requests.dropFirst().map { try queryDate($0[0]) } ==
+            [4, 10, 16].map { now.addingTimeInterval(Double($0) * 3600) })
+    }
+
+    @Test func defaultEmptySearchCovers24HoursAndReusesItsCompletedSearch() async throws {
+        let client = RouteBoardStub()
+        client.resultForQuery = { query in try self.result(from: self.queryDate(query), hours: query.time == nil ? 4 : 6) }
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "BFR"])
+        await store.refresh(groups: [route])
+        await store.prepareUpcoming(for: route)
+        #expect(store.displayState(for: route).reachedSearchLimit)
+        #expect(store.displayState(for: route).emptySearchMessage == "No journeys found in the next 24 hours.")
+        let count = client.requests.count
+        await store.prepareUpcoming(for: route)
+        #expect(client.requests.count == count)
+    }
+
+    @Test func emptyDirectSearchFindsIndirectAlternativesWithoutChangingPreference() async throws {
+        let suite = "indirect-alternatives-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let client = RouteBoardStub()
+        let direct = try journey(departure: now.addingTimeInterval(20 * 3600))
+        let indirect = PlannedJourney(id: "indirect", departure: direct.departure, arrival: direct.arrival,
+            durationMinutes: direct.durationMinutes, changes: 1, legs: direct.legs)
+        client.resultForQuery = { query in
+            let start = try self.queryDate(query)
+            return try self.result(journeys: query.maxChanges == nil && start >= self.now.addingTimeInterval(18 * 3600)
+                ? [indirect] : [], from: start)
+        }
+        let store = SavedRoutePlannerStore(client: client, defaults: defaults, now: { now })
+        let route = group(["KTH", "BFR"])
+        store.setDirectTrainsOnly(true, for: route)
+        await store.refresh(groups: [route])
+        await store.prepareUpcoming(for: route)
+        #expect(store.directTrainsOnly(for: route))
+        #expect(store.displayState(for: route).result?.journeys.isEmpty == true)
+        #expect(store.displayState(for: route).hasIndirectAlternatives)
+        store.setDirectTrainsOnly(false, for: route)
+        #expect(store.displayState(for: route).result?.journeys == [indirect])
+    }
+
+    @Test func anchoredOverlappingEmptyWindowsAdvanceToTheFullHorizon() async throws {
+        let client = RouteBoardStub()
+        client.resultForQuery = { query in
+            let requested = try self.queryDate(query)
+            return try self.result(from: requested.addingTimeInterval(-3600), hours: 6, time: requested)
+        }
+        let store = SavedRoutePlannerStore(client: client, now: { now })
+        let route = group(["KTH", "BFR"])
+        await store.searchLater(for: route)
+        #expect(store.laterState(for: route)?.reachedSearchLimit == true)
+        #expect(client.requests.count == 5)
+        #expect(store.laterState(for: route)?.message == nil)
+    }
+
     @Test func requiredStopsKeepTheirOrderAndDirectionInRequestAndCacheKey() throws {
         let route = group(["KTH", "VIC", "EUS", "INV"])
         let query = SavedRouteQuery(group: route)

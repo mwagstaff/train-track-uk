@@ -283,12 +283,6 @@ final class JourneyPlannerUITests: XCTestCase {
             app.tabBars.buttons["Favourites"].tap()
             XCTAssertTrue(app.navigationBars["Favourites"].waitForExistence(timeout: 5))
         }
-        let initial = app.staticTexts["No journeys found in the next 6 hours."]
-        XCTAssertTrue(initial.waitForExistence(timeout: 10))
-        XCTAssertFalse(app.buttons["saved-route.new-journey"].exists)
-        let more = app.buttons["saved-route.later-departures"].firstMatch
-        scrollTo(more, in: app)
-        more.tap()
         let empty = app.staticTexts["No journeys found in the next 24 hours."]
         XCTAssertTrue(empty.waitForExistence(timeout: 10))
         let newJourney = app.buttons["saved-route.new-journey"].firstMatch
@@ -307,14 +301,130 @@ final class JourneyPlannerUITests: XCTestCase {
     }
 
     @MainActor
-    func testSavedRouteMoreDeparturesFindsAnOvernightJourneyAfterEmptyWindows() throws {
-        let app = launch(plannerEnabled: false, apiBase: "http://127.0.0.1:3014/saved-overnight/api/v2", resetAppearance: true)
-        saveFixtureRoute(in: app)
-        XCTAssertTrue(app.staticTexts["No journeys found in the next 6 hours."].waitForExistence(timeout: 10))
+    func testEmptyDirectDayOffersIndirectJourneysAndDisablesFilter() throws {
+        let app = launch(plannerEnabled: false, apiBase: "http://127.0.0.1:3014/saved-indirect/api/v2", resetAppearance: true)
+        saveFixtureRoute(in: app, destination: ("VIC", "London Victoria"))
+        let toggle = app.switches["saved-route.direct-only"].firstMatch
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        scrollTo(toggle, in: app, towardTop: true)
+        if toggle.value as? String != "1" {
+            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        }
+        let empty = app.staticTexts["No direct journeys found"].firstMatch
+        XCTAssertTrue(empty.waitForExistence(timeout: 20))
+        let alternatives = app.buttons["saved-route.show-indirect"].firstMatch
+        XCTAssertTrue(alternatives.waitForExistence(timeout: 20))
+        scrollTo(alternatives, in: app)
+        attach("direct-empty-indirect-available", app: app)
+        alternatives.tap()
+        XCTAssertEqual(toggle.value as? String, "0")
+        XCTAssertTrue(app.buttons["saved-route.journey.available-indirect"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertFalse(empty.exists)
+        attach("indirect-journeys-revealed", app: app)
+    }
+
+    @MainActor
+    func testMoreJourneysReportsFullEmptyDayAlongsideLoadedJourneys() throws {
+        let app = launch(plannerEnabled: false, apiBase: "http://127.0.0.1:3014/saved-exhausted/api/v2", resetAppearance: true)
+        saveFixtureRoute(in: app, destination: ("VIC", "London Victoria"))
+        XCTAssertTrue(app.buttons["saved-route.journey.last-direct"].firstMatch.waitForExistence(timeout: 10))
         let more = app.buttons["saved-route.later-departures"].firstMatch
         scrollTo(more, in: app)
         more.tap()
-        XCTAssertTrue(app.buttons["saved-route.journey.saved-overnight"].waitForExistence(timeout: 10))
+        let empty = app.staticTexts["saved-route.no-more-journeys"].firstMatch
+        XCTAssertTrue(empty.waitForExistence(timeout: 20))
+        XCTAssertEqual(empty.label, "No more journeys found in the next 24 hours")
+        XCTAssertTrue(app.buttons["saved-route.journey.last-direct"].firstMatch.exists)
+        scrollTo(empty, in: app)
+        attach("no-more-journeys-after-full-day", app: app)
+    }
+
+    @MainActor
+    func testSavedRoutePagingAndPersistentDirectFilter() throws {
+        try checkSavedRoutePagingAndFilter(favourite: false, largeText: false)
+    }
+
+    @MainActor
+    func testFavouritePagingAndPersistentDirectFilterInDarkLargeText() throws {
+        try checkSavedRoutePagingAndFilter(favourite: true, largeText: true)
+    }
+
+    @MainActor
+    private func checkSavedRoutePagingAndFilter(favourite: Bool, largeText: Bool) throws {
+        let app = launch(plannerEnabled: false, largeText: largeText, dark: largeText,
+            apiBase: "http://127.0.0.1:3014/saved-paging/api/v2", resetAppearance: true)
+        saveFixtureRoute(in: app, destination: ("VIC", "London Victoria"))
+        if favourite {
+            let addFavourite = app.buttons["Add to favourites"].firstMatch
+            scrollTo(addFavourite, in: app, towardTop: true)
+            addFavourite.tap()
+            app.alerts.buttons["Add to favourites"].tap()
+            app.tabBars.buttons["Favourites"].tap()
+        }
+        let toggle = app.switches["saved-route.direct-only"].firstMatch
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        // Reset this route's preference from any earlier interrupted UI test.
+        if toggle.value as? String == "1" {
+            scrollTo(toggle, in: app, towardTop: true, maximumSwipes: 24)
+            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        }
+        XCTAssertEqual(toggle.value as? String, "0")
+        let more = app.buttons["saved-route.later-departures"].firstMatch
+        scrollTo(more, in: app)
+        more.tap()
+        let fewer = app.buttons["saved-route.fewer-journeys"].firstMatch
+        XCTAssertTrue(fewer.waitForExistence(timeout: 10))
+        let rows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "saved-route.journey.paging-"))
+        XCTAssertTrue(NSPredicate(format: "count >= 8").evaluate(with: rows) ||
+            XCTWaiter.wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "count >= 8"), object: rows)], timeout: 10) == .completed)
+        for _ in 0..<3 {
+            let loadedCount = rows.count
+            scrollTo(more, in: app)
+            XCTAssertEqual(fewer.frame.midY, more.frame.midY, accuracy: 1)
+            XCTAssertLessThan(fewer.frame.midX, more.frame.midX)
+            more.tap()
+            XCTAssertTrue(more.staticTexts["Loading…"].waitForExistence(timeout: 3))
+            XCTAssertEqual(XCTWaiter.wait(for: [XCTNSPredicateExpectation(
+                predicate: NSPredicate(format: "count > %d", loadedCount), object: rows)], timeout: 10), .completed)
+        }
+        scrollTo(fewer, in: app)
+        attach(favourite ? "favourite-pagination-row-large" : "journey-pagination-row", app: app)
+        fewer.tap()
+        XCTAssertFalse(fewer.exists)
+        scrollTo(toggle, in: app, towardTop: true, maximumSwipes: 24)
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        XCTAssertEqual(toggle.value as? String, "1")
+        attach(favourite ? "favourite-direct-filter-dark-large" : "journey-direct-filter", app: app)
+        try app.performAccessibilityAudit(for: [.textClipped]) { issue in
+            issue.element?.identifier != "saved-route.direct-only"
+        }
+        app.terminate()
+        app.launchEnvironment.removeValue(forKey: "UI_TEST_RESET_JOURNEYS")
+        app.launch()
+        app.tabBars.buttons[favourite ? "Favourites" : "My Journeys"].tap()
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        XCTAssertEqual(toggle.value as? String, "1")
+        scrollTo(toggle, in: app, towardTop: true, maximumSwipes: 24)
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        XCTAssertEqual(toggle.value as? String, "0")
+    }
+
+    @MainActor
+    func testMoreJourneysAfterAutomaticEmptyDaySearchAdvancesImmediately() throws {
+        let app = launch(plannerEnabled: false, apiBase: "http://127.0.0.1:3014/saved-next-day/api/v2", resetAppearance: true)
+        saveFixtureRoute(in: app)
+        XCTAssertTrue(app.staticTexts["No journeys found in the next 24 hours."].firstMatch.waitForExistence(timeout: 20))
+        let more = app.buttons["saved-route.later-departures"].firstMatch
+        scrollTo(more, in: app)
+        more.tap()
+        XCTAssertTrue(app.buttons["saved-route.journey.saved-next-day"].firstMatch.waitForExistence(timeout: 20))
+    }
+
+    @MainActor
+    func testSavedRouteMoreDeparturesFindsAnOvernightJourneyAfterEmptyWindows() throws {
+        let app = launch(plannerEnabled: false, apiBase: "http://127.0.0.1:3014/saved-overnight/api/v2", resetAppearance: true)
+        saveFixtureRoute(in: app)
+        XCTAssertTrue(app.buttons["saved-route.journey.saved-overnight"].waitForExistence(timeout: 20))
         XCTAssertFalse(app.staticTexts["No journeys found in the next 24 hours."].exists)
         attach("saved-route-overnight-found", app: app)
     }
@@ -376,7 +486,7 @@ final class JourneyPlannerUITests: XCTestCase {
         let later = app.buttons["saved-route.later-departures"].firstMatch
         scrollTo(later, in: app)
         XCTAssertTrue(later.isHittable)
-        XCTAssertEqual(later.label, "More departures")
+        XCTAssertEqual(later.label, "More journeys")
         XCTAssertFalse(app.buttons["View all departures"].exists)
         XCTAssertFalse(app.buttons["Search for later departures"].exists)
         XCTAssertFalse(app.staticTexts["Route updates"].exists)
@@ -1451,8 +1561,8 @@ final class JourneyPlannerUITests: XCTestCase {
         add.tap()
     }
 
-    @MainActor private func scrollTo(_ element: XCUIElement, in app: XCUIApplication, towardTop: Bool = false) {
-        for _ in 0..<8 {
+    @MainActor private func scrollTo(_ element: XCUIElement, in app: XCUIApplication, towardTop: Bool = false, maximumSwipes: Int = 8) {
+        for _ in 0..<maximumSwipes {
             let top = app.navigationBars.firstMatch.exists
                 ? app.navigationBars.firstMatch.frame.maxY
                 : app.frame.minY

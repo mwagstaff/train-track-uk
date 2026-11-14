@@ -7,7 +7,8 @@ struct SavedRouteQuery: Encodable, Hashable {
     let via: [String]
     var realtime = "apply"
     var time: String? = nil
-    var id: String { ([origin] + via + [destination, realtime, time ?? "now"]).joined(separator: "-") }
+    var maxChanges: Int? = nil
+    var id: String { ([origin] + via + [destination, realtime, time ?? "now"] + (maxChanges.map { ["changes\($0)"] } ?? [])).joined(separator: "-") }
 
     init(group: JourneyGroup) {
         origin = group.startStation.crs.uppercased()
@@ -15,7 +16,7 @@ struct SavedRouteQuery: Encodable, Hashable {
         via = group.viaStations.map { $0.crs.uppercased() }
     }
 
-    enum CodingKeys: String, CodingKey { case id, origin, destination, via, realtime, time }
+    enum CodingKeys: String, CodingKey { case id, origin, destination, via, realtime, time, maxChanges, allowedModes }
     func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(id, forKey: .id)
@@ -24,6 +25,8 @@ struct SavedRouteQuery: Encodable, Hashable {
         try values.encode(via, forKey: .via)
         try values.encode(realtime, forKey: .realtime)
         try values.encodeIfPresent(time, forKey: .time)
+        try values.encodeIfPresent(maxChanges, forKey: .maxChanges)
+        if maxChanges == 0 { try values.encode(["rail"], forKey: .allowedModes) }
     }
 }
 
@@ -108,6 +111,7 @@ struct SavedRouteBoardState {
     var searchedWindow: PlannerSearchResponse.Window? = nil
     var reachedSearchLimit = false
     var isSearchingLater = false
+    var hasIndirectAlternatives = false
 
     var hasPersistentFailure: Bool { consecutiveFailures >= 3 }
     var showsActivity: Bool { isRefreshing || isPending }
@@ -159,7 +163,8 @@ final class SavedRoutePlannerStore {
     private(set) var states: [String: SavedRouteBoardState] = [:]
     private struct LaterSearch {
         var query: SavedRouteQuery
-        let from: Date
+        var from: Date
+        var previousQueries: [SavedRouteQuery] = []
         var searchedUntil: Date
         var isSearching = false
         var finished = false
@@ -170,41 +175,77 @@ final class SavedRoutePlannerStore {
     @ObservationIgnored private let client: any SavedRouteBoardServing
     @ObservationIgnored private var flights: [String: Task<Void, Never>] = [:]
     @ObservationIgnored private var firstRequestStarted: [String: ContinuousClock.Instant] = [:]
+    private var directOnlyRoutes: Set<String>
+    @ObservationIgnored private let defaults: UserDefaults
+    private static let directOnlyKey = "savedRouteDirectTrainsOnly"
     @ObservationIgnored private let now: () -> Date
 
-    init(client: (any SavedRouteBoardServing)? = nil, now: @escaping () -> Date = Date.init) {
+    init(client: (any SavedRouteBoardServing)? = nil, defaults: UserDefaults = .standard, now: @escaping () -> Date = Date.init) {
         self.client = client ?? JourneyPlannerClient()
         self.now = now
+        self.defaults = defaults
+        directOnlyRoutes = Set(defaults.stringArray(forKey: Self.directOnlyKey) ?? [])
     }
 
     private func key(_ query: SavedRouteQuery) -> String { client.routeBoardsServerIdentity + "|" + query.id }
 
-    func query(for group: JourneyGroup) -> SavedRouteQuery {
-        SavedRouteQuery(group: group)
+    func query(for group: JourneyGroup, directOnly: Bool? = nil) -> SavedRouteQuery {
+        var query = SavedRouteQuery(group: group)
+        query.maxChanges = (directOnly ?? directTrainsOnly(for: group)) ? 0 : nil
+        return query
+    }
+
+    private func preferenceKey(for group: JourneyGroup) -> String {
+        group.stationSequence.map { $0.crs.uppercased() }.joined(separator: "-")
+    }
+
+    func directTrainsOnly(for group: JourneyGroup) -> Bool {
+        directOnlyRoutes.contains(preferenceKey(for: group))
+    }
+
+    func setDirectTrainsOnly(_ enabled: Bool, for group: JourneyGroup) {
+        let preference = preferenceKey(for: group)
+        if enabled { directOnlyRoutes.insert(preference) }
+        else { directOnlyRoutes.remove(preference) }
+        defaults.set(directOnlyRoutes.sorted(), forKey: Self.directOnlyKey)
     }
 
     func laterState(for group: JourneyGroup) -> SavedRouteBoardState? {
-        guard let search = laterQueries[key(SavedRouteQuery(group: group))] else { return nil }
+        laterState(for: query(for: group))
+    }
+
+    private func laterState(for query: SavedRouteQuery) -> SavedRouteBoardState? {
+        guard let search = laterQueries[key(query)] else { return nil }
         var state = states[key(search.query)] ?? SavedRouteBoardState()
         state.isSearchingLater = search.isSearching
         state.searchedWindow = .init(from: search.from, to: search.searchedUntil)
         state.reachedSearchLimit = search.searchedUntil >= search.limit
         state.message = search.message ?? state.message
-        if let result = state.result {
+        let previous = search.previousQueries.compactMap { states[key($0)]?.result }
+        if let result = state.result ?? previous.last {
+            let journeys = previous.flatMap(\.journeys) + (state.result?.journeys ?? [])
+            let disrupted = previous.flatMap { $0.disruptedJourneys ?? [] } + (state.result?.disruptedJourneys ?? [])
+            if state.board == nil {
+                state.board = SavedRouteBoard(id: search.query.id, status: "queued", pollAfterMs: nil,
+                    result: nil, computedAt: nil, expiresAt: nil, error: nil)
+            }
             // The last server window may extend past our 24-hour departure limit.
             state.board?.result = PlannerSearchResponse(
-                journeys: result.journeys.filter { $0.departure < search.limit },
+                journeys: journeys.filter { $0.departure < search.limit },
                 dataset: result.dataset, search: result.search, warnings: result.warnings,
                 pagination: result.pagination, live: result.live,
-                disruptedJourneys: result.disruptedJourneys?.filter { $0.departure < search.limit })
+                disruptedJourneys: disrupted.filter { $0.departure < search.limit })
         }
         return state
     }
 
     func searchLater(for group: JourneyGroup) async {
-        let routeID = key(SavedRouteQuery(group: group))
+        await searchLater(query: query(for: group), primary: state(for: group))
+    }
+
+    private func searchLater(query: SavedRouteQuery, primary: SavedRouteBoardState) async {
+        let routeID = key(query)
         if laterQueries[routeID] == nil {
-            let primary = state(for: group)
             let window = primary.result?.search.window
             let canContinue = primary.result?.search.searchTruncated == false && primary.result?.search.provisional != true
                 && window.map { $0.from <= now() && $0.to > now() } == true
@@ -217,16 +258,40 @@ final class SavedRoutePlannerStore {
             let lastDeparture = primary.result?.journeys.map(\.departure).max()
             let until = canContinue ? min(window!.to, from.addingTimeInterval(24 * 60 * 60),
                 lastDeparture.map { max(from, $0.addingTimeInterval(1)) } ?? window!.to) : from
-            var created = SavedRouteQuery(group: group)
+            var created = query
             created.time = PlannerTime.iso8601(until)
             laterQueries[routeID] = LaterSearch(query: created, from: from, searchedUntil: until)
         }
-        guard laterState(for: group)?.hasPersistentFailure != true else { return }
+        guard laterState(for: query)?.hasPersistentFailure != true else { return }
+        await continueLaterSearch(routeID)
+    }
+
+    /// Explicit pagination advances a completed search; expanding a collapsed card reuses it.
+    func searchMore(for group: JourneyGroup) async {
+        let routeID = key(query(for: group))
+        guard var search = laterQueries[routeID], search.finished else {
+            if laterQueries[routeID] != nil {
+                // Explicit taps retry a failed page; passive expansion deliberately does not.
+                await continueLaterSearch(routeID)
+            } else {
+                await searchLater(for: group)
+            }
+            return
+        }
+        let last = states[key(search.query)]?.result?.journeys
+            .filter { $0.departure < search.limit }.map(\.departure).max()
+        let next = max(now(), last?.addingTimeInterval(1) ?? search.searchedUntil)
+        search.previousQueries.append(search.query)
+        search.query.time = PlannerTime.iso8601(next)
+        search.from = next
+        search.searchedUntil = next
+        search.finished = false
+        laterQueries[routeID] = search
         await continueLaterSearch(routeID)
     }
 
     func retryLater(for group: JourneyGroup) async {
-        await continueLaterSearch(key(SavedRouteQuery(group: group)))
+        await continueLaterSearch(key(query(for: group)))
     }
 
     private func continueLaterSearch(_ routeID: String) async {
@@ -243,13 +308,17 @@ final class SavedRoutePlannerStore {
                   let state = states[key(search.query)], state.consecutiveFailures == 0,
                   state.message == nil, let result = state.result else { return }
             ClientPerf.log("savedRoutes.later.window.end route=\(search.query.origin)-\(search.query.destination) from=\(PlannerTime.iso8601(result.search.window.from)) to=\(PlannerTime.iso8601(result.search.window.to)) journeys=\(result.journeys.count)")
-            if result.journeys.contains(where: { $0.departure >= now() && $0.departure < search.limit }) {
+            // A cached/overlapping page must not complete a request for later departures:
+            // doing so reuses the same cursor forever and makes More journeys look inert.
+            let requestedTime = search.searchedUntil
+            if result.journeys.contains(where: { $0.departure >= max(now(), requestedTime) && $0.departure < search.limit }) {
                 laterQueries[routeID]?.finished = true
                 return
             }
             let window = result.search.window
             guard state.board?.status == "ready", !result.search.searchTruncated, result.search.provisional != true,
-                  abs(window.from.timeIntervalSince(search.searchedUntil)) < 1,
+                  result.search.time >= requestedTime.addingTimeInterval(-1),
+                  window.from <= search.searchedUntil.addingTimeInterval(1),
                   window.to > search.searchedUntil else {
                 laterQueries[routeID]?.message = "The search could not check the full time window. Try again."
                 return
@@ -294,17 +363,82 @@ final class SavedRoutePlannerStore {
 
     private func queries(for groups: [JourneyGroup]) -> [SavedRouteQuery] {
         var seen = Set<String>()
-        return groups.map(query(for:)).filter { seen.insert($0.id).inserted }
+        return groups.map { query(for: $0) }.filter { seen.insert($0.id).inserted }
     }
 
     func state(for group: JourneyGroup) -> SavedRouteBoardState {
         states[key(query(for: group))] ?? SavedRouteBoardState()
     }
 
+    /// A short live window is only the first batch of the default 24-hour search.
+    /// Keep early results fast; scan later batches automatically when it is empty.
+    func prepareUpcoming(for group: JourneyGroup) async {
+        let primary = state(for: group)
+        guard !primary.isPending, primary.message == nil, !primary.usesLegacyDepartures,
+              !hasUpcoming(primary) else { return }
+        let routeID = key(query(for: group))
+        if let search = laterQueries[routeID], !search.isSearching,
+           search.from < now().addingTimeInterval(-300),
+           laterState(for: group).map({ !hasUpcoming($0) }) == true {
+            laterQueries[routeID] = nil
+        }
+        await searchLater(for: group)
+        guard !Task.isCancelled, directTrainsOnly(for: group),
+              let direct = laterState(for: group), direct.reachedSearchLimit,
+              !direct.isPending, direct.message == nil, !hasUpcoming(direct) else { return }
+        let unrestricted = query(for: group, directOnly: false)
+        await searchLater(query: unrestricted, primary: states[key(unrestricted)] ?? SavedRouteBoardState())
+    }
+
+    private func hasUpcoming(_ state: SavedRouteBoardState) -> Bool {
+        if let direct = state.direct {
+            return !SavedRouteDirectPresentation.upcoming(direct.departures, useLiveTimes: true,
+                now: now(), observedAt: direct.lastSuccessfulUpdate).isEmpty
+        }
+        return state.result?.journeys.contains { $0.departure >= now() } == true
+    }
+
+    func displayState(for group: JourneyGroup) -> SavedRouteBoardState {
+        let primary = state(for: group)
+        guard !hasUpcoming(primary) else { return primary }
+        var displayed = laterState(for: group) ?? primary
+        if laterState(for: group) == nil && primary.message == nil && !primary.usesLegacyDepartures {
+            displayed.isSearchingLater = true
+        }
+        if directTrainsOnly(for: group) {
+            let alternatives = laterState(for: query(for: group, directOnly: false))
+            displayed.hasIndirectAlternatives = alternatives?.result?.journeys.contains {
+                $0.departure >= now() && $0.changes > 0
+            } == true
+        }
+        return displayed
+    }
+
     func watch(groups: [JourneyGroup]) async {
         guard !groups.isEmpty else { return }
-        let queries = queries(for: groups)
+        await withTaskGroup(of: Void.self) { tasks in
+            tasks.addTask { await self.poll(groups: groups) }
+            // Two sequential workers avoid submitting every empty route to the planner at once.
+            for offset in 0..<min(2, groups.count) {
+                let batch = stride(from: offset, to: groups.count, by: 2).map { groups[$0] }
+                tasks.addTask {
+                    while !Task.isCancelled {
+                        for group in batch {
+                            guard !Task.isCancelled else { return }
+                            await self.prepareUpcoming(for: group)
+                        }
+                        do { try await Task.sleep(for: .seconds(5)) }
+                        catch { return }
+                    }
+                }
+            }
+            await tasks.waitForAll()
+        }
+    }
+
+    private func poll(groups: [JourneyGroup]) async {
         while !Task.isCancelled {
+            let queries = queries(for: groups)
             await refresh(queries: queries)
             guard !Task.isCancelled else { return }
             let next = queries.compactMap { states[key($0)]?.nextRefresh }.min() ?? now().addingTimeInterval(20)

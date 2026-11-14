@@ -173,6 +173,12 @@ struct JourneyCard: View {
     var onOpenPlannedJourney: ((PlannerJourneyResponse, String) -> Void)? = nil
     var onNewJourney: (() -> Void)? = nil
 
+    var directTrainsOnly = false
+    var onSetDirectTrainsOnly: ((Bool) -> Void)? = nil
+    var onSearchMore: (() async -> Void)? = nil
+    @State private var moreRequest = 0
+    @State private var handledMoreRequest = 0
+
     @EnvironmentObject private var depStore: DeparturesStore
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject private var serverConfig = ServerConfigStore.shared
@@ -204,9 +210,11 @@ struct JourneyCard: View {
         if let direct = plannedBoard?.direct {
             return SavedRouteDirectPresentation.upcoming(direct.departures, useLiveTimes: true,
                 now: Date(), observedAt: direct.lastSuccessfulUpdate)
+                .filter { !directTrainsOnly || $0.serviceType.lowercased() == "train" }
         }
         return depStore.departures(for: firstLeg).filter {
             JourneyCardPresentation.isUpcomingDeparture($0)
+                && (!directTrainsOnly || $0.serviceType.lowercased() == "train")
                 && ConnectionDeparturePolicy.isVisible($0, arrival: connectionArrival)
         }
     }
@@ -225,7 +233,7 @@ struct JourneyCard: View {
         let upcoming = upcomingDepartures
         var summaries: [Summary] = []
         // Planned journeys replace these rows entirely.
-        if !usesPlannedJourneys {
+        if !usesPlannedJourneys && (!directTrainsOnly || presentationGroup.legs.count == 1) {
             let limit = isExpanded ? Int.max : defaultDepartureCount + 1
             for departure in upcoming {
                 if let summary = buildSummary(startingWith: departure) {
@@ -247,7 +255,10 @@ struct JourneyCard: View {
     private var displayedPlannedBoard: SavedRouteBoardState? {
         if plannedBoard?.hasPlannedResult == true { return plannedBoard }
         // The expanded search includes direct trains too; render one ordered list.
-        if isExpanded, laterBoard?.hasPlannedResult == true { return laterBoard }
+        if isExpanded, laterBoard?.hasPlannedResult == true,
+           upcomingDepartures.isEmpty || laterBoard?.upcomingJourneys(at: Date()).isEmpty == false {
+            return laterBoard
+        }
         return nil
     }
 
@@ -260,7 +271,7 @@ struct JourneyCard: View {
 
     private func hasVisibleDepartures(_ presentation: Presentation) -> Bool {
         if usesPlannedJourneys { return !(displayedPlannedBoard?.upcomingJourneys(at: Date()).isEmpty ?? true) }
-        if awaitingPlannedResults && !presentation.upcomingDepartures.isEmpty { return true }
+        if awaitingPlannedResults && !presentation.upcomingDepartures.isEmpty && !directTrainsOnly { return true }
         return !presentation.displayedSummaries.isEmpty
     }
 
@@ -300,16 +311,29 @@ struct JourneyCard: View {
                     .padding(.horizontal, 16)
             }
 
+            if let onSetDirectTrainsOnly {
+                Toggle("Direct trains only", isOn: Binding(
+                    get: { directTrainsOnly }, set: onSetDirectTrainsOnly
+                ))
+                .font(.subheadline)
+                .disabled(!isInteractive)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .accessibilityIdentifier("saved-route.direct-only")
+                Divider().padding(.horizontal, 16)
+            }
+
             if usesPlannedJourneys, let plannedBoard = displayedPlannedBoard {
                 SavedRouteBoardView(state: plannedBoard, routeKey: group.stationSequence.map(\.crs).joined(separator: "-"), departureCount: defaultDepartureCount,
                     isInteractive: isInteractive, isExpanded: isExpanded,
-                    onRetry: nil,
+                    onRetry: onRetryLater,
                     supplementalState: laterBoard,
                     onRetrySupplemental: onRetryLater,
                     onOpenJourney: onOpenPlannedJourney,
-                    onNewJourney: onNewJourney)
+                    onNewJourney: onNewJourney, directTrainsOnly: directTrainsOnly,
+                    onShowIndirectJourneys: { onSetDirectTrainsOnly?(false) })
             } else {
-            if awaitingPlannedResults && !presentation.upcomingDepartures.isEmpty {
+            if awaitingPlannedResults && !presentation.upcomingDepartures.isEmpty && !directTrainsOnly {
                 Text("Showing available departures while full journey options load")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -326,7 +350,7 @@ struct JourneyCard: View {
 
             VStack(alignment: .leading, spacing: 0) {
                 if presentation.displayedSummaries.isEmpty {
-                    if awaitingPlannedResults && !presentation.upcomingDepartures.isEmpty {
+                    if awaitingPlannedResults && !presentation.upcomingDepartures.isEmpty && !directTrainsOnly {
                         let fallback = Array(presentation.upcomingDepartures.prefix(defaultDepartureCount))
                         ForEach(Array(fallback.enumerated()), id: \.element.id) { index, departure in
                             firstLegDepartureRow(departure)
@@ -334,7 +358,7 @@ struct JourneyCard: View {
                                 Divider().padding(.horizontal, 16)
                             }
                         }
-                    } else if isExpanded && laterBoard != nil {
+                    } else if plannedBoard?.isSearchingLater == true || (isExpanded && laterBoard != nil) {
                         EmptyView()
                     } else if awaitingPlannedResults && !depStore.isInitialLoadInProgress && plannedBoard?.message == nil {
                         Text("Finding journey options…")
@@ -381,12 +405,19 @@ struct JourneyCard: View {
                     onRetry: onRetryLater,
                     showsEmptyState: presentation.displayedSummaries.isEmpty,
                     onOpenJourney: onOpenPlannedJourney,
-                    onNewJourney: onNewJourney
+                    onNewJourney: onNewJourney,
+                    directTrainsOnly: directTrainsOnly
                 )
             }
             }
 
-            if isExpanded && laterBoard?.isPending == true {
+            if !isExpanded && plannedBoard?.isSearchingLater == true {
+                ProgressView("Searching the next 24 hours…")
+                    .font(.caption)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(16)
+                    .accessibilityIdentifier("saved-route.searching-day")
+            } else if isExpanded && laterBoard?.isPending == true {
                 ProgressView("Finding more departures…")
                     .font(.caption)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -396,6 +427,17 @@ struct JourneyCard: View {
                     .font(.caption)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(16)
+            }
+
+            if isExpanded, let laterBoard, laterBoard.reachedSearchLimit,
+               !laterBoard.isPending, laterBoard.message == nil,
+               hasVisibleDepartures(presentation) {
+                Text("No more journeys found in the next 24 hours")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .accessibilityIdentifier("saved-route.no-more-journeys")
             }
 
             if showsLaterDeparturesControl(canExpand: presentation.canExpand) {
@@ -417,9 +459,14 @@ struct JourneyCard: View {
         .onChange(of: isRefreshingDepartures) { _, refreshing in
             ClientPerf.log("card.spinner route=\(group.startStation.crs)-\(group.endStation.crs) active=\(refreshing) board=\(plannedBoard?.showsActivity == true)")
         }
-        .task(id: "\(isExpanded)-\(SavedRouteQuery(group: group).id)-\(ApiHostPreference.currentBaseURL)") {
+        .task(id: "\(isExpanded)-\(directTrainsOnly)-\(SavedRouteQuery(group: group).id)-\(ApiHostPreference.currentBaseURL)-\(moreRequest)") {
             guard isExpanded, let onSearchLater else { return }
-            await onSearchLater()
+            if moreRequest > handledMoreRequest, let onSearchMore {
+                handledMoreRequest = moreRequest
+                await onSearchMore()
+            } else {
+                await onSearchLater()
+            }
         }
     }
 
@@ -453,25 +500,53 @@ struct JourneyCard: View {
         .accessibilityElement(children: .combine)
     }
 
+    private var isLoadingMore: Bool {
+        isExpanded && (moreRequest > handledMoreRequest || laterBoard?.isSearchingLater == true)
+    }
+
     private var laterDeparturesControl: some View {
-        Button {
-            ClientPerf.log("card.moreDepartures route=\(group.startStation.crs)-\(group.endStation.crs) expanded=\(!isExpanded)")
-            onToggleExpanded()
-        } label: {
-            HStack(spacing: 6) {
-                Text(isExpanded ? "Fewer departures" : "More departures")
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                    .font(.caption.weight(.semibold))
+        HStack(spacing: 16) {
+            if isExpanded {
+                Button {
+                    onToggleExpanded()
+                } label: {
+                    Label("Fewer journeys", systemImage: "chevron.up")
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityIdentifier("saved-route.fewer-journeys")
+            } else {
+                Spacer(minLength: 0)
             }
-            .font(.subheadline.weight(.medium))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 13)
+            if !isExpanded || onSearchMore != nil {
+                Button {
+                    if isExpanded || laterBoard?.reachedSearchLimit == true { moreRequest += 1 }
+                    if !isExpanded { onToggleExpanded() }
+                } label: {
+                    HStack(spacing: 6) {
+                        if isLoadingMore {
+                            ProgressView().controlSize(.small)
+                            Text("Loading…")
+                        } else {
+                            Label("More journeys", systemImage: "chevron.down")
+                        }
+                    }
+                    .multilineTextAlignment(.trailing)
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .trailing)
+                    .contentShape(Rectangle())
+                }
+                .disabled(isLoadingMore)
+                .accessibilityIdentifier("saved-route.later-departures")
+            }
         }
+        .font(.subheadline.weight(.medium))
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .lineLimit(1)
+        .minimumScaleFactor(0.7)
+        .padding(.horizontal, 16)
         .buttonStyle(.plain)
         .foregroundStyle(Color.accentColor)
         .disabled(!isInteractive)
-        .accessibilityLabel(isExpanded ? "Fewer departures" : "More departures")
-        .accessibilityIdentifier("saved-route.later-departures")
         .overlay(alignment: .top) {
             Divider().padding(.horizontal, 16)
         }

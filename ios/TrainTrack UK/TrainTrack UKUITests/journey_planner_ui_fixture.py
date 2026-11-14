@@ -425,7 +425,42 @@ class Handler(BaseHTTPRequestHandler):
                     key = (self.headers.get("X-Planner-Client"), path, route["id"])
                     ROUTE_REQUESTS[key] = ROUTE_REQUESTS.get(key, 0) + 1
                     board = {"id": route["id"], "status": "queued", "pollAfterMs": 1000}
-                    if path.startswith(("/saved-empty/", "/saved-overnight/")):
+                    if path.startswith(("/saved-indirect/", "/saved-exhausted/")):
+                        start = datetime.fromisoformat(route["time"].replace("Z", "+00:00")) if route.get("time") else datetime.now(timezone.utc).replace(microsecond=0)
+                        result = duration_comparison_result()
+                        result["search"].update(time=iso(start), window={"from": iso(start), "to": iso(start + timedelta(hours=6))})
+                        indirect = path.startswith("/saved-indirect/")
+                        if route.get("maxChanges") == 0 or (not indirect and route.get("time")):
+                            result["journeys"] = []
+                        else:
+                            candidate = result["journeys"][0]
+                            departure = start + timedelta(minutes=10)
+                            arrival = departure + timedelta(minutes=30)
+                            candidate.update(id="available-indirect" if indirect else "last-direct",
+                                departure=iso(departure), arrival=iso(arrival), changes=1 if indirect else 0)
+                            candidate["legs"][0].update(departure=iso(departure), arrival=iso(arrival))
+                            result["journeys"] = [candidate]
+                        boards.append(dict(board, status="ready", result=result))
+                        continue
+                    if path.startswith("/saved-paging/"):
+                        # Keep subsequent pages pending long enough to verify inline feedback.
+                        if route.get("time") and ROUTE_REQUESTS[key] <= 5:
+                            boards.append(board)
+                            continue
+                        start = datetime.fromisoformat(route["time"].replace("Z", "+00:00")) if route.get("time") else START
+                        result = duration_comparison_result()
+                        result["search"].update(time=iso(start), window={"from": iso(start), "to": iso(start + timedelta(hours=6))})
+                        for index, journey in enumerate(result["journeys"]):
+                            departure = start + timedelta(minutes=10 + index * 10)
+                            arrival = departure + timedelta(minutes=30)
+                            journey.update(id=f"paging-{int(start.timestamp())}-{index}", departure=iso(departure),
+                                arrival=iso(arrival), durationMinutes=30, changes=1 if index == 1 else 0)
+                            journey["legs"][0].update(departure=iso(departure), arrival=iso(arrival))
+                        if route.get("maxChanges") == 0:
+                            result["journeys"] = [j for j in result["journeys"] if j["changes"] == 0]
+                        boards.append(dict(board, status="ready", result=result))
+                        continue
+                    if path.startswith(("/saved-empty/", "/saved-overnight/", "/saved-next-day/")):
                         start = datetime.fromisoformat(route["time"].replace("Z", "+00:00")) if route.get("time") else datetime.now(timezone.utc).replace(microsecond=0)
                         result = search_result({})
                         result["search"].update(origin=route["origin"], destination=route["destination"], time=iso(start),
@@ -435,6 +470,9 @@ class Handler(BaseHTTPRequestHandler):
                         if path.startswith("/saved-overnight/") and start > datetime.now(timezone.utc) + timedelta(hours=17):
                             result["journeys"] = [detail_journey(start + timedelta(hours=2))]
                             result["journeys"][0]["id"] = "saved-overnight"
+                        if path.startswith("/saved-next-day/") and start > datetime.now(timezone.utc) + timedelta(hours=23):
+                            result["journeys"] = [detail_journey(start + timedelta(hours=2))]
+                            result["journeys"][0]["id"] = "saved-next-day"
                         boards.append(dict(board, status="ready", result=result))
                         continue
                     progress_profile = path.startswith("/saved-progress")

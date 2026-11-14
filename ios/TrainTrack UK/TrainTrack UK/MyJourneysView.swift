@@ -686,7 +686,7 @@ private extension MyJourneysView {
                     showDeleteDialog = true
                 },
                 showsLiveActionProgress: updateState.showsProgress,
-                plannedBoard: routePlanner.state(for: displayedGroup),
+                plannedBoard: routePlanner.displayState(for: displayedGroup),
                 laterBoard: routePlanner.laterState(for: displayedGroup),
                 onSearchLater: {
                     await routePlanner.searchLater(for: displayedGroup)
@@ -698,7 +698,10 @@ private extension MyJourneysView {
                     cardDestination = .plannedJourney(response,
                         SavedRouteJourneyReference(group: displayedGroup, semanticKey: semanticKey))
                 },
-                onNewJourney: { router.selected = .addJourney }
+                onNewJourney: { router.selected = .addJourney },
+                directTrainsOnly: routePlanner.directTrainsOnly(for: displayedGroup),
+                onSetDirectTrainsOnly: { routePlanner.setDirectTrainsOnly($0, for: displayedGroup) },
+                onSearchMore: { await routePlanner.searchMore(for: displayedGroup) }
             )
         }
         .contentShape(Rectangle())
