@@ -156,7 +156,7 @@ def search_result(request, profile=None):
                      "durationMinutes": 360, "changes": 3, "legs": legs}]
     if profile in ["details", "live-details"]:
         journeys = [detail_journey(LIVE_START if profile == "live-details" else START)]
-    if profile == "schedule":
+    if profile in ["schedule", "schedule-overrides"]:
         journeys = [scheduled_journey()]
     if profile == "generic-transfer":
         journeys = [generic_transfer_journey()]
@@ -311,9 +311,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urlparse(self.path)
         profile = url.path.split("/")[1]
-        if profile in ["schedule", "schedule-active"] and url.path.endswith("/notifications/subscriptions"):
+        if profile == "schedule-overrides" and url.path.endswith("/notifications/subscriptions"):
+            self.respond(200, {"subscriptions": [{"id": "regular-victoria", "device_id": self.headers.get("X-Device-Token", "fixture"),
+                "route_key": "KTH-VIC", "schedule_type": "regular", "source": "scheduled",
+                "days_of_week": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"], "notification_types": ["summary"],
+                "legs": [{"from": "KTH", "to": "VIC", "from_name": "Kent House", "to_name": "London Victoria", "enabled": True,
+                    "window_start": "07:00", "window_end": "09:00", "day_windows": {day: {"window_start": "08:30", "window_end": "12:30"} for day in ["sat", "sun"]}}]}]})
+        elif profile in ["schedule", "schedule-active"] and url.path.endswith("/notifications/subscriptions"):
             self.respond(200, {"subscriptions": [scheduled_card(profile, self.headers.get("X-Device-Token", "fixture"))]})
-        elif profile in ["schedule", "schedule-active"] and url.path.endswith("/notifications/live_sessions"):
+        elif profile in ["schedule", "schedule-active", "schedule-overrides"] and url.path.endswith("/notifications/live_sessions"):
             self.respond(200, {"subscriptions": []})
         elif "/journeys/departure-row-" in url.path:
             journey_id = url.path.rsplit("/", 1)[-1]
@@ -414,6 +420,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path.endswith("/notifications/subscriptions/planner-conflicts"):
+            request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+            conflicts = []
+            if path.startswith("/schedule-overrides/"):
+                conflicts = [{"subscriptionId": "regular-victoria", "legIndex": 0, "legKey": "KTH-VIC",
+                    "start": iso(START.replace(hour=7)), "end": iso(START.replace(hour=9)),
+                    "title": "Kent House → London Victoria", "revision": None}]
+            self.respond(200, {"conflicts": conflicts})
+            return
         if path.endswith("/route-boards"):
             request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
             if path.startswith("/saved-legacy/"):

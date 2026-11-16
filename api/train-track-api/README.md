@@ -31,6 +31,52 @@ node --test test/journey-notification-policy.test.js test/platform-notifications
 After deploying the API and installing the updated iOS app, verify welcome-boundary behaviour and background APNs delivery
 on an iPhone; local fixtures and simulator checks cannot prove device delivery.
 
+## Future journey tracking and regular schedule replacements
+
+The iOS journey details screen can schedule an individual train or the whole
+connected itinerary. The default lead time is 60 minutes (15–120 minutes remain
+available). `POST /api/v2/notifications/subscriptions/planner-conflicts` accepts
+`device_id` and `planner_journey`, and returns the precise regular occurrences
+that overlap the lead-time-to-arrival interval, using Europe/London time. A 09:03
+train with a 60-minute lead time therefore conflicts with a 07:00–09:00 window.
+
+The selected `planner_journey` carries `replacementMode` (`once` or `permanent`)
+and the reviewed `replacements`. Saving rechecks their IDs, dates and schedule
+revisions; stale previews are rejected. Temporary exceptions are stored in the
+same Mongo document as the selected journey and suppress the entire conflicting
+occurrence, including its notification and auto-start paths. Other occurrences,
+including a non-overlapping return, remain unchanged. Regular subscription
+responses include `replaced_occurrences` for the phone's persistent station
+monitoring and late-callback checks.
+
+Permanent replacement changes the affected route legs, preserving the recurring
+days, windows and notification preferences. The selected dated service remains
+separate. The plan document first commits a `pendingRegularChanges` journal;
+startup, saves and polling apply it idempotently before continuing. If a write
+fails, retain that journal and retry normally—do not manually disable the regular
+schedule or delete the committed plan to repair it. No Mongo replica-set
+transaction is required. Cancelling the selected service does not undo a
+permanent route edit.
+
+Cancelling before the tracking start removes the temporary exception. Once
+tracking was due, cancellation/dismissal hides the plan but retains the exception
+until expiry, preventing the original commute from unexpectedly restarting.
+Cancellation of the train itself does not restore the regular route or select
+another train. An already boarded journey keeps priority. Overlapping selected
+journeys are rejected with a prompt to edit the existing plan or schedule the
+whole connection together.
+
+Validation:
+
+```sh
+node --test test/planner-schedule-overrides.test.js test/planner-journey-schedule.test.js test/one-off-schedules.test.js test/day-window-schedules.test.js test/single-live-activity.test.js
+```
+
+Deploy the API before distributing the updated app. Verify an overnight schedule,
+its skipped regular occurrence, actual boarding/connection history, and remote
+Live Activity start on an iPhone with the app closed. Simulator and mocked-push
+tests do not establish background delivery or physical station detection.
+
 ## Recovering an unconfirmed boarded train
 
 Automatic matching retains the original departure observation and refreshes exact

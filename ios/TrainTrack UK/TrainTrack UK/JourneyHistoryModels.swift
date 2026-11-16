@@ -223,6 +223,7 @@ struct ArmedJourneyHistoryCandidate: Codable, Hashable, Identifiable {
     var activeFrom: Date? = nil
     var recoveryObservations: [JourneyRecoveryObservation]? = nil
     var lastOriginPresenceAt: Date? = nil
+    var plannedJourney: ScheduledPlannerJourney? = nil
     var recoveryStations: [Station]? = nil
 
     /// Require the entire accuracy circle to be inside the origin, using the fix time.
@@ -401,6 +402,7 @@ struct ActiveJourneyHistoryCheckpoint: Codable, Hashable, Identifiable {
     // Absence also persists an explicit manual service/unlisted choice: it is never retried.
     var serviceMatchRecovery: JourneyServiceMatchRecoveryContext? = nil
     var lastOriginPresenceAt: Date? = nil
+    var plannedJourney: ScheduledPlannerJourney? = nil
 
     var plannedOrigin: Station { plannedStations.first! }
     var plannedDestination: Station { plannedStations.last! }

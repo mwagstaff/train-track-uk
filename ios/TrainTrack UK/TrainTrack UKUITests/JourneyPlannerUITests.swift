@@ -50,8 +50,8 @@ final class JourneyPlannerUITests: XCTestCase {
             XCTAssertTrue(journey.waitForExistence(timeout: 10))
             journey.tap()
             let schedule = app.buttons["planner.detail.schedule"]
-            XCTAssertTrue(schedule.waitForExistence(timeout: 10))
             scrollTo(schedule, in: app)
+            XCTAssertTrue(schedule.waitForExistence(timeout: 10))
             schedule.tap()
             XCTAssertTrue(app.navigationBars["Schedule journey"].waitForExistence(timeout: 5))
             let picker = app.buttons["planner.schedule.lead-time"]
@@ -66,6 +66,45 @@ final class JourneyPlannerUITests: XCTestCase {
             attach(largeText ? "schedule-large-dark" : "schedule-default", app: app)
             app.buttons["Done"].tap()
             XCTAssertTrue(app.navigationBars["Journey details"].waitForExistence(timeout: 5))
+            app.terminate()
+        }
+    }
+
+    @MainActor
+    func testSelectedTrainAndWholeJourneyOfferScheduleOverrides() async throws {
+        for largeText in [false, true] {
+            let app = try await launchQueuedFixture(profile: "schedule-overrides", largeText: largeText,
+                dark: largeText, resetAppearance: true)
+            app.buttons["planner.search"].tap()
+            let journey = app.buttons["planner.journey.fixture-schedule"]
+            XCTAssertTrue(journey.waitForExistence(timeout: 10))
+            journey.tap()
+            let wholeJourney = app.buttons["planner.detail.schedule"]
+            scrollTo(wholeJourney, in: app)
+            wholeJourney.tap()
+            XCTAssertTrue(app.navigationBars["Schedule journey"].waitForExistence(timeout: 5))
+            let temporary = app.buttons["planner.schedule.replace-once"]
+            scrollTo(temporary, in: app)
+            XCTAssertTrue(temporary.exists)
+            XCTAssertTrue(temporary.isSelected)
+            let permanent = app.buttons["planner.schedule.replace-permanent"]
+            scrollTo(permanent, in: app)
+            permanent.tap()
+            XCTAssertTrue(permanent.isSelected)
+            let hours = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Weekdays 07:00–09:00")).firstMatch
+            scrollTo(hours, in: app)
+            XCTAssertTrue(hours.exists)
+            attach(largeText ? "override-permanent-large-dark" : "override-permanent-default", app: app)
+            app.buttons["Done"].tap()
+            let single = app.buttons["planner.service.schedule.A00000"]
+            scrollTo(single, in: app)
+            XCTAssertTrue(single.exists)
+            single.tap()
+            XCTAssertTrue(app.navigationBars["Schedule journey"].waitForExistence(timeout: 5))
+            let once = app.buttons["planner.schedule.replace-once"]
+            scrollTo(once, in: app)
+            XCTAssertTrue(once.isSelected)
+            attach(largeText ? "override-single-large-dark" : "override-single-default", app: app)
             app.terminate()
         }
     }
@@ -1525,6 +1564,9 @@ final class JourneyPlannerUITests: XCTestCase {
         app.launchEnvironment["UI_TEST_RESET_JOURNEYS"] = "1"
         if apiBase.contains("/schedule/") || apiBase.contains("/schedule-active/") {
             app.launchArguments += ["-knownSubscriptionIDs", "(fixture-scheduled-card)"]
+        }
+        if apiBase.contains("/schedule-overrides/") {
+            app.launchArguments += ["-knownSubscriptionIDs", "(regular-victoria)"]
         }
         if let timeZone { app.launchEnvironment["TZ"] = timeZone }
         app.launchArguments += ["-AppleLanguages", "(en)", "-AppleLocale", "en_GB"]

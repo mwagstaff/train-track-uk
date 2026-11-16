@@ -278,6 +278,8 @@ struct NotificationSubscription: Codable, Identifiable, Hashable {
     let updatedAt: Date?
     var plannerJourney: ScheduledPlannerJourney? = nil
     var plannerStatus: String? = nil
+    var replacedOccurrences: [PlannerScheduleReplacement]? = nil
+    var directionSplitIndex: Int? = nil
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -297,7 +299,11 @@ struct NotificationSubscription: Codable, Identifiable, Hashable {
         case updatedAt = "updated_at"
         case plannerJourney = "planner_journey"
         case plannerStatus = "planner_status"
+        case replacedOccurrences = "replaced_occurrences"
+        case directionSplitIndex = "direction_split_index"
     }
+
+    var trackingLegs: [NotificationLeg] { plannerJourney?.trackingLegs ?? legs }
 
     var routeTitle: String {
         guard let first = legs.first, let last = legs.last else { return routeKey }
@@ -472,7 +478,11 @@ enum NotificationScheduleActivationPolicy {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> DateInterval? {
-        activeWindow(
+        guard !(subscription.replacedOccurrences ?? []).contains(where: { $0.suppresses(leg, at: now) }) else { return nil }
+        if let plan = subscription.plannerJourney {
+            return plan.trackingWindow.start <= now && now < plan.trackingWindow.end ? plan.trackingWindow : nil
+        }
+        return activeWindow(
             scheduleKind: subscription.scheduleKind,
             daysOfWeek: subscription.daysOfWeek,
             windowStart: leg.windowStart,
@@ -533,6 +543,10 @@ enum NotificationScheduleActivationPolicy {
     ) -> DateInterval? {
         guard observedAt <= receivedAt,
               receivedAt.timeIntervalSince(observedAt) <= StationDetectionPolicy.recoveryLifetime else { return nil }
+        if let plan = subscription.plannerJourney {
+            return plan.trackingWindow.start <= observedAt && receivedAt < plan.trackingWindow.end.addingTimeInterval(StationDetectionPolicy.recoveryLifetime)
+                ? plan.trackingWindow : nil
+        }
         return activationIntervals(
             scheduleKind: subscription.scheduleKind,
             daysOfWeek: subscription.daysOfWeek,
@@ -544,6 +558,7 @@ enum NotificationScheduleActivationPolicy {
             calendar: calendar
         ).filter {
             $0.start <= observedAt && receivedAt < $0.end.addingTimeInterval(StationDetectionPolicy.recoveryLifetime)
+                && !(subscription.replacedOccurrences ?? []).contains(where: { $0.suppresses(leg, at: observedAt) })
         }.max { $0.start < $1.start }
     }
 
@@ -553,7 +568,8 @@ enum NotificationScheduleActivationPolicy {
         now: Date = Date(),
         calendar: Calendar = .current
     ) -> Date? {
-        activationIntervals(
+        if let plan = subscription.plannerJourney { return now < plan.trackingWindow.end ? plan.startsAt : nil }
+        return activationIntervals(
             scheduleKind: subscription.scheduleKind,
             daysOfWeek: subscription.daysOfWeek,
             windowStart: leg.windowStart,
@@ -563,7 +579,7 @@ enum NotificationScheduleActivationPolicy {
             around: now,
             calendar: calendar
         )
-        .filter { $0.end >= now }
+        .filter { interval in interval.end >= now && !(subscription.replacedOccurrences ?? []).contains(where: { $0.suppresses(leg, at: interval.start) }) }
         .map(\.start)
         .min()
     }
@@ -699,20 +715,11 @@ enum ScheduledJourneyActivationResolver {
     ) -> [NotificationLeg] {
         let fromCode = from.uppercased()
         let toCode = to.uppercased()
-        let enabledLegs = subscription.legs.filter(\.enabled)
+        let enabledLegs = subscription.trackingLegs.filter(\.enabled)
         guard let startIndex = enabledLegs.firstIndex(where: { leg in
             leg.from.uppercased() == fromCode
                 && leg.to.uppercased() == toCode
-                && NotificationScheduleActivationPolicy.isActive(
-                    scheduleKind: subscription.scheduleKind,
-                    daysOfWeek: subscription.daysOfWeek,
-                    windowStart: leg.windowStart,
-                    windowEnd: leg.windowEnd,
-                    travelDate: leg.travelDate,
-                    dayWindows: leg.dayWindows,
-                    now: now,
-                    calendar: calendar
-                )
+                && NotificationScheduleActivationPolicy.activeWindow(for: subscription, leg: leg, now: now, calendar: calendar) != nil
         }) else {
             return []
         }

@@ -973,6 +973,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
             lastOriginPresenceAt: previousCandidate?.lastOriginPresenceAt,
             recoveryStations: previousCandidate?.recoveryStations
         )
+        candidate.plannedJourney = subscription.plannerJourney
         for existing in armedCandidates {
             candidate.inheritBoardingEvidence(from: existing, now: now)
         }
@@ -1264,7 +1265,8 @@ final class JourneyTrackingCoordinator: ObservableObject {
                     plannedLegIndex: 0, fromStation: origin, detectedAt: detectedAt,
                     departures: candidate.candidateDepartures
                 ) : nil,
-            lastOriginPresenceAt: candidate.lastOriginPresenceAt
+            lastOriginPresenceAt: candidate.lastOriginPresenceAt,
+            plannedJourney: candidate.plannedJourney
         )
         armedCandidates.removeAll()
         persistCheckpoint()
@@ -1362,7 +1364,8 @@ final class JourneyTrackingCoordinator: ObservableObject {
             originDepartureWasMissed: true,
             scheduleOccurrenceStart: candidate.source == .scheduled ? candidate.activeFrom : nil,
             scheduleOccurrenceEnd: candidate.source == .scheduled ? candidate.activeUntil : nil,
-            lastOriginPresenceAt: candidate.lastOriginPresenceAt
+            lastOriginPresenceAt: candidate.lastOriginPresenceAt,
+            plannedJourney: candidate.plannedJourney
         )
     }
 
@@ -2067,6 +2070,21 @@ final class JourneyTrackingCoordinator: ObservableObject {
         var recentDepartures = RecentServiceStore.shared.departures(
             fromCRS: from.crs, toCRS: to.crs, now: detectedAt
         )
+        let selectedPlan = preferredDeparture == nil ? active.plannedJourney : nil
+        let selectedLeg = selectedPlan?.legs.first { $0.from.crs == from.crs && $0.to.crs == to.crs }
+        if selectedPlan != nil {
+            // A transfer or missing live match must not substitute another train.
+            departures = departures.filter { departure in
+                guard let selectedLeg, selectedLeg.isRail else { return false }
+                return PlannerTrainTracking.matchesBoard(departure, leg: selectedLeg.plannerLeg, now: detectedAt)
+            }
+            if Set(departures.map(\.serviceID)).count > 1 { departures = [] }
+            let verifiedIDs = Set(departures.map(\.serviceID))
+            recentDepartures = recentDepartures.filter { recent in
+                guard let selectedLeg, selectedLeg.isRail, verifiedIDs.contains(recent.serviceID) else { return false }
+                return abs(recent.scheduledDepartureAt.timeIntervalSince(selectedLeg.departure)) < 30
+            }
+        }
         let preferredServiceID = LiveActivityManager.shared.preferredServiceID(fromCRS: from.crs, toCRS: to.crs)
         let originArrivedAt = active.originArrivalForServiceMatching(from: from)
         let lastOriginPresenceAt = active.plannedLegIndex == 0
@@ -2102,7 +2120,12 @@ final class JourneyTrackingCoordinator: ObservableObject {
                         serviceID: id, details: details, from: from, to: to, detectedAt: detectedAt, now: Date()
                     )
                 }
-                recentDepartures += recoveredEvidence
+                recentDepartures += recoveredEvidence.filter { evidence in
+                    guard selectedPlan != nil else { return true }
+                    guard let selectedLeg, selectedLeg.isRail,
+                          departures.contains(where: { $0.serviceID == evidence.serviceID }) else { return false }
+                    return abs(evidence.scheduledDepartureAt.timeIntervalSince(selectedLeg.departure)) < 30
+                }
                 log("service_detail_recovery_evaluated", "Refreshed departure evidence before retrying the service match", metadata: [
                     "journey_id": active.id.uuidString,
                     "requested_service_ids": ids,

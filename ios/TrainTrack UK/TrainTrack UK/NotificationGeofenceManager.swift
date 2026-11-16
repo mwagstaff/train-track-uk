@@ -110,10 +110,14 @@ struct StationArrivalTarget: Codable {
     let windowEnd: String?
     let travelDate: String?
     var dayWindows: [String: NotificationTimeWindow]? = nil
+    var replacedOccurrences: [PlannerScheduleReplacement]? = nil
+    var plannedWindow: DateInterval? = nil
 
     func isActive(at now: Date = Date()) -> Bool {
+        if (replacedOccurrences ?? []).contains(where: { $0.suppresses(from: from, to: to, at: now) }) { return false }
         if let activeUntil, activeUntil <= now { return false }
         guard isScheduledActivation == true else { return true }
+        if let plannedWindow { return plannedWindow.start <= now && now < plannedWindow.end }
         guard let windowStart, let windowEnd else { return false }
         return NotificationScheduleActivationPolicy.isActive(
             scheduleKind: scheduleKind,
@@ -131,6 +135,8 @@ struct StationArrivalTarget: Codable {
     }
 
     func activeWindow(at date: Date) -> DateInterval? {
+        guard !(replacedOccurrences ?? []).contains(where: { $0.suppresses(from: from, to: to, at: date) }) else { return nil }
+        if let plannedWindow { return plannedWindow.start <= date && date < plannedWindow.end ? plannedWindow : nil }
         guard isScheduledActivation == true, let windowStart, let windowEnd else { return nil }
         return NotificationScheduleActivationPolicy.activeWindow(
             scheduleKind: scheduleKind, daysOfWeek: daysOfWeek ?? [],
@@ -1086,7 +1092,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
     ) -> [String: StationArrivalTarget] {
         var targets: [String: StationArrivalTarget] = [:]
         for subscription in subscriptions {
-            for leg in subscription.legs where leg.enabled {
+            for leg in subscription.trackingLegs where leg.enabled {
                 guard let station = stationsByCrs[leg.from.uppercased()] else { continue }
                 guard station.hasUsableCoordinate else { continue }
                 let identifier = regionIdentifier(subscriptionId: subscription.id, from: leg.from, to: leg.to)
@@ -1106,7 +1112,9 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
                     windowStart: leg.windowStart,
                     windowEnd: leg.windowEnd,
                     travelDate: leg.travelDate,
-                    dayWindows: leg.dayWindows
+                    dayWindows: leg.dayWindows,
+                    replacedOccurrences: subscription.replacedOccurrences,
+                    plannedWindow: subscription.plannerJourney?.trackingWindow
                 )
             }
         }
@@ -1481,17 +1489,7 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             now: observedAt
         )
         if target.isScheduledActivation == true, !isAwaitingDeparture {
-            guard let windowStart = target.windowStart,
-                  let windowEnd = target.windowEnd,
-                  NotificationScheduleActivationPolicy.isActive(
-                    scheduleKind: target.scheduleKind,
-                    daysOfWeek: target.daysOfWeek ?? [],
-                    windowStart: windowStart,
-                    windowEnd: windowEnd,
-                    travelDate: target.travelDate,
-                    dayWindows: target.dayWindows,
-                    now: now
-                  ) else {
+            guard target.isActive(at: now) else {
                 logGeofenceDiagnostic("scheduled_condition_outside_window", metadata: [
                     "region_id": identifier,
                     "subscription_id": target.subscriptionId
@@ -2286,7 +2284,9 @@ final class NotificationGeofenceManager: NSObject, CLLocationManagerDelegate {
             windowStart: leg.windowStart,
             windowEnd: leg.windowEnd,
             travelDate: leg.travelDate,
-            dayWindows: leg.dayWindows
+            dayWindows: leg.dayWindows,
+            replacedOccurrences: subscription.replacedOccurrences,
+            plannedWindow: subscription.plannerJourney?.trackingWindow
         )
 
         monitoredTargets[identifier] = target

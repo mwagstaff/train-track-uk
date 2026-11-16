@@ -169,7 +169,7 @@ export class PlannerJourneyScheduler {
     find(deviceId, key) {
         if (!key?.startsWith(PLANNER_SCHEDULE_PREFIX)) return null;
         const subscription = this.owner.subscriptions.get(key.slice(PLANNER_SCHEDULE_PREFIX.length));
-        return subscription?.deviceId === deviceId && subscription.plannerJourney ? subscription : null;
+        return subscription?.deviceId === deviceId && subscription.plannerJourney && !subscription.hiddenFromSchedules ? subscription : null;
     }
 
     async snapshot(subscription) {
@@ -234,6 +234,9 @@ export class PlannerJourneyScheduler {
         const content = await this.snapshot(subscription);
         if (this.owner.subscriptions.get(subscription.id) !== subscription || this.owner.isHolidayModeEnabled(subscription.deviceId)
             || this.now() >= Date.parse(plan.departure)) return;
+        await this.owner.releaseReplacedActivities?.(subscription.deviceId);
+        if (this.owner.subscriptions.get(subscription.id) !== subscription || subscription.hiddenFromSchedules
+            || this.owner.isHolidayModeEnabled(subscription.deviceId) || this.now() >= Date.parse(plan.departure)) return;
         const occupied = this.owner.deviceHasLiveActivity(subscription.deviceId) || this.owner.activeAdHocJourneyForDevice(subscription.deviceId);
         if (occupied) {
             subscription.plannerState.status = 'conflict';

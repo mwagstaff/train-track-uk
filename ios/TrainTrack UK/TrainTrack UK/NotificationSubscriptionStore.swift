@@ -8,11 +8,7 @@ final class NotificationSubscriptionService {
     private var base: String { ApiHostPreference.currentBaseURL }
     private var deviceId: String { DeviceIdentity.deviceToken }
 
-    private let decoder: JSONDecoder = {
-        let d = JSONDecoder()
-        d.dateDecodingStrategy = .iso8601
-        return d
-    }()
+    private let decoder = PlannerTime.decoder()
 
     private let encoder: JSONEncoder = {
         let e = JSONEncoder()
@@ -38,6 +34,22 @@ final class NotificationSubscriptionService {
 
     func deleteSubscription(id: String) async throws {
         try await delete(id: id, path: "subscriptions")
+    }
+
+    func plannerConflicts(_ plan: ScheduledPlannerJourney) async throws -> [PlannerScheduleReplacement] {
+        struct Request: Encodable { let device_id: String; let planner_journey: ScheduledPlannerJourney }
+        struct Response: Decodable { let conflicts: [PlannerScheduleReplacement] }
+        guard let url = URL(string: "\(base)/notifications/subscriptions/planner-conflicts") else {
+            throw PhoneNetworkError.invalidURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-Token")
+        request.httpBody = try encoder.encode(Request(device_id: deviceId, planner_journey: plan))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validateResponse(response, data: data)
+        return try PlannerTime.decoder().decode(Response.self, from: data).conflicts
     }
 
     func updatePlannerDisplay(id: String, showAllDepartures: Bool) async throws -> NotificationSubscription {
@@ -377,7 +389,14 @@ final class NotificationSubscriptionStore: ObservableObject {
     }
 
     func delete(id: String) async throws {
+        let removedPlan = subscriptions.first { $0.id == id }?.plannerJourney
         try await service.deleteSubscription(id: id)
+        if let removedPlan, removedPlan.startsAt > Date() {
+            let removed = Set((removedPlan.replacements ?? []).map(\.id))
+            for index in subscriptions.indices {
+                subscriptions[index].replacedOccurrences?.removeAll { removed.contains($0.id) }
+            }
+        }
         subscriptions.removeAll { $0.id == id }
         cachedScheduledActivations.removeAll { $0.subscription.id == id }
         JourneyTrackingCoordinator.shared.disarm(subscriptionID: id)
@@ -826,7 +845,9 @@ final class NotificationSubscriptionStore: ObservableObject {
             mutedByLegDay: subscription.mutedByLegDay,
             mutedAtByLegDay: subscription.mutedAtByLegDay,
             createdAt: subscription.createdAt,
-            updatedAt: subscription.updatedAt
+            updatedAt: subscription.updatedAt,
+            plannerJourney: subscription.plannerJourney,
+            replacedOccurrences: subscription.replacedOccurrences
         )
     }
 
@@ -901,6 +922,11 @@ final class NotificationSubscriptionStore: ObservableObject {
     }
 
     private func syncGeofences() async {
+        for subscription in subscriptions where subscription.legs.contains(where: { leg in
+            (subscription.replacedOccurrences ?? []).contains { $0.suppresses(leg, at: Date()) }
+        }) {
+            JourneyTrackingCoordinator.shared.disarm(subscriptionID: subscription.id)
+        }
         let eligible = monitoringSubscriptions()
         logGeofenceEligibility(eligible: eligible)
         await NotificationGeofenceManager.shared.sync(subscriptions: eligible)
@@ -912,7 +938,7 @@ final class NotificationSubscriptionStore: ObservableObject {
             where Self.retainsScheduleForRecovery(subscription) {
             byID[subscription.id] = subscription
         }
-        for subscription in subscriptions where subscription.plannerJourney == nil && !NotificationScheduleExpiry.isExpired(subscription) {
+        for subscription in subscriptions where !NotificationScheduleExpiry.isExpired(subscription) {
             byID[subscription.id] = subscription
         }
         for subscription in geofenceEligibleLiveSessions {
@@ -928,7 +954,7 @@ final class NotificationSubscriptionStore: ObservableObject {
     }
 
     private func nextMonitoringStart(for subscription: NotificationSubscription) -> Date {
-        subscription.legs
+        subscription.trackingLegs
             .filter(\.enabled)
             .compactMap { NotificationScheduleActivationPolicy.nextStart(for: subscription, leg: $0) }
             .min() ?? .distantFuture
@@ -1009,7 +1035,7 @@ final class NotificationSubscriptionStore: ObservableObject {
                 let previousStations = Dictionary(uniqueKeysWithValues: (previousByID[subscription.id]?.stations ?? []).map {
                     ($0.crs.uppercased(), $0)
                 })
-                let requiredCodes = Set(subscription.legs.flatMap {
+                let requiredCodes = Set(subscription.trackingLegs.flatMap {
                     [$0.from.uppercased(), $0.to.uppercased()]
                 })
                 let stations = requiredCodes.compactMap { currentStations[$0] ?? previousStations[$0] }
@@ -1029,7 +1055,6 @@ final class NotificationSubscriptionStore: ObservableObject {
     }
 
     private static func retainsScheduleForRecovery(_ subscription: NotificationSubscription, now: Date = Date()) -> Bool {
-        guard subscription.plannerJourney == nil else { return false }
         guard let expiration = NotificationScheduleExpiry.expirationDate(for: subscription) else { return true }
         return now < expiration.addingTimeInterval(StationDetectionPolicy.recoveryLifetime)
     }

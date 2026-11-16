@@ -556,10 +556,19 @@ final class ScheduledLiveActivityAutoStartManager {
     }
 
     func shouldSkipForAdHocJourney(leg: NotificationLeg, now: Date = Date()) -> Bool {
-        shouldSkipForAdHocJourney(scheduleKey: scheduleKey(for: leg, now: now))
+        if NotificationSubscriptionStore.shared.subscriptions.contains(where: { subscription in
+            (subscription.replacedOccurrences ?? []).contains { $0.suppresses(leg, at: now) }
+        }) { return true }
+        return shouldSkipForAdHocJourney(scheduleKey: scheduleKey(for: leg, now: now))
     }
 
     func shouldSkipForAdHocJourney(scheduleKey: String?) -> Bool {
+        if let scheduleKey, NotificationSubscriptionStore.shared.subscriptions.contains(where: { subscription in
+            subscription.legs.contains { leg in
+                self.scheduleKey(for: leg) == scheduleKey
+                    && (subscription.replacedOccurrences ?? []).contains { $0.suppresses(leg, at: Date()) }
+            }
+        }) { return true }
         let defaults = skipDefaults
         let savedKeys = defaults.stringArray(forKey: skippedScheduleKeysKey) ?? []
         let todayKey = ScheduledLiveActivityTrigger.currentDateKey()

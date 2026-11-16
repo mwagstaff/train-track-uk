@@ -58,6 +58,7 @@ import { plannerSearchLog } from './lib/planner-search-log.js';
 notificationSubscriptionManager.getDeviceLiveActivities = (deviceId) =>
     Array.from(liveActivityManager.subscriptions.values()).filter((session) => session.deviceId === deviceId);
 notificationSubscriptionManager.getDeviceTrackingSessions = (deviceId) => journeyTrackingManager.listSessions(deviceId);
+notificationSubscriptionManager.releaseReplacedActivities = deviceId => liveActivityManager.releaseReplacedActivities(deviceId);
 notificationSubscriptionManager.plannerScheduler.routeContent = schedule => liveActivityManager.buildPlannerRouteContent(schedule);
 
 journeyTrackingManager.setJourneyCompletionHandler(async (completion) => {
@@ -777,6 +778,14 @@ app.post('/api/v2/notifications/subscriptions', async (req, res) => {
         });
         res.status(400).json({ error: error?.message || error });
     }
+});
+
+app.post('/api/v2/notifications/subscriptions/planner-conflicts', (req, res) => {
+    const { device_id, planner_journey } = req.body || {};
+    if (!device_id) return res.status(400).json({ error: 'device_id is required' });
+    try {
+        res.json({ conflicts: notificationSubscriptionManager.plannerConflicts(device_id, planner_journey) });
+    } catch (error) { res.status(400).json({ error: error?.message || 'Unable to check regular schedules' }); }
 });
 
 app.patch('/api/v2/notifications/subscriptions/planner-display', async (req, res) => {

@@ -204,6 +204,12 @@ export class LiveActivityManager {
         };
 
         const plannerSchedule = notificationSubscriptionManager.plannerScheduler.find(deviceId, subscription.scheduleKey);
+        if (!plannerSchedule && this.isReplacedPendingActivity(subscription)) {
+            subscription.evicted = true;
+            this.sendEndPushForEvictedSubscription(subscription, 'replaced_schedule_occurrence')
+                .catch(error => console.error('[live-activity] replaced occurrence end failed:', error.message));
+            return subscription;
+        }
         if (plannerSchedule) {
             subscription.endAt = existing?.endAt || plannerSchedule.plannerJourney.expiresAt;
             subscription.endPolicy = 'planned_journey_arrival';
@@ -391,6 +397,11 @@ export class LiveActivityManager {
         try {
             if (subscription.scheduleKey?.startsWith(PLANNER_SCHEDULE_PREFIX)) {
                 return await this.pollPlannerSubscription(subscription, { force, dryRun });
+            }
+            if (this.isReplacedPendingActivity(subscription)) {
+                if (dryRun) return { sent: false, reason: 'replaced_schedule_occurrence' };
+                await this.releaseReplacedActivities(subscription.deviceId);
+                return { sent: true, reason: 'replaced_schedule_occurrence' };
             }
             const statusVersion = subscription.lastJourneyStatusObservedAtMs;
             const leg = subscription.legContext;
@@ -585,6 +596,21 @@ export class LiveActivityManager {
             content.destinationTitle = to.name;
         }
         return content;
+    }
+
+    isReplacedPendingActivity(subscription) {
+        return subscription.scheduleKey && !subscription.scheduleKey.startsWith(PLANNER_SCHEDULE_PREFIX)
+            && !subscription.serviceMatchConfirmed && ['pending_start', 'at_start'].includes(subscription.journeyPhase)
+            && notificationSubscriptionManager.isReplacedScheduleKey(subscription.deviceId, subscription.scheduleKey);
+    }
+
+    async releaseReplacedActivities(deviceId) {
+        for (const subscription of this.subscriptions.values()) {
+            if (subscription.deviceId !== deviceId || !this.isReplacedPendingActivity(subscription)) continue;
+            subscription.evicted = true;
+            try { await this.sendEndUpdate(subscription, { reason: 'replaced_schedule_occurrence', trigger: 'eviction' }); }
+            catch (error) { subscription.evicted = false; throw error; }
+        }
     }
 
     async refreshPlannerSchedule(deviceId, subscriptionId) {

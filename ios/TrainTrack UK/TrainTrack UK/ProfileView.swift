@@ -346,9 +346,9 @@ struct ProfileView: View {
     }
 
     private func resolvedScheduledRoute(for subscription: NotificationSubscription) -> ProfileResolvedScheduledRoute? {
-        let legs = chronologicalLegs(from: subscription.legs)
+        let legs = subscription.directionSplitIndex == nil ? chronologicalLegs(from: subscription.legs) : subscription.legs
         guard !legs.isEmpty else { return nil }
-        if let splitIndex = returnSplitIndex(for: legs) {
+        if let splitIndex = subscription.directionSplitIndex ?? returnSplitIndex(for: legs), splitIndex > 0, splitIndex < legs.count {
             let outbound = Array(legs.prefix(splitIndex))
             let inbound = Array(legs.dropFirst(splitIndex))
             return ProfileResolvedScheduledRoute(

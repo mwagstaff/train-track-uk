@@ -1,4 +1,5 @@
 import moment from 'moment';
+import { plannerConflicts, replacementMatchesScheduleKey, preparePlannerOverrides, replacedOccurrences, occurrenceIsReplaced, permanentReplacement } from './planner-schedule-overrides.js';
 import { primaryPlace } from './departure-places.js';
 import crypto from 'crypto';
 import { getTrainTimes } from './realtime-trains-api.js';
@@ -70,6 +71,7 @@ export class NotificationSubscriptionManager {
         this.getNotificationPreferences = options.getNotificationPreferences || loadNotificationPreferences;
         this.scheduledStartTasks = new Map();
         this.scheduleSkipTasks = new Map();
+        this.subscriptionSaveTasks = new Map();
         this.getPlannerPushToken = options.getPlannerPushToken || (deviceId => pushToStartTokenStore.get(deviceId));
         this.plannerScheduler = new PlannerJourneyScheduler(this, options.plannerScheduler);
         // Polling loop is started by init() after Mongo hydration.
@@ -79,6 +81,7 @@ export class NotificationSubscriptionManager {
     // Must be called once at server startup before handling requests.
     async init() {
         await this.hydrateFromMongoWithRetry();
+        await this.applyPendingPlannerChanges();
         await this.hydrateHolidayModeFromMongo();
         await this.pruneExpiredLiveSessions();
         await this.pruneExpiredOneOffSchedules();
@@ -204,7 +207,7 @@ export class NotificationSubscriptionManager {
     listSubscriptions(deviceId, { source = null } = {}) {
         return Array.from(this.subscriptions.values())
             .filter((sub) => {
-                if (sub.deviceId !== deviceId) return false;
+                if (sub.deviceId !== deviceId || sub.hiddenFromSchedules) return false;
                 if (source && this.subscriptionSource(sub) !== source) return false;
                 if (this.isExpiredLiveSession(sub)) {
                     this.deleteSubscription({
@@ -249,7 +252,58 @@ export class NotificationSubscriptionManager {
         return this.publicSubscription(subscription);
     }
 
+    async applyPendingPlannerChanges() {
+        if (this.plannerChangesTask) return this.plannerChangesTask;
+        this.plannerChangesTask = this.applyPendingPlannerChangesSerial();
+        try { await this.plannerChangesTask; }
+        finally { this.plannerChangesTask = null; }
+    }
+
+    async applyPendingPlannerChangesSerial() {
+        for (const planned of this.subscriptions.values()) {
+            if (!planned.pendingRegularChanges?.length) continue;
+            for (const change of planned.pendingRegularChanges) {
+                const current = this.subscriptions.get(change.id);
+                if (!current || current.deviceId !== planned.deviceId || current.appliedPlannerChanges?.includes(planned.id)) continue;
+                const updated = { ...current, ...change,
+                    appliedPlannerChanges: [...(current.appliedPlannerChanges || []), planned.id].slice(-16) };
+                this.subscriptions.set(updated.id, updated);
+                try { await this._saveSubscription(updated); }
+                catch (error) { this.subscriptions.set(current.id, current); throw error; }
+            }
+            planned.pendingRegularChanges = [];
+            await this._saveSubscription(planned);
+        }
+    }
+
+    plannerConflicts(deviceId, input) {
+        return plannerConflicts([...this.subscriptions.values()], deviceId, normalizePlannerSchedule(input));
+    }
+
+    replacedOccurrences(subscription) {
+        return replacedOccurrences([...this.subscriptions.values()], subscription);
+    }
+
+    isReplacedScheduleKey(deviceId, scheduleKey) {
+        return [...this.subscriptions.values()].some(s => s.deviceId === deviceId
+            && (s.plannerJourney?.replacements || []).some(r => replacementMatchesScheduleKey(r, scheduleKey)));
+    }
+
+    isReplaced(subscription, leg, now = new Date()) {
+        return occurrenceIsReplaced(this.replacedOccurrences(subscription), leg, now);
+    }
+
     async upsertSubscription(payload) {
+        const key = payload?.deviceId;
+        const prior = this.subscriptionSaveTasks.get(key) || Promise.resolve();
+        const task = prior.catch(() => {}).then(() => this.upsertSubscriptionSerial(payload));
+        this.subscriptionSaveTasks.set(key, task);
+        try { return await task; }
+        finally { if (this.subscriptionSaveTasks.get(key) === task) this.subscriptionSaveTasks.delete(key); }
+    }
+
+    async upsertSubscriptionSerial(payload) {
+        await this.applyPendingPlannerChanges();
         const {
             deviceId,
             pushToken,
@@ -288,6 +342,22 @@ export class NotificationSubscriptionManager {
         if (plannerJourney && (source !== SCHEDULED_SOURCE || scheduleKindInput !== ONE_OFF_SCHEDULE)) {
             throw new Error('Planned journeys must use a one-off schedule');
         }
+        if (plannerJourney) {
+            const duplicate = [...this.subscriptions.values()].find(s => s.deviceId === deviceId
+                && !s.hiddenFromSchedules && s.plannerJourney?.identity === plannerJourney.identity);
+            if (duplicate?.plannerJourney?.replacementMode === 'permanent') {
+                if (plannerJourneyInput.replacementMode === 'permanent'
+                    && duplicate.plannerJourney.leadMinutes === plannerJourney.leadMinutes
+                    && duplicate.plannerJourney.showAllDepartures === plannerJourney.showAllDepartures) return this.publicSubscription(duplicate);
+                throw new Error('The regular route was already changed. Edit its schedule separately.');
+            }
+            const overlapping = [...this.subscriptions.values()].some(s => s.deviceId === deviceId
+                && !s.hiddenFromSchedules && s.id !== subscriptionId && s.plannerJourney && s.plannerJourney.identity !== plannerJourney.identity
+                && Date.parse(s.plannerJourney.startsAt) < Date.parse(plannerJourney.arrival)
+                && Date.parse(plannerJourney.startsAt) < Date.parse(s.plannerJourney.arrival));
+            if (overlapping) throw new Error('Another selected journey overlaps this tracking period. Edit that journey, or schedule the whole connection together.');
+        }
+        if (plannerJourney) preparePlannerOverrides([...this.subscriptions.values()], deviceId, plannerJourney, plannerJourneyInput);
         const scheduleKind = source === SCHEDULED_SOURCE
             ? normalizeScheduleKind(scheduleKindInput)
             : null;
@@ -340,13 +410,17 @@ export class NotificationSubscriptionManager {
         const requestedLiveSessionOrigin = source === LIVE_SESSION_SOURCE
             ? normalizeLiveSessionOrigin(liveSessionOriginInput)
             : null;
+        if (requestedLiveSessionOrigin === 'scheduled' && [...this.subscriptions.values()].some(s =>
+            s.deviceId === deviceId && normalizedLegs.some(l => this.isReplaced(s, l)))) {
+            throw new Error('This regular schedule occurrence was replaced by a selected journey');
+        }
         if (requestedLiveSessionOrigin === 'scheduled' && this.activeAdHocJourneyForDevice(deviceId)) {
             throw new Error('Scheduled journey skipped because an ad hoc journey is still in progress');
         }
         const existingById = subscriptionId
             ? this.subscriptions.get(subscriptionId)
             : plannerJourney ? Array.from(this.subscriptions.values()).find(candidate => candidate.deviceId === deviceId
-                && candidate.plannerJourney?.identity === plannerJourney.identity) : null;
+                && !candidate.hiddenFromSchedules && candidate.plannerJourney?.identity === plannerJourney.identity) : null;
         const matchingScheduledLiveSessions = !subscriptionId
             && source === LIVE_SESSION_SOURCE
             && requestedLiveSessionOrigin === 'scheduled'
@@ -399,6 +473,8 @@ export class NotificationSubscriptionManager {
             scheduleKind,
             plannerJourney,
             plannerState: null,
+            appliedPlannerChanges: existing?.appliedPlannerChanges || [],
+            directionSplitIndex: existing?.directionSplitIndex ?? null,
             daysOfWeek: scheduleKind === ONE_OFF_SCHEDULE
                 ? []
                 : (daysOfWeek.length > 0 ? daysOfWeek : (existing?.daysOfWeek || [])),
@@ -427,6 +503,19 @@ export class NotificationSubscriptionManager {
             lastActiveAt: existing?.lastActiveAt || null
         };
 
+        if (plannerJourney?.replacementMode === 'permanent') {
+            const targets = [...new Set(plannerJourney.replacements.map(r => r.subscriptionId))];
+            subscription.pendingRegularChanges = targets.map(id => {
+                const updated = permanentReplacement(this.subscriptions.get(id), plannerJourney);
+                const replacementLegKeys = plannerJourney.legs.filter(l => l.kind === 'vehicle' && l.mode === 'rail')
+                    .map(l => `${l.from.crs}-${l.to.crs}`);
+                for (const occurrence of plannerJourney.replacements.filter(r => r.subscriptionId === id)) {
+                    occurrence.replacementLegKeys = replacementLegKeys;
+                }
+                return { id, legs: updated.legs, routeKey: updated.routeKey, directionSplitIndex: updated.directionSplitIndex, updatedAt: nowIso };
+            });
+        }
+
         // A late ActivityKit registration must not revive departure alerts after boarding/completion.
         if (source === LIVE_SESSION_SOURCE && resolvedLiveSessionOrigin === 'scheduled') {
             subscription.mutedByLegDay = { ...subscription.mutedByLegDay };
@@ -452,6 +541,7 @@ export class NotificationSubscriptionManager {
             }
             throw error;
         }
+        await this.applyPendingPlannerChanges();
         await this.recordSubscriptionAudit({
             action: existing ? 'update' : 'create',
             reason: existing ? 'upsert_existing' : 'upsert_new',
@@ -490,9 +580,20 @@ export class NotificationSubscriptionManager {
     }
 
     async deleteSubscription({ deviceId, subscriptionId, reason = 'explicit_delete', metadata = null } = {}) {
+        await this.applyPendingPlannerChanges();
         const sub = this.subscriptions.get(subscriptionId) || await this._getSubscriptionFromMongo(subscriptionId);
         if (!sub) return false;
         if (deviceId && sub.deviceId !== deviceId) return false;
+        // Once tracking was due, dismissing it must not revive the skipped commute.
+        // Retain just this hidden, dated exception until normal expiry removes it.
+        if (sub.plannerJourney?.replacements?.length && Date.parse(sub.plannerJourney.startsAt) <= Date.now()
+            && !isExpiredOneOffSchedule(sub, new Date(Date.now()))) {
+            const cancelled = { ...sub, hiddenFromSchedules: true, plannerState: { ...sub.plannerState, status: 'ended' } };
+            this.subscriptions.set(sub.id, cancelled);
+            try { await this._saveSubscription(cancelled); }
+            catch (error) { this.subscriptions.set(sub.id, sub); throw error; }
+            return true;
+        }
         this.subscriptions.delete(subscriptionId);
         try {
             await this._deleteFromMongo(subscriptionId);
@@ -731,7 +832,7 @@ export class NotificationSubscriptionManager {
 
     countSubscriptionsForDevice(deviceId, { source = null } = {}) {
         return Array.from(this.subscriptions.values()).filter((sub) => {
-            if (sub.deviceId !== deviceId) return false;
+            if (sub.deviceId !== deviceId || sub.hiddenFromSchedules) return false;
             if (source && this.subscriptionSource(sub) !== source) return false;
             if (this.isExpiredLiveSession(sub)) return false;
             if (isExpiredOneOffSchedule(sub)) return false;
@@ -762,6 +863,7 @@ export class NotificationSubscriptionManager {
         }
         this.isPolling = true;
         try {
+            await this.applyPendingPlannerChanges();
             await this.pruneExpiredLiveSessions();
             await this.pruneExpiredOneOffSchedules();
             const jobs = Array.from(this.subscriptions.values()).map((sub) =>
@@ -797,11 +899,12 @@ export class NotificationSubscriptionManager {
         if (this.isHolidayModeEnabled(subscription.deviceId)) {
             return;
         }
+        if (subscription.hiddenFromSchedules) return;
         if (subscription.plannerJourney) return this.plannerScheduler.poll(subscription);
         for (const storedLeg of subscription.legs) {
             if (!storedLeg.enabled) continue;
             const now = new Date();
-            if (!shouldPollNow(subscription, storedLeg, now)) continue;
+            if (this.isReplaced(subscription, storedLeg, now) || !shouldPollNow(subscription, storedLeg, now)) continue;
             const leg = resolveLegWindow(subscription, storedLeg, now);
             const legKey = `${leg.from}-${leg.to}`;
             if (this.isMutedToday(subscription, legKey)) continue;
@@ -1133,6 +1236,7 @@ export class NotificationSubscriptionManager {
             candidate.deviceId === deviceId && candidate.legs?.some((storedLeg) => {
                 const leg = resolveLegWindow(candidate, storedLeg, new Date());
                 return candidate.lastAutoStartSentByLeg?.[`${leg.from}-${leg.to}`] === currentScheduleDateKey()
+                    && !this.isReplaced(candidate, storedLeg)
                     && shouldPollNow(candidate, storedLeg, new Date());
             })
         );
@@ -1747,6 +1851,8 @@ export class NotificationSubscriptionManager {
             live_session_origin: subscription.liveSessionOrigin || null,
             active_until: subscription.activeUntil || null,
             planner_journey: subscription.plannerJourney || null,
+            replaced_occurrences: this.replacedOccurrences(subscription),
+            direction_split_index: subscription.directionSplitIndex ?? null,
             planner_status: subscription.plannerState?.status || null,
             push_token_invalid_at: subscription.pushTokenInvalidAt || null,
             last_bad_token_reason: subscription.lastBadTokenReason || null,
@@ -1964,6 +2070,8 @@ export class NotificationSubscriptionManager {
     }
 
     isMutedToday(subscription, legKey) {
+        const leg = subscription.legs.find(l => `${l.from}-${l.to}` === legKey);
+        if (leg && this.isReplaced(subscription, leg)) return true;
         if (subscription.mutedByLegDay?.[legKey] === currentScheduleDateKey()) return true;
         return this.subscriptionSource(subscription) === LIVE_SESSION_SOURCE
             && normalizeLiveSessionOrigin(subscription.liveSessionOrigin) === 'scheduled'

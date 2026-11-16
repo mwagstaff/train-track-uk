@@ -68,4 +68,51 @@ struct PlannerJourneyScheduleTests {
         #expect(restored.expiresAt == original.expiresAt)
         #expect(try decoder.decode(ScheduledPlannerJourney.self, from: encoder.encode(restored)).showAllDepartures)
     }
+    @Test func individualServiceUsesTheSameDatedSchedule() throws {
+        let selected = try journey()
+        let single = ScheduledPlannerJourney(leg: selected.legs[0])
+        #expect(single == ScheduledPlannerJourney(journey: selected))
+        #expect(single.legs[0].plannerLeg.uid == selected.legs[0].uid)
+        #expect(single.trackingWindow.start == single.startsAt)
+        #expect(single.trackingLegs[0].travelDate == "2030-10-19")
+    }
+
+    @Test func datedReplacementBlocksOnlyItsOccurrenceIncludingCachedRecovery() throws {
+        let leg = NotificationLeg(from: "KTH", to: "VIC", fromName: nil, toName: nil, enabled: true,
+                                  windowStart: "07:00", windowEnd: "09:00")
+        let start = Date(timeIntervalSince1970: 1921302000) // 2030-11-19 07:00 UTC
+        let replacement = PlannerScheduleReplacement(subscriptionId: "regular", legIndex: 0, legKey: "KTH-VIC",
+            start: start, end: start.addingTimeInterval(7200), title: "Kent House → London Victoria", revision: nil)
+        var subscription = NotificationSubscription(id: "regular", deviceId: "test", routeKey: "KTH-VIC",
+            daysOfWeek: DayOfWeek.allCases, notificationTypes: [.summary], legs: [leg], muteOnArrival: true,
+            source: .scheduled, liveSessionOrigin: nil, activeUntil: nil, mutedByLegDay: nil,
+            mutedAtByLegDay: nil, createdAt: nil, updatedAt: nil, replacedOccurrences: [replacement])
+        let during = start.addingTimeInterval(3600)
+        #expect(NotificationScheduleActivationPolicy.activeWindow(for: subscription, leg: leg,
+            now: during, calendar: PlannerTime.calendar) == nil)
+        #expect(NotificationScheduleActivationPolicy.windowForRouteRecovery(for: subscription, leg: leg,
+            observedAt: during, receivedAt: during, calendar: PlannerTime.calendar) == nil)
+        #expect(ScheduledJourneyActivationResolver.legs(for: subscription, matchingFrom: "KTH", to: "VIC", now: during).isEmpty)
+        subscription.replacedOccurrences = []
+        #expect(NotificationScheduleActivationPolicy.activeWindow(for: subscription, leg: leg,
+            now: during, calendar: PlannerTime.calendar) != nil)
+        #expect(!replacement.suppresses(from: "VIC", to: "KTH", at: during))
+        #expect(!replacement.suppresses(leg, at: during.addingTimeInterval(86400)))
+    }
+
+    @Test func plannedTrackingUsesAbsoluteWindowAcrossMidnight() throws {
+        let plan = ScheduledPlannerJourney(journey: try journey())
+        let subscription = NotificationSubscription(id: "planned", deviceId: "test", routeKey: "KTH-VIC",
+            scheduleKind: .oneOff, daysOfWeek: [], notificationTypes: [.summary], legs: plan.notificationLegs,
+            muteOnArrival: false, source: .scheduled, liveSessionOrigin: nil, activeUntil: nil,
+            mutedByLegDay: nil, mutedAtByLegDay: nil, createdAt: nil, updatedAt: nil, plannerJourney: plan)
+        let leg = try #require(plan.trackingLegs.first)
+        #expect(NotificationScheduleActivationPolicy.activeWindow(for: subscription, leg: leg,
+            now: plan.startsAt.addingTimeInterval(-1)) == nil)
+        #expect(NotificationScheduleActivationPolicy.activeWindow(for: subscription, leg: leg,
+            now: plan.startsAt) == plan.trackingWindow)
+        #expect(ScheduledJourneyActivationResolver.legs(for: subscription, matchingFrom: "KTH", to: "VIC",
+            now: plan.startsAt) == plan.trackingLegs)
+    }
+
 }

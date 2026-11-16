@@ -1513,8 +1513,12 @@ struct PlannerJourneyDetailView: View {
                                 Label("Route map", systemImage: "map")
                             }
                             .accessibilityIdentifier("planner.route-map.\(index)")
-                            if allowsTrainTracking && leg.kind == "vehicle" && leg.mode == "rail" {
-                                PlannerTrainTrackingButton(leg: leg)
+                            if leg.kind == "vehicle" && leg.mode == "rail" {
+                                if leg.departure > Date(), ScheduledPlannerJourney(leg: leg).canSchedule {
+                                    PlannerScheduleAction(leg: leg)
+                                } else if allowsTrainTracking {
+                                    PlannerTrainTrackingButton(leg: leg)
+                                }
                             }
                             ForEach(PlannerLivePresentation.visibleWarnings((leg.warnings ?? []) + (leg.live?.warnings ?? []))
                                 .filter { !(leg.localJourney?.travelNotes ?? []).contains($0) }, id: \.self) { Text($0).font(.caption).foregroundStyle(Color.primary) }
