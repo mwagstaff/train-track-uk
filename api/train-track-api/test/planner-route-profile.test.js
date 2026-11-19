@@ -146,7 +146,7 @@ test('engine profile is persistable, dataset-pinned and additive to public searc
     assert.deepEqual(response.result.journeys[0].legs[0].serviceCallingPoints.map(call => call.station.crs), ['AAA', 'BBB', 'DDD']);
     assert.equal((await engine.journey(response.result.journeys[0].id)).journey.legs[0].uid, 'fast');
     const legacy = await engine.search({ request: normalizeRequest(request({ limit: 5, windowMinutes: 360 })) });
-    assert.equal(legacy.journeys[0].legs[0].uid, undefined);
+    assert.equal(legacy.journeys[0].legs[0].uid, 'fast');
     await assert.rejects(engine.routeBoardProfile({ request: request({ via: ['AAA'] }) }), { code: 'INVALID_REQUEST' });
     await assert.rejects(engine.routeBoardProfile({ request: request(), version: 'e'.repeat(64) }), { code: 'CURSOR_EXPIRED' });
     await assert.rejects(engine.routeBoardProfile({ request: request() }, { aborted: true }), { code: 'SEARCH_CANCELLED' });

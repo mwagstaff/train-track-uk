@@ -10,6 +10,7 @@ struct PlannerScheduleReplacement: Codable, Hashable, Identifiable {
     let title: String
     let revision: String?
     var replacementLegKeys: [String]? = nil
+    var replacementPlanId: String? = nil
     var id: String { "\(subscriptionId)|\(legIndex)|\(start.timeIntervalSince1970)" }
 
     func suppresses(_ leg: NotificationLeg, at date: Date) -> Bool {
@@ -155,7 +156,7 @@ struct PlannerScheduleAction: View {
     var body: some View {
         if plan.canSchedule && (plan.departure > Date() || existing != nil) {
             Button { showsSchedule = true } label: {
-                Label(existing == nil ? (isSingleService ? "Enable journey tracking for this service" : "Enable tracking for the whole journey") : "Journey tracking scheduled", systemImage: "calendar.badge.clock")
+                Label(existing == nil ? (isSingleService ? "Schedule tracking for this train only" : "Schedule journey tracking") : "Journey tracking scheduled", systemImage: "calendar.badge.clock")
             }
             .accessibilityIdentifier(isSingleService ? "planner.service.schedule.\(plan.legs.first?.uid ?? "train")" : "planner.detail.schedule")
             .sheet(isPresented: $showsSchedule) {
@@ -242,7 +243,7 @@ struct PlannerJourneyScheduleView: View {
                         Text("Regular journey tracking")
                     } footer: {
                         Text(replacementMode == "once"
-                            ? "Skip these occurrences in full. Your regular tracking resumes at its next scheduled occurrence. Cancelling this plan restores them."
+                            ? "Skip these occurrences in full. Your regular tracking resumes at its next scheduled occurrence. Cancelling before tracking starts restores them."
                             : "Keep your existing hours and notification preferences. This selected departure is also scheduled separately. Cancelling it will not undo your regular route change.")
                     }
                 }

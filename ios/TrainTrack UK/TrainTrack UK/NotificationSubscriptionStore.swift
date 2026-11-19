@@ -394,7 +394,9 @@ final class NotificationSubscriptionStore: ObservableObject {
         if let removedPlan, removedPlan.startsAt > Date() {
             let removed = Set((removedPlan.replacements ?? []).map(\.id))
             for index in subscriptions.indices {
-                subscriptions[index].replacedOccurrences?.removeAll { removed.contains($0.id) }
+                subscriptions[index].replacedOccurrences?.removeAll {
+                    $0.replacementPlanId.map { $0 == id } ?? removed.contains($0.id)
+                }
             }
         }
         subscriptions.removeAll { $0.id == id }
@@ -792,9 +794,13 @@ final class NotificationSubscriptionStore: ObservableObject {
 
         let coordinator = JourneyTrackingCoordinator.shared
         coordinator.pruneCompletedScheduledCandidates()
-        guard !ScheduledLiveActivityAutoStartManager.shared.shouldSkipForAdHocJourney(
-            leg: resolvedActivation.legs[0], now: now
-        ) else { return false }
+        if activation.subscription.plannerJourney != nil {
+            guard !coordinator.hasInProgressAdHocJourney else { return false }
+        } else {
+            guard !ScheduledLiveActivityAutoStartManager.shared.shouldSkipForAdHocJourney(
+                leg: resolvedActivation.legs[0], now: now
+            ) else { return false }
+        }
         if !JourneyTrackingCoordinator.shouldArmCandidate(
             subscriptionID: activation.subscription.id,
             activeSubscriptionID: coordinator.activeJourney?.subscriptionId

@@ -69,6 +69,25 @@ def scheduled_journey():
         if leg["mode"] == "rail":
             leg["uid"] = f"A{index:05}"
             leg["originDate"] = START.date().isoformat()
+            leg["serviceId"] = f"fixture-service-{index}"
+    return journey
+
+
+def saved_schedule_journey(profile, enriched=True):
+    journey = scheduled_journey()
+    journey["id"] = "saved-apply-KTH"
+    if profile == "saved-schedule-direct":
+        journey["legs"] = journey["legs"][:1]
+        journey.update(arrival=journey["legs"][0]["arrival"], changes=0, durationMinutes=21)
+    for leg in journey["legs"]:
+        if leg["mode"] == "rail":
+            timetable_id = leg["serviceId"]
+            leg["serviceId"] = "live:" + leg["from"]["crs"] + ":" + timetable_id
+            if enriched:
+                leg["scheduledServiceId"] = timetable_id
+            else:
+                leg.pop("uid", None)
+                leg.pop("originDate", None)
     return journey
 
 
@@ -350,6 +369,8 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(200, {"journey": generic_transfer_journey(), "dataset": DATASET})
         elif url.path.endswith("/journeys/fixture-details"):
             self.respond(200, {"journey": detail_journey(LIVE_START if url.path.startswith("/live-details/") else START), "dataset": DATASET})
+        elif profile.startswith("saved-schedule") and "/journeys/saved-" in url.path:
+            self.respond(200, {"journey": saved_schedule_journey(profile), "dataset": DATASET})
         elif url.path.endswith("/journeys/fixture-schedule"):
             self.respond(200, {"journey": scheduled_journey(), "dataset": DATASET})
         elif url.path.startswith("/live-details/") and "/departures/from/" in url.path:
@@ -456,6 +477,11 @@ class Handler(BaseHTTPRequestHandler):
                             candidate["legs"][0].update(departure=iso(departure), arrival=iso(arrival))
                             result["journeys"] = [candidate]
                         boards.append(dict(board, status="ready", result=result))
+                        continue
+                    if path.startswith("/saved-schedule"):
+                        result = search_result({})
+                        result["journeys"] = [saved_schedule_journey(path.split("/")[1], enriched=False)]
+                        boards.append(dict(board, status="ready", result=result, pollAfterMs=20000))
                         continue
                     if path.startswith("/saved-paging/"):
                         # Keep subsequent pages pending long enough to verify inline feedback.

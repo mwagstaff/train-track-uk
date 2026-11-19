@@ -370,3 +370,38 @@ test('bounded queue rejects overload and an aborted queued request does not exec
     assert.deepEqual(await first, { ok: true });
     assert.deepEqual(await service.status(), { ok: true });
 });
+
+test('public departures retain dated train identity for scheduling from saved boards', () => {
+    const raw = result(request).journeys[0];
+    Object.assign(raw.legs[0], { uid: 'A12345', originDate: '2026-09-08' });
+    const leg = engine().publicJourney(raw).legs[0];
+    assert.equal(leg.uid, 'A12345');
+    assert.equal(leg.originDate, '2026-09-08');
+    assert.equal(leg.operator, 'SE');
+    assert.equal(leg.sourceRef, undefined);
+});
+
+test('live saved departures resolve dated identities without replacing live predictions', async () => {
+    const repo = repository();
+    const departure = Date.parse('2026-09-08T06:00:00Z');
+    const service = { id: 'timetable-service', uid: 'A12345', originDate: '2026-09-07', mode: 'rail', operator: 'SE',
+        calls: [{ station: 'KTH', departure }, { station: 'VIC', arrival: departure + 21 * 60000 }] };
+    const dates = [];
+    repo.resolveServices = date => { dates.push(date); return { services: date === service.originDate ? [service] : [] }; };
+    const instance = engine({ openDataset: async () => repo });
+    const journey = instance.publicJourney(result(normalizeRequest(request)).journeys[0]);
+    journey.id = 'live-detail-test';
+    const leg = journey.legs[0];
+    Object.assign(leg, { serviceId: 'live:KTH:opaque', scheduledDeparture: leg.departure, scheduledArrival: leg.arrival,
+        departure: new Date(departure + 5 * 60000).toISOString(), live: { status: 'delayed', platform: '3' },
+        serviceCallingPoints: [{ station: leg.from, departure: leg.departure }, { station: leg.to, arrival: leg.arrival }] });
+    instance.retainJourney(journey, version);
+    const enriched = (await instance.journey(journey.id)).journey.legs[0];
+    assert.equal(enriched.uid, service.uid);
+    assert.equal(enriched.originDate, '2026-09-07');
+    assert.equal(enriched.scheduledServiceId, service.id);
+    assert.equal(enriched.serviceId, 'live:KTH:opaque');
+    assert.equal(enriched.departure, leg.departure);
+    assert.deepEqual(enriched.live, leg.live);
+    assert.deepEqual(dates, ['2026-09-08', '2026-09-07']);
+});

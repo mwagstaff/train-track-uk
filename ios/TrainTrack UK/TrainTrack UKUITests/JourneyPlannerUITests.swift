@@ -50,18 +50,18 @@ final class JourneyPlannerUITests: XCTestCase {
             XCTAssertTrue(journey.waitForExistence(timeout: 10))
             journey.tap()
             let schedule = app.buttons["planner.detail.schedule"]
-            scrollTo(schedule, in: app)
+            scrollToScheduleControl(schedule, in: app)
             XCTAssertTrue(schedule.waitForExistence(timeout: 10))
             schedule.tap()
             XCTAssertTrue(app.navigationBars["Schedule journey"].waitForExistence(timeout: 5))
             let picker = app.buttons["planner.schedule.lead-time"]
-            scrollTo(picker, in: app)
+            scrollToScheduleControl(picker, in: app)
             XCTAssertTrue(picker.label.contains("1 hour"))
             picker.tap()
             app.buttons["2 hours"].tap()
             XCTAssertTrue(picker.label.contains("2 hours"))
             let save = app.buttons["planner.schedule.save"]
-            scrollTo(save, in: app)
+            scrollToScheduleControl(save, in: app)
             XCTAssertTrue(save.isHittable)
             attach(largeText ? "schedule-large-dark" : "schedule-default", app: app)
             app.buttons["Done"].tap()
@@ -80,31 +80,66 @@ final class JourneyPlannerUITests: XCTestCase {
             XCTAssertTrue(journey.waitForExistence(timeout: 10))
             journey.tap()
             let wholeJourney = app.buttons["planner.detail.schedule"]
-            scrollTo(wholeJourney, in: app)
+            scrollToScheduleControl(wholeJourney, in: app)
             wholeJourney.tap()
             XCTAssertTrue(app.navigationBars["Schedule journey"].waitForExistence(timeout: 5))
             let temporary = app.buttons["planner.schedule.replace-once"]
-            scrollTo(temporary, in: app)
+            scrollToScheduleControl(temporary, in: app)
             XCTAssertTrue(temporary.exists)
             XCTAssertTrue(temporary.isSelected)
             let permanent = app.buttons["planner.schedule.replace-permanent"]
-            scrollTo(permanent, in: app)
+            scrollToScheduleControl(permanent, in: app)
             permanent.tap()
             XCTAssertTrue(permanent.isSelected)
             let hours = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Weekdays 07:00–09:00")).firstMatch
-            scrollTo(hours, in: app)
+            scrollToScheduleControl(hours, in: app)
             XCTAssertTrue(hours.exists)
             attach(largeText ? "override-permanent-large-dark" : "override-permanent-default", app: app)
             app.buttons["Done"].tap()
             let single = app.buttons["planner.service.schedule.A00000"]
-            scrollTo(single, in: app)
+            scrollToScheduleControl(single, in: app)
             XCTAssertTrue(single.exists)
             single.tap()
             XCTAssertTrue(app.navigationBars["Schedule journey"].waitForExistence(timeout: 5))
             let once = app.buttons["planner.schedule.replace-once"]
-            scrollTo(once, in: app)
+            scrollToScheduleControl(once, in: app)
             XCTAssertTrue(once.isSelected)
             attach(largeText ? "override-single-large-dark" : "override-single-default", app: app)
+            app.terminate()
+        }
+    }
+
+    @MainActor
+    func testFavouriteDeparturesUseSharedSchedulingWithoutDuplicateDirectAction() throws {
+        for connected in [false, true] {
+            let profile = connected ? "saved-schedule-connected" : "saved-schedule-direct"
+            let app = launch(plannerEnabled: false, apiBase: "http://127.0.0.1:3014/\(profile)/api/v2", resetAppearance: true)
+            saveFixtureRoute(in: app, favourite: true, ensureFavourite: true)
+            let more = app.buttons["saved-route.later-departures"].firstMatch
+            scrollToScheduleControl(more, in: app)
+            more.tap()
+            let journey = app.buttons["saved-route.journey.saved-apply-KTH"].firstMatch
+            XCTAssertTrue(journey.waitForExistence(timeout: 15))
+            journey.tap()
+            let schedule = app.buttons["planner.detail.schedule"]
+            scrollToScheduleControl(schedule, in: app)
+            XCTAssertTrue(schedule.waitForExistence(timeout: 10))
+            XCTAssertEqual(schedule.label, "Schedule journey tracking")
+            schedule.tap()
+            XCTAssertTrue(app.navigationBars["Schedule journey"].waitForExistence(timeout: 5))
+            app.buttons["Done"].tap()
+            let single = app.buttons["planner.service.schedule.A00000"]
+            if connected {
+                scrollToScheduleControl(single, in: app)
+                XCTAssertEqual(single.label, "Schedule tracking for this train only")
+                single.tap()
+                XCTAssertTrue(app.navigationBars["Schedule journey"].waitForExistence(timeout: 5))
+            } else {
+                app.swipeUp()
+                XCTAssertFalse(single.exists)
+                XCTAssertFalse(app.buttons["planner.track.KTH.VIC"].exists)
+            }
+            attach(connected ? "favourite-connected-scheduling" : "favourite-direct-single-action", app: app)
             app.terminate()
         }
     }
@@ -511,15 +546,12 @@ final class JourneyPlannerUITests: XCTestCase {
         attach("saved-route-itinerary-card", app: app)
         journey.tap()
         XCTAssertTrue(app.navigationBars["Journey details"].waitForExistence(timeout: 5))
-        let track = app.buttons["planner.track.KTH.VIC"]
-        // The summary now ends with interchange notes; full-page swipes can skip past this lazy row.
-        _ = scrollDurationElement(track, in: app)
-        XCTAssertTrue(track.isHittable)
-        track.tap()
-        let failure = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "could not be confirmed for tracking")).firstMatch
-        // The fixture has no provider identity: no train or subscription may be guessed.
-        XCTAssertTrue(failure.waitForExistence(timeout: 10))
-        attach("saved-route-per-train-verification", app: app)
+        let retry = app.buttons["Retry tracking details"]
+        scrollToScheduleControl(retry, in: app)
+        // This legacy fixture has no dated train identity: offer retry without guessing a service.
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["planner.detail.schedule"].exists)
+        attach("saved-route-tracking-details-unavailable", app: app)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.navigationBars["My Journeys"].waitForExistence(timeout: 5))
         let later = app.buttons["saved-route.later-departures"].firstMatch
@@ -569,9 +601,9 @@ final class JourneyPlannerUITests: XCTestCase {
         attach("favourite-planned-itinerary-dark-large-text", app: app)
         journey.tap()
         XCTAssertTrue(app.navigationBars["Journey details"].waitForExistence(timeout: 5))
-        let track = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "planner.track.")).firstMatch
-        _ = scrollDurationElement(track, in: app)
-        XCTAssertTrue(track.isHittable)
+        let retry = app.buttons["Retry tracking details"]
+        scrollToScheduleControl(retry, in: app)
+        XCTAssertTrue(retry.isHittable)
         attach("favourite-planned-detail-dark-large-text", app: app)
         // The separate text-clipping audit currently reports an unidentified element
         // (nil) on iOS 26.5; retain hit-target verification here and review screenshots.
@@ -579,8 +611,8 @@ final class JourneyPlannerUITests: XCTestCase {
     }
 
     @MainActor
-    private func saveFixtureRoute(in app: XCUIApplication, favourite: Bool = false, destination: (String, String) = ("INV", "Inverness")) {
-        if favourite { app.buttons["Add favourite journey"].tap() }
+    private func saveFixtureRoute(in app: XCUIApplication, favourite: Bool = false, destination: (String, String) = ("INV", "Inverness"), ensureFavourite: Bool = false) {
+        if favourite && !ensureFavourite { app.buttons["Add favourite journey"].tap() }
         else { openAddJourney(in: app) }
         for (field, code, name) in [("from", "KTH", "Kent House"), ("destination", destination.0, destination.1)] {
             let input = app.textFields["add-journey.\(field)"]
@@ -594,6 +626,9 @@ final class JourneyPlannerUITests: XCTestCase {
         let save = app.buttons["Save"]
         scrollTo(save, in: app)
         XCTAssertTrue(save.waitForExistence(timeout: 5))
+        if ensureFavourite && app.switches["Mark as favourite"].value as? String != "1" {
+            app.switches["Mark as favourite"].coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        }
         if favourite { XCTAssertEqual(app.switches["Mark as favourite"].value as? String, "1") }
         XCTAssertTrue(save.isEnabled)
         XCTAssertTrue(save.isHittable)
@@ -1601,6 +1636,18 @@ final class JourneyPlannerUITests: XCTestCase {
         let add = app.tabBars.buttons["New journey"]
         XCTAssertTrue(add.waitForExistence(timeout: 5))
         add.tap()
+    }
+
+    @MainActor private func scrollToScheduleControl(_ element: XCUIElement, in app: XCUIApplication) {
+        for _ in 0..<35 {
+            let inSheet = app.navigationBars["Schedule journey"].exists
+            let bottom = !inSheet && app.tabBars.firstMatch.exists ? app.tabBars.firstMatch.frame.minY : app.frame.maxY - 34
+            let top = inSheet ? app.navigationBars["Schedule journey"].frame.maxY : app.navigationBars.firstMatch.frame.maxY
+            if element.exists && element.isHittable && element.frame.midY > top && element.frame.midY < bottom { return }
+            let start = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.75))
+            let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            start.press(forDuration: 0.05, thenDragTo: end)
+        }
     }
 
     @MainActor private func scrollTo(_ element: XCUIElement, in app: XCUIApplication, towardTop: Bool = false, maximumSwipes: Int = 8) {

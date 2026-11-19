@@ -52,12 +52,34 @@ struct PlannedJourney: Codable, Identifiable, Equatable {
     let arrival: Date
     let durationMinutes: Double
     let changes: Int
-    let legs: [Leg]
+    var legs: [Leg]
     var scheduledDeparture: Date? = nil
     var scheduledArrival: Date? = nil
     var warnings: [String]? = nil
 
     var requiresTransferCheck: Bool { legs.contains(where: \.requiresTransferCheck) }
+
+    /// Add timetable identity without replacing fresher board predictions.
+    func addingTrackingDetails(from detail: PlannedJourney) -> PlannedJourney {
+        var result = self
+        result.legs = legs.map { leg in
+            guard let serviceID = leg.scheduledServiceId ?? leg.serviceId,
+                  let source = detail.legs.first(where: {
+                      (($0.scheduledServiceId ?? $0.serviceId) == serviceID || (leg.serviceId != nil && $0.serviceId == leg.serviceId))
+                          && (leg.originDate == nil || $0.originDate == leg.originDate)
+                          && $0.operator == leg.operator
+                          && $0.from.crs == leg.from.crs && $0.to.crs == leg.to.crs
+                          && ($0.scheduledDeparture ?? $0.departure) == (leg.scheduledDeparture ?? leg.departure)
+                  }) else { return leg }
+            var enriched = leg
+            enriched.uid = leg.uid ?? source.uid
+            enriched.originDate = leg.originDate ?? source.originDate
+            enriched.scheduledServiceId = leg.scheduledServiceId ?? source.scheduledServiceId
+            enriched.serviceCallingPoints = leg.serviceCallingPoints ?? source.serviceCallingPoints
+            return enriched
+        }
+        return result
+    }
 
     struct Leg: Codable, Equatable {
         let kind: String
@@ -68,7 +90,7 @@ struct PlannedJourney: Codable, Identifiable, Equatable {
         let arrival: Date
         let `operator`: String?
         let serviceId: String?
-        let originDate: String?
+        var originDate: String?
         var uid: String? = nil
         let callingPoints: [CallingPoint]?
         var serviceCallingPoints: [CallingPoint]? = nil
@@ -353,7 +375,7 @@ struct PlannerSearchJob: Decodable {
 }
 
 struct PlannerJourneyResponse: Decodable, Hashable {
-    let journey: PlannedJourney
+    var journey: PlannedJourney
     let dataset: PlannerDataset
     var live: PlannerLiveContext? = nil
 

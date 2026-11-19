@@ -16,6 +16,34 @@ struct PlannerJourneyScheduleTests {
         """#.utf8))
     }
 
+    @Test func savedBoardGetsTrackingIdentityWithoutReplacingLiveTimes() throws {
+        let details = try journey()
+        var board = details
+        board.legs[0].uid = nil
+        board.legs[0].serviceCallingPoints = nil
+        #expect(!ScheduledPlannerJourney(journey: board).canSchedule)
+        let enriched = board.addingTrackingDetails(from: details)
+        #expect(ScheduledPlannerJourney(journey: enriched).canSchedule)
+        #expect(enriched.legs[0].departure == board.legs[0].departure)
+        #expect(enriched.legs[0].serviceCallingPoints == details.legs[0].serviceCallingPoints)
+        var different = details
+        different.legs[0].scheduledDeparture = details.legs[0].scheduledDeparture?.addingTimeInterval(86400)
+        #expect(!ScheduledPlannerJourney(journey: board.addingTrackingDetails(from: different)).canSchedule)
+    }
+
+    @Test func liveBoardReceivesDatedIdentityThroughItsOpaqueServiceReference() throws {
+        var board = try journey()
+        board.legs[0].uid = nil
+        board.legs[0].originDate = nil
+        var detail = try journey()
+        detail.legs[0].scheduledServiceId = "resolved-timetable-service"
+        let enriched = board.addingTrackingDetails(from: detail)
+        #expect(ScheduledPlannerJourney(journey: enriched).canSchedule)
+        #expect(enriched.legs[0].originDate == detail.legs[0].originDate)
+        #expect(enriched.legs[0].scheduledServiceId == "resolved-timetable-service")
+        #expect(enriched.legs[0].departure == board.legs[0].departure)
+    }
+
     @Test func schedulingUsesScheduledTimesAndDefaultsToOneHour() throws {
         let selected = try journey()
         let plan = ScheduledPlannerJourney(journey: selected)

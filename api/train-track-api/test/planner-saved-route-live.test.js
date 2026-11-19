@@ -1,3 +1,4 @@
+import { liveScheduleIdentity } from '../lib/planner/live-schedule-identity.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { SavedRouteLive, earliestRouteJourneys } from '../lib/planner/saved-route-live.js';
@@ -487,4 +488,21 @@ test('cancelled boarding and arrival stops explicitly identify the impact', asyn
         assert.ok(live.warnings.includes(boarding ? 'Boarding at ORG is cancelled.' : 'Arrival at DST is cancelled.'));
         assert.ok(!live.warnings.some(warning => warning.includes('are not cancelled')));
     }
+});
+
+test('a rebuilt live departure can recover its exact dated timetable identity', async () => {
+    const f = fixture();
+    const original = leg('ORG', 'DST', '12:05', '12:27');
+    original.uid = 'A12345';
+    f.board('ORG', 'DST', [row('live-service', '12:05')]);
+    f.details('ORG', 'live-service', '12:05', [point('DST', '12:27')]);
+    const result = await f.helper.refresh(plan([original]), request);
+    const live = result.journeys[0].legs[0];
+    assert.equal(live.serviceId, 'live:ORG:live-service');
+    assert.equal(live.live.status, 'onTime');
+    const timetable = { id: original.serviceId, uid: original.uid, originDate: original.originDate,
+        mode: 'rail', operator: 'SN', calls: [
+            { station: 'ORG', departure: Date.parse(original.departure) },
+            { station: 'DST', arrival: Date.parse(original.arrival) }] };
+    assert.equal(liveScheduleIdentity(live, [timetable]), timetable);
 });

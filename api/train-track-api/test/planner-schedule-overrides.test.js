@@ -195,3 +195,20 @@ test('replaced regular cards can be released without ending a boarded journey', 
     assert.deepEqual(lateEnds, ['late']);
     assert.equal(manager.subscriptions.has('device::late'), false);
 });
+
+
+test('two separate selected services retain independent exceptions for the same regular occurrence', async () => {
+    const { manager } = harness();
+    manager.subscriptions.get('regular').legs[0].windowEnd = '12:00';
+    const first = await manager.upsertSubscription(request(manager));
+    const secondRequest = request(manager);
+    secondRequest.plannerJourney.legs[0].departure = `${date}T11:03:00Z`;
+    secondRequest.plannerJourney.legs[0].arrival = `${date}T11:27:00Z`;
+    secondRequest.plannerJourney.replacements = manager.plannerConflicts('device', secondRequest.plannerJourney);
+    const second = await manager.upsertSubscription(secondRequest);
+    const original = manager.subscriptions.get('regular');
+    assert.deepEqual(new Set(manager.replacedOccurrences(original).map(r => r.replacementPlanId)), new Set([first.id, second.id]));
+    await manager.deleteSubscription({ deviceId: 'device', subscriptionId: first.id });
+    assert.equal(manager.isReplaced(original, original.legs[0], new Date(`${date}T08:00Z`)), true);
+    assert.deepEqual(manager.replacedOccurrences(original).map(r => r.replacementPlanId), [second.id]);
+});

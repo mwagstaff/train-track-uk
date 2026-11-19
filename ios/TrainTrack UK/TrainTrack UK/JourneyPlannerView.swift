@@ -1395,6 +1395,7 @@ struct PlannerJourneyDetailView: View {
     var allowsTrainTracking = false
     var savedRoute: SavedRouteJourneyReference? = nil
     @State private var response: PlannerJourneyResponse?
+    @State private var trackingDetails: PlannedJourney?
     @State private var error: String?
     @State private var retry = UUID()
     @State private var displayDate = Date()
@@ -1404,6 +1405,12 @@ struct PlannerJourneyDetailView: View {
     /// Saved-route details follow the route's board as it refreshes; others are a snapshot.
     private var liveResponse: PlannerJourneyResponse? {
         savedRoute.flatMap { routePlanner.currentJourney(for: $0) }
+    }
+
+    private var detailResponse: PlannerJourneyResponse? {
+        guard var value = liveResponse ?? response else { return nil }
+        if let trackingDetails { value.journey = value.journey.addingTrackingDetails(from: trackingDetails) }
+        return value
     }
 
     private var liveIsStale: Bool {
@@ -1416,12 +1423,24 @@ struct PlannerJourneyDetailView: View {
 
     var body: some View {
         List {
-            if let response = liveResponse ?? response {
+            if let response = detailResponse {
                 Section {
                     Text("Summary").font(.headline)
                     PlannerJourneySummary(journey: response.journey, liveIsStale: liveIsStale, showsTravelNotes: false)
                         .accessibilityIdentifier("planner.detail.summary")
                     PlannerScheduleAction(journey: response.journey)
+                    if response.journey.legs.filter({ $0.kind == "vehicle" && $0.mode == "rail" }).count > 1 {
+                        Text("Tracks all trains and connections in this journey. To track one train, use its option below.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if response.journey.departure > Date(), !ScheduledPlannerJourney(journey: response.journey).canSchedule {
+                        if let error {
+                            Text("Journey tracking details could not be loaded. \(error)").font(.caption)
+                            Button("Retry tracking details") { retry = UUID() }
+                        } else {
+                            ProgressView("Loading journey tracking options…")
+                        }
+                    }
                     // Live-data notes are summarised by the status line at the foot of the page.
                     ForEach(PlannerLivePresentation.searchResultWarnings(for: response.journey)
                         .filter { !PlannerLivePresentation.isRefreshFailureWarning($0) }, id: \.self) { warning in
@@ -1515,8 +1534,10 @@ struct PlannerJourneyDetailView: View {
                             .accessibilityIdentifier("planner.route-map.\(index)")
                             if leg.kind == "vehicle" && leg.mode == "rail" {
                                 if leg.departure > Date(), ScheduledPlannerJourney(leg: leg).canSchedule {
-                                    PlannerScheduleAction(leg: leg)
-                                } else if allowsTrainTracking {
+                                    if response.journey.legs.count > 1 {
+                                        PlannerScheduleAction(leg: leg)
+                                    }
+                                } else if allowsTrainTracking && leg.departure <= Date() {
                                     PlannerTrainTrackingButton(leg: leg)
                                 }
                             }
@@ -1560,14 +1581,18 @@ struct PlannerJourneyDetailView: View {
             // Keep the latest copy on screen once a departed journey leaves the board.
             if journey != nil { response = liveResponse }
         }
-        .task(id: retry) {
-            response = initialResponse
+        .task(id: "\(liveResponse?.journey.id ?? id)-\(retry)") {
+            if response == nil { response = initialResponse }
             error = nil
-            if initialResponse != nil { return }
+            if let current = liveResponse ?? response, ScheduledPlannerJourney(journey: current.journey).canSchedule { return }
             do {
-                let value = try await client.journey(id: id)
+                let value = try await client.journey(id: liveResponse?.journey.id ?? id)
                 try Task.checkCancellation()
+                trackingDetails = value.journey
                 response = value
+                if !ScheduledPlannerJourney(journey: detailResponse?.journey ?? value.journey).canSchedule {
+                    error = "The timetable could not confirm the selected train identities."
+                }
             } catch {
                 guard !Task.isCancelled else { return }
                 self.error = error.localizedDescription

@@ -1,3 +1,4 @@
+import { liveScheduleIdentity } from './live-schedule-identity.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getHeapStatistics } from 'node:v8';
@@ -440,6 +441,7 @@ export class PlannerEngine {
                 ...(leg.operator ? { operator: leg.operator } : {}),
                 ...(leg.serviceId ? { serviceId: leg.serviceId } : {}),
                 ...(leg.originDate ? { originDate: leg.originDate } : {}),
+                ...(leg.uid ? { uid: leg.uid } : {}),
                 ...(leg.platform ? { platform: leg.platform } : {}),
                 ...(leg.callingPoints ? { callingPoints: leg.callingPoints.map(call => ({
                     station: station(call.station), arrival: call.arrival ?? null, departure: call.departure ?? null,
@@ -467,15 +469,29 @@ export class PlannerEngine {
         const legs = [];
         for (const leg of cached.journey.legs) {
             if (signal?.aborted) throw new PlannerError('SEARCH_CANCELLED', 'Request cancelled.', 499);
-            if (leg.kind !== 'vehicle' || !leg.originDate || !leg.serviceId) { legs.push(leg); continue; }
-            const dateKey = `${repo.version}:${leg.originDate}`;
-            let resolved = this.dates.get(dateKey);
-            if (!resolved) {
-                resolved = await repo.resolveServices(leg.originDate, { signal });
-                remember(this.dates, dateKey, resolved, this.config.dateCacheSize);
+            if (leg.kind !== 'vehicle' || !leg.serviceId) { legs.push(leg); continue; }
+            const resolve = async date => {
+                if (signal?.aborted) throw new PlannerError('SEARCH_CANCELLED', 'Request cancelled.', 499);
+                const key = `${repo.version}:${date}`;
+                return this.dates.get(key) ?? remember(this.dates, key,
+                    await repo.resolveServices(date, { signal }), this.config.dateCacheSize);
+            };
+            let service;
+            if (leg.serviceId.startsWith('live:') && !leg.scheduledServiceId) {
+                const date = londonDate(leg.scheduledDeparture ?? leg.departure);
+                const services = [];
+                // A train boarded after midnight may have originated on a previous day.
+                for (let offset = 0; offset <= (repo.metadata.maxEventDayOffset ?? 2); offset++) {
+                    services.push(...(await resolve(addDays(date, -offset))).services);
+                }
+                service = liveScheduleIdentity(leg, services);
+            } else if (leg.originDate) {
+                service = (await resolve(leg.originDate)).services.find(value => value.id === (leg.scheduledServiceId ?? leg.serviceId));
             }
-            const service = resolved.services.find(value => value.id === (leg.scheduledServiceId ?? leg.serviceId));
-            legs.push(service ? { ...leg, uid: service.uid, serviceCallingPoints: service.calls.map(call => ({
+            if (signal?.aborted) throw new PlannerError('SEARCH_CANCELLED', 'Request cancelled.', 499);
+            legs.push(service ? { ...leg, uid: service.uid, originDate: service.originDate ?? leg.originDate,
+                ...(leg.serviceId.startsWith('live:') ? { scheduledServiceId: service.id } : {}),
+                serviceCallingPoints: service.calls.map(call => ({
                 station: this.publicStation(stations.get(call.station) ?? call.station),
                 arrival: Number.isFinite(call.arrival) ? new Date(call.arrival).toISOString() : null,
                 departure: Number.isFinite(call.departure) ? new Date(call.departure).toISOString() : null

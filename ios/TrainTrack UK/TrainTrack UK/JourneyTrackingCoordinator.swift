@@ -901,7 +901,7 @@ final class JourneyTrackingCoordinator: ObservableObject {
             ])
             return
         }
-        if source == .scheduled,
+        if source == .scheduled, subscription.plannerJourney == nil,
            ScheduledLiveActivityAutoStartManager.shared.shouldSkipForAdHocJourney(leg: first) {
             return
         }

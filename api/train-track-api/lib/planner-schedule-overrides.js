@@ -66,7 +66,8 @@ export function preparePlannerOverrides(subscriptions, deviceId, plan, input) {
 }
 export function replacedOccurrences(subscriptions, subscription) {
     return subscriptions.filter(s => s.deviceId === subscription.deviceId).flatMap(s =>
-        (s.plannerJourney?.replacements || []).filter(r => r.subscriptionId === subscription.id));
+        (s.plannerJourney?.replacements || []).filter(r => r.subscriptionId === subscription.id)
+            .map(r => ({ ...r, replacementPlanId: s.id })));
 }
 export function occurrenceIsReplaced(occurrences, leg, now = new Date()) {
     return occurrences.some(r => (r.legKey === key(leg) || r.replacementLegKeys?.includes(key(leg)))
